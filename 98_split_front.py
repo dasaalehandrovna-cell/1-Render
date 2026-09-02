@@ -1295,72 +1295,9 @@ def _r7_v262_finance_postcommit_job(chat_id: int, day_key: str, reason: str):
 
 globals()['_v262_finance_postcommit_job']=_r7_v262_finance_postcommit_job
 
-# --- Chat audit: distinguish temporary unreachable from confirmed bot removal. ---
-_R7_BASE_REFRESH_CHAT_PROBE = globals().get('_v197_refresh_chat_probe_facts')
-_R7_BASE_PROBE_BOT_IN_CHAT = globals().get('probe_bot_in_chat')
-
-
-def _r7_refresh_chat_probe_facts(chat_id: int, chat_obj=None) -> bool:
-    changed = bool(_R7_BASE_REFRESH_CHAT_PROBE(int(chat_id), chat_obj)) if callable(_R7_BASE_REFRESH_CHAT_PROBE) else False
-    try:
-        info = get_chat_store(int(chat_id)).setdefault('info', {})
-        membership = info.get('bot_membership') or {}
-        status = str(membership.get('status') or '').strip().lower()
-        reason = ''
-        if status in {'left', 'kicked'}:
-            reason = f'getChatMember status={status}: bot is not a member'
-        if not reason:
-            for warning in info.get('probe_warnings') or []:
-                low = str(warning or '').casefold()
-                if str(warning).startswith('bot_member:') and any(x in low for x in ('bot is not a member', 'bot was kicked', 'kicked from the', 'bot removed')):
-                    reason = str(warning)[len('bot_member:'):][:260]
-                    break
-        previous = str(info.get('_r7_bot_removed_probe_reason') or '')
-        if reason:
-            if previous != reason:
-                info['_r7_bot_removed_probe_reason'] = reason
-                changed = True
-        elif previous:
-            info.pop('_r7_bot_removed_probe_reason', None)
-            changed = True
-    except Exception:
-        pass
-    return changed
-
-
-def _r7_probe_bot_in_chat(chat_id: int, *, deep: bool=True, persist: bool=True, schedule_backup: bool=True, _migration_retry: bool=False) -> bool:
-    cid = int(chat_id)
-    result = bool(_R7_BASE_PROBE_BOT_IN_CHAT(cid, deep=deep, persist=persist, schedule_backup=schedule_backup, _migration_retry=_migration_retry)) if callable(_R7_BASE_PROBE_BOT_IN_CHAT) else False
-    try:
-        store = get_chat_store(cid)
-        info = store.get('info') or {}
-        reason = str(info.get('_r7_bot_removed_probe_reason') or '')
-        lifecycle = _v150_lifecycle(cid) if callable(globals().get('_v150_lifecycle')) else (store.get('chat_lifecycle_v150') or {})
-        last_error = str((lifecycle or {}).get('last_error') or '')
-        failures = int((lifecycle or {}).get('consecutive_failures') or 0)
-        # Direct getChatMember left/kicked is definitive.  For an already known
-        # chat, Telegram may answer 400 `chat not found` immediately after the
-        # bot was removed.  Treat the first explicit deep-probe result as removed;
-        # timeout/429/connection errors remain temporary orange states.
-        if not reason and deep and (not result) and 'chat not found' in last_error.casefold():
-            reason = f'confirmed by Telegram deep probe: {last_error[:220]}'
-        if reason:
-            set_chat_status_v150(cid, 'bot_removed', reason, source='r7_deep_probe', persist=persist, schedule_backup=schedule_backup)
-            try:
-                suspend = globals().get('suspend_forward_target_v199')
-                if callable(suspend):
-                    suspend(cid, reason, persist=persist)
-            except Exception:
-                pass
-            return False
-    except Exception as exc:
-        try: log_error(f'R7 chat probe classify {cid}: {exc}')
-        except Exception: pass
-    return result
-
-# The base probe calls this helper by global name.
-globals()['_v197_refresh_chat_probe_facts'] = _r7_refresh_chat_probe_facts
-globals()['probe_bot_in_chat'] = _r7_probe_bot_in_chat
+# R9.2: chat-removal classification is implemented canonically in 00_core.py.
+# Do not rebind probe_bot_in_chat here: bot.py runtime-contract requires its
+# owner to remain 00_core.py.
 
 # --- Google UX: three-step setup, service email, open current sheet, auto-test. ---
 _R7_GOOGLE_INFO_CACHE = {'ts': 0.0, 'data': {}}

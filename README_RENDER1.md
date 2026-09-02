@@ -1,4 +1,4 @@
-# Render #1 — FAST front — R6 FULL STATE
+# Render #1 — FAST front — R9.2 RUNTIME CONTRACT FIX
 
 Deploy this ZIP as the Telegram/front service. Start command: `python start_front.py`.
 
@@ -35,3 +35,9 @@ R8 chat lifecycle fix: for an already-known chat, Telegram 400 `Bad Request: cha
 ## R9 Google style + concise startup note
 - Startup `Бот запущен` shows a short four-line list of the important recent changes.
 - Google formatting itself is owned by Render #2 and now matches original vys-262 styling.
+
+## R9.2 runtime-contract correction
+- `probe_bot_in_chat` remains canonically owned by `00_core.py`, as required by bot.py runtime contract v223.
+- The late override from `98_split_front.py` was removed.
+- `left`/`kicked` membership and explicit Telegram `400 chat not found` removal classification now live inside the canonical probe path.
+- Manifest hashes are regenerated only after all source edits.

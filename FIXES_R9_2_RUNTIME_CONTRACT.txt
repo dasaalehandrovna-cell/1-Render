@@ -1,0 +1,6 @@
+R9.2
+
+Fixed startup crash:
+RUNTIME CONTRACT GATE v223 FAILED: owner probe_bot_in_chat=98_split_front.py expected=00_core.py
+
+The public probe is no longer rebound from 98_split_front.py. Chat removal classification is implemented in the canonical 00_core.py probe.

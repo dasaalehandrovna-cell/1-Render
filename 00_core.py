@@ -5974,6 +5974,40 @@ def _v177_legacy_0040_probe_bot_in_chat(chat_id: int, *, deep: bool=True, persis
                 mig = globals().get('migrate_chat_id_everywhere')
                 if callable(mig) and mig(chat_id, migrate_to, 'deep probe: Telegram group upgraded'):
                     return probe_bot_in_chat(migrate_to, deep=deep, persist=persist, schedule_backup=schedule_backup, _migration_retry=True)
+
+            # Canonical membership classification belongs here in 00_core.py.
+            # The runtime contract requires probe_bot_in_chat to remain owned by
+            # this module; do not override it from a late split/runtime module.
+            try:
+                _probe_info = get_chat_store(chat_id).get('info') or {}
+                _membership = _probe_info.get('bot_membership') or {}
+                _membership_status = str(_membership.get('status') or '').strip().lower()
+                _removed_reason = ''
+                if _membership_status in {'left', 'kicked'}:
+                    _removed_reason = f'getChatMember status={_membership_status}: bot is not a member'
+                if not _removed_reason:
+                    for _warning in (_probe_info.get('probe_warnings') or []):
+                        _warning_text = str(_warning or '')
+                        _warning_low = _warning_text.casefold()
+                        if _warning_text.startswith('bot_member:') and any(_needle in _warning_low for _needle in (
+                            'bot is not a member', 'bot was kicked', 'kicked from the', 'bot removed', 'chat not found'
+                        )):
+                            _removed_reason = _warning_text[len('bot_member:'):][:260]
+                            break
+                if _removed_reason:
+                    set_chat_bot_removed(chat_id, True, _removed_reason, persist=persist, schedule_backup=schedule_backup)
+                    try:
+                        _suspend = globals().get('suspend_forward_target_v199')
+                        if callable(_suspend):
+                            _suspend(chat_id, _removed_reason, persist=persist)
+                    except Exception:
+                        pass
+                    return False
+            except Exception as _membership_exc:
+                try:
+                    log_error(f'probe membership classify {chat_id}: {_membership_exc}')
+                except Exception:
+                    pass
         changed = bool(set_chat_bot_removed(chat_id, False, '', persist=False, schedule_backup=False)) or bool(changed)
         try:
             reactivate = globals().get('reactivate_forward_target_v199')

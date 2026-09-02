@@ -38,7 +38,7 @@
     "98_split_front.py": "v262"
   },
   "files": {
-    "00_core.py": "f4198654cd07bf0a7f968ee24c10f760c17aef2cdbf1cd6789426b56910f4709",
+    "00_core.py": "0eca820d92a1dd1ae2ba2b0d521c1ee9462dd8dbd7e5862a2a2d37de7e6cbd8e",
     "05_key_value_runtime.py": "1df54a6018dbe2f973854f8d6929672e785be38c5bdb285ec0d756906ab1d36d",
     "10_mega_runtime.py": "cb46169f289dbd09a4631dab2fb439fa7a7aa43466737ca477520c380dee80b1",
     "11_data_constitution.py": "810c95193895cfa6e2aa23b59801717b7d2c71fdedd539d076a63dd83b873bae",
@@ -71,6 +71,6 @@
     "88_ui_constructor.py": "3f684bfcaab2a0f41aed87e7e23bc5053dccfde88c603ea4c159b51a0dcc2b6a",
     "89_callback_final.py": "077fa57a67ad4c436e9d3f7f5f915e2c34d79ea470879fa1d34a2570fe1408c1",
     "92_v262_linked_finance_speed.py": "181c0ada9af164986e9c32c462d22af13b03836d27a623c32b040c06eaef4061",
-    "98_split_front.py": "2a92c09be6b7a3c9862760f50b6fa28e8c097ca9c1d341d3a14e028fc6e4d1a1"
+    "98_split_front.py": "00b0455908f6afcbcf22efebe4fb4d005bc41af2b280278338dd594a1d69c23b"
   }
 }
