@@ -20,7 +20,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r7-system-polish"
+_SPLIT_FRONT_VERSION = "vys-262-front-r9-google-style"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -1338,11 +1338,12 @@ def _r7_probe_bot_in_chat(chat_id: int, *, deep: bool=True, persist: bool=True, 
         lifecycle = _v150_lifecycle(cid) if callable(globals().get('_v150_lifecycle')) else (store.get('chat_lifecycle_v150') or {})
         last_error = str((lifecycle or {}).get('last_error') or '')
         failures = int((lifecycle or {}).get('consecutive_failures') or 0)
-        # Direct getChatMember left/kicked is definitive.  Telegram often answers
-        # "chat not found" after a bot has been removed; two consecutive explicit
-        # deep-probe failures are considered definitive, while timeout/429 remain orange.
-        if not reason and deep and (not result) and 'chat not found' in last_error.casefold() and failures >= 2:
-            reason = f'confirmed after {failures} deep probes: {last_error[:220]}'
+        # Direct getChatMember left/kicked is definitive.  For an already known
+        # chat, Telegram may answer 400 `chat not found` immediately after the
+        # bot was removed.  Treat the first explicit deep-probe result as removed;
+        # timeout/429/connection errors remain temporary orange states.
+        if not reason and deep and (not result) and 'chat not found' in last_error.casefold():
+            reason = f'confirmed by Telegram deep probe: {last_error[:220]}'
         if reason:
             set_chat_status_v150(cid, 'bot_removed', reason, source='r7_deep_probe', persist=persist, schedule_backup=schedule_backup)
             try:
@@ -1833,5 +1834,14 @@ def _r7_front_create_sheet_disabled(tenant_id: str, title: str='Финансы �
 globals()['_google_access_token']=_r7_front_google_forbidden
 globals()['tenant_google_upload_export']=_r7_front_google_forbidden
 globals()['tenant_google_create_spreadsheet']=_r7_front_create_sheet_disabled
+
+# v262
+
+# --- R9 release note: Google visual formatting restored to original vys-262 on Worker. ---
+R9_GOOGLE_STYLE = 'vys262-r9-google-style'
+try:
+    bot_journal('r9_release_loaded', int(OWNER_ID or 0), 'google=original-v262-colors; startup-summary=concise; r8-chat-removal=kept')
+except Exception:
+    pass
 
 # v262

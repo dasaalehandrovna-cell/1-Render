@@ -25,6 +25,13 @@ Use the SAME `REDIS_URL`, `WORKER_REDIS_SNAPSHOT_KEY` and `PEER_SHARED_SECRET` o
 
 ### R7.1 finance/chat/google cleanup
 - Finance mutations commit locally first; duplicate synchronous global rebuilds were removed from add, edit, bulk delete, USD delete, forwarded edits and linked edits.
-- Telegram chat audit treats `left`/`kicked` as removed; repeated deep `chat not found` becomes removed, while timeout/429 stays temporary/unreachable.
+- Telegram chat audit treats `left`/`kicked` as removed; the first explicit deep `chat not found` becomes removed, while timeout/429 stays temporary/unreachable.
 - `/google` is a guided 3-step flow; opening the menu does not synchronously wake the worker just to render status.
 - Normal CSV/XLSX serialization and Drive upload are delegated to Render #2. Front keeps only emergency local file fallback if the worker is unavailable; Google OAuth/Drive hooks on Front are blocked.
+
+
+R8 chat lifecycle fix: for an already-known chat, Telegram 400 `Bad Request: chat not found` during explicit probing is classified immediately as `bot_removed`; the chat moves to the Removed menu. Timeout/429/connection failures remain temporary `unreachable`.
+
+## R9 Google style + concise startup note
+- Startup `Бот запущен` shows a short four-line list of the important recent changes.
+- Google formatting itself is owned by Render #2 and now matches original vys-262 styling.

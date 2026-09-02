@@ -415,8 +415,13 @@ def _v150_error_class(err) -> tuple[str, str]:
         return ('bot_removed', 'telegram_confirmed_bot_removed')
     if 'migrate_to_chat_id' in low or 'group chat was upgraded' in low:
         return ('migrated', 'telegram_migration')
+    # For a chat already known to the bot, Telegram's explicit
+    # `400 Bad Request: chat not found` during a membership/probe request means
+    # the bot can no longer access that chat.  The original monolith treated
+    # this as removal; keep that behaviour so the chat immediately moves to
+    # the "Removed" menu instead of staying orange forever.
     if 'chat not found' in low:
-        return ('unreachable', 'telegram_chat_not_found')
+        return ('bot_removed', 'telegram_chat_not_found_confirmed')
     if 'not enough rights' in low or 'have no rights' in low or 'not enough permissions' in low:
         return ('unreachable', 'telegram_missing_rights')
     if 'forbidden' in low:
@@ -4050,7 +4055,7 @@ def _v153_runtime_audit_text() -> str:
     a = _v153_handler_audit()
     stats = mega_task_registry_stats()
     migration = _v153_migration_store()
-    lines = ['ГЛУБОКИЙ АУДИТ v153', f'Создан: {_v153_now()}', '', f"Slash-команд: {a['commands']}; дублей: {', '.join(a['duplicate_commands']) or 'нет'}.", f"Message handlers: {a['message_handlers']}; callback handlers: {a['callback_handlers']}.", 'Команды /json_full, /restore и /full_audit имеют отдельные обработчики и проверку прав.', 'Callback подтверждения защищены одноразовыми token и actor check.', 'Повторная выгрузка не создаёт очередь: одно INFO-сообщение становится кнопкой скачивания.', 'Telegram message is not modified считается идемпотентным результатом, а не ошибкой бизнеса.', 'Временные chat not found/timeout не удаляют чат; lifecycle active/unreachable/bot_removed/migrated/archived сохраняется в runtime ZIP.', 'Runtime ZIP скачивает slots/events; устаревшие candidate/staged остаются только в индексе и очищаются до 2 файлов.', f"Durable failed: {stats.get('failed', 0)}; details: {len(stats.get('failed_details') or [])}; pending_detail_refresh={bool(stats.get('failed_details_pending'))}.", 'Reminder witnesses принимаются только при явном EDITREM/EDITREMINT, поэтому финансовая задача не требует reminder_edit.', 'Секреты очищаются перед журналом, snapshot, ZIP/TXT/JSON export и отправкой документа.', f"MEGA root v238: один canonical {globals().get('MEGA_BACKUP_DIR')}; legacy migration state удалён."]
+    lines = ['ГЛУБОКИЙ АУДИТ v153', f'Создан: {_v153_now()}', '', f"Slash-команд: {a['commands']}; дублей: {', '.join(a['duplicate_commands']) or 'нет'}.", f"Message handlers: {a['message_handlers']}; callback handlers: {a['callback_handlers']}.", 'Команды /json_full, /restore и /full_audit имеют отдельные обработчики и проверку прав.', 'Callback подтверждения защищены одноразовыми token и actor check.', 'Повторная выгрузка не создаёт очередь: одно INFO-сообщение становится кнопкой скачивания.', 'Telegram message is not modified считается идемпотентным результатом, а не ошибкой бизнеса.', 'Явный chat not found для известного чата означает bot_removed; timeout/429/сетевая ошибка остаются unreachable; lifecycle active/unreachable/bot_removed/migrated/archived сохраняется в runtime ZIP.', 'Runtime ZIP скачивает slots/events; устаревшие candidate/staged остаются только в индексе и очищаются до 2 файлов.', f"Durable failed: {stats.get('failed', 0)}; details: {len(stats.get('failed_details') or [])}; pending_detail_refresh={bool(stats.get('failed_details_pending'))}.", 'Reminder witnesses принимаются только при явном EDITREM/EDITREMINT, поэтому финансовая задача не требует reminder_edit.', 'Секреты очищаются перед журналом, snapshot, ZIP/TXT/JSON export и отправкой документа.', f"MEGA root v238: один canonical {globals().get('MEGA_BACKUP_DIR')}; legacy migration state удалён."]
     return '\n'.join(lines)
 
 def v153_cmd_full_audit(msg):

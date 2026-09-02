@@ -1,0 +1,4 @@
+R9.1 MANIFEST FIX
+- Rebuilt modules_manifest.json after all R9 module edits.
+- Intended to fix MODULAR PACKAGE CHECK FAILED hash errors on Render deployment.
+- No business logic changes relative to corrected R9 source tree.

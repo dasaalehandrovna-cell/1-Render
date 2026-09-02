@@ -595,7 +595,7 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = '• 🔗 Финансы выс-262: длинный тап исходного сообщения, /изм бот-копии и редактирование из финансового окна теперь меняют одну логическую операцию по неизменяемому Telegram-origin, без создания второй записи.\n• 🩹 Если после deploy исходная финансовая строка пропала, но связанная бот-копия сохранилась, источник в финансовом чате восстанавливается по origin ровно один раз и затем редактируется вместе с копиями.\n• ⚡ Все окна переведены на RAM-first навигацию: Key Value/remote mirror больше не стоит перед Telegram edit; UI-only выборы и режим ввода не делают синхронный общий save/config checkpoint.\n• 🧩 Runtime timestamps и временные UI-настройки исключены из Configuration Constitution, поэтому обычные клики/финансы не должны плодить config generations.\n• ☁️ Три режима Google Sync из выс-261 и exact-once/recovery защиты выс-260 сохранены.'
+STARTUP_RELEASE_SUMMARY = '• 🎨 Google Sheets: возвращены цветные ячейки, рамки и форматы исходного выс-262; сама Google-работа остаётся на Render #2.\n• ⛔ Проверка чатов: если Telegram подтверждает, что бота нет / chat not found, чат переносится в «Удалённые»; временные ошибки остаются 🟠.\n• ⚡ Финансы: локальный commit на Render #1, повторные пересчёты и UI объединены после записи.\n• 💾 Deploy: полное пользовательское состояние восстанавливается через Worker → Redis → MEGA.'
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""
