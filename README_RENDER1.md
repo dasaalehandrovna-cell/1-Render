@@ -41,3 +41,11 @@ R8 chat lifecycle fix: for an already-known chat, Telegram 400 `Bad Request: cha
 - The late override from `98_split_front.py` was removed.
 - `left`/`kicked` membership and explicit Telegram `400 chat not found` removal classification now live inside the canonical probe path.
 - Manifest hashes are regenerated only after all source edits.
+
+## R10 unified UI / contours / Excel
+- Service progress is human-readable; internal W/Ф232/Ф233 ids are hidden from ordinary users.
+- All XLSX/Google Sheet outputs use the colored vys-262 financial palette.
+- /ok is blocked in contour 1/2; disabled business-mode callbacks return to the mode menu.
+- Owner UI has Google Excel and Render #2 health controls; peer health is bidirectional.
+- Contour toggles force immediate keyboard redraw after state changes.
+

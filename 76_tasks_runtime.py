@@ -4350,6 +4350,10 @@ def v215_contour_mode_callback(call, resolved: str) -> bool:
                 pass
             text, kb = build_contour_mode_control(cid, uid, mode)
             _v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')
+            try:
+                bot.edit_message_reply_markup(chat_id=cid, message_id=mid, reply_markup=kb)
+            except Exception:
+                pass
         except PermissionError:
             try:
                 bot.answer_callback_query(call.id, 'Недостаточно прав для изменения режима.', show_alert=True)
@@ -5373,12 +5377,15 @@ def _v218_go_mode(call, mode: str) -> bool:
         return _V218_PREV_GO_MODE(call, mode)
     if _v215_circle_business_chat(cid) and (not _v215_mode_enabled(cid, mode)):
         try:
-            bot.answer_callback_query(call.id)
+            bot.answer_callback_query(call.id, 'Этот режим сейчас выключен. Возвращаю в меню режимов.')
         except Exception:
             pass
-        _v218_show_demo(call, str(mode), 'root')
         try:
-            bot_journal('contour_demo_open_v218', cid, f'mode={mode}; readonly=1')
+            show_contour_start_modes(cid, int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0), int(call.message.message_id))
+        except Exception:
+            pass
+        try:
+            bot_journal('contour_disabled_mode_redirect_r10', cid, f'mode={mode}; source=go')
         except Exception:
             pass
         return True
@@ -7334,6 +7341,28 @@ def _v223_contour_callback_guard(call, resolved: str) -> bool:
         uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
     except Exception:
         return bool(_V223_PREV_CONTOUR_GUARD(call, raw))
+    # R10: stale buttons from a business mode must never reopen a mode that the
+    # owner has disabled for contour 1/2. Mode-management callbacks themselves
+    # remain allowed so an authorized user can enable a mode from the menu.
+    try:
+        if _v215_circle_business_chat(cid) and (not raw.startswith('v215:mode:')):
+            mode_now = _v223_directive_mode_from_callback(raw)
+            if mode_now and (not _v215_mode_enabled(cid, mode_now)):
+                try:
+                    bot.answer_callback_query(call.id, 'Этот режим выключен. Возвращаю в меню режимов.')
+                except Exception:
+                    pass
+                try:
+                    show_contour_start_modes(cid, uid, int(call.message.message_id))
+                except Exception:
+                    pass
+                try:
+                    bot_journal('contour_disabled_mode_redirect_r10', cid, f'mode={mode_now}; action={raw}; user={uid}')
+                except Exception:
+                    pass
+                return True
+    except Exception:
+        pass
     if directive_chat_enabled_v223(cid):
         if _v223_is_mode_mutation_callback(raw):
             try:

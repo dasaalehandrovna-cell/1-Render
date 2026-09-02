@@ -595,7 +595,7 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = '• 🎨 Google Sheets: возвращены цветные ячейки, рамки и форматы исходного выс-262; сама Google-работа остаётся на Render #2.\n• ⛔ Проверка чатов: если Telegram подтверждает, что бота нет / chat not found, чат переносится в «Удалённые»; временные ошибки остаются 🟠.\n• ⚡ Финансы: локальный commit на Render #1, повторные пересчёты и UI объединены после записи.\n• 💾 Deploy: полное пользовательское состояние восстанавливается через Worker → Redis → MEGA.'
+STARTUP_RELEASE_SUMMARY = '• ⚡ Упрощены служебные окна; технические W/Ф233 пользователю не показываются.\n• 🎨 Excel/Google: единое цветное оформление выс-262 на Render #2.\n• 🔒 Контуры 1/2: /ok закрыта; выключенный режим возвращает в меню режимов; чекбоксы обновляются сразу.\n• 🛰 В Инфо добавлен статус Render #2 и взаимный пеленг; 📊 Google Excel вынесен отдельной кнопкой.'
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""

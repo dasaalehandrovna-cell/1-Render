@@ -1987,7 +1987,12 @@ def _canon_v220_contour_access_callback_final__001(call, resolved: str) -> bool:
         bot.answer_callback_query(call.id, 'Доступ включён' if value else 'Доступ выключен')
     except Exception:
         pass
-    safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
+    _r10_kb = build_info_keyboard(cid)
+    safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)
+    try:
+        bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
+    except Exception:
+        pass
     try:
         refresh_circle_menu_access_v220(level)
     except Exception as exc:
@@ -2230,7 +2235,12 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
                 bot_journal('directive_admin_toggle_v224', target, f'enabled={int(value)}; ui_first=1; targeted_refresh=1')
             except Exception:
                 pass
-            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_v223_directive_card_keyboard(target, page))
+            _r10_kb = _v223_directive_card_keyboard(target, page)
+            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
+            try:
+                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
+            except Exception:
+                pass
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=False)
             except Exception:
@@ -2247,7 +2257,12 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
                 bot_journal('directive_admin_mode_v224', target, f'mode={mode}; enabled={int(value)}; ui_first=1; targeted_refresh=1')
             except Exception:
                 pass
-            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_v223_directive_card_keyboard(target, page))
+            _r10_kb = _v223_directive_card_keyboard(target, page)
+            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
+            try:
+                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
+            except Exception:
+                pass
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=False)
             except Exception:
@@ -2259,7 +2274,12 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
             page = int(parts[5] or 0) if len(parts) > 5 else 0
             current = bool((_v223_directive_policy(target, False).get('annotations') or {}).get(kind, True))
             set_directive_annotation_v223(target, kind, not current)
-            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_v223_directive_card_keyboard(target, page))
+            _r10_kb = _v223_directive_card_keyboard(target, page)
+            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
+            try:
+                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
+            except Exception:
+                pass
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=True)
             except Exception:
@@ -2376,7 +2396,12 @@ def _v226_annotation_callback_final(call, resolved: str) -> bool:
         bot.answer_callback_query(call.id, 'ВКЛ — кнопка доступна' if value else 'ВЫКЛ — кнопка скрыта и заблокирована')
     except Exception:
         pass
-    safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
+    _r10_kb = build_info_keyboard(cid)
+    safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)
+    try:
+        bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
+    except Exception:
+        pass
     v226_schedule_annotation_markup_refresh_all()
     try:
         bot_journal('annotation_global_toggle_v226', cid, f'kind={kind}; enabled={int(value)}; ui_first=1; async_markup_only=1')

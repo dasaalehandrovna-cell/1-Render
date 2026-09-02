@@ -3072,40 +3072,39 @@ def _file_job_busy_info() -> dict:
     return st
 
 def build_all_processes_toast(chat_id=None) -> str:
-    """Compact snapshot of every active business lane for Telegram callback toast."""
-    parts = []
+    """Human-facing busy status. Internal pool names/counters stay in diagnostics only."""
     try:
         busy = _file_job_busy_info()
         if busy:
-            elapsed = _file_job_elapsed_text(float(busy.get('elapsed') or 0))
-            phase = str(busy.get('phase') or 'работаю')
-            parts.append(f"📄 {busy.get('label', 'файл')} {elapsed} · {phase}")
+            label = str(busy.get('label') or 'файл').strip()
+            phase = str(busy.get('phase') or '').strip()
+            if phase:
+                return f'⏳ {label}: {phase}'[:190]
+            return f'⏳ {label}: обрабатываю…'[:190]
     except Exception:
         pass
-    pools = (('Сообщ', WEBHOOK_TASK_POOL), ('UI', UI_TASK_POOL), ('Фин', FINANCE_TASK_POOL), ('ФинПерес', FIN_FORWARD_TASK_POOL), ('Перес', FORWARD_TASK_POOL), ('Восст', RECOVERY_TASK_POOL), ('Напом', REMINDER_TASK_POOL), ('Бэкап', BACKUP_TASK_POOL), ('MEGAΔ', DELTA_TASK_POOL), ('Экспорт', EXPORT_TASK_POOL), ('Общие', GENERAL_TASK_POOL), ('Сервис', MAINTENANCE_TASK_POOL), ('Журнал', JOURNAL_TASK_POOL), ('Таймер', DELAYED_TASK_POOL), ('Дозвон', DOZVON_TASK_POOL))
-    for label, pool in pools:
+    active_total = 0
+    pending_total = 0
+    pools = (WEBHOOK_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    for pool in pools:
         try:
-            st = pool.stats()
-            active = int(st.get('active', 0) or 0)
-            pending = int(st.get('pending', 0) or 0)
-            if active or pending:
-                parts.append(f'{label} {active}/{pending}')
+            st = pool.stats() or {}
+            active_total += int(st.get('active', 0) or 0)
+            pending_total += int(st.get('pending', 0) or 0)
         except Exception:
             pass
     try:
         mt = globals().get('mega_task_stats')
         if callable(mt):
             st = mt() or {}
-            pending = int(st.get('pending', 0) or 0)
-            running = int(st.get('running', 0) or 0) + int(st.get('processing', 0) or 0)
-            if pending or running:
-                parts.append(f'Защита {running}/{pending}')
+            active_total += int(st.get('running', 0) or 0) + int(st.get('processing', 0) or 0)
+            pending_total += int(st.get('pending', 0) or 0)
     except Exception:
         pass
-    if not parts:
-        return '✅ Активных процессов нет'
-    text = '⚙️ ' + ' · '.join(parts)
-    return text[:190]
+    total = active_total + pending_total
+    if total <= 0:
+        return '✅ Готово'
+    return '⏳ Выполняю…' if total == 1 else f'⏳ Выполняю… ({total})'
 
 def _v177_legacy_0009_file_job_progress(phase: str, current=None, total=None, force: bool=False):
     """Update one temporary Telegram status message at a throttled rate."""

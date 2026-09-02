@@ -580,6 +580,22 @@ def cmd_ok(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    # R10: /ok (and /поехали) is owner/legacy finance activation only.
+    # Contours 1/2 must use their explicit business-mode menu so a command
+    # cannot bypass the owner's mode policy.
+    try:
+        if bool(globals().get('_v215_circle_business_chat', lambda _c: False)(int(chat_id))):
+            try:
+                send_and_auto_delete(chat_id, '🔒 /ok недоступна в контурах 1/2. Используйте «☰ Меню режимов».', 10)
+            except Exception:
+                pass
+            try:
+                globals().get('show_contour_start_modes', lambda *_a, **_k: None)(int(chat_id), int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0), 0)
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
     set_total_secret_mode(chat_id, False)
     if is_finance_output_suppressed(chat_id):
         return

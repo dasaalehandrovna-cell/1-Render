@@ -1,0 +1,10 @@
+R10 UNIFIED UI / CONTOURS / EXCEL
+
+1. Service progress simplified: no pool counters and no Wxxxxxxxx/Ф232/Ф233 diagnostic ids in normal user messages.
+2. All XLSX and Google Sheets use the original vys-262 colored financial palette; local fallback XLSX is colored too.
+3. /ok and /поехали are blocked in contour 1/2.
+4. Stale buttons from disabled business modes redirect to the contour mode menu.
+5. Owner Info/main menu includes Render #2 status and Google Excel.
+6. Front and Worker health-ping each other; health card shows both directions, queues, Google, Redis, MEGA and last sync.
+7. Contour/directive checkboxes force immediate reply-markup redraw.
+8. PEER_PING_INTERVAL_SEC=120 recommended on both services.

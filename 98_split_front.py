@@ -20,7 +20,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r9-google-style"
+_SPLIT_FRONT_VERSION = "vys-262-front-r10-unified-ui"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -36,6 +36,7 @@ _SPLIT_STATE = {
     "peer_last_ok": 0.0,
     "peer_last_error": "",
     "peer_status": None,
+    "worker_health": {},
     "sync_last_attempt": 0.0,
     "sync_last_ok": 0.0,
     "sync_last_error": "",
@@ -214,11 +215,16 @@ def _split_ping_once():
         _SPLIT_STATE['peer_last_error'] = 'PEER_SERVICE_URL empty'
         return False
     try:
-        r = requests.get(base + '/peer/health', headers=_split_headers(), timeout=12)
+        r = requests.get(base + '/peer/health', headers=_split_headers('vys-262-front-peer-r10'), timeout=12)
         _SPLIT_STATE['peer_status'] = int(r.status_code)
         if 200 <= r.status_code < 300:
+            payload = {}
+            try: payload = r.json() if r.content else {}
+            except Exception: payload = {}
             _SPLIT_STATE['peer_last_ok'] = _split_time.time()
             _SPLIT_STATE['peer_last_error'] = ''
+            _SPLIT_STATE['worker_health'] = dict(payload or {})
+            _SPLIT_STATE['worker_health']['seen_at'] = _split_time.time()
             return True
         _SPLIT_STATE['peer_last_error'] = f'HTTP {r.status_code}'
     except Exception as exc:
@@ -232,7 +238,11 @@ def _split_peer_loop():
     while True:
         if _split_env_bool('PEER_PING_ENABLED', True):
             _split_ping_once()
-        _split_time.sleep(600)
+        try:
+            interval = int(_split_os.getenv('PEER_PING_INTERVAL_SEC', '120') or '120')
+        except Exception:
+            interval = 120
+        _split_time.sleep(max(30, min(1800, interval)))
 
 
 def _split_request_sync_now(reason='change'):
@@ -1778,6 +1788,127 @@ globals()['tenant_google_create_spreadsheet']=_r7_front_create_sheet_disabled
 R9_GOOGLE_STYLE = 'vys262-r9-google-style'
 try:
     bot_journal('r9_release_loaded', int(OWNER_ID or 0), 'google=original-v262-colors; startup-summary=concise; r8-chat-removal=kept')
+except Exception:
+    pass
+
+
+# --- R10 unified user UI, Worker status and menu entry points. ---
+def _r10_age_text(ts):
+    try:
+        sec=max(0,int(_split_time.time()-float(ts or 0)))
+    except Exception:
+        return '—'
+    if not ts: return '—'
+    if sec < 5: return 'только что'
+    if sec < 60: return f'{sec} сек назад'
+    if sec < 3600: return f'{sec//60} мин назад'
+    return f'{sec//3600} ч назад'
+
+
+def _r10_worker_health_text(force=False):
+    if force or (_split_time.time()-float(_SPLIT_STATE.get('peer_last_attempt') or 0) > 25):
+        _split_ping_once()
+    h=dict(_SPLIT_STATE.get('worker_health') or {})
+    st=dict(h.get('state') or {})
+    interval=max(30,min(1800,int(_split_os.getenv('PEER_PING_INTERVAL_SEC','120') or '120')))
+    front_ok=bool(_SPLIT_STATE.get('peer_last_ok')) and (_split_time.time()-float(_SPLIT_STATE.get('peer_last_ok') or 0) <= interval*2.5)
+    reverse_ok=bool(st.get('peer_last_ok')) and (_split_time.time()-float(st.get('peer_last_ok') or 0) <= interval*2.5)
+    worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
+    google_ok=bool(h.get('google_configured'))
+    redis_ok=bool(st.get('redis_cache_ok'))
+    mega_ok=bool(h.get('mega_configured'))
+    q=int(h.get('queue_size') or 0); gq=int(h.get('google_queue_size') or 0)
+    linked='✅ связаны в обе стороны' if (front_ok and reverse_ok) else ('🟠 связь только в одну сторону' if (front_ok or reverse_ok) else '⛔ связи нет')
+    err=str(_SPLIT_STATE.get('peer_last_error') or st.get('peer_last_error') or '').strip()
+    lines=[
+        '🛰 RENDER #2 · ТЯЖЁЛЫЙ КОНТУР', '',
+        f"Worker: {('✅ жив' if worker_ok else '⛔ недоступен')} · {str(h.get('version') or '—')}",
+        f'Пеленг: {linked}',
+        f"Front → Worker: {('✅' if front_ok else '⛔')} · {_r10_age_text(_SPLIT_STATE.get('peer_last_ok'))}",
+        f"Worker → Front: {('✅' if reverse_ok else '⛔')} · {_r10_age_text(st.get('peer_last_ok'))}",
+        '',
+        f'Очередь: обычная {q} · Google {gq}',
+        f"Google: {('✅ настроен' if google_ok else '⛔ не настроен')} · последний успех {_r10_age_text(st.get('google_last_ok'))}",
+        f"Redis snapshot: {('✅' if redis_ok else '🟠')} · rev {str(st.get('cache_revision') or '—')}",
+        f"MEGA: {('✅ настроена' if mega_ok else '⛔ не настроена')} · upload {_r10_age_text(st.get('last_mega_upload_at'))}",
+        f"Последняя синхронизация: {_r10_age_text(st.get('job_last_done') or st.get('last_snapshot_at'))}",
+    ]
+    if err and not worker_ok:
+        lines += ['', 'Ошибка: '+err[:240]]
+    return window_mark('\n'.join(lines), 'Ф270')
+
+
+def _r10_worker_health_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB('🔄 Проверить сейчас', callback_data='r10:worker:refresh'))
+    kb.row(IB('📊 Google Excel', callback_data='v149:google:status'))
+    kb.row(IB('🔙 В Инфо', callback_data='r10:worker:back'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+_R10_BASE_INFO_KB = globals().get('build_info_keyboard')
+def _r10_build_info_keyboard(chat_id: int):
+    kb=_R10_BASE_INFO_KB(int(chat_id)) if callable(_R10_BASE_INFO_KB) else types.InlineKeyboardMarkup()
+    if int(chat_id) != int(OWNER_ID or 0): return kb
+    rows=_v177_info_rows(kb)
+    callbacks={_v177_info_btn_cb(b) for row in rows for b in row or []}
+    additions=[]
+    if 'r10:worker:status' not in callbacks:
+        additions.append([IB('🛰 Render #2 · состояние', callback_data='r10:worker:status')])
+    if 'v149:google:status' not in callbacks:
+        additions.append([IB('📊 Google Excel', callback_data='v149:google:status')])
+    if additions:
+        insert_at=len(rows)
+        for i,row in enumerate(rows):
+            if any((_v218_info_is_nav(b) for b in row or [])): insert_at=i; break
+        rows[insert_at:insert_at]=additions
+        kb=_v177_info_set_rows(kb,rows)
+    return kb
+
+globals()['build_info_keyboard']=_r10_build_info_keyboard
+
+_R10_BASE_MAIN_KB = globals().get('build_main_keyboard')
+def _r10_build_main_keyboard(day_key: str, chat_id=None):
+    kb=_R10_BASE_MAIN_KB(day_key,chat_id) if callable(_R10_BASE_MAIN_KB) else types.InlineKeyboardMarkup()
+    try: cid=int(chat_id if chat_id is not None else current_state_chat_id() or 0)
+    except Exception: cid=0
+    if cid != int(OWNER_ID or 0): return kb
+    rows=_v217_rows(kb)
+    callbacks={_v217_btn_cb(b) for row in rows for b in row or []}
+    if 'v149:google:status' not in callbacks:
+        rows.append([IB('📊 Google Excel', callback_data='v149:google:status'), IB('🛰 Render #2', callback_data='r10:worker:status')])
+        kb=_v217_set_rows(kb,rows)
+    return kb
+
+globals()['build_main_keyboard']=_r10_build_main_keyboard
+
+_R10_BASE_CONTOUR_GUARD = globals().get('contour_callback_guard')
+def _r10_contour_callback_guard(call, resolved: str) -> bool:
+    raw=str(resolved or '')
+    if raw.startswith('r10:worker:'):
+        try:
+            cid=int(call.message.chat.id); uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
+        except Exception:
+            return True
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id,'Только основной владелец.',show_alert=True)
+            except Exception: pass
+            return True
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        if raw == 'r10:worker:back':
+            safe_edit(bot,call,build_info_text(cid),reply_markup=build_info_keyboard(cid)); return True
+        safe_edit(bot,call,_r10_worker_health_text(force=(raw=='r10:worker:refresh')),reply_markup=_r10_worker_health_keyboard())
+        return True
+    return bool(_R10_BASE_CONTOUR_GUARD(call,raw)) if callable(_R10_BASE_CONTOUR_GUARD) else False
+
+globals()['contour_callback_guard']=_r10_contour_callback_guard
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:*','Ф270')
+    WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:status','Ф270')
+    WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:refresh','Ф270')
+    WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:back','Ф89')
+    bot_journal('r10_unified_ui_loaded',int(OWNER_ID or 0),'service-ui=simple; worker-card=1; google-menu=1; peer=bidirectional')
 except Exception:
     pass
 

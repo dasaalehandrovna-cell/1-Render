@@ -4698,6 +4698,12 @@ def _v161_tokenize_text(text: str, chat_id: int, message_id: int | None=None) ->
         marker = ''
     if not marker:
         return (body, '')
+    # R10: short service/progress windows keep their marker internally but do
+    # not expose Ф232/Ф233 or Wxxxxxxxx diagnostic ids to ordinary users.
+    if str(marker).upper() in {'Ф232', 'Ф233'}:
+        plain = str(body or '')
+        plain = _v161_re.sub(r'(?m)^\s*[Фф](?:232|233)(?:-\(W[A-Z0-9]{6,12}\))?(?:\s*[⏳⏰])?\s*$', '', plain, flags=_v161_re.IGNORECASE).strip()
+        return (plain or '⏳ Выполняю…', '')
     body = _v161_re.sub('(?m)^\\s*W[A-Z0-9]{6,12}\\s*\\n?', '', body)
     body = _v161_re.sub('(?m)([СФПОВсов]\\d{1,6})-\\(W[A-Z0-9]{6,12}\\)', '\\1', body, flags=_v161_re.IGNORECASE)
     cb = str(getattr(_V161_SOURCE_CONTEXT, 'callback', '') or _v161_callback_data() or '')

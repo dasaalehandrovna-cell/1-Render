@@ -2982,6 +2982,17 @@ def _v167_formulaize_four_week_rows(rows: list[list]) -> list[list]:
     return out
 
 def _canon_write_simple_xlsx__001(path: str, rows: list[list], sheet_name: str='Данные') -> None:
+    # R10: even the emergency/local simple XLSX path uses the original vys-262
+    # colored financial palette. Normal exports run on Worker, but fallback files
+    # must look the same instead of reverting to a black/white workbook.
+    if callable(_V167_BASE_WRITE_TABL):
+        try:
+            styles, comments, freeze_rows, widths = _canon_modern_simple_excel_styles_comments__001(rows)
+            _V167_BASE_WRITE_TABL(path, rows, styles, sheet_name=sheet_name, comments=comments, freeze_rows=freeze_rows, widths=widths, annotation_mode='notes')
+            _v167_patch_xlsx_package(path)
+            return
+        except Exception:
+            pass
     if not callable(_V167_BASE_WRITE_SIMPLE):
         raise RuntimeError('XLSX writer is unavailable')
     _V167_BASE_WRITE_SIMPLE(path, rows, sheet_name=sheet_name)
