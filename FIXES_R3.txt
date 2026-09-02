@@ -1,0 +1,7 @@
+VYS-262 split r3 — log fixes (2026-08-31)
+
+1. Fixed WINDOW_MARKER_NOT_DECLARED for v149:google:* callbacks.
+2. Fixed old v167 Google scheduler trying to use a service account on Render #1.
+3. Google service-account remains only on Render #2.
+4. Worker now refreshes an existing named Google tab instead of addSheet duplicate failure.
+5. Reduced full SQLite state-transfer traffic and fixed coalescing so changes arriving during an active sync are not lost.

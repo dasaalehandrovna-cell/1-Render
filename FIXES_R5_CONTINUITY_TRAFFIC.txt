@@ -1,0 +1,8 @@
+VYS-262 R5 — continuity + state-token dedupe
+
+1. One Telegram update => one post-update sync notification.
+2. Duplicate state token => no second /internal/split/state download.
+3. Worker fetch is read-only (no continuity saved_at mutation on GET).
+4. Newer state during active sync => exactly one follow-up.
+5. Startup UI replay disabled; restored Telegram messages remain where they already are.
+6. Stale historic chats are not proactively messaged after deploy.

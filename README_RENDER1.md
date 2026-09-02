@@ -1,0 +1,30 @@
+# Render #1 — FAST front — R6 FULL STATE
+
+Deploy this ZIP as the Telegram/front service. Start command: `python start_front.py`.
+
+R6 fixes the deploy continuity problem system-wide:
+- Full SQLite is still canonical, but a `user_state_shadow_v265` is also persisted in SQLite for all non-financial user state: global/tenant settings, per-chat settings, active windows, modes, Google destination, task/reminder/UI metadata, forwarding/config state and similar control-plane state.
+- The shadow is restored inside the BASE `load_data()` before `99_web_runtime.py` can apply factory defaults. This fixes the loader-order bug where the late split module restored settings too late.
+- Every successfully handled Telegram update checkpoints current chat/root + user-state shadow + serializable RAM continuity, even if a feature forgot its own save hook.
+- Additional interaction sessions (timer input, careful restore, dial/session state, category ordering/sorting, ready exports and UI caches) are included in continuity.
+- On rolling deploy, preboot health stays HTTP 200 while the new instance watches worker `cache_revision`; if the old instance publishes a newer final SIGTERM snapshot, the new instance adopts it before starting the bot.
+- A stale worker/MEGA snapshot can no longer overwrite a newer local SQLite revision.
+- The exact restored/current DB is seeded to shared Redis before normal bot startup. If worker is unavailable, background sync/shutdown also writes the newest snapshot to Redis as a fallback.
+- `/` is liveness HTTP 200; `/readyz` remains the strict readiness endpoint.
+- Current literal callback audit has zero undeclared marker callbacks, including `v229:tasks:single_window`.
+
+Google service-account JSON must NOT be placed on Render #1.
+Use the SAME `REDIS_URL`, `WORKER_REDIS_SNAPSHOT_KEY` and `PEER_SHARED_SECRET` on both services.
+
+
+## R7 system polish
+- finance derived calculations are coalesced after the local SQLite commit;
+- deep chat audit moves confirmed left/kicked chats to removed;
+- Google setup is a 3-step menu and auto-tests the pasted table;
+- CSV/XLSX serialization and Drive upload execute on Render #2.
+
+### R7.1 finance/chat/google cleanup
+- Finance mutations commit locally first; duplicate synchronous global rebuilds were removed from add, edit, bulk delete, USD delete, forwarded edits and linked edits.
+- Telegram chat audit treats `left`/`kicked` as removed; repeated deep `chat not found` becomes removed, while timeout/429 stays temporary/unreachable.
+- `/google` is a guided 3-step flow; opening the menu does not synchronously wake the worker just to render status.
+- Normal CSV/XLSX serialization and Drive upload are delegated to Render #2. Front keeps only emergency local file fallback if the worker is unavailable; Google OAuth/Drive hooks on Front are blocked.

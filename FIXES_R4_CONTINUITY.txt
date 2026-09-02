@@ -1,0 +1,15 @@
+VYS-262 R4 — FULL USER CONTINUITY AFTER DEPLOY
+
+1. Every logical save schedules coalesced durability to Render #2, not finance-only.
+2. Every successfully processed Telegram update commits the current chat + root state.
+3. RAM-only interaction continuity is stored in SQLite meta runtime_continuity_v263:
+   short callback tokens, Back-navigation history, input/UI sessions, selected UI state,
+   reminder UI bindings, constructor sessions, restore confirmations and related small state.
+4. Existing active_messages/open_window_registry/message IDs remain in canonical SQLite root.
+5. Graceful SIGTERM performs full local save and direct final SQLite upload to Render #2.
+6. start_front.py prefers worker snapshot at every deploy/start by default.
+7. If worker is unavailable and local SQLite is valid, local state is kept instead of being
+   overwritten by an older emergency MEGA snapshot.
+8. Render #2 validates direct uploads, installs restore cache immediately, and promotes to MEGA.
+9. Worker cache has monotonic continuity revision protection and cannot regress to an older snapshot.
+10. Stale worker cache is served immediately while MEGA refresh happens in background.

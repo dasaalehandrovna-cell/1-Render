@@ -1,0 +1,12 @@
+R7 SYSTEM POLISH
+
+1. Finance fast path: local durable commit stays synchronous on Render #1; duplicate global rebuild/normalize work removed from add/edit/delete/USD/forwarded/linked paths.
+2. Finance UI, aggregate rebuild and backup are coalesced after commit.
+3. Chat audit: Telegram bot membership left/kicked => Removed; repeated deep chat-not-found => Removed; timeout/429/network remain orange temporary state.
+4. Google UX: 3-step setup with service email, paste link, automatic access test and direct Open current table button.
+5. /google menu itself is nonblocking and uses cached service-account info.
+6. Google tabs: deterministic period title; repeated sync updates the same tab instead of creating timestamp duplicates.
+7. CSV/XLSX serialization + Google Drive upload normally run on Render #2. Front keeps an emergency local file fallback only if Worker is unavailable.
+8. Active Front Google OAuth/Drive hooks are disabled so old buttons cannot accidentally move Google work back to Render #1.
+9. v229:tasks:single_window and new Google callbacks are registered in the marker registry.
+10. R6 full-state continuity/Redis/MEGA restore architecture is retained.

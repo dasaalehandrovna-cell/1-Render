@@ -1,0 +1,9 @@
+R6 FULL STATE
+- Fixed loader order: persisted user-state shadow is applied in base load_data before factory defaults.
+- Added full non-financial user state shadow in SQLite.
+- Added additional serializable RAM interaction continuity.
+- Added rolling-deploy revision handoff.
+- Reject stale remote restore over newer local DB.
+- Added shared Redis durable snapshot bridge and front fallback.
+- Root liveness now 200; /readyz remains readiness.
+- Audited literal callbacks: all current callback_data markers declared, including v229 task window.
