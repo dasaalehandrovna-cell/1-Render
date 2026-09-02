@@ -1,0 +1,9 @@
+R13 EVENT JOURNAL SYNC
+
+1. Every Telegram update is written to the existing local v260 inbox and then remotely witnessed on Render #2/Redis before Telegram receives HTTP 200.
+2. Operation states are monotonic: RECEIVED -> COMMITTED -> MIRRORED. Late packets cannot move an event backwards.
+3. After Front business commit, a tiny commit status is sent to Worker and the exact SQLite page delta carries event_ids; Worker marks those events MIRRORED only after the mirrored SQLite validates.
+4. Abrupt deploy recovery: Front asks Worker/Redis for RECEIVED/COMMITTED-but-not-MIRRORED events and replays them through the existing exact-once inbox.
+5. Full Front SQLite is not transferred on normal updates. Worker performs a hash reconciliation every 6h and fetches a full database only on real divergence.
+6. Worker makes its own Redis full checkpoint every 6h (or threshold) from its mirror; MEGA full checkpoint defaults to once per 24h.
+7. Existing R12 delta sync, other-bot forwarding, R11 fast finance, colored Excel/Google, UI and chat-journal defaults remain intact.

@@ -8,6 +8,8 @@ cold emergency restore path for deploy/startup recovery.
 """
 import gzip as _split_gzip
 import json as _split_json
+import base64 as _split_base64
+import hashlib as _split_hashlib
 import collections as _split_collections
 import os as _split_os
 import secrets as _split_secrets
@@ -20,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r10-unified-ui"
+_SPLIT_FRONT_VERSION = "vys-262-front-r13-event-journal"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -50,8 +52,170 @@ _SPLIT_STATE = {
     "state_change_reason": "boot",
     "redis_fallback_last_ok": 0.0,
     "redis_fallback_last_error": "",
+    "delta_last_ok": 0.0,
+    "delta_last_error": "",
+    "delta_last_bytes": 0,
+    "delta_last_pages": 0,
+    "delta_total_bytes": 0,
+    "delta_total_pages": 0,
+    "delta_full_fallbacks": 0,
+    "delta_baseline_sha256": "",
+    "event_last_receipt_ok": 0.0,
+    "event_last_commit_ok": 0.0,
+    "event_last_error": "",
+    "event_received": 0,
+    "event_committed": 0,
+    "event_mirrored": 0,
+    "event_redis_fallbacks": 0,
+    "event_recovered": 0,
 }
 
+
+_SPLIT_DELTA_LOCK = _split_threading.RLock()
+_SPLIT_DELTA_DIR = _split_os.path.join(str(_split_os.getenv('MEGA_LOCAL_TMP_DIR', '/tmp') or '/tmp'), 'vys262_delta_front')
+_split_os.makedirs(_SPLIT_DELTA_DIR, exist_ok=True)
+_SPLIT_DELTA_BASELINE = _split_os.path.join(_SPLIT_DELTA_DIR, 'acked_baseline.sqlite3')
+
+def _split_sha256_file_v267(path):
+    h = _split_hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _split_sqlite_page_size_v267(path):
+    with open(path, 'rb') as fh:
+        head = fh.read(100)
+    if len(head) < 18 or head[:16] != b'SQLite format 3\x00':
+        raise RuntimeError('not a SQLite database')
+    page_size = int.from_bytes(head[16:18], 'big')
+    if page_size == 1:
+        page_size = 65536
+    if page_size < 512 or page_size > 65536 or (page_size & (page_size - 1)):
+        raise RuntimeError(f'invalid SQLite page size {page_size}')
+    return page_size
+
+def _split_snapshot_raw_v267(prefix='delta'):
+    workdir = _split_tempfile.mkdtemp(prefix=f'v267_{prefix}_')
+    raw = _split_os.path.join(workdir, 'state.sqlite3')
+    SQLITE.backup_to(raw)
+    return workdir, raw
+
+def _split_init_delta_baseline_v267(force=False):
+    with _SPLIT_DELTA_LOCK:
+        if (not force) and _split_os.path.isfile(_SPLIT_DELTA_BASELINE) and _split_os.path.getsize(_SPLIT_DELTA_BASELINE) > 0:
+            try:
+                sha = _split_sha256_file_v267(_SPLIT_DELTA_BASELINE)
+                _SPLIT_STATE['delta_baseline_sha256'] = sha
+                return True
+            except Exception:
+                pass
+        workdir = None
+        try:
+            workdir, raw = _split_snapshot_raw_v267('baseline')
+            tmp = _SPLIT_DELTA_BASELINE + '.tmp'
+            _split_shutil.copy2(raw, tmp)
+            _split_os.replace(tmp, _SPLIT_DELTA_BASELINE)
+            _SPLIT_STATE['delta_baseline_sha256'] = _split_sha256_file_v267(_SPLIT_DELTA_BASELINE)
+            return True
+        except Exception as exc:
+            _SPLIT_STATE['delta_last_error'] = 'baseline: ' + str(exc)[:180]
+            return False
+        finally:
+            if workdir:
+                _split_shutil.rmtree(workdir, ignore_errors=True)
+
+def _split_build_delta_v267(reason='change'):
+    """Build a page-level delta against the last Worker-acknowledged SQLite image.
+
+    Returns (payload_dict, current_raw, workdir, fallback_reason).  current_raw stays
+    alive until the caller receives Worker acknowledgement and promotes it to baseline.
+    """
+    with _SPLIT_DELTA_LOCK:
+        if not _split_os.path.isfile(_SPLIT_DELTA_BASELINE):
+            return None, None, None, 'baseline_missing'
+        workdir = None
+        try:
+            workdir, current = _split_snapshot_raw_v267('delta')
+            base = _SPLIT_DELTA_BASELINE
+            page_size = _split_sqlite_page_size_v267(current)
+            if _split_sqlite_page_size_v267(base) != page_size:
+                return None, current, workdir, 'page_size_changed'
+            base_sha = _split_sha256_file_v267(base)
+            new_sha = _split_sha256_file_v267(current)
+            base_size = _split_os.path.getsize(base)
+            new_size = _split_os.path.getsize(current)
+            if base_sha == new_sha and base_size == new_size:
+                return {'schema':1,'noop':True,'base_sha256':base_sha,'new_sha256':new_sha,'db_size':new_size,'page_size':page_size,'pages':[], 'state_token':_split_current_state_token_v264(), 'reason':str(reason or '')[:160], 'event_ids':_split_pending_event_ids_v268()}, current, workdir, ''
+            pages=[]
+            page_count=(new_size + page_size - 1)//page_size
+            with open(base,'rb') as old, open(current,'rb') as new:
+                for idx in range(page_count):
+                    ob=old.read(page_size)
+                    nb=new.read(page_size)
+                    if ob != nb:
+                        pages.append([idx, _split_base64.b64encode(nb).decode('ascii')])
+            payload={'schema':1,'base_sha256':base_sha,'new_sha256':new_sha,'base_size':base_size,'db_size':new_size,'page_size':page_size,'pages':pages,'state_token':_split_current_state_token_v264(),'reason':str(reason or '')[:160],'created_at':_split_time.time(),'event_ids':_split_pending_event_ids_v268()}
+            raw_json=_split_json.dumps(payload,separators=(',',':')).encode('utf-8')
+            compressed=_split_gzip.compress(raw_json, compresslevel=9)
+            max_pages=max(8,min(4096,int(_split_os.getenv('SPLIT_DELTA_MAX_PAGES','256') or '256')))
+            max_bytes=max(32768,min(8*1024*1024,int(_split_os.getenv('SPLIT_DELTA_MAX_BYTES','524288') or '524288')))
+            if len(pages) > max_pages or len(compressed) > max_bytes:
+                return None, current, workdir, f'delta_too_large pages={len(pages)} bytes={len(compressed)}'
+            payload['_wire_gzip']=compressed
+            return payload,current,workdir,''
+        except Exception as exc:
+            if workdir:
+                _split_shutil.rmtree(workdir, ignore_errors=True)
+            return None,None,None,f'{type(exc).__name__}: {str(exc)[:180]}'
+
+def _split_promote_delta_baseline_v267(current_raw):
+    if not current_raw or not _split_os.path.isfile(current_raw):
+        return False
+    with _SPLIT_DELTA_LOCK:
+        tmp=_SPLIT_DELTA_BASELINE+'.tmp'
+        _split_shutil.copy2(current_raw,tmp)
+        _split_os.replace(tmp,_SPLIT_DELTA_BASELINE)
+        _SPLIT_STATE['delta_baseline_sha256']=_split_sha256_file_v267(_SPLIT_DELTA_BASELINE)
+        return True
+
+def _split_send_delta_v267(reason='change'):
+    base, secret = _split_peer_base(), _split_secret()
+    if not base or not secret:
+        return False, 'worker URL/secret not configured', False
+    payload,current,workdir,fallback = _split_build_delta_v267(reason)
+    if payload is None:
+        if workdir:
+            _split_shutil.rmtree(workdir, ignore_errors=True)
+        return False, fallback or 'delta unavailable', True
+    try:
+        wire=payload.pop('_wire_gzip', None)
+        if wire is None:
+            wire=_split_gzip.compress(_split_json.dumps(payload,separators=(',',':')).encode('utf-8'),compresslevel=9)
+        r=requests.post(base+'/internal/delta',data=wire,headers={**_split_headers('vys-262-front-delta-r12'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=15)
+        if 200 <= r.status_code < 300:
+            body={}
+            try: body=r.json() if r.content else {}
+            except Exception: body={}
+            status=str(body.get('status') or 'applied')
+            if status in {'applied','up_to_date','noop'}:
+                _split_promote_delta_baseline_v267(current)
+                _SPLIT_STATE['delta_last_ok']=_split_time.time()
+                _SPLIT_STATE['delta_last_error']=''
+                _SPLIT_STATE['delta_last_bytes']=len(wire)
+                _SPLIT_STATE['delta_last_pages']=len(payload.get('pages') or [])
+                _SPLIT_STATE['delta_total_bytes']=int(_SPLIT_STATE.get('delta_total_bytes') or 0)+len(wire)
+                _SPLIT_STATE['delta_total_pages']=int(_SPLIT_STATE.get('delta_total_pages') or 0)+len(payload.get('pages') or [])
+                _split_ack_mirrored_events_v268(payload.get('event_ids') or [])
+                return True,status,False
+        if r.status_code in {409, 412, 422}:
+            return False, f'worker requests full: HTTP {r.status_code} {r.text[:180]}', True
+        return False,f'HTTP {r.status_code}: {r.text[:180]}',False
+    except Exception as exc:
+        return False,f'{type(exc).__name__}: {str(exc)[:180]}',False
+    finally:
+        if workdir:
+            _split_shutil.rmtree(workdir, ignore_errors=True)
 
 def _split_env_bool(name, default=True):
     return str(_split_os.getenv(name, "1" if default else "0") or "").strip().lower() in {"1", "true", "yes", "on", "да"}
@@ -70,6 +234,197 @@ def _split_secret():
 
 def _split_headers(agent="vys-262-front-peer"):
     return {"X-Peer-Secret": _split_secret(), "User-Agent": agent}
+
+
+# R13: remote Telegram event witness.  The raw event is made durable on Worker/Redis
+# before Telegram is acknowledged.  Business execution still happens only on Front.
+_SPLIT_EVENT_LOCK = _split_threading.RLock()
+_SPLIT_EVENT_PENDING_MIRROR = _split_collections.OrderedDict()
+
+def _split_event_prefix_v268():
+    return str(_split_os.getenv('WORKER_REDIS_EVENT_PREFIX','vys262:tg_events:v1') or 'vys262:tg_events:v1').strip()
+
+def _split_event_id_v268(update_id):
+    return str(update_id)
+
+def _split_event_row_v268(update_id, payload, chat_id=None, update_type='other'):
+    raw = _split_json.dumps(payload if isinstance(payload,dict) else {}, ensure_ascii=False, separators=(',',':'), default=str)
+    return {
+        'schema': 1, 'event_id': _split_event_id_v268(update_id), 'update_id': str(update_id),
+        'chat_id': chat_id, 'update_type': str(update_type or 'other')[:40],
+        'payload': payload if isinstance(payload,dict) else {},
+        'payload_sha256': _split_hashlib.sha256(raw.encode('utf-8')).hexdigest(),
+        'state': 'received', 'received_at': _split_time.time(),
+        'front_version': _SPLIT_FRONT_VERSION,
+    }
+
+def _split_event_redis_write_v268(row, state=None, error=''):
+    if _split_redis is None:
+        return False, 'redis package unavailable'
+    url=str(_split_os.getenv('REDIS_URL','') or '').strip()
+    if not url:
+        return False, 'REDIS_URL empty'
+    try:
+        client=_split_redis.Redis.from_url(url,socket_connect_timeout=3,socket_timeout=6,health_check_interval=30)
+        event_id=str((row or {}).get('event_id') or (row or {}).get('update_id') or '')
+        if not event_id:
+            return False,'event id empty'
+        prefix=_split_event_prefix_v268(); key=f'{prefix}:event:{event_id}'; pending=f'{prefix}:pending'
+        current={}
+        try:
+            existing=client.get(key)
+            if existing: current=_split_json.loads(existing.decode('utf-8') if isinstance(existing,(bytes,bytearray)) else existing)
+        except Exception: current={}
+        merged=dict(current or {}); merged.update(row or {})
+        _rank={'received':1,'failed_retry':1,'committed':2,'mirrored':3,'checkpointed':4,'done':4}
+        old_state=str((current or {}).get('state') or '')
+        new_state=str(state or merged.get('state') or '')
+        if _rank.get(old_state,0) > _rank.get(new_state,0): new_state=old_state
+        if new_state: merged['state']=new_state
+        if error and _rank.get(new_state,0) < 3: merged['last_error']=str(error)[:300]
+        merged['updated_at']=_split_time.time()
+        ttl=max(86400,min(2592000,int(_split_os.getenv('WORKER_EVENT_RETENTION_SEC','604800') or '604800')))
+        pipe=client.pipeline(transaction=True)
+        pipe.set(key,_split_json.dumps(merged,ensure_ascii=False,separators=(',',':'),default=str),ex=ttl)
+        if str(merged.get('state') or '') in {'mirrored','checkpointed','done'}:
+            pipe.zrem(pending,event_id)
+        else:
+            pipe.zadd(pending,{event_id:float(merged.get('received_at') or _split_time.time())})
+        pipe.execute()
+        return True,'redis event stored'
+    except Exception as exc:
+        return False,f'{type(exc).__name__}: {str(exc)[:180]}'
+
+def split_witness_event_v268(update_id, payload, chat_id=None, update_type='other'):
+    """Durably witness raw Telegram update before Front accepts it from Telegram."""
+    row=_split_event_row_v268(update_id,payload,chat_id,update_type)
+    base,secret=_split_peer_base(),_split_secret()
+    detail='worker not configured'
+    if base and secret:
+        try:
+            raw=_split_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
+            wire=_split_gzip.compress(raw,compresslevel=6)
+            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r13'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(12.0,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','6') or '6'))))
+            if 200 <= r.status_code < 300:
+                _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
+                _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
+                return True
+            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
+        except Exception as exc:
+            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
+    ok,rdetail=_split_event_redis_write_v268(row,'received',detail)
+    if ok:
+        _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
+        _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
+        _SPLIT_STATE['event_redis_fallbacks']=int(_SPLIT_STATE.get('event_redis_fallbacks') or 0)+1
+        return True
+    _SPLIT_STATE['event_last_error']=f'{detail}; redis={rdetail}'[:260]
+    return False
+
+def _split_event_status_send_v268(update_id, chat_id=None, update_type='other', success=True, error=''):
+    event_id=_split_event_id_v268(update_id)
+    row={'schema':1,'event_id':event_id,'update_id':str(update_id),'chat_id':chat_id,'update_type':str(update_type or 'other')[:40],
+         'state':'committed' if success else 'failed_retry','committed_at':_split_time.time() if success else 0.0,
+         'state_token':_split_current_state_token_v264(),'last_error':str(error or '')[:300]}
+    base,secret=_split_peer_base(),_split_secret(); detail='worker not configured'
+    if base and secret:
+        try:
+            r=requests.post(base+'/internal/event/commit',json=row,headers=_split_headers('vys-262-front-event-commit-r13'),timeout=6)
+            if 200 <= r.status_code < 300:
+                if success:
+                    _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
+                _SPLIT_STATE['event_last_error']=''
+                return True
+            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
+        except Exception as exc:
+            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
+    ok,rdetail=_split_event_redis_write_v268(row,row['state'],detail or error)
+    if ok:
+        if success:
+            _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
+        return True
+    _SPLIT_STATE['event_last_error']=f'{detail}; redis={rdetail}'[:260]
+    return False
+
+def _split_event_bg_v268(fn,*args):
+    try:
+        pool=globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None and hasattr(pool,'submit'):
+            key=f'event-r13:{args[0] if args else _split_time.time_ns()}'
+            if pool.submit(key,fn,*args): return True
+    except Exception: pass
+    try:
+        _split_threading.Thread(target=fn,args=args,daemon=True,name='vys262-event-r13').start(); return True
+    except Exception: return False
+
+def split_event_committed_v268(update_id, chat_id=None, update_type='other', success=True, error=''):
+    event_id=_split_event_id_v268(update_id)
+    if success:
+        with _SPLIT_EVENT_LOCK:
+            _SPLIT_EVENT_PENDING_MIRROR[event_id]=_split_time.time()
+            while len(_SPLIT_EVENT_PENDING_MIRROR)>512:
+                _SPLIT_EVENT_PENDING_MIRROR.popitem(last=False)
+        # A successful business execution always gets a mirror attempt even when it
+        # only changed metadata/UI rather than finance.
+        try: split_schedule_worker_sync_v262(reason=f'event_commit:{event_id}',delay=0.08)
+        except Exception: pass
+    return _split_event_bg_v268(_split_event_status_send_v268,update_id,chat_id,update_type,success,error)
+
+def _split_pending_event_ids_v268(limit=96):
+    with _SPLIT_EVENT_LOCK:
+        return list(_SPLIT_EVENT_PENDING_MIRROR.keys())[:max(1,int(limit))]
+
+def _split_ack_mirrored_events_v268(event_ids):
+    ids=[str(x) for x in (event_ids or []) if str(x)]
+    if not ids: return
+    with _SPLIT_EVENT_LOCK:
+        for event_id in ids: _SPLIT_EVENT_PENDING_MIRROR.pop(event_id,None)
+    _SPLIT_STATE['event_mirrored']=int(_SPLIT_STATE.get('event_mirrored') or 0)+len(ids)
+
+def _split_remote_pending_rows_v268(limit=100):
+    base,secret=_split_peer_base(),_split_secret()
+    if base and secret:
+        try:
+            r=requests.get(base+'/internal/events/pending',params={'limit':max(1,min(250,int(limit)))},headers=_split_headers('vys-262-front-event-recover-r13'),timeout=8)
+            if 200 <= r.status_code < 300:
+                body=r.json() if r.content else {}; return list(body.get('events') or [])
+        except Exception: pass
+    if _split_redis is None: return []
+    url=str(_split_os.getenv('REDIS_URL','') or '').strip()
+    if not url: return []
+    try:
+        client=_split_redis.Redis.from_url(url,socket_connect_timeout=3,socket_timeout=6)
+        prefix=_split_event_prefix_v268(); ids=client.zrange(f'{prefix}:pending',0,max(0,min(249,int(limit)-1))) or []
+        rows=[]
+        for raw_id in ids:
+            eid=raw_id.decode() if isinstance(raw_id,(bytes,bytearray)) else str(raw_id)
+            raw=client.get(f'{prefix}:event:{eid}')
+            if not raw: continue
+            try: row=_split_json.loads(raw.decode('utf-8') if isinstance(raw,(bytes,bytearray)) else raw)
+            except Exception: continue
+            if str((row or {}).get('state') or '') in {'received','failed_retry','committed'}: rows.append(row)
+        return rows
+    except Exception: return []
+
+def split_recover_remote_events_v268(limit=100):
+    """Replay remote witnessed-but-not-mirrored Telegram updates after abrupt deploy."""
+    recovered=0
+    for row in _split_remote_pending_rows_v268(limit):
+        try:
+            update_id=row.get('update_id') or row.get('event_id'); payload=row.get('payload') or {}
+            chat_id=row.get('chat_id'); update_type=str(row.get('update_type') or 'other')
+            if update_id is None or not isinstance(payload,dict): continue
+            state_fn=globals().get('_v260_webhook_inbox_state'); put_fn=globals().get('_v260_webhook_inbox_put'); submit_fn=globals().get('_v260_submit_webhook_inbox_row'); row_fn=globals().get('_v260_webhook_inbox_row')
+            if not all(callable(x) for x in (state_fn,put_fn,submit_fn,row_fn)): continue
+            if state_fn(update_id)=='done':
+                split_event_committed_v268(update_id,chat_id,update_type,True,'already local done')
+                continue
+            if not put_fn(update_id,payload,chat_id,update_type): continue
+            if submit_fn(row_fn(update_id)):
+                recovered+=1
+        except Exception: continue
+    _SPLIT_STATE['event_recovered']=int(_SPLIT_STATE.get('event_recovered') or 0)+recovered
+    return recovered
 
 
 def _split_authorized_request():
@@ -108,6 +463,18 @@ def _split_snapshot_meta():
 
 @app.route('/peer/health', methods=['GET', 'HEAD'])
 def split_front_peer_health_v262():
+    # Keep the legacy keep_alive diagnostics in sync with the real split peer.
+    try:
+        ua = str(request.headers.get('User-Agent', '') or '').casefold()
+        if 'worker-peer' in ua and _split_authorized_request():
+            ks = globals().get('KEEP_ALIVE_STATE')
+            if isinstance(ks, dict):
+                now_txt = now_local().isoformat(timespec='milliseconds') if callable(globals().get('now_local')) else str(_split_time.time())
+                ks['peer_received_at'] = now_txt
+                ks['last_inbound_activity_at'] = now_txt
+                ks['last_inbound_activity_kind'] = 'peer_worker'
+    except Exception:
+        pass
     if request.method == 'HEAD':
         return ('', 200)
     return ({
@@ -148,6 +515,21 @@ def split_front_state_download_v262():
     finally:
         _split_shutil.rmtree(workdir, ignore_errors=True)
 
+
+
+@app.route('/internal/split/hash', methods=['GET'])
+def split_front_state_hash_v268():
+    """Rare reconciliation probe: hash a consistent SQLite image without sending it."""
+    if not _split_authorized_request():
+        return ({'ok':False},404)
+    workdir=None
+    try:
+        workdir,raw=_split_snapshot_raw_v267('hash')
+        return ({'ok':True,'sha256':_split_sha256_file_v267(raw),'size':_split_os.path.getsize(raw),'state_token':_split_current_state_token_v264(),'version':_SPLIT_FRONT_VERSION},200)
+    except Exception as exc:
+        return ({'ok':False,'error':f'{type(exc).__name__}: {str(exc)[:180]}'},500)
+    finally:
+        if workdir: _split_shutil.rmtree(workdir,ignore_errors=True)
 
 
 def _split_redis_snapshot_keys_v266():
@@ -211,11 +593,17 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
 def _split_ping_once():
     base = _split_peer_base()
     _SPLIT_STATE['peer_last_attempt'] = _split_time.time()
+    try:
+        ks = globals().get('KEEP_ALIVE_STATE')
+        if isinstance(ks, dict):
+            ks['peer_last_attempt_at'] = now_local().isoformat(timespec='milliseconds') if callable(globals().get('now_local')) else str(_split_time.time())
+    except Exception:
+        pass
     if not base:
         _SPLIT_STATE['peer_last_error'] = 'PEER_SERVICE_URL empty'
         return False
     try:
-        r = requests.get(base + '/peer/health', headers=_split_headers('vys-262-front-peer-r10'), timeout=12)
+        r = requests.get(base + '/peer/health', headers=_split_headers('vys-262-front-peer-r11'), timeout=12)
         _SPLIT_STATE['peer_status'] = int(r.status_code)
         if 200 <= r.status_code < 300:
             payload = {}
@@ -223,6 +611,15 @@ def _split_ping_once():
             except Exception: payload = {}
             _SPLIT_STATE['peer_last_ok'] = _split_time.time()
             _SPLIT_STATE['peer_last_error'] = ''
+            try:
+                ks = globals().get('KEEP_ALIVE_STATE')
+                if isinstance(ks, dict):
+                    ks['peer_last_ok_at'] = now_local().isoformat(timespec='milliseconds') if callable(globals().get('now_local')) else str(_split_time.time())
+                    ks['peer_last_error'] = ''
+                    ks['peer_last_status_code'] = int(r.status_code)
+                    ks['peer_ok_count'] = int(ks.get('peer_ok_count') or 0) + 1
+            except Exception:
+                pass
             _SPLIT_STATE['worker_health'] = dict(payload or {})
             _SPLIT_STATE['worker_health']['seen_at'] = _split_time.time()
             return True
@@ -230,6 +627,14 @@ def _split_ping_once():
     except Exception as exc:
         _SPLIT_STATE['peer_last_error'] = str(exc)[:220]
         _SPLIT_STATE['peer_status'] = None
+    try:
+        ks = globals().get('KEEP_ALIVE_STATE')
+        if isinstance(ks, dict):
+            ks['peer_last_error'] = str(_SPLIT_STATE.get('peer_last_error') or '')[:220]
+            ks['peer_last_status_code'] = _SPLIT_STATE.get('peer_status')
+            ks['peer_fail_count'] = int(ks.get('peer_fail_count') or 0) + 1
+    except Exception:
+        pass
     return False
 
 
@@ -246,32 +651,35 @@ def _split_peer_loop():
 
 
 def _split_request_sync_now(reason='change'):
-    base, secret = _split_peer_base(), _split_secret()
+    """R12 normal durability path: send only changed SQLite pages.
+
+    A full SQLite image is sent only when the Worker reports a base mismatch, when the
+    delta is abnormally large, or during the explicit graceful-shutdown checkpoint.
+    """
     _SPLIT_STATE['sync_last_attempt'] = _split_time.time()
     _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
-    if not base or not secret:
-        _SPLIT_STATE['sync_last_error'] = 'worker URL/secret not configured'
-        return False
-    body = {
-        'type': 'sync_state',
-        'reason': _SPLIT_STATE['sync_reason'],
-        'front_url': str(globals().get('APP_URL') or '').rstrip('/'),
-        'state_token': _split_current_state_token_v264(),
-    }
+    ok, detail, need_full = _split_send_delta_v267(_SPLIT_STATE['sync_reason'])
+    if ok:
+        _SPLIT_STATE['sync_last_ok'] = _split_time.time()
+        _SPLIT_STATE['sync_last_error'] = ''
+        _SPLIT_STATE['sync_pending'] = False
+        return True
+    _SPLIT_STATE['delta_last_error'] = str(detail or '')[:220]
+    if need_full:
+        try:
+            _SPLIT_STATE['delta_full_fallbacks'] = int(_SPLIT_STATE.get('delta_full_fallbacks') or 0) + 1
+            if _split_push_snapshot_now_v263('delta_resync:' + str(reason or 'change')[:90]):
+                _SPLIT_STATE['sync_last_ok'] = _split_time.time()
+                _SPLIT_STATE['sync_last_error'] = ''
+                _SPLIT_STATE['sync_pending'] = False
+                return True
+        except Exception as exc:
+            detail = f'{detail}; full={type(exc).__name__}: {str(exc)[:120]}'
+    _SPLIT_STATE['sync_last_error'] = str(detail or 'delta sync failed')[:220]
+    # Emergency only: if Worker itself is unavailable, preserve the exact current DB in
+    # shared Redis. This is no longer the normal per-update path.
     try:
-        r = requests.post(base + '/internal/job', json=body, headers=_split_headers(), timeout=10)
-        if 200 <= r.status_code < 300:
-            _SPLIT_STATE['sync_last_ok'] = _split_time.time()
-            _SPLIT_STATE['sync_last_error'] = ''
-            _SPLIT_STATE['sync_pending'] = False
-            return True
-        _SPLIT_STATE['sync_last_error'] = f'HTTP {r.status_code}: {r.text[:160]}'
-    except Exception as exc:
-        _SPLIT_STATE['sync_last_error'] = str(exc)[:220]
-    # Worker may be between deploys. Preserve the newest exact SQLite in shared Redis
-    # so neither a front nor a worker restart can roll user settings back.
-    try:
-        _split_cache_snapshot_to_redis_v266(reason='worker_sync_fallback:' + str(reason or 'change')[:100])
+        _split_cache_snapshot_to_redis_v266(reason='delta_sync_emergency:' + str(reason or 'change')[:100])
     except Exception:
         pass
     return False
@@ -314,7 +722,13 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
     except Exception:
         min_interval = 12.0
     wait = max(0.08, min(30.0, wait))
-    min_interval = max(1.0, min(120.0, min_interval))
+    min_interval = max(0.2, min(120.0, min_interval))
+    # Financial commits use tiny deltas now, so do not keep a five-second durability
+    # window just because an older R11 environment still has MIN_INTERVAL=5.
+    _reason_l = str(reason or '').lower()
+    if 'finance' in _reason_l or 'critical' in _reason_l:
+        wait = min(wait, 0.15)
+        min_interval = min(min_interval, 0.5)
     now = _split_time.time()
     last = float(_SPLIT_STATE.get('sync_last_attempt') or 0.0)
     due = max(now + wait, last + min_interval if last else now + wait)
@@ -576,6 +990,52 @@ globals()['tenant_google_status_text'] = _split_tenant_google_status_text
 globals()['tenant_google_keyboard'] = _split_tenant_google_keyboard
 globals()['tenant_google_test'] = _split_tenant_google_test
 globals()['tenant_google_set_credentials'] = _split_reject_front_google_credentials
+
+# R11: no legacy MEGA delta is allowed to execute on the fast Front. Some old
+# delayed callbacks may have been armed before this final split module loaded; make
+# their runtime target a harmless drain so diagnostics do not keep reporting
+# `shard delta upload failed` while Worker owns Redis/MEGA durability.
+def _r11_split_legacy_delta_noop():
+    try:
+        lock = globals().get('_delta_state_lock')
+        pending = globals().get('_delta_pending_chats')
+        if lock is not None:
+            with lock:
+                if isinstance(pending, set): pending.clear()
+        elif isinstance(pending, set):
+            pending.clear()
+        domains = globals().get('_V240_PENDING_DOMAINS')
+        if isinstance(domains, dict): domains.clear()
+        globals()['_delta_last_error'] = ''
+    except Exception:
+        pass
+    return True
+
+globals()['_run_delta_batch'] = _r11_split_legacy_delta_noop
+globals()['_V234_MEGA_RUN_DELTA_BATCH'] = _r11_split_legacy_delta_noop
+_r11_split_legacy_delta_noop()
+
+# R11: note the exact moment a finance row became durable on Front. During a
+# Telegram update the remote handoff waits until the handler has finished; finance
+# forwarding/background commits that happen outside the update schedule their own
+# coalesced Worker handoff.
+_R11_BASE_PERSIST_FINANCE_LOCAL = globals().get('persist_finance_chat_local_fast')
+def _r11_persist_finance_chat_local_fast(chat_id: int) -> bool:
+    ok = bool(_R11_BASE_PERSIST_FINANCE_LOCAL(int(chat_id))) if callable(_R11_BASE_PERSIST_FINANCE_LOCAL) else False
+    if not ok:
+        return False
+    try:
+        if _split_inside_telegram_update_v264():
+            _SPLIT_UPDATE_CONTEXT.finance_dirty = True
+        else:
+            _split_mark_state_changed_v264(f'finance_commit:{int(chat_id)}')
+            split_schedule_worker_sync_v262(reason=f'finance_commit:{int(chat_id)}', delay=0.35)
+    except Exception:
+        pass
+    return True
+
+if callable(_R11_BASE_PERSIST_FINANCE_LOCAL):
+    globals()['persist_finance_chat_local_fast'] = _r11_persist_finance_chat_local_fast
 
 _split_threading.Thread(target=_split_peer_loop, name='v262-front-peer', daemon=True).start()
 
@@ -1001,17 +1461,24 @@ _V263_BASE_EXECUTE_TELEGRAM_PAYLOAD = _execute_telegram_payload
 
 def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str='other'):
     _SPLIT_UPDATE_CONTEXT.active = True
+    _SPLIT_UPDATE_CONTEXT.finance_dirty = False
+    finance_dirty = False
     try:
         result = _V263_BASE_EXECUTE_TELEGRAM_PAYLOAD(payload, update_id, update_chat_id, update_type)
     finally:
+        finance_dirty = bool(getattr(_SPLIT_UPDATE_CONTEXT, 'finance_dirty', False))
         _SPLIT_UPDATE_CONTEXT.active = False
+        _SPLIT_UPDATE_CONTEXT.finance_dirty = False
     try:
         cid = update_chat_id
         if cid is None and isinstance(payload, dict):
             cid = _extract_update_chat_id(payload)
-        continuity_checkpoint_v263(cid, reason=f'tg:{str(update_type or "other")}', full=False, schedule=True)
+        prefix = 'finance' if finance_dirty else 'tg'
+        _reason = f'{prefix}:{str(update_type or "other")}'
+        continuity_checkpoint_v263(cid, reason=_reason, full=False, schedule=False)
+        split_schedule_worker_sync_v262(reason=f'continuity:{_reason}', delay=0.12 if finance_dirty else 0.35)
     except Exception as exc:
-        try: log_error(f'CONTINUITY post-update R5: {exc}')
+        try: log_error(f'CONTINUITY post-update R11: {exc}')
         except Exception: pass
     return result
 
@@ -1037,11 +1504,21 @@ def _split_push_snapshot_now_v263(reason='shutdown'):
             body = fh.read()
         r = requests.post(
             base + '/internal/snapshot/upload', data=body,
-            headers={**_split_headers('vys-262-front-final-push'), 'Content-Type': 'application/gzip', 'X-Snapshot-Reason': str(reason or '')[:120]},
+            headers={**_split_headers('vys-262-front-final-push'), 'Content-Type': 'application/gzip', 'X-Snapshot-Reason': str(reason or '')[:120], 'X-Split-State-Token': _split_current_state_token_v264()},
             timeout=20,
         )
         if 200 <= r.status_code < 300:
-            return True
+            row={}
+            try: row=r.json() if r.content else {}
+            except Exception: row={}
+            if str(row.get('status') or '') != 'stale_ignored':
+                try:
+                    _split_promote_delta_baseline_v267(raw)
+                except Exception:
+                    pass
+                return True
+            _SPLIT_STATE['sync_last_error'] = 'worker has a newer full state; stale front snapshot ignored'
+            return False
         try: _SPLIT_STATE['sync_last_error'] = f'final push HTTP {r.status_code}: {r.text[:160]}'
         except Exception: pass
     except Exception as exc:
@@ -1829,9 +2306,12 @@ def _r10_worker_health_text(force=False):
         '',
         f'Очередь: обычная {q} · Google {gq}',
         f"Google: {('✅ настроен' if google_ok else '⛔ не настроен')} · последний успех {_r10_age_text(st.get('google_last_ok'))}",
-        f"Redis snapshot: {('✅' if redis_ok else '🟠')} · rev {str(st.get('cache_revision') or '—')}",
-        f"MEGA: {('✅ настроена' if mega_ok else '⛔ не настроена')} · upload {_r10_age_text(st.get('last_mega_upload_at'))}",
-        f"Последняя синхронизация: {_r10_age_text(st.get('job_last_done') or st.get('last_snapshot_at'))}",
+        f"Redis: {('✅' if redis_ok else '🟠')} · delta {int(st.get('delta_since_checkpoint') or 0)} · rev {str(st.get('cache_revision') or '—')}",
+        f"Delta sync: {int(st.get('delta_last_pages') or 0)} стр. · {int(st.get('delta_bytes') or 0)//1024} КБ всего",
+        f"События: получено {int(st.get('event_received') or 0)} · commit {int(st.get('event_committed') or 0)} · зеркало {int(st.get('event_mirrored') or 0)} · ждут {int(st.get('event_pending') or 0)}",
+        f"Hash-сверка: {_r10_age_text(st.get('reconcile_last_ok'))} · full-resync {int(st.get('reconcile_full_resyncs') or 0)}",
+        f"MEGA checkpoint: {('✅ настроена' if mega_ok else '⛔ не настроена')} · {_r10_age_text(st.get('last_mega_upload_at'))}",
+        f"Последняя синхронизация: {_r10_age_text(st.get('delta_last_at') or st.get('job_last_done') or st.get('last_snapshot_at'))}",
     ]
     if err and not worker_ok:
         lines += ['', 'Ошибка: '+err[:240]]
@@ -1909,7 +2389,19 @@ try:
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:refresh','Ф270')
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:back','Ф89')
     bot_journal('r10_unified_ui_loaded',int(OWNER_ID or 0),'service-ui=simple; worker-card=1; google-menu=1; peer=bidirectional')
+    bot_journal('r11_fast_finance_loaded',int(OWNER_ID or 0),'finance-derived=async; chat-journal-default=on; legacy-front-delta=off')
 except Exception:
     pass
+
+# R12: establish the local delta base after all migrations/continuity wrappers are loaded.
+# If the first Worker delta later reports a mismatch, the bridge automatically performs
+# one full resync and re-bases; normal updates never GET the full SQLite again.
+try:
+    _split_init_delta_baseline_v267(force=True)
+    bot_journal('r12_delta_sync_loaded', int(OWNER_ID or 0), 'sqlite-page-delta=on; full=checkpoint-or-mismatch')
+    bot_journal('r13_event_journal_loaded', int(OWNER_ID or 0), 'raw-event-witness=worker/redis; commit-ack=on; reconcile-hash=rare')
+except Exception as _r12_delta_boot_exc:
+    try: log_error(f'R13 delta/event baseline init: {_r12_delta_boot_exc}')
+    except Exception: pass
 
 # v262

@@ -1514,6 +1514,114 @@ def _v151_apply_reserve_cover(chat_id: int, currency: str, rec: dict | None, rea
             pass
         return result
 
+# R11: the authoritative finance row is already committed by _finance_add_record_base.
+# Gomonk/reserve-cover is derived state and must never keep the Telegram content lane
+# busy after that commit. Queue it on the per-chat FINANCE lane and coalesce bursts.
+_V151_POSTCOMMIT_LOCK = _v151_threading.RLock()
+_V151_POSTCOMMIT_PENDING = {}
+_V151_POSTCOMMIT_RUNNING = set()
+
+def _v151_postcommit_identity(chat_id: int, rec: dict) -> dict:
+    return {
+        'uid': str((rec or {}).get('record_uid') or ''),
+        'source_msg_id': int((rec or {}).get('source_msg_id') or 0),
+        'record_id': int((rec or {}).get('id') or 0),
+        'day_key': str((rec or {}).get('day_key') or ''),
+    }
+
+def _v151_resolve_postcommit_record(chat_id: int, ident: dict):
+    uid = str((ident or {}).get('uid') or '')
+    if uid and callable(globals().get('find_finance_record_by_uid')):
+        try:
+            rec = find_finance_record_by_uid(int(chat_id), uid)
+            if isinstance(rec, dict):
+                return rec
+        except Exception:
+            pass
+    source_msg_id = int((ident or {}).get('source_msg_id') or 0)
+    if source_msg_id and callable(globals().get('find_record_by_message_id')):
+        try:
+            rec = find_record_by_message_id(int(chat_id), source_msg_id)
+            if isinstance(rec, dict):
+                return rec
+        except Exception:
+            pass
+    rid = int((ident or {}).get('record_id') or 0)
+    try:
+        for _key, rec in _finance_record_lists(get_chat_store(int(chat_id))):
+            if isinstance(rec, dict) and rid and int(rec.get('id') or 0) == rid:
+                return rec
+    except Exception:
+        pass
+    return None
+
+def _v151_postcommit_cover_job(chat_id: int):
+    cid = int(chat_id)
+    try:
+        while True:
+            with _V151_POSTCOMMIT_LOCK:
+                batch = list((_V151_POSTCOMMIT_PENDING.get(cid) or {}).values())
+                _V151_POSTCOMMIT_PENDING[cid] = {}
+            if not batch:
+                break
+            last_day = ''
+            for item in batch:
+                ident = dict(item.get('ident') or {})
+                rec = _v151_resolve_postcommit_record(cid, ident)
+                if not isinstance(rec, dict):
+                    continue
+                last_day = str(ident.get('day_key') or rec.get('day_key') or last_day)
+                for currency in tuple(item.get('currencies') or ('ars',)):
+                    try:
+                        _v151_apply_reserve_cover(cid, str(currency), rec, 'postcommit_async_r11')
+                    except Exception as exc:
+                        try: log_error(f'R11 async reserve cover chat={cid} currency={currency}: {exc}')
+                        except Exception: pass
+            # finance_changed/schedule_finalize is normally queued by the caller after
+            # add_record_to_chat returns. A tiny safety repaint is only needed when this
+            # helper was invoked from a path that did not schedule one.
+            try:
+                if last_day and callable(globals().get('schedule_financial_window_refresh')):
+                    schedule_financial_window_refresh(cid, last_day, reason='reserve_cover_r11', delay=0.02)
+            except Exception:
+                pass
+    finally:
+        rerun = False
+        with _V151_POSTCOMMIT_LOCK:
+            _V151_POSTCOMMIT_RUNNING.discard(cid)
+            rerun = bool(_V151_POSTCOMMIT_PENDING.get(cid))
+        if rerun:
+            _v151_schedule_postcommit_cover(cid, None, ())
+
+def _v151_schedule_postcommit_cover(chat_id: int, rec: dict | None, currencies) -> bool:
+    cid = int(chat_id)
+    with _V151_POSTCOMMIT_LOCK:
+        if isinstance(rec, dict):
+            ident = _v151_postcommit_identity(cid, rec)
+            key = str(ident.get('uid') or ident.get('source_msg_id') or ident.get('record_id') or id(rec))
+            row = (_V151_POSTCOMMIT_PENDING.setdefault(cid, {})).setdefault(key, {'ident': ident, 'currencies': set()})
+            row['currencies'].update(str(x) for x in (currencies or ()) if x)
+        if cid in _V151_POSTCOMMIT_RUNNING:
+            return True
+        if not _V151_POSTCOMMIT_PENDING.get(cid):
+            return True
+        _V151_POSTCOMMIT_RUNNING.add(cid)
+    pool = globals().get('FINANCE_TASK_POOL')
+    try:
+        if pool is not None and hasattr(pool, 'submit') and pool.submit(cid, _v151_postcommit_cover_job, cid):
+            return True
+    except Exception:
+        pass
+    # Never fall back to synchronous work in the Telegram/content thread.
+    try:
+        t = _v151_threading.Thread(target=_v151_postcommit_cover_job, args=(cid,), name=f'fin-cover-r11-{cid}', daemon=True)
+        t.start()
+        return True
+    except Exception:
+        with _V151_POSTCOMMIT_LOCK:
+            _V151_POSTCOMMIT_RUNNING.discard(cid)
+        return False
+
 def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str='', usd_only: bool=False, source_finance_text: str=''):
     rec = _V151_BASE_ADD_RECORD(chat_id, amount, note, owner, source_msg=source_msg, day_key=day_key, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_finance_text=source_finance_text)
     if isinstance(rec, dict):
@@ -1521,13 +1629,10 @@ def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, sourc
             ensure_finance_record_uid(int(chat_id), rec)
         except Exception:
             pass
-        _v151_apply_reserve_cover(int(chat_id), 'ars', rec)
+        currencies = ['ars']
         if usd_amount is not None:
-            _v151_apply_reserve_cover(int(chat_id), 'usd', rec)
-        try:
-            persist_finance_chat_local_fast(int(chat_id))
-        except Exception:
-            pass
+            currencies.append('usd')
+        _v151_schedule_postcommit_cover(int(chat_id), rec, currencies)
     return rec
 
 def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None=None):
@@ -1553,13 +1658,9 @@ def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, not
             ensure_finance_record_uid(int(chat_id), rec)
         except Exception:
             pass
-        _v151_apply_reserve_cover(int(chat_id), ledger, rec)
+        _v151_schedule_postcommit_cover(int(chat_id), rec, [ledger])
         try:
-            persist_finance_chat_local_fast(int(chat_id))
-        except Exception:
-            pass
-        try:
-            schedule_financial_window_refresh(int(chat_id), str(rec.get('day_key') or day_key or ''), reason='currency_record_add_final_v187')
+            schedule_financial_window_refresh(int(chat_id), str(rec.get('day_key') or day_key or ''), reason='currency_record_add_fast_r11')
         except Exception:
             pass
     return result if result is not None else rec

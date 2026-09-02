@@ -1,3 +1,11 @@
+# Render #1 FAST — R13 Event Journal
+
+R13 adds a pre-commit remote Telegram event witness and monotonic operation states `RECEIVED → COMMITTED → MIRRORED`. Normal changes use compact SQLite page deltas. A full database moves from Front only after a rare hash mismatch or explicit deploy/shutdown checkpoint. Worker creates its own periodic checkpoints from the mirrored SQLite.
+
+Recommended cadence: hash reconciliation every 6h, Worker Redis checkpoint every 6h/threshold, MEGA full checkpoint once per 24h.
+
+---
+
 # Render #1 — FAST front — R9.2 RUNTIME CONTRACT FIX
 
 Deploy this ZIP as the Telegram/front service. Start command: `python start_front.py`.
@@ -49,3 +57,12 @@ R8 chat lifecycle fix: for an already-known chat, Telegram 400 `Bad Request: cha
 - Owner UI has Google Excel and Render #2 health controls; peer health is bidirectional.
 - Contour toggles force immediate keyboard redraw after state changes.
 
+
+## R11 fast finance
+Финансовый источник истины остаётся на Render #1: запись сначала фиксируется в локальном SQLite. Производные Gomonk/валютные расчёты выполняются после commit в FINANCE_TASK_POOL, чтобы не блокировать следующие Telegram finance messages. После завершения update полный SQLite асинхронно передаётся Render #2. Для новых чатов журнал чата включён по умолчанию.
+
+## R13 event journal + delta mirror
+- Normal changes send only changed SQLite pages to Render #2; repeated `/internal/split/state` full downloads are no longer the normal path.
+- Finance durability delta is scheduled immediately after the completed local transaction/update; old 5-second minimum is capped to 1 second for finance/critical changes.
+- Full SQLite is used only for deploy shutdown, first/mismatched base, oversized delta or emergency recovery.
+- Forwarding allows messages delivered by Telegram from third-party bots. This bot's own messages remain excluded to prevent loops.

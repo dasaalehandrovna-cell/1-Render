@@ -1,0 +1,10 @@
+R12 DELTA SYNC + BOT FORWARDING
+
+1. Normal Front -> Worker state durability no longer downloads the full SQLite database.
+2. Front creates a consistent SQLite backup, compares it with the last Worker-acknowledged baseline and sends only changed SQLite pages to POST /internal/delta.
+3. Worker validates the reconstructed DB with PRAGMA quick_check + SHA256 before promotion.
+4. The validated tiny delta is appended to Redis before Worker /tmp promotion, reducing the abrupt-worker-deploy loss window.
+5. Worker builds full checkpoints locally every 15 minutes or 100 deltas by default, then stores Redis full snapshot + MEGA archive. No Front full GET is needed.
+6. Full Front snapshot remains for graceful shutdown, first-base mismatch, abnormal large delta and emergency resync.
+7. Finance delta scheduling is accelerated: finance/critical changes are not held by an old 5-second minimum interval.
+8. Forwarding accepts Telegram-delivered messages whose sender is another bot. Messages sent by this bot itself remain blocked to prevent loops.

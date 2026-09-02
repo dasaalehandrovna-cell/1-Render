@@ -38,9 +38,9 @@
     "98_split_front.py": "v262"
   },
   "files": {
-    "00_core.py": "75ad508b26aac109e74f9d94d154879fcdd6f3b9cf65b26e23e9a4239cfa3415",
+    "00_core.py": "6d8e6f8ee8bbab3c105fcd0fd0fea2c238181102f5f32a35c414b587eda5543f",
     "05_key_value_runtime.py": "1df54a6018dbe2f973854f8d6929672e785be38c5bdb285ec0d756906ab1d36d",
-    "10_mega_runtime.py": "cb46169f289dbd09a4631dab2fb439fa7a7aa43466737ca477520c380dee80b1",
+    "10_mega_runtime.py": "0c2e444fe7320d5d54586c437c53ab0cca40450243d0d31cc0d1120d543f5958",
     "11_data_constitution.py": "810c95193895cfa6e2aa23b59801717b7d2c71fdedd539d076a63dd83b873bae",
     "12_telegram_durable.py": "d2a687699287903d3cafa40a048b8c43653cada2318578eca81533d4f836eec9",
     "13_telegram_stable_slots.py": "8dd913726ee92f892e713dbeec49bbcd460ebe163b697fec721b72c91fa548df",
@@ -62,8 +62,8 @@
     "90_commands_exports.py": "0be5ecd1900893649a61ba83b47d9a0b29b68c6e1107f1f53e32b5a2f1c662d2",
     "91_finance_records_handlers.py": "4bcd9a431412ac4655fd89371026f7e1eb430015900a35fbc94b34052d8e666c",
     "72_multitenant_runtime.py": "8f9fc7359e8c36da2d890dc653e92630484240dd95c92a30ad64e3ed552d253c",
-    "99_web_runtime.py": "a56ebcb0574ed8e6c25f920a7b369397c101f9f16ee9206c18f9508f0dcd3324",
-    "73_state_export_runtime.py": "d303936571d115edd21e35812cd6073ded6d9fbaa3c8ed5da5ed1e3275831e8d",
+    "99_web_runtime.py": "530501ce5eb66a592081d19c8bbf18edbc0738ac727c5c4209c98ba4ad08b9ef",
+    "73_state_export_runtime.py": "d108cd9b626de8c9b85aa0d6e6ca5ff9d664b8d18883f97761e2837bb797f787",
     "74_ui_reliability_runtime.py": "58fad0376718c7662e83f64eb3eeefe753927c7dbbebf04cd26080a99d83b5b7",
     "75_platform_features_runtime.py": "8361c4d7dd3885693d8d6b97f439dcda44a52910348cece0f256fb43a64925db",
     "76_tasks_runtime.py": "9bf9e654c93ba85292f6b9164eb982676446e98d7968086418e32a192a3947e5",
@@ -71,6 +71,6 @@
     "88_ui_constructor.py": "3f684bfcaab2a0f41aed87e7e23bc5053dccfde88c603ea4c159b51a0dcc2b6a",
     "89_callback_final.py": "077fa57a67ad4c436e9d3f7f5f915e2c34d79ea470879fa1d34a2570fe1408c1",
     "92_v262_linked_finance_speed.py": "181c0ada9af164986e9c32c462d22af13b03836d27a623c32b040c06eaef4061",
-    "98_split_front.py": "758099b357f136501d3fd8671aa3c405df05b6338cdb870b83e43d572cced4b9"
+    "98_split_front.py": "aa9fe87476e3ffdfd1cfd4f747f96e6f30d3ad4914361c1370379c7bbde43615"
   }
 }

@@ -965,7 +965,12 @@ def _forward_anonymous_admin_message(msg) -> bool:
     return False
 
 def _forward_sender_skip_reason(msg) -> str:
-    """Skip our own/other real bot messages, but allow anonymous human admins."""
+    """R12: accept delivered messages from other bots; skip only this bot itself.
+
+    The self-sender guard prevents forwarding loops. Anonymous/send-as-chat admins and
+    genuine third-party bots are eligible for the same configured forwarding rules as
+    human senders whenever Telegram delivers the update to us.
+    """
     try:
         sender = getattr(msg, 'from_user', None)
         if not sender or not bool(getattr(sender, 'is_bot', False)):
@@ -974,14 +979,12 @@ def _forward_sender_skip_reason(msg) -> str:
         self_id = _current_bot_id_for_forwarding()
         if self_id and sender_id == self_id:
             return 'bot_sender'
-        if _forward_anonymous_admin_message(msg):
-            return ''
-        return 'other_bot_sender'
+        return ''
     except Exception:
         return ''
 
 def _forward_sender_skip_reason_raw(raw: dict) -> str:
-    """Raw-payload twin of _forward_sender_skip_reason for durable recovery."""
+    """Raw-payload twin: third-party bots are forwardable; our own bot is not."""
     if not isinstance(raw, dict):
         return ''
     try:
@@ -992,17 +995,7 @@ def _forward_sender_skip_reason_raw(raw: dict) -> str:
         self_id = _current_bot_id_for_forwarding()
         if self_id and sender_id == self_id:
             return 'bot_sender'
-        username = str(sender.get('username') or '').lstrip('@').lower()
-        if username == 'groupanonymousbot':
-            return ''
-        sender_chat = raw.get('sender_chat') or {}
-        chat = raw.get('chat') or {}
-        if isinstance(sender_chat, dict) and isinstance(chat, dict):
-            sid = int(sender_chat.get('id') or 0)
-            cid = int(chat.get('id') or 0)
-            if sid and cid and (sid == cid):
-                return ''
-        return 'other_bot_sender'
+        return ''
     except Exception:
         return ''
 
@@ -2006,7 +1999,7 @@ def journal_toggle_label() -> str:
 def is_chat_journal_enabled(chat_id: int) -> bool:
     try:
         store = get_chat_store(int(chat_id))
-        return bool(store.setdefault('settings', {}).get('journal_enabled', False))
+        return bool(store.setdefault('settings', {}).get('journal_enabled', True))
     except Exception:
         return False
 

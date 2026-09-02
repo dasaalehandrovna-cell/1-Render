@@ -322,10 +322,14 @@ def _v260_replay_webhook_inbox_row(row: dict):
         _v260_webhook_inbox_mark(update_id, 'running')
         _execute_telegram_payload(payload, update_id, chat_id, update_type)
         _v260_webhook_inbox_mark(update_id, 'done')
+        _r13_commit_fn = globals().get('split_event_committed_v268')
+        if callable(_r13_commit_fn): _r13_commit_fn(update_id, chat_id, update_type, True, '')
         bot_journal('webhook_inbox_recovered_v260', chat_id, f'update_id={update_id}; type={update_type}')
         return True
     except Exception as exc:
         failed_row = _v260_webhook_inbox_mark(update_id, 'failed', str(exc))
+        _r13_commit_fn = globals().get('split_event_committed_v268')
+        if callable(_r13_commit_fn): _r13_commit_fn(update_id, chat_id, update_type, False, str(exc))
         log_error(f'WEBHOOK INBOX V260 recovery failed update={update_id}: {exc}')
         _v260_schedule_webhook_inbox_retry(failed_row or update_id)
         return False
@@ -414,6 +418,13 @@ def telegram_webhook():
             return ('OK', 200)
         if not _v260_webhook_inbox_put(update_id, payload, update_chat_id, update_type):
             return ('LOCAL DURABLE INBOX FAILED', 503)
+        # R13: before Telegram gets HTTP 200 and before business execution starts,
+        # make the raw update durable on Worker/Redis.  If both remote witnesses are
+        # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
+        _r13_witness_fn = globals().get('split_witness_event_v268')
+        if callable(_r13_witness_fn) and not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
+            log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
+            return ('REMOTE DURABLE WITNESS FAILED', 503)
         _protect_pending_ui_timers_on_receipt(payload)
         if update_type == 'callback_query':
             try:
@@ -470,6 +481,8 @@ def telegram_webhook():
                     execution_ctx = _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
                     success = True
                     _v260_webhook_inbox_mark(update_id, 'done')
+                    _r13_commit_fn = globals().get('split_event_committed_v268')
+                    if callable(_r13_commit_fn): _r13_commit_fn(update_id, update_chat_id, update_type, True, '')
                     if durable_cloud:
                         durable_expected_after = _durable_expected_after_execution(durable_expected, execution_ctx, payload)
                         queued_finalize = enqueue_durable_finalize_background(update_id, update_chat_id, update_type, payload, durable_expected_after)
@@ -481,6 +494,8 @@ def telegram_webhook():
                 except Exception as exc:
                     error_text = str(exc)
                     _failed_inbox_v260 = _v260_webhook_inbox_mark(update_id, 'external_failed_review' if durable_cloud else 'failed', error_text)
+                    _r13_commit_fn = globals().get('split_event_committed_v268')
+                    if callable(_r13_commit_fn): _r13_commit_fn(update_id, update_chat_id, update_type, False, error_text)
                     if not durable_cloud:
                         _v260_schedule_webhook_inbox_retry(_failed_inbox_v260 or update_id)
                     if durable_cloud and durable_started:
@@ -595,7 +610,7 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = '• ⚡ Упрощены служебные окна; технические W/Ф233 пользователю не показываются.\n• 🎨 Excel/Google: единое цветное оформление выс-262 на Render #2.\n• 🔒 Контуры 1/2: /ok закрыта; выключенный режим возвращает в меню режимов; чекбоксы обновляются сразу.\n• 🛰 В Инфо добавлен статус Render #2 и взаимный пеленг; 📊 Google Excel вынесен отдельной кнопкой.'
+STARTUP_RELEASE_SUMMARY = '• 🛡 Telegram update сначала получает удалённый свидетель Render #2/Redis, затем Front выполняет бизнес-логику.\n• ✅ После локального commit второй Render получает статус операции и маленький SQLite-delta; оба знают RECEIVED → COMMITTED → MIRRORED.\n• 📉 Полная база больше не гоняется по изменениям: hash-сверка раз в 6 ч, полный re-sync только при расхождении; Worker checkpoint локально.\n• 🤖 Пересылка от других ботов, быстрые финансы, цветные Excel/Google и журнал новых чатов ВКЛ сохранены.'
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""
@@ -641,8 +656,10 @@ def _v211_start_post_ready_runtime():
     try:
         try:
             _inbox_recovered_v260 = recover_webhook_inbox_v260(100)
+            _remote_recover_fn = globals().get('split_recover_remote_events_v268')
+            _remote_recovered_v268 = _remote_recover_fn(100) if callable(_remote_recover_fn) else 0
             _fin_recovered_v260 = recover_partial_finance_forwards_v260(200) if callable(globals().get('recover_partial_finance_forwards_v260')) else 0
-            runtime_event('v260_local_recovery_started', f'webhook={_inbox_recovered_v260}; finance_forward={_fin_recovered_v260}')
+            runtime_event('v260_local_recovery_started', f'webhook={_inbox_recovered_v260}; remote_event={_remote_recovered_v268}; finance_forward={_fin_recovered_v260}')
         except Exception as _v260_recovery_exc:
             log_error(f'v260 local recovery start: {_v260_recovery_exc}')
         runtime_event('post_ready_runtime_started_v211', 'expense/keepalive/reminder/safety/telegram-durable/v260-local-inbox')
@@ -969,7 +986,7 @@ def main():
             settings.setdefault('hidden_finance', False)
             settings.setdefault('auto_backup_enabled', True)
             settings.setdefault('auto_backup_to_mega_enabled', False)
-            settings.setdefault('journal_enabled', False)
+            settings.setdefault('journal_enabled', True)
             settings.setdefault('main_article_buttons_enabled', False)
             settings.setdefault('main_financial_value_buttons_enabled', False)
             settings.setdefault('currency_mode', 'ars_usd' if settings.get('usd_display_enabled', False) else 'ars')

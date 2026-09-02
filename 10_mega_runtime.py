@@ -6018,7 +6018,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool=True) -> None:
         log_error(f'send_backup_to_chat({chat_id}): {e}')
 
 def default_data():
-    return {'overall_balance': 0, 'records': [], 'chats': {}, 'active_messages': {}, 'next_id': 1, 'backup_flags': {'drive': True, 'channel': True}, 'finance_active_chats': {}, 'forward_rules': {}, 'forward_finance': {}, 'forward_index': {}, 'bot_errors': [], 'csv_meta': {}, 'chat_backup_meta': {}, '_global_settings': {'bot_journal_enabled': False, 'bot_journal_verbose_telegram': False, 'buttons_current_window': True, 'forward_menu_new_style': True, 'icon_button_mode': False, 'total_secret_mask_enabled': False, 'finance_day_start_5am': False, 'finance_day_start_minute': 5, 'backup_excel_all_enabled': True, 'mega_backup_priority': True, 'bot_behavior_profile': 'v97_current', 'journal_default_off_v83_applied': True}}
+    return {'overall_balance': 0, 'records': [], 'chats': {}, 'active_messages': {}, 'next_id': 1, 'backup_flags': {'drive': True, 'channel': True}, 'finance_active_chats': {}, 'forward_rules': {}, 'forward_finance': {}, 'forward_index': {}, 'bot_errors': [], 'csv_meta': {}, 'chat_backup_meta': {}, '_global_settings': {'bot_journal_enabled': True, 'bot_journal_verbose_telegram': False, 'buttons_current_window': True, 'forward_menu_new_style': True, 'icon_button_mode': False, 'total_secret_mask_enabled': False, 'finance_day_start_5am': False, 'finance_day_start_minute': 5, 'backup_excel_all_enabled': True, 'mega_backup_priority': True, 'bot_behavior_profile': 'v97_current', 'journal_default_off_v83_applied': True}}
 _ORIGINAL_INLINE_KEYBOARD_BUTTON = types.InlineKeyboardButton
 
 def _compact_button_label(text) -> str:

@@ -1,0 +1,7 @@
+R11 FAST FINANCE
+- Финансовая запись сначала коммитится в локальный SQLite Render #1.
+- Gomonk/reserve-cover и связанные тяжёлые валютные проходы вынесены из content/webhook lane в FINANCE_TASK_POOL.
+- Быстрые серии финансовых сообщений больше не должны ждать Google/Gomonk расчёты предыдущей записи.
+- Для новых чатов journal_enabled заводски True; явно выключенные существующие чаты не переопределяются.
+- Старый MEGA delta runner на Front окончательно отключён; удалённая долговечность идёт через Worker full SQLite -> Redis -> MEGA.
+- Finance local commit помечается отдельно: после завершения Telegram update Worker получает coalesced sync полного SQLite.
