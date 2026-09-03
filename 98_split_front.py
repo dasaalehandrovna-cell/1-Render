@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r15-fast-hotpath"
+_SPLIT_FRONT_VERSION = "vys-262-front-r16-fast-finance-color-xlsx"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -306,29 +306,32 @@ def _split_event_redis_write_v268(row, state=None, error=''):
         return False,f'{type(exc).__name__}: {str(exc)[:180]}'
 
 def split_witness_event_v268(update_id, payload, chat_id=None, update_type='other'):
-    """Durably witness raw Telegram update before Front accepts it from Telegram."""
+    """R16: Redis is the first remote durable witness; Worker HTTP is fallback only.
+
+    This removes an entire Render#1 -> Render#2 -> Redis hop from the Telegram hot path.
+    Render#2 hydrates pending events from Redis in its reconcile loop.
+    """
     row=_split_event_row_v268(update_id,payload,chat_id,update_type)
-    base,secret=_split_peer_base(),_split_secret()
-    detail='worker not configured'
+    ok,rdetail=_split_event_redis_write_v268(row,'received','')
+    if ok:
+        _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
+        _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
+        return True
+    base,secret=_split_peer_base(),_split_secret(); detail=f'redis={rdetail}'
     if base and secret:
         try:
             raw=_split_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
             wire=_split_gzip.compress(raw,compresslevel=1)
-            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r13'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(0.35,min(2.5,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','1.2') or '1.2'))))
+            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r16-fallback'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(0.35,min(2.5,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','1.2') or '1.2'))))
             if 200 <= r.status_code < 300:
                 _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
                 _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
+                _SPLIT_STATE['event_redis_fallbacks']=int(_SPLIT_STATE.get('event_redis_fallbacks') or 0)+1
                 return True
-            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
+            detail=f'{detail}; worker HTTP {r.status_code}: {r.text[:160]}'
         except Exception as exc:
-            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
-    ok,rdetail=_split_event_redis_write_v268(row,'received',detail)
-    if ok:
-        _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
-        _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
-        _SPLIT_STATE['event_redis_fallbacks']=int(_SPLIT_STATE.get('event_redis_fallbacks') or 0)+1
-        return True
-    _SPLIT_STATE['event_last_error']=f'{detail}; redis={rdetail}'[:260]
+            detail=f'{detail}; worker {type(exc).__name__}: {str(exc)[:160]}'
+    _SPLIT_STATE['event_last_error']=detail[:260]
     return False
 
 def _split_event_status_send_v268(update_id, chat_id=None, update_type='other', success=True, error=''):
@@ -336,24 +339,25 @@ def _split_event_status_send_v268(update_id, chat_id=None, update_type='other', 
     row={'schema':1,'event_id':event_id,'update_id':str(update_id),'chat_id':chat_id,'update_type':str(update_type or 'other')[:40],
          'state':'committed' if success else 'failed_retry','committed_at':_split_time.time() if success else 0.0,
          'state_token':_split_current_state_token_v264(),'last_error':str(error or '')[:300]}
-    base,secret=_split_peer_base(),_split_secret(); detail='worker not configured'
+    ok,rdetail=_split_event_redis_write_v268(row,row['state'],error)
+    if ok:
+        if success:
+            _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
+        _SPLIT_STATE['event_last_error']=''
+        return True
+    base,secret=_split_peer_base(),_split_secret(); detail=f'redis={rdetail}'
     if base and secret:
         try:
-            r=requests.post(base+'/internal/event/commit',json=row,headers=_split_headers('vys-262-front-event-commit-r13'),timeout=6)
+            r=requests.post(base+'/internal/event/commit',json=row,headers=_split_headers('vys-262-front-event-commit-r16-fallback'),timeout=4)
             if 200 <= r.status_code < 300:
                 if success:
                     _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
                 _SPLIT_STATE['event_last_error']=''
                 return True
-            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
+            detail=f'{detail}; worker HTTP {r.status_code}: {r.text[:160]}'
         except Exception as exc:
-            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
-    ok,rdetail=_split_event_redis_write_v268(row,row['state'],detail or error)
-    if ok:
-        if success:
-            _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
-        return True
-    _SPLIT_STATE['event_last_error']=f'{detail}; redis={rdetail}'[:260]
+            detail=f'{detail}; worker {type(exc).__name__}: {str(exc)[:160]}'
+    _SPLIT_STATE['event_last_error']=detail[:260]
     return False
 
 def _split_event_bg_v268(fn,*args):
@@ -390,29 +394,32 @@ def _split_ack_mirrored_events_v268(event_ids):
     _SPLIT_STATE['event_mirrored']=int(_SPLIT_STATE.get('event_mirrored') or 0)+len(ids)
 
 def _split_remote_pending_rows_v268(limit=100):
+    # R16: query the authoritative Redis event journal first; Worker is a fallback.
+    if _split_redis is not None:
+        url=str(_split_os.getenv('REDIS_URL','') or '').strip()
+        if url:
+            try:
+                client=_split_redis.Redis.from_url(url,socket_connect_timeout=1.5,socket_timeout=3)
+                prefix=_split_event_prefix_v268(); ids=client.zrange(f'{prefix}:pending',0,max(0,min(249,int(limit)-1))) or []
+                rows=[]
+                for raw_id in ids:
+                    eid=raw_id.decode() if isinstance(raw_id,(bytes,bytearray)) else str(raw_id)
+                    raw=client.get(f'{prefix}:event:{eid}')
+                    if not raw: continue
+                    try: row=_split_json.loads(raw.decode('utf-8') if isinstance(raw,(bytes,bytearray)) else raw)
+                    except Exception: continue
+                    if str((row or {}).get('state') or '') in {'received','failed_retry','committed'}: rows.append(row)
+                return rows
+            except Exception:
+                pass
     base,secret=_split_peer_base(),_split_secret()
     if base and secret:
         try:
-            r=requests.get(base+'/internal/events/pending',params={'limit':max(1,min(250,int(limit)))},headers=_split_headers('vys-262-front-event-recover-r13'),timeout=8)
+            r=requests.get(base+'/internal/events/pending',params={'limit':max(1,min(250,int(limit)))},headers=_split_headers('vys-262-front-event-recover-r16-fallback'),timeout=8)
             if 200 <= r.status_code < 300:
                 body=r.json() if r.content else {}; return list(body.get('events') or [])
         except Exception: pass
-    if _split_redis is None: return []
-    url=str(_split_os.getenv('REDIS_URL','') or '').strip()
-    if not url: return []
-    try:
-        client=_split_redis.Redis.from_url(url,socket_connect_timeout=3,socket_timeout=6)
-        prefix=_split_event_prefix_v268(); ids=client.zrange(f'{prefix}:pending',0,max(0,min(249,int(limit)-1))) or []
-        rows=[]
-        for raw_id in ids:
-            eid=raw_id.decode() if isinstance(raw_id,(bytes,bytearray)) else str(raw_id)
-            raw=client.get(f'{prefix}:event:{eid}')
-            if not raw: continue
-            try: row=_split_json.loads(raw.decode('utf-8') if isinstance(raw,(bytes,bytearray)) else raw)
-            except Exception: continue
-            if str((row or {}).get('state') or '') in {'received','failed_retry','committed'}: rows.append(row)
-        return rows
-    except Exception: return []
+    return []
 
 def split_recover_remote_events_v268(limit=100):
     """Replay remote witnessed-but-not-mirrored Telegram updates after abrupt deploy."""
@@ -1807,6 +1814,7 @@ def _r7_finance_changed_now(chat_id: int, day_key: str | None=None, reason: str=
         normalize_chat_records(chat_id)
         store = get_chat_store(chat_id)
         store.pop('_finance_hotpath_pending_normalize_r15', None)
+        store.pop('_finance_hotpath_pending_normalize_r16', None)
         store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
         _r7_rebuild_month_short_ids_after_normalize(chat_id, store)
         try:
@@ -1841,11 +1849,13 @@ def _r7_linked_edit_postcommit(origin_chat_id: int, origin_msg_id: int, touched_
     """
     for cid, day_key in list((touched_days or {}).items()):
         try:
-            schedule_financial_window_refresh(int(cid), str(day_key or ''), reason='linked_edit_r7', delay=0.015)
+            schedule_financial_window_refresh(int(cid), str(day_key or ''), reason='linked_edit_r16_fast', delay=0.01)
         except Exception:
             pass
+        # R16 hot edit intentionally skipped full normalize; schedule exactly one
+        # delayed canonical reconcile after the immediate user-visible repaint.
         try:
-            schedule_finance_postcommit_background_v243(int(cid), reason='linked_edit_r7', delay=0.30)
+            finance_changed(int(cid), str(day_key or ''), reason='linked_edit_r16_reconcile', delay=0.18)
         except Exception:
             pass
     if repaint_copies and origin_chat_id and origin_msg_id:
@@ -1862,11 +1872,9 @@ def _r7_v262_finance_postcommit_job(chat_id: int, day_key: str, reason: str):
     cid=int(chat_id); dk=str(day_key or '')
     try: finance_cache_invalidate(cid, f'r7:{reason}')
     except Exception: pass
-    try: schedule_financial_window_refresh(cid, dk, reason=f'r7:{reason}', delay=0.015)
+    try: schedule_financial_window_refresh(cid, dk, reason=f'r16-fast:{reason}', delay=0.01)
     except Exception: pass
-    try: schedule_finance_postcommit_background_v243(cid, reason=f'r7:{reason}', delay=0.25)
-    except Exception: pass
-    try: schedule_quick_backup(cid, MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS)
+    try: finance_changed(cid, dk, reason=f'r16-reconcile:{reason}', delay=0.18)
     except Exception: pass
 
 globals()['_v262_finance_postcommit_job']=_r7_v262_finance_postcommit_job

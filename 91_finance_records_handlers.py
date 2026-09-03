@@ -203,14 +203,36 @@ def rebuild_month_short_ids(chat_id: int):
     store['records'] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, [])]
 
 def calc_day_balance(store: dict, day_key: str) -> float:
-    total = 0.0
+    """R16 fast closing balance: O(1) for the latest day, cached for history."""
+    day_key = str(day_key or '')[:10]
     daily = store.get('daily_records', {}) or {}
+    if not daily:
+        return 0.0
+    try:
+        latest = max(str(k)[:10] for k in daily.keys())
+        if day_key >= latest:
+            return float(store.get('balance', 0) or 0)
+    except Exception:
+        pass
+    gen = int(store.get('_finance_fast_generation_r16', 0) or 0)
+    cache = store.setdefault('_finance_day_balance_cache_r16', {})
+    cached = cache.get(day_key) if isinstance(cache, dict) else None
+    if isinstance(cached, dict) and int(cached.get('generation', -1)) == gen:
+        try: return float(cached.get('value', 0) or 0)
+        except Exception: pass
+    total = 0.0
     for dk in sorted(daily.keys()):
-        if dk > day_key:
+        if str(dk)[:10] > day_key:
             break
         for r in daily.get(dk, []) or []:
             total += float(r.get('amount', 0) or 0)
-    return total
+    try:
+        cache[day_key] = {'generation': gen, 'value': float(total)}
+        if len(cache) > 64:
+            for key in list(cache)[:-64]: cache.pop(key, None)
+    except Exception:
+        pass
+    return float(total)
 
 def rebuild_global_records():
     """Быстрый общий итог без копирования всех записей всех чатов при каждом сообщении."""

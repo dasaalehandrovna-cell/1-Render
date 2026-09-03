@@ -610,7 +610,10 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = '• ⚡ R15: финансовый hot-path разгружен — запись фиксируется локально, окно перерисовывается сразу, тяжёлый continuity уходит после периода тишины.\n• 📡 Full snapshot больше не отправляется при каждом большом delta: полная база уходит только idle/reconcile, поэтому Front не забивает CPU и трафик.\n• 🛡 RAW update по-прежнему сначала попадает на Render #2; Worker быстро подтверждает локальный журнал и дописывает Redis асинхронно с retry.\n• ⚙️ Все числовые/tuning-настройки остаются в runtime_config.py; Render ENV — только секреты, адреса и внешние ID.'
+STARTUP_RELEASE_SUMMARY = ('• ⚡ R16: финансы ускорены для add/edit/delete/пересылки — hot-path меняет только затронутые записи и агрегаты, полный normalize остаётся фоном.\n'
+'• 🛡 RAW update теперь сначала пишется прямо в Redis; Render #2 HTTP используется только как fallback, поэтому Worker не стоит в пользовательском hot-path.\n'
+'• 🎨 Все XLSX, включая OLD/backup/legacy/Excel статьи, получают цветную палитру выс-262; старый режим меняет только layout/примечания.\n'
+'• 📡 Полные базы по-прежнему только idle/reconcile; обычные операции зеркалируются маленькими delta.')
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""

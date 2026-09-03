@@ -571,6 +571,8 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 return False
             try:
                 if isinstance(existing, dict):
+                    _r16_old_amount = float(existing.get('amount', 0) or 0)
+                    _r16_old_usd = float(existing.get('usd_amount', 0) or 0)
                     next_usd = float(comp.get('usd_amount') or 0) if comp.get('usd_amount') is not None else 0.0
                     next_usd_note = str(comp.get('usd_note') or '') if comp.get('usd_amount') is not None else ''
                     next_usd_only = bool(comp.get('usd_only', False)) if comp.get('usd_amount') is not None else False
@@ -609,11 +611,17 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 if isinstance(result_rec, dict) and callable(globals().get('_v260_bind_forward_finance_record')) and source_msg is not None:
                     _v260_bind_forward_finance_record(result_rec, source_msg, dst_chat_id, dst_msg_id)
                 if isinstance(result_rec, dict):
-                    # R7: add_record_to_chat already normalized and committed locally.
-                    helper = globals().get('_r7_rebuild_month_short_ids_after_normalize')
-                    if callable(helper): helper(dst_chat_id, store)
-                    else: rebuild_month_short_ids(dst_chat_id)
-                    store['balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get('records', [])))
+                    # R16: add already committed incrementally. Existing-row edits adjust
+                    # only their amount delta; no full short-id/history rebuild here.
+                    if isinstance(existing, dict) and changed:
+                        try: store['balance'] = float(store.get('balance', 0) or 0) + float(result_rec.get('amount', 0) or 0) - float(_r16_old_amount)
+                        except Exception: pass
+                    store['_finance_hotpath_pending_normalize_r16'] = True
+                    store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
+                    store.pop('_finance_day_balance_cache_r16', None)
+                    if isinstance(existing, dict) and changed and '_usd_balance_cache_r16' in store:
+                        try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) + float(result_rec.get('usd_amount', 0) or 0) - float(_r16_old_usd)
+                        except Exception: store.pop('_usd_balance_cache_r16', None)
             except Exception as e:
                 log_error(f'[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}')
                 return False
@@ -628,8 +636,15 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 existing['usd_only'] = False
             entry_day = existing.get('day_key') or entry_day
             result_rec = existing
-            # R7: amount/note replacement does not reorder records.
-            store['balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get('records', [])))
+            # R16: amount/note replacement does not reorder records; update by delta.
+            try: store['balance'] = float(store.get('balance', 0) or 0) - float((before or {}).get('amount', 0) or 0)
+            except Exception: pass
+            store['_finance_hotpath_pending_normalize_r16'] = True
+            store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
+            store.pop('_finance_day_balance_cache_r16', None)
+            if '_usd_balance_cache_r16' in store:
+                try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) - float((before or {}).get('usd_amount', 0) or 0)
+                except Exception: store.pop('_usd_balance_cache_r16', None)
         else:
             if text_has_any_digit(text):
                 log_error(f'[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}')

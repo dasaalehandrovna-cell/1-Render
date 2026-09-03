@@ -902,13 +902,16 @@ def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
 
 def usd_balance_for_chat(chat_id: int) -> float:
     ensure_usd_migration_for_chat(int(chat_id))
+    store = get_chat_store(int(chat_id))
+    if '_usd_balance_cache_r16' in store:
+        try: return float(store.get('_usd_balance_cache_r16', 0) or 0)
+        except Exception: store.pop('_usd_balance_cache_r16', None)
     total = 0.0
-    for rec in get_chat_store(int(chat_id)).get('records', []) or []:
-        try:
-            total += float(rec.get('usd_amount', 0) or 0)
-        except Exception:
-            pass
-    return total
+    for rec in store.get('records', []) or []:
+        try: total += float(rec.get('usd_amount', 0) or 0)
+        except Exception: pass
+    store['_usd_balance_cache_r16'] = float(total)
+    return float(total)
 
 def usd_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     ensure_usd_migration_for_chat(int(chat_id))

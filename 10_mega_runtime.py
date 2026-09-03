@@ -7048,9 +7048,8 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
     if mode not in {'old', 'new_plain', 'new_comments', 'new_notes', 'google_notes'}:
         mode = 'old'
     local_mode = 'new_notes' if mode == 'google_notes' else mode
-    if local_mode == 'old':
-        _write_simple_xlsx(path, rows, sheet_name=sheet_name)
-        return
+    # R16: ALL XLSX files are colored.  'old' now means old layout/annotation
+    # behaviour only; it no longer bypasses the canonical vys-262 palette.
     if category_layout == 'category_compact':
         styles, annotations, freeze_rows, widths = _modern_category_no_description_styles_comments(rows, compact_annotations or {})
     elif category_layout:
@@ -7059,7 +7058,7 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
         styles, annotations, freeze_rows, widths = _modern_compact_excel_styles_comments(rows, compact_annotations)
     else:
         styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
-    annotation_mode = None if local_mode == 'new_plain' else 'comments' if local_mode == 'new_comments' else 'notes'
+    annotation_mode = None if local_mode in {'old', 'new_plain'} else 'comments' if local_mode == 'new_comments' else 'notes'
     if annotation_mode is None:
         annotations = {}
     expected_annotations: dict[tuple[int, int], str] = {}

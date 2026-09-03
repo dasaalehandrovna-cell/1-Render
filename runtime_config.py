@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r15-fast-hotpath"
+CONFIG_VERSION = "vys-262-r16-fast-finance-color-xlsx"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -45,8 +45,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "SPLIT_DELTA_MAX_PAGES": "256",
     "SPLIT_DELTA_MAX_BYTES": "524288",
     "SPLIT_EVENT_RECEIPT_TIMEOUT_SEC": "1.2",
-    "SPLIT_REDIS_FALLBACK_CONNECT_TIMEOUT_SEC": "0.7",
-    "SPLIT_REDIS_FALLBACK_SOCKET_TIMEOUT_SEC": "1.2",
+    "SPLIT_REDIS_FALLBACK_CONNECT_TIMEOUT_SEC": "0.35",
+    "SPLIT_REDIS_FALLBACK_SOCKET_TIMEOUT_SEC": "0.65",
 
     # Boot / rolling deploy recovery
     "SPLIT_BOOT_ALWAYS_RESTORE": "1",

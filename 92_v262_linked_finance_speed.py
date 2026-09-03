@@ -462,6 +462,11 @@ def apply_linked_finance_edit_v262(anchor_chat_id: int, anchor_rec: dict, *, upd
                         continue
                     before_primary = None
                     changed_here = 0
+                    try:
+                        _active_before = sum(float(r.get('amount', 0) or 0) for r in get_chat_store(int(cid)).get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
+                        _usd_before = sum(float(r.get('usd_amount', 0) or 0) for r in get_chat_store(int(cid)).get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
+                    except Exception:
+                        _active_before = 0.0; _usd_before = 0.0
                     for _ledger, rec in rows:
                         before = _v262_update_one_record(rec, update_ars=update_ars, amount=amount, note=note, replace_usd=replace_usd, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_text=source_text, full_text_replace=full_text_replace)
                         _ensure_finance_origin_key_v262(int(cid), rec)
@@ -481,15 +486,21 @@ def apply_linked_finance_edit_v262(anchor_chat_id: int, anchor_rec: dict, *, upd
                         _snapshot_active_currency_ledger(store, active)
                     except Exception:
                         pass
-                    normalize_chat_records(int(cid))
+                    # R16: edit only the touched operation. Avoid normalize/sort/short-id rebuild
+                    # and a full balance sum in the Telegram hot transaction.
                     try:
-                        rebuild_month_short_ids(int(cid))
+                        _active_after = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
+                        store['balance'] = float(store.get('balance', 0) or 0) + (_active_after - _active_before)
                     except Exception:
                         pass
-                    try:
-                        store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
-                    except Exception:
-                        pass
+                    store['_finance_hotpath_pending_normalize_r16'] = True
+                    store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
+                    store.pop('_finance_day_balance_cache_r16', None)
+                    if replace_usd and '_usd_balance_cache_r16' in store:
+                        try:
+                            _usd_after = sum(float(r.get('usd_amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
+                            store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) + (_usd_after - _usd_before)
+                        except Exception: store.pop('_usd_balance_cache_r16', None)
                     if not persist_finance_chat_local_fast(int(cid)):
                         raise RuntimeError('local SQLite finance persist failed')
                     current = _v262_records_for_origin(int(cid), origin_key)

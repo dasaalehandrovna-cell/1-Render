@@ -77,3 +77,7 @@ All runtime tuning values (intervals, limits, ports, feature switches and intern
 - Oversized/mismatched deltas never trigger an immediate full upload from the mutation path. Full rebase waits for 5 minutes of inactivity or graceful shutdown/reconcile.
 - User-state shadow and RAM continuity are coalesced in background instead of being rebuilt inline after every Telegram update.
 - RAW event witness remains before Telegram 200; Worker acknowledges its local fsynced journal quickly and flushes Redis asynchronously with retry.
+
+
+## R16 FAST FINANCE + ALL COLOR XLSX
+See FIXES_R16_FAST_FINANCE_ALL_COLOR_XLSX.txt.

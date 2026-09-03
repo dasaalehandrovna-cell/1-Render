@@ -1,0 +1,9 @@
+R16 FAST FINANCE + ALL COLOR XLSX
+
+- Every XLSX path is colored with the canonical vys-262 palette, including OLD/backup/legacy layouts.
+- Worker treats xlsx/xlsxstat/excel as XLSX and applies the same palette.
+- RAW Telegram durable witness is Redis-first; Render #2 HTTP is fallback only.
+- Finance add avoids full sort when the row naturally appends.
+- Linked edit, single delete, bulk delete, USD delete and forwarded-finance edit avoid synchronous full normalize/re-number/full balance rebuild.
+- Full financial normalization remains a background reconciliation step.
+- Full SQLite transfer remains idle/hash-reconcile only.
