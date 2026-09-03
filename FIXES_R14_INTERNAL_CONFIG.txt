@@ -1,0 +1,7 @@
+R14 INTERNAL CONFIG
+
+- Render tuning variables removed from deployment configuration.
+- Numeric limits, intervals, booleans, Redis layout names and local worker paths are centralized in runtime_config.py.
+- Packaged values are authoritative and overwrite stale tuning ENV left in Render.
+- Render ENV is reserved for credentials, remote addresses and external account/resource IDs.
+- R13 Event Journal, delta mirror, Excel/Google formatting and finance flow are unchanged.

@@ -66,3 +66,7 @@ R8 chat lifecycle fix: for an already-known chat, Telegram 400 `Bad Request: cha
 - Finance durability delta is scheduled immediately after the completed local transaction/update; old 5-second minimum is capped to 1 second for finance/critical changes.
 - Full SQLite is used only for deploy shutdown, first/mismatched base, oversized delta or emergency recovery.
 - Forwarding allows messages delivered by Telegram from third-party bots. This bot's own messages remain excluded to prevent loops.
+
+
+## R14 internal configuration
+All runtime tuning values (intervals, limits, ports, feature switches and internal Redis key names) are packaged in `runtime_config.py`. Render Environment should contain only credentials, remote addresses and external Telegram/Google/MEGA identifiers. Stale tuning variables left in Render are ignored/overwritten at service startup.

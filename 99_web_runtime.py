@@ -610,7 +610,7 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = '• 🛡 Telegram update сначала получает удалённый свидетель Render #2/Redis, затем Front выполняет бизнес-логику.\n• ✅ После локального commit второй Render получает статус операции и маленький SQLite-delta; оба знают RECEIVED → COMMITTED → MIRRORED.\n• 📉 Полная база больше не гоняется по изменениям: hash-сверка раз в 6 ч, полный re-sync только при расхождении; Worker checkpoint локально.\n• 🤖 Пересылка от других ботов, быстрые финансы, цветные Excel/Google и журнал новых чатов ВКЛ сохранены.'
+STARTUP_RELEASE_SUMMARY = '• ⚙️ R14: числовые и служебные настройки Render перенесены в единый runtime_config.py внутри обоих сервисов.\n• 🔐 В Render ENV остаются только секреты, адреса и внешние идентификаторы; старые tuning ENV больше не переопределяют код.\n• 🛡 Event Journal RECEIVED → COMMITTED → MIRRORED, редкие full-checkpoint и быстрый финансовый commit сохранены.\n• 🤖 Пересылка от других ботов, цветные Excel/Google и журнал новых чатов ВКЛ сохранены.'
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""

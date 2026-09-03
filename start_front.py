@@ -15,6 +15,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import requests
+from runtime_config import install_internal_runtime_config, CONFIG_VERSION as INTERNAL_CONFIG_VERSION
+install_internal_runtime_config("front")
 try:
     import redis as _redis
 except Exception:
@@ -371,12 +373,8 @@ def main():
         # after Render sees this preboot instance as healthy. Pick that newer revision.
         if _db_valid(target):
             _settle_worker_handoff(target)
-        os.environ['BOT_SPLIT_ROLE'] = 'front'
-        os.environ['RENDER_TELEGRAM_ONLY'] = '1'
-        # Normal MEGA runtime is strictly OFF on front. start_front itself already used
-        # the credentials above only if emergency recovery was necessary.
-        os.environ['MEGA_ENABLED'] = '0'
-        os.environ['MEGA_AUTORESTORE'] = '0'
+        # R14: packaged runtime_config.py is authoritative for all internal tunables.
+        install_internal_runtime_config('front')
         # Service-account private key must never be loaded by the Telegram front.
         os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)
         # R6 migration/deploy bridge: persist the exact restored/current DB in shared

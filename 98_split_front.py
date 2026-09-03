@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r13-event-journal"
+_SPLIT_FRONT_VERSION = "vys-262-front-r14-internal-config"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -2403,5 +2403,10 @@ try:
 except Exception as _r12_delta_boot_exc:
     try: log_error(f'R13 delta/event baseline init: {_r12_delta_boot_exc}')
     except Exception: pass
+
+try:
+    bot_journal('r14_internal_config_loaded', int(OWNER_ID or 0), 'Render ENV=credentials/addresses only; tunables=runtime_config.py')
+except Exception:
+    pass
 
 # v262
