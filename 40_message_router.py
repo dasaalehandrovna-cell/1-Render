@@ -446,6 +446,12 @@ def handle_finance_text(msg):
         rec = add_record_to_chat(chat_id, amount, note, getattr(getattr(msg, 'from_user', None), 'id', 0), source_msg=msg, day_key=entry_day, usd_amount=comp.get('usd_amount'), usd_note=comp.get('usd_note', ''), usd_only=comp.get('usd_only', False), source_finance_text=comp.get('source_finance_text', text))
         if careful_forward:
             careful_restore_touch_value(chat_id, entry_day, msg=msg, record=rec)
+        # R15: repaint from the already committed in-memory/SQLite record immediately.
+        # Heavy normalize/Gomonk/global finalize remains detached in FINANCE_TASK_POOL.
+        try:
+            schedule_financial_window_refresh(chat_id, entry_day, reason='record_commit_fast_r15', delay=0.01)
+        except Exception:
+            pass
         schedule_finalize(chat_id, entry_day)
         return True
     except Exception as e:

@@ -956,17 +956,18 @@ def _v151_ars_records(chat_id: int) -> list[dict]:
     ``amount == 0`` with a non-zero ``usd_amount``.  The last shape has no ARS
     monetary effect, so excluding it cannot change a real peso balance.
     """
-    try:
-        normalize_chat_records(int(chat_id))
-    except Exception as _v258_norm_exc:
-        try: log_error(f'v258 report normalize ARS {chat_id}: {_v258_norm_exc}')
-        except Exception: pass
-    try:
-        normalize_chat_records(int(chat_id))
-    except Exception as _v258_norm_exc:
-        try: log_error(f'v258 report normalize USD {chat_id}: {_v258_norm_exc}')
-        except Exception: pass
+    # R15: immediately after an incremental finance commit the store is already
+    # consistent for rendering (records + daily_records + balance).  The debounced
+    # FINANCE_TASK_POOL finalizer performs the historical full normalize/dedupe.
+    # Skipping it here keeps the first visual repaint cheap on long histories.
     store = get_chat_store(int(chat_id))
+    if not bool(store.get('_finance_hotpath_pending_normalize_r15')):
+        try:
+            normalize_chat_records(int(chat_id))
+        except Exception as _v258_norm_exc:
+            try: log_error(f'v258 report normalize ARS {chat_id}: {_v258_norm_exc}')
+            except Exception: pass
+        store = get_chat_store(int(chat_id))
     active = _v151_sync_currency_snapshots(store)
     source = store.get('records', []) if active == 'ars' else store.get('ars_records', [])
     rows = []

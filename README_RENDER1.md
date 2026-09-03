@@ -70,3 +70,10 @@ R8 chat lifecycle fix: for an already-known chat, Telegram 400 `Bad Request: cha
 
 ## R14 internal configuration
 All runtime tuning values (intervals, limits, ports, feature switches and internal Redis key names) are packaged in `runtime_config.py`. Render Environment should contain only credentials, remote addresses and external Telegram/Google/MEGA identifiers. Stale tuning variables left in Render are ignored/overwritten at service startup.
+
+## R15 FAST HOTPATH
+- Finance add no longer performs a full-history normalize/dedupe before the local SQLite commit; records/day/balance are updated incrementally and the full normalize runs in FINANCE_TASK_POOL after commit.
+- The first finance-window repaint is scheduled directly from the committed record and skips redundant read-normalization while the finalizer is pending.
+- Oversized/mismatched deltas never trigger an immediate full upload from the mutation path. Full rebase waits for 5 minutes of inactivity or graceful shutdown/reconcile.
+- User-state shadow and RAM continuity are coalesced in background instead of being rebuilt inline after every Telegram update.
+- RAW event witness remains before Telegram 200; Worker acknowledges its local fsynced journal quickly and flushes Redis asynchronously with retry.

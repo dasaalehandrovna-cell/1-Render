@@ -96,10 +96,33 @@ def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int,
             rec['usd_only'] = bool(usd_only)
         if source_finance_text:
             rec['source_finance_text'] = str(source_finance_text)
-        store.setdefault('records', []).append(rec)
-        normalize_chat_records(chat_id)
-        store['next_id'] = max([int(r.get('id', 0) or 0) for r in store.get('records', [])] + [0]) + 1
-        store['balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get('records', [])))
+        # R15 hot path: do not run the historical full-ledger normalizer/dedupe
+        # synchronously for every new message.  Exact-once guards above already protect
+        # this Telegram effect.  Update the two authoritative in-memory indexes
+        # incrementally, commit this chat, and let the debounced finance finalize do the
+        # full normalize/reconcile in FINANCE_TASK_POOL.
+        records = store.setdefault('records', [])
+        records.append(rec)
+        try:
+            records.sort(key=record_sort_key)
+        except Exception:
+            pass
+        daily = store.setdefault('daily_records', {})
+        day_rows = daily.setdefault(str(day_key), [])
+        day_rows.append(rec)
+        try:
+            day_rows.sort(key=record_sort_key)
+        except Exception:
+            pass
+        try:
+            store['next_id'] = max(int(store.get('next_id', 1) or 1), int(rid) + 1)
+        except Exception:
+            store['next_id'] = int(rid) + 1
+        try:
+            store['balance'] = float(store.get('balance', 0) or 0) + float(amount or 0)
+        except Exception:
+            store['balance'] = sum((float(r.get('amount', 0) or 0) for r in records if isinstance(r, dict)))
+        store['_finance_hotpath_pending_normalize_r15'] = True
         # R7: the durable record itself is committed immediately below.  Month short-id
         # renumbering and global aggregate rebuild are derived data and are rebuilt once
         # by the debounced finance finalize path before any finance window repaint.

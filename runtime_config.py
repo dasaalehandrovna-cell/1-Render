@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r14-internal-config"
+CONFIG_VERSION = "vys-262-r15-fast-hotpath"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -36,11 +36,17 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "PEER_PING_ENABLED": "1",
     "PEER_PING_INTERVAL_SEC": "120",
     "SPLIT_WORKER_SYNC_ENABLED": "1",
-    "SPLIT_STATE_SYNC_DELAY_SEC": "0.35",
-    "SPLIT_STATE_SYNC_MIN_INTERVAL_SEC": "0.5",
+    "SPLIT_STATE_SYNC_DELAY_SEC": "1.2",
+    "SPLIT_STATE_SYNC_MIN_INTERVAL_SEC": "1.5",
+    "SPLIT_FINANCE_SYNC_DELAY_SEC": "0.8",
+    "SPLIT_CONTINUITY_FINANCE_DELAY_SEC": "4.0",
+    "SPLIT_CONTINUITY_OTHER_DELAY_SEC": "2.5",
+    "SPLIT_FULL_RECONCILE_QUIET_SEC": "300",
     "SPLIT_DELTA_MAX_PAGES": "256",
     "SPLIT_DELTA_MAX_BYTES": "524288",
-    "SPLIT_EVENT_RECEIPT_TIMEOUT_SEC": "6",
+    "SPLIT_EVENT_RECEIPT_TIMEOUT_SEC": "1.2",
+    "SPLIT_REDIS_FALLBACK_CONNECT_TIMEOUT_SEC": "0.7",
+    "SPLIT_REDIS_FALLBACK_SOCKET_TIMEOUT_SEC": "1.2",
 
     # Boot / rolling deploy recovery
     "SPLIT_BOOT_ALWAYS_RESTORE": "1",
@@ -76,6 +82,9 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
     "WORKER_REDIS_EVENT_PREFIX": "vys262:tg_events:v1",
     "WORKER_EVENT_RETENTION_SEC": "604800",
     "WORKER_EVENT_MAX_WIRE_KB": "512",
+    "WORKER_EVENT_REDIS_QUEUE_MAX": "2048",
+    "WORKER_EVENT_REDIS_RETRY_MS": "250",
+    "WORKER_EVENT_REDIS_RECONCILE_SEC": "5",
 
     # Worker local cache / transport limits
     "WORKER_CACHE_DIR": "/tmp/vys262_worker",

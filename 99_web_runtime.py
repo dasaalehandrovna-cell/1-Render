@@ -610,7 +610,7 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = '• ⚙️ R14: числовые и служебные настройки Render перенесены в единый runtime_config.py внутри обоих сервисов.\n• 🔐 В Render ENV остаются только секреты, адреса и внешние идентификаторы; старые tuning ENV больше не переопределяют код.\n• 🛡 Event Journal RECEIVED → COMMITTED → MIRRORED, редкие full-checkpoint и быстрый финансовый commit сохранены.\n• 🤖 Пересылка от других ботов, цветные Excel/Google и журнал новых чатов ВКЛ сохранены.'
+STARTUP_RELEASE_SUMMARY = '• ⚡ R15: финансовый hot-path разгружен — запись фиксируется локально, окно перерисовывается сразу, тяжёлый continuity уходит после периода тишины.\n• 📡 Full snapshot больше не отправляется при каждом большом delta: полная база уходит только idle/reconcile, поэтому Front не забивает CPU и трафик.\n• 🛡 RAW update по-прежнему сначала попадает на Render #2; Worker быстро подтверждает локальный журнал и дописывает Redis асинхронно с retry.\n• ⚙️ Все числовые/tuning-настройки остаются в runtime_config.py; Render ENV — только секреты, адреса и внешние ID.'
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""

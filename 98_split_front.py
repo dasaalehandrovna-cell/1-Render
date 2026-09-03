@@ -22,10 +22,17 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r14-internal-config"
+_SPLIT_FRONT_VERSION = "vys-262-front-r15-fast-hotpath"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
+_SPLIT_LAST_CHANGE_AT = _split_time.time()
+_SPLIT_FULL_LOCK = _split_threading.RLock()
+_SPLIT_FULL_TIMER = None
+_SPLIT_CONTINUITY_LOCK = _split_threading.RLock()
+_SPLIT_CONTINUITY_TIMER = None
+_SPLIT_CONTINUITY_CHAT_ID = None
+_SPLIT_CONTINUITY_REASON = ''
 _SPLIT_CHANGE_LOCK = _split_threading.RLock()
 _SPLIT_CHANGE_EPOCH = _split_secrets.token_hex(6)
 _SPLIT_CHANGE_SEQ = 0
@@ -59,6 +66,9 @@ _SPLIT_STATE = {
     "delta_total_bytes": 0,
     "delta_total_pages": 0,
     "delta_full_fallbacks": 0,
+    "full_reconcile_pending": False,
+    "full_reconcile_last_ok": 0.0,
+    "full_reconcile_last_error": "",
     "delta_baseline_sha256": "",
     "event_last_receipt_ok": 0.0,
     "event_last_commit_ok": 0.0,
@@ -265,7 +275,7 @@ def _split_event_redis_write_v268(row, state=None, error=''):
     if not url:
         return False, 'REDIS_URL empty'
     try:
-        client=_split_redis.Redis.from_url(url,socket_connect_timeout=3,socket_timeout=6,health_check_interval=30)
+        client=_split_redis.Redis.from_url(url,socket_connect_timeout=float(_split_os.getenv('SPLIT_REDIS_FALLBACK_CONNECT_TIMEOUT_SEC','0.7') or '0.7'),socket_timeout=float(_split_os.getenv('SPLIT_REDIS_FALLBACK_SOCKET_TIMEOUT_SEC','1.2') or '1.2'),health_check_interval=30)
         event_id=str((row or {}).get('event_id') or (row or {}).get('update_id') or '')
         if not event_id:
             return False,'event id empty'
@@ -303,8 +313,8 @@ def split_witness_event_v268(update_id, payload, chat_id=None, update_type='othe
     if base and secret:
         try:
             raw=_split_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
-            wire=_split_gzip.compress(raw,compresslevel=6)
-            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r13'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(12.0,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','6') or '6'))))
+            wire=_split_gzip.compress(raw,compresslevel=1)
+            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r13'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(0.35,min(2.5,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','1.2') or '1.2'))))
             if 200 <= r.status_code < 300:
                 _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
                 _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
@@ -364,10 +374,8 @@ def split_event_committed_v268(update_id, chat_id=None, update_type='other', suc
             _SPLIT_EVENT_PENDING_MIRROR[event_id]=_split_time.time()
             while len(_SPLIT_EVENT_PENDING_MIRROR)>512:
                 _SPLIT_EVENT_PENDING_MIRROR.popitem(last=False)
-        # A successful business execution always gets a mirror attempt even when it
-        # only changed metadata/UI rather than finance.
-        try: split_schedule_worker_sync_v262(reason=f'event_commit:{event_id}',delay=0.08)
-        except Exception: pass
+        # R15: the post-update wrapper schedules one trailing-edge mirror attempt.
+        # Do not arm a second snapshot timer from the event-status path.
     return _split_event_bg_v268(_split_event_status_send_v268,update_id,chat_id,update_type,success,error)
 
 def _split_pending_event_ids_v268(limit=96):
@@ -434,9 +442,10 @@ def _split_authorized_request():
 
 
 def _split_mark_state_changed_v264(reason='change'):
-    global _SPLIT_CHANGE_SEQ, _SPLIT_STATE_TOKEN
+    global _SPLIT_CHANGE_SEQ, _SPLIT_STATE_TOKEN, _SPLIT_LAST_CHANGE_AT
     with _SPLIT_CHANGE_LOCK:
         _SPLIT_CHANGE_SEQ += 1
+        _SPLIT_LAST_CHANGE_AT = _split_time.time()
         _SPLIT_STATE_TOKEN = f"{_SPLIT_CHANGE_EPOCH}:{_SPLIT_CHANGE_SEQ}"
         _SPLIT_STATE['state_token'] = _SPLIT_STATE_TOKEN
         _SPLIT_STATE['state_change_reason'] = str(reason or 'change')[:160]
@@ -666,22 +675,15 @@ def _split_request_sync_now(reason='change'):
         return True
     _SPLIT_STATE['delta_last_error'] = str(detail or '')[:220]
     if need_full:
-        try:
-            _SPLIT_STATE['delta_full_fallbacks'] = int(_SPLIT_STATE.get('delta_full_fallbacks') or 0) + 1
-            if _split_push_snapshot_now_v263('delta_resync:' + str(reason or 'change')[:90]):
-                _SPLIT_STATE['sync_last_ok'] = _split_time.time()
-                _SPLIT_STATE['sync_last_error'] = ''
-                _SPLIT_STATE['sync_pending'] = False
-                return True
-        except Exception as exc:
-            detail = f'{detail}; full={type(exc).__name__}: {str(exc)[:120]}'
+        # R15: never gzip/upload the full database from the hot mutation path.  R13's
+        # RAW event journal already protects every Telegram update.  A full rebase is
+        # coalesced and runs only after the bot has been quiet, so a burst of finance
+        # messages cannot burn CPU/network and stall the keyed dispatcher.
+        _SPLIT_STATE['delta_full_fallbacks'] = int(_SPLIT_STATE.get('delta_full_fallbacks') or 0) + 1
+        _SPLIT_STATE['full_reconcile_pending'] = True
+        try: _split_schedule_idle_full_reconcile_v270('delta_resync:' + str(reason or 'change')[:90])
+        except Exception: pass
     _SPLIT_STATE['sync_last_error'] = str(detail or 'delta sync failed')[:220]
-    # Emergency only: if Worker itself is unavailable, preserve the exact current DB in
-    # shared Redis. This is no longer the normal per-update path.
-    try:
-        _split_cache_snapshot_to_redis_v266(reason='delta_sync_emergency:' + str(reason or 'change')[:100])
-    except Exception:
-        pass
     return False
 
 
@@ -723,22 +725,20 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
         min_interval = 12.0
     wait = max(0.08, min(30.0, wait))
     min_interval = max(0.2, min(120.0, min_interval))
-    # Financial commits use tiny deltas now, so do not keep a five-second durability
-    # window just because an older R11 environment still has MIN_INTERVAL=5.
+    # R15: RAW events are already remotely witnessed.  State mirroring may therefore
+    # debounce short finance bursts instead of snapshotting/gzipping on every message.
     _reason_l = str(reason or '').lower()
-    if 'finance' in _reason_l or 'critical' in _reason_l:
-        wait = min(wait, 0.15)
-        min_interval = min(min_interval, 0.5)
+    if 'finance' in _reason_l or 'critical' in _reason_l or 'event_commit' in _reason_l:
+        wait = max(wait, 0.8)
+        min_interval = max(min_interval, 1.5)
     now = _split_time.time()
     last = float(_SPLIT_STATE.get('sync_last_attempt') or 0.0)
     due = max(now + wait, last + min_interval if last else now + wait)
     _SPLIT_STATE['sync_pending'] = True
     _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
     with _SPLIT_SYNC_LOCK:
-        # Keep the earliest scheduled transfer. Repeated mutations are coalesced
-        # instead of repeatedly postponing a full SQLite snapshot.
-        if _SPLIT_SYNC_TIMER is not None and _SPLIT_SYNC_DUE_AT and _SPLIT_SYNC_DUE_AT <= due + 0.05:
-            return True
+        # R15 trailing-edge debounce: a burst of ten messages produces one mirror
+        # attempt after the burst, not ten competing SQLite backups.
         if _SPLIT_SYNC_TIMER is not None:
             try:
                 _SPLIT_SYNC_TIMER.cancel()
@@ -1429,6 +1429,45 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
     return True
 
 
+# R15: full user-state shadow/continuity is a coalesced background checkpoint.
+# The finance record itself has already been committed by persist_finance_chat_local_fast;
+# serializing every chat after every message was pure foreground latency.
+def _split_continuity_checkpoint_fire_v270():
+    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
+    with _SPLIT_CONTINUITY_LOCK:
+        cid = _SPLIT_CONTINUITY_CHAT_ID
+        reason = str(_SPLIT_CONTINUITY_REASON or 'coalesced')
+        _SPLIT_CONTINUITY_TIMER = None
+        _SPLIT_CONTINUITY_CHAT_ID = None
+        _SPLIT_CONTINUITY_REASON = ''
+    try:
+        if cid is not None:
+            _V263_BASE_SAVE_DATA(data, chat_ids=[int(cid)])
+        else:
+            _V263_BASE_SAVE_DATA(data, root_only=True)
+        user_state_shadow_capture_v265('bg:' + reason)
+        continuity_capture_v263('bg:' + reason)
+        _split_mark_state_changed_v264('bg_continuity:' + reason)
+        split_schedule_worker_sync_v262(reason='bg_continuity:' + reason, delay=1.2)
+    except Exception as exc:
+        try: log_error(f'R15 background continuity: {exc}')
+        except Exception: pass
+
+def split_schedule_continuity_checkpoint_v270(chat_id=None, reason='update', delay=4.0):
+    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
+    with _SPLIT_CONTINUITY_LOCK:
+        if chat_id is not None:
+            try: _SPLIT_CONTINUITY_CHAT_ID = int(chat_id)
+            except Exception: pass
+        _SPLIT_CONTINUITY_REASON = str(reason or 'update')[:160]
+        if _SPLIT_CONTINUITY_TIMER is not None:
+            try: _SPLIT_CONTINUITY_TIMER.cancel()
+            except Exception: pass
+        _SPLIT_CONTINUITY_TIMER = _split_threading.Timer(max(0.5, float(delay or 4.0)), _split_continuity_checkpoint_fire_v270)
+        _SPLIT_CONTINUITY_TIMER.daemon = True
+        _SPLIT_CONTINUITY_TIMER.start()
+    return True
+
 # Any logical save, not only finance, now requests remote durability.  The worker
 # coalesces these calls, so Telegram handlers do not wait for MEGA.
 _V263_BASE_SAVE_DATA = save_data
@@ -1436,7 +1475,18 @@ _V263_BASE_SAVE_DATA = save_data
 def save_data(d, chat_ids=None, full=False, root_only=False):
     result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
     try:
-        user_state_shadow_capture_v265('logical_save')
+        # Heavy all-chat shadow is background-only during normal READY operation.
+        ready_fn = globals().get('runtime_is_ready')
+        if full or not (callable(ready_fn) and ready_fn()):
+            user_state_shadow_capture_v265('logical_save')
+        else:
+            _cid = None
+            if chat_ids is not None:
+                try:
+                    _src = list(chat_ids) if isinstance(chat_ids,(list,tuple,set)) else [chat_ids]
+                    _cid = int(_src[0]) if _src else None
+                except Exception: _cid = None
+            split_schedule_continuity_checkpoint_v270(_cid, 'logical_save', delay=4.0)
     except Exception:
         pass
     try:
@@ -1475,8 +1525,10 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
             cid = _extract_update_chat_id(payload)
         prefix = 'finance' if finance_dirty else 'tg'
         _reason = f'{prefix}:{str(update_type or "other")}'
-        continuity_checkpoint_v263(cid, reason=_reason, full=False, schedule=False)
-        split_schedule_worker_sync_v262(reason=f'continuity:{_reason}', delay=0.12 if finance_dirty else 0.35)
+        # Fast hot path: the business handler already committed its own SQLite rows.
+        # Persist RAM/UI continuity once after the burst, not inline for every update.
+        split_schedule_continuity_checkpoint_v270(cid, _reason, delay=float(_split_os.getenv('SPLIT_CONTINUITY_FINANCE_DELAY_SEC','4.0') or '4.0') if finance_dirty else float(_split_os.getenv('SPLIT_CONTINUITY_OTHER_DELAY_SEC','2.5') or '2.5'))
+        split_schedule_worker_sync_v262(reason=f'continuity:{_reason}', delay=float(_split_os.getenv('SPLIT_FINANCE_SYNC_DELAY_SEC','0.8') or '0.8') if finance_dirty else float(_split_os.getenv('SPLIT_STATE_SYNC_DELAY_SEC','1.2') or '1.2'))
     except Exception as exc:
         try: log_error(f'CONTINUITY post-update R11: {exc}')
         except Exception: pass
@@ -1528,6 +1580,42 @@ def _split_push_snapshot_now_v263(reason='shutdown'):
         _split_shutil.rmtree(workdir, ignore_errors=True)
     return False
 
+
+# R15 idle-only full rebase.  This replaces the old immediate full fallback that
+# uploaded ~1.1 MB repeatedly during finance bursts.
+def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
+    global _SPLIT_FULL_TIMER
+    with _SPLIT_FULL_LOCK:
+        _SPLIT_FULL_TIMER = None
+    quiet_for = max(0.0, _split_time.time() - float(globals().get('_SPLIT_LAST_CHANGE_AT') or 0.0))
+    quiet_need = float(_split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','90') or '90')
+    if quiet_for < quiet_need:
+        return _split_schedule_idle_full_reconcile_v270(reason, delay=max(5.0, quiet_need - quiet_for))
+    ok = False
+    try:
+        ok = bool(_split_push_snapshot_now_v263('idle:' + str(reason or '')[:100]))
+    except Exception as exc:
+        _SPLIT_STATE['full_reconcile_last_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+    if ok:
+        _SPLIT_STATE['full_reconcile_pending'] = False
+        _SPLIT_STATE['full_reconcile_last_ok'] = _split_time.time()
+        _SPLIT_STATE['full_reconcile_last_error'] = ''
+    else:
+        _SPLIT_STATE['full_reconcile_pending'] = True
+    return ok
+
+def _split_schedule_idle_full_reconcile_v270(reason='need_full', delay=None):
+    global _SPLIT_FULL_TIMER
+    wait = float(delay if delay is not None else _split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','90') or '90')
+    with _SPLIT_FULL_LOCK:
+        if _SPLIT_FULL_TIMER is not None:
+            try: _SPLIT_FULL_TIMER.cancel()
+            except Exception: pass
+        _SPLIT_FULL_TIMER = _split_threading.Timer(max(5.0, wait), _split_idle_full_reconcile_fire_v270, args=(str(reason or 'need_full'),))
+        _SPLIT_FULL_TIMER.daemon = True
+        _SPLIT_FULL_TIMER.start()
+    _SPLIT_STATE['full_reconcile_pending'] = True
+    return True
 
 # Snapshot download always captures the latest RAM continuity first.
 _V263_BASE_SPLIT_FRONT_STATE_DOWNLOAD = split_front_state_download_v262
@@ -1718,6 +1806,7 @@ def _r7_finance_changed_now(chat_id: int, day_key: str | None=None, reason: str=
         # rebuild_month_short_ids, which was noticeable on chats with long histories.
         normalize_chat_records(chat_id)
         store = get_chat_store(chat_id)
+        store.pop('_finance_hotpath_pending_normalize_r15', None)
         store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
         _r7_rebuild_month_short_ids_after_normalize(chat_id, store)
         try:
@@ -2409,4 +2498,7 @@ try:
 except Exception:
     pass
 
+R15_FAST_HOTPATH = 'vys262-r15-fast-hotpath'
+try: bot_journal('r15_fast_hotpath_loaded', int(OWNER_ID or 0), 'remote witness fast; continuity background; full fallback idle-only')
+except Exception: pass
 # v262

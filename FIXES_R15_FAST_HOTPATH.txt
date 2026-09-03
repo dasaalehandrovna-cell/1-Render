@@ -1,0 +1,35 @@
+R15 FAST HOTPATH
+================
+
+Цель: вернуть ощущение раннего выс-262 — финансовая запись и первое обновление окна не должны ждать тяжёлую синхронизацию/полную историю.
+
+1. Finance add hot path
+- Новая запись добавляется инкрементально в records + daily_records.
+- balance/next_id обновляются инкрементально.
+- Полный normalize/dedupe длинной истории больше не выполняется перед локальным SQLite commit.
+- Exact-once source_msg_id / operation_key проверки остаются до записи.
+- Полный normalize выполняется в существующем FINANCE_TASK_POOL после commit.
+
+2. Быстрый UI
+- Сразу после локального commit ставится отдельный быстрый repaint финансового окна.
+- Первый repaint не запускает повторный полный normalize, пока фоновый finalizer его не закончит.
+
+3. Split traffic / CPU
+- Большой delta/base mismatch больше не вызывает немедленный full snapshot upload с Front.
+- Полная rebase-база coalesced и разрешена только после 5 минут тишины либо graceful shutdown/reconcile.
+- Короткая серия сообщений создаёт один trailing-edge mirror sync.
+
+4. Continuity
+- Полный user_state_shadow + RAM continuity больше не сериализуются inline после каждого update.
+- Они объединяются в один background checkpoint после короткого периода тишины.
+
+5. Event witness
+- RAW Telegram event по-прежнему получает удалённого свидетеля до HTTP 200.
+- Worker сначала fsync-ит свой локальный event journal и быстро отвечает Front.
+- Redis event запись выполняется отдельной очередью Worker с retry/reconcile.
+- Front использует лёгкий gzip для маленького RAW-event.
+
+6. Legacy Front delta/MEGA
+- Старый shard/MEGA delta на Front остаётся отключённым.
+
+Все числовые настройки остаются внутри runtime_config.py (R14 правило).
