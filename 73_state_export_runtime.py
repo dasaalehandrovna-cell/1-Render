@@ -520,20 +520,6 @@ def set_chat_status_v150(chat_id: int, status: str, reason: str, *, source: str=
         if changed or force_history or signature != last_signature:
             row['history'].append({'at': now, 'from': previous, 'to': status, 'reason': str(reason or '')[:200], 'source': str(source or '')[:80], 'migrated_to': int(migrated_to) if migrated_to is not None else None})
             del row['history'][:-200]
-        # R17 terminal-chat fan-out.  The helper is defined by 76_tasks_runtime
-        # later in module load, so this remains dependency-safe during boot.
-        # It mutates only local canonical state here; the single save below writes
-        # chat lifecycle + root task/reminder/forward state atomically to SQLite.
-        if status in {'bot_removed', 'migrated', 'archived'}:
-            try:
-                cleanup_fn = globals().get('r17_suspend_terminal_chat_bindings')
-                if callable(cleanup_fn):
-                    cleanup_fn(chat_id, reason=str(reason or status), source=str(source or 'lifecycle'), persist=False)
-            except Exception as cleanup_exc:
-                try:
-                    bot_journal('r17_terminal_cleanup_error', chat_id, f'{type(cleanup_exc).__name__}: {str(cleanup_exc)[:240]}', 'ERROR')
-                except Exception:
-                    pass
         if persist:
             save_data(data, chat_ids=[chat_id])
             if status == 'active':

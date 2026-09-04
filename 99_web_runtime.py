@@ -610,11 +610,10 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = ('• ⚡ R17: FAST остаётся на пользовательском hot-path — проверки удалённого чата не добавляют сетевых запросов к кнопкам/текущим действиям.\n'
-'• 🧹 Подтверждённо удалённый/архивный чат становится terminal: live-пересылки снимаются, напоминалки больше не шлются туда, незавершённые задачи отменяются и диспетчер выключается; при Telegram migration состояние переносится на новый chat ID.\n'
-'• 🔁 На старте R17 автоматически очищает старые R16-привязки к уже terminal-чатам, поэтому фоновые циклы не продолжают бесконечные попытки.\n'
-'• 💾 Deploy/restart: полный user/config shadow + RAM continuity; снимок фиксируется до остановки и после drain, а безопасные новые UI-сессии подхватываются автоматически.\n'
-'• 🧱 HEAVY/Render #2 сохраняет тяжёлый контур восстановления, Redis/снимков/фоновой синхронизации; FAST не ждёт эти операции в обычной работе.')
+STARTUP_RELEASE_SUMMARY = ('• ⚡ R16: финансы ускорены для add/edit/delete/пересылки — hot-path меняет только затронутые записи и агрегаты, полный normalize остаётся фоном.\n'
+'• 🛡 RAW update теперь сначала пишется прямо в Redis; Render #2 HTTP используется только как fallback, поэтому Worker не стоит в пользовательском hot-path.\n'
+'• 🎨 Все XLSX, включая OLD/backup/legacy/Excel статьи, получают цветную палитру выс-262; старый режим меняет только layout/примечания.\n'
+'• 📡 Полные базы по-прежнему только idle/reconcile; обычные операции зеркалируются маленькими delta.')
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""
@@ -680,7 +679,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (R17 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:

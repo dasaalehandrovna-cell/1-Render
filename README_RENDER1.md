@@ -81,9 +81,3 @@ All runtime tuning values (intervals, limits, ports, feature switches and intern
 
 ## R16 FAST FINANCE + ALL COLOR XLSX
 See FIXES_R16_FAST_FINANCE_ALL_COLOR_XLSX.txt.
-
-## R17 FAST TERMINAL CHAT + FULL RESTORE
-See FIXES_R17_FAST_TERMINAL_CHAT_FULL_RESTORE.txt.
-
-Key rule: Render #1 / FAST must stay responsive. Terminal-chat cleanup is local and event-driven; remote durability and heavy restore/snapshot work remain asynchronous / Render #2.
-
