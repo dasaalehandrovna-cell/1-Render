@@ -1,4 +1,4 @@
-# v263
+# v262
 def mega_is_configured(control_plane: bool=False) -> bool:
     recovery = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)) or bool(control_plane)
     if not recovery:
@@ -162,19 +162,17 @@ def _v178_mega_gate_exit() -> None:
 
 def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
     """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
-    args = list(args or [])
-    _gate_text = ' '.join(str(x or '') for x in args).casefold()
-    _critical = bool(control_plane) or any(x in _gate_text for x in ('/tasks/', '/ledger/finance', 'storage_control', '/control/'))
-    gate_category = 'mega_critical' if _critical else 'mega_backup'
-    gate = globals().get('external_io_allowed_v263') or globals().get('external_access_allowed_v233')
-    _ok = True
-    if callable(gate):
+    gate = globals().get('external_access_allowed_v233')
+    gate_category = 'mega_control' if bool(control_plane) else 'mega'
+    if callable(gate) and (not gate(gate_category)):
         try:
-            _ok = bool(gate(gate_category, f'{cmd}:{_gate_text[:120]}') if getattr(gate, '__name__', '') == 'external_io_allowed_v263' else gate(gate_category))
-        except TypeError:
-            _ok = bool(gate(gate_category))
-    if not _ok:
-        raise RuntimeError(f"external_io_blocked_v263:{gate_category}:{str(cmd or '')}")
+            logger_fn = globals().get('external_block_log_v233')
+            if callable(logger_fn):
+                logger_fn(gate_category, str(cmd or ''))
+        except Exception:
+            pass
+        raise RuntimeError(f"external_local_only_v233:{gate_category}:{str(cmd or '')}")
+    args = list(args or [])
     exe = shutil.which(cmd)
     if not exe:
         raise RuntimeError(f'MEGAcmd command not found: {cmd}')
@@ -199,11 +197,6 @@ def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, ch
                         raise RuntimeError(f'{cmd} timeout after {timeout or MEGA_TIMEOUT}s')
             finally:
                 _v178_mega_gate_exit()
-        try:
-            _note = globals().get('external_io_note_outbound_v263')
-            if callable(_note): _note(gate_category, str(cmd or ''))
-        except Exception:
-            pass
         if callable(mem_ctx):
             safe_args = _mega_memory_safe_args(cmd, args)
             with mem_ctx(f'mega:{cmd}', {'args': safe_args}, heavy=cmd in {'mega-find', 'mega-get', 'mega-put'}, quiet=True):
@@ -8904,4 +8897,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f'{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}')
     lines.extend(['', '✏️ Изменить: название статьи и/или её ключевые слова.'])
     return (wm_common('\n'.join(lines), 7), cats)
-# v263
+# v262

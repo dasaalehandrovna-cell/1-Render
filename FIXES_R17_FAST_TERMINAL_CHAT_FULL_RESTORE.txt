@@ -1,0 +1,41 @@
+R17 FAST TERMINAL CHAT + FULL RESTORE
+========================================
+
+Release package: R17 (internal bot compatibility series remains vys-262).
+
+Goals
+-----
+1. Render #1 / FAST stays maximally responsive for buttons and current user actions.
+2. A confirmed dead/removed Telegram chat must not keep reminder, forwarding, or task loops alive.
+3. Deploy/restart restores user-visible state as completely as possible without placing heavy serialization/network work in the FAST hot-path.
+4. Render #2 / HEAVY remains responsible for heavy durability, restore cache, background sync and remote recovery.
+
+Terminal chat lifecycle
+-----------------------
+- Terminal statuses are: bot_removed, migrated, archived.
+- Transient unreachable/network/429/rights errors are NOT automatically treated as removed.
+- On a terminal transition R17 coordinates all features locally:
+  * forwarding destination is removed from live routes and preserved in the reversible v199 suspended registry;
+  * reminder target is physically removed from chat_ids and last-message/delivery-ack state; if no recipients remain the reminder is disabled;
+  * for bot_removed/archived, active task dispatcher is disabled and unfinished tasks are retained for audit but marked cancelled;
+  * for migrated, reminder/task runtime is moved to migrated_to so the successor supergroup continues without losing active tasks;
+  * RAM input/search rows tied to the dead chat are cleared;
+  * merged reminder group runtime for the chat is removed.
+- On boot R17 reconciles already-terminal chats, repairing stale R16 state before normal schedulers start.
+- Forwarding suspension no longer downgrades a confirmed terminal lifecycle back to transient unreachable.
+
+Deploy/restart continuity
+-------------------------
+- Canonical SQLite/root/chat state remains authoritative.
+- User-state shadow continues to copy non-financial root/chat configuration (users, owners/roles, tenants, settings, task/reminder metadata, windows/config state) without touching accounting cold ledgers.
+- RAM continuity keeps the explicit interaction-state whitelist and R17 also discovers additional safe UI containers whose names indicate session/wait/pending/selection/binding/callback/window/input state.
+- Locks, threads, timers, queues, sockets, Redis/MEGA/TG transport state, media-group and forwarding outcome caches are explicitly excluded from automatic RAM restore.
+- Graceful deploy shutdown now writes a full continuity checkpoint BEFORE runtime teardown and another full checkpoint AFTER queues/drain, then pushes the exact final snapshot to the worker/Redis durability path.
+
+FAST performance rule
+---------------------
+No new network probe, MEGA upload, worker HTTP call, or all-state serialization was added to the normal button/message path. Terminal cleanup runs only when Telegram has already confirmed a terminal chat or during boot reconciliation. Normal remote durability remains coalesced/asynchronous.
+
+R17 visible startup message
+---------------------------
+The owner READY notice now says: "Бот запущен и READY (R17 · версия выс-262)" and lists the R17 changes.

@@ -82,10 +82,8 @@ All runtime tuning values (intervals, limits, ports, feature switches and intern
 ## R16 FAST FINANCE + ALL COLOR XLSX
 See FIXES_R16_FAST_FINANCE_ALL_COLOR_XLSX.txt.
 
+## R17 FAST TERMINAL CHAT + FULL RESTORE
+See FIXES_R17_FAST_TERMINAL_CHAT_FULL_RESTORE.txt.
 
-## v263 LOCAL LAB / SAFE ISOLATION
-Set `EXTERNAL_IO_BOOT_MODE=local_lab` (or `safe_isolation`) on the corresponding Render service when isolation must be active from process startup. Runtime owner switching propagates the mode from Render #1 to Render #2; the ENV remains the hard restart/deploy override. Telegram UI is intentionally allowed on Render #1.
+Key rule: Render #1 / FAST must stay responsive. Terminal-chat cleanup is local and event-driven; remote durability and heavy restore/snapshot work remain asynchronous / Render #2.
 
-
-## v263 Hybrid storage / isolation
-`EXTERNAL_IO_BOOT_MODE` is a hard boot override (`normal`, `local_lab`, `safe_isolation`). Leave it unset to use the persisted owner profile during ordinary restarts. `STORAGE_POLICY_BOOT_MODE` is an optional hard storage-policy override (`auto`, `telegram_first`, `mega_first`, `newest_verified`, `render_only`). The canonical MEGA archive root is `/TelegramBotBackups`; the former `/TelegramBotBackups2-2` is read only as a recovery fallback.

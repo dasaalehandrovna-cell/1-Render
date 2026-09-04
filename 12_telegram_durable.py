@@ -1,4 +1,4 @@
-# v263
+# v262
 TG_DURABLE_SCHEMA_V234 = 1
 TG_DURABLE_HEAD_KIND_V234 = 'telegram_bot_durable_head_v234'
 TG_DURABLE_HEAD_FILENAME_V234 = 'BOT_STATE_HEAD.json'
@@ -1691,24 +1691,4 @@ def _canon_schedule_mega_task_recovery__003(delay: float | None=None):
     if p == STORAGE_PROFILE_MEGA_V237_1 and (not storage_mode_feature_enabled_v240('mega', 'tasks')):
         return None
     return _V240_TASK_RECOVERY_ORIG(delay)
-
-# v263 isolation integration: Telegram UI stays allowed, Telegram durable channel is storage.
-_V263_TG_PRIMARY_PREV = telegram_durable_primary_v234
-_V263_STORAGE_FEATURE_PREV = storage_mode_feature_enabled_v240
-
-def telegram_durable_primary_v234() -> bool:
-    gate = globals().get('external_io_allowed_v263')
-    if callable(gate) and (not gate('mega_backup', 'telegram_durable_primary')):
-        return False
-    return bool(_V263_TG_PRIMARY_PREV())
-
-def storage_mode_feature_enabled_v240(mode: str, feature: str, *, recovery: bool=False) -> bool:
-    if not recovery and not bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)):
-        gate = globals().get('external_io_allowed_v263')
-        if callable(gate):
-            category = 'mega_backup' if _storage_profile_normalize_v237_1(mode) == STORAGE_PROFILE_TELEGRAM_V237_1 else 'mega_backup' if _storage_profile_normalize_v237_1(mode) == STORAGE_PROFILE_MEGA_V237_1 else 'local'
-            if category != 'local' and (not gate(category, f'storage_feature:{mode}:{feature}')):
-                return False
-    return bool(_V263_STORAGE_FEATURE_PREV(mode, feature, recovery=recovery))
-
-# v263
+# v262

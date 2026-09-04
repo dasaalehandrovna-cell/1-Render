@@ -1,0 +1,22 @@
+R17 VALIDATION REPORT
+=====================
+
+PASS
+- Python compile: all FAST .py files.
+- Python compile: all HEAVY .py files.
+- Modular package manifest SHA-256 validation and # v262 first/last markers.
+- INFO/tests/startup_smoke_v262.py: V262_STARTUP_SMOKE_OK.
+- INFO/tests/v262_fast_ui_smoke.py: V262_FAST_UI_SMOKE_OK.
+- INFO/tests/v262_exact_once_regression.py: V262_EXACT_ONCE_SMOKE_OK.
+- INFO/tests/v262_linked_finance_smoke.py: V262_LINKED_FINANCE_SMOKE_OK.
+- INFO/tests/r17_terminal_restore_smoke.py: terminal chat lifecycle, mixed live/dead reminder targets, task cancellation, stale forwarding scrub, Telegram migration preservation, safe RAM continuity discovery, pre/post shutdown checkpoints, front->worker restore chain.
+
+ENVIRONMENT / LEGACY TEST NOTES
+- Old v256/v257/v260/v261 startup harnesses copy only bot.py into a temporary directory and therefore fail before bot load because current releases require runtime_config.py. This is a legacy test-harness limitation, not an R17 runtime failure.
+- v262_google_sync_modes_regression reaches the Google worker path and requires a configured HEAVY/Google worker in the test environment; the local sandbox has no such external worker.
+- HEAVY source compiles successfully. A live Flask import/health request was not executable in this sandbox because Flask is not installed here; HEAVY requirements.txt explicitly includes Flask>=3.0,<4.
+
+PERFORMANCE CHECK
+- No new network probe was added to normal Telegram callback/message hot paths.
+- Terminal cleanup is triggered only after confirmed terminal lifecycle transition or boot reconciliation.
+- Full continuity serialization and remote snapshot push remain background/shutdown operations.

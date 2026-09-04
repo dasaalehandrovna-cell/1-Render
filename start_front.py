@@ -1,4 +1,4 @@
-# v263
+# v262
 #!/usr/bin/env python3
 """Render #1 launcher: fast Telegram front + worker restore + emergency MEGA restore."""
 from __future__ import annotations
@@ -41,21 +41,12 @@ class _BootHealthHandler(BaseHTTPRequestHandler):
 def _bool(name: str, default=False):
     return str(os.getenv(name, '1' if default else '0') or '').strip().lower() in {'1','true','yes','on','да'}
 
-def _external_boot_mode_v263():
-    raw=str(os.getenv('EXTERNAL_IO_BOOT_MODE','') or '').strip().lower().replace('-','_').replace(' ','_')
-    if raw in {'local','lab','local_lab','locallab'}: return 'local_lab'
-    if raw in {'safe','safe_isolation','isolation'}: return 'safe_isolation'
-    return 'normal'
-
-def _boot_external_blocked_v263():
-    return _external_boot_mode_v263() in {'local_lab','safe_isolation'}
-
 
 def _start_boot_port():
     port = int(os.getenv('PORT', '5000') or '5000')
     server = ThreadingHTTPServer(('0.0.0.0', port), _BootHealthHandler)
     server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, name='v263-front-boot-http', daemon=True).start()
+    threading.Thread(target=server.serve_forever, name='v262-front-boot-http', daemon=True).start()
     print(f'[SPLIT FRONT] preboot port open on 0.0.0.0:{port}', flush=True)
     return server
 
@@ -161,9 +152,9 @@ def _restore_from_worker(target: Path):
     timeout = max(5.0, min(120.0, float(os.getenv('SPLIT_BOOT_WORKER_TIMEOUT', '12') or '12')))
     detail = 'worker unavailable'
     for attempt in range(1, attempts + 1):
-        tmpdir = Path(tempfile.mkdtemp(prefix='v263_worker_restore_'))
+        tmpdir = Path(tempfile.mkdtemp(prefix='v262_worker_restore_'))
         try:
-            r = requests.get(base + '/internal/restore/latest', headers={'X-Peer-Secret': secret, 'User-Agent':'vys-263-front-restore'}, timeout=timeout, stream=True)
+            r = requests.get(base + '/internal/restore/latest', headers={'X-Peer-Secret': secret, 'User-Agent':'vys-262-front-restore'}, timeout=timeout, stream=True)
             if r.status_code == 200:
                 gz = tmpdir / 'latest.sqlite3.gz'
                 with open(gz, 'wb') as fh:
@@ -255,8 +246,8 @@ def _mega_login(timeout):
 def _restore_from_mega_emergency(target: Path):
     if not _bool('SPLIT_EMERGENCY_MEGA', True):
         return False, 'emergency MEGA disabled'
-    root = '/' + str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups') or 'TelegramBotBackups').strip('/')
-    legacy_raw = str(os.getenv('MEGA_LEGACY_BACKUP_DIRS', '/TelegramBotBackups2-2,/TelegramBotBackups-2T') or '')
+    root = '/' + str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups2-2') or 'TelegramBotBackups2-2').strip('/')
+    legacy_raw = str(os.getenv('MEGA_LEGACY_BACKUP_DIRS', '/TelegramBotBackups-2T,/TelegramBotBackups') or '')
     roots = [root]
     for item in legacy_raw.split(','):
         p = '/' + str(item or '').strip().strip('/')
@@ -267,7 +258,7 @@ def _restore_from_mega_emergency(target: Path):
     logged, detail = _mega_login(login_timeout)
     if not logged:
         return False, detail
-    tmpdir = Path(tempfile.mkdtemp(prefix='v263_emergency_mega_'))
+    tmpdir = Path(tempfile.mkdtemp(prefix='v262_emergency_mega_'))
     try:
         for idx, candidate_root in enumerate(roots):
             attempt = tmpdir / f'r{idx}'
@@ -359,10 +350,7 @@ def main():
         force = _bool('SPLIT_FORCE_BOOT_RESTORE', False)
         always_remote = _bool('SPLIT_BOOT_ALWAYS_RESTORE', True)
         local_valid = _db_valid(target)
-        boot_isolated = _boot_external_blocked_v263()
-        if boot_isolated:
-            print(f'[SPLIT FRONT] EXTERNAL_IO_BOOT_MODE={_external_boot_mode_v263()}: Worker/Redis/MEGA startup outbound physically skipped', flush=True)
-        if (not boot_isolated) and (force or always_remote or not local_valid):
+        if force or always_remote or not local_valid:
             while True:
                 ok, detail = _restore_from_worker(target)
                 print('[SPLIT FRONT] worker restore:', ok, detail, flush=True)
@@ -383,7 +371,7 @@ def main():
                 time.sleep(max(5, min(120, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '20') or '20'))))
         # Rolling deploy handoff: old instance can publish a newer final snapshot only
         # after Render sees this preboot instance as healthy. Pick that newer revision.
-        if (not boot_isolated) and _db_valid(target):
+        if _db_valid(target):
             _settle_worker_handoff(target)
         # R14: packaged runtime_config.py is authoritative for all internal tunables.
         install_internal_runtime_config('front')
@@ -391,10 +379,7 @@ def main():
         os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)
         # R6 migration/deploy bridge: persist the exact restored/current DB in shared
         # Redis before the worker can be redeployed and lose its /tmp cache.
-        if boot_isolated:
-            redis_ok, redis_detail = False, 'skipped by EXTERNAL_IO_BOOT_MODE'
-        else:
-            redis_ok, redis_detail = _redis_seed_current_db(target, reason='front_boot_after_restore')
+        redis_ok, redis_detail = _redis_seed_current_db(target, reason='front_boot_after_restore')
         print('[SPLIT FRONT] Redis durable seed:', redis_ok, redis_detail, flush=True)
         _stop_boot_port(server)
         runpy.run_path(str(Path(__file__).with_name('bot.py')), run_name='__main__')
@@ -405,4 +390,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-# v263
+# v262

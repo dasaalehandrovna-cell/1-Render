@@ -1,4 +1,4 @@
-# v263
+# v262
 """Render #1 fast split bridge for vys-262.
 
 Render #1 keeps Telegram/webhook/UI and the working SQLite commit path.
@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-263-front-r17-local-lab-hybrid-guard"
+_SPLIT_FRONT_VERSION = "vys-262-front-r17-fast-terminal-chat-full-restore"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -269,9 +269,6 @@ def _split_event_row_v268(update_id, payload, chat_id=None, update_type='other')
     }
 
 def _split_event_redis_write_v268(row, state=None, error=''):
-    _gate = globals().get('external_io_allowed_v263')
-    if callable(_gate) and (not _gate('peer_http', 'front:redis:event')):
-        return False, 'blocked by external I/O profile'
     if _split_redis is None:
         return False, 'redis package unavailable'
     url=str(_split_os.getenv('REDIS_URL','') or '').strip()
@@ -309,9 +306,6 @@ def _split_event_redis_write_v268(row, state=None, error=''):
         return False,f'{type(exc).__name__}: {str(exc)[:180]}'
 
 def split_witness_event_v268(update_id, payload, chat_id=None, update_type='other'):
-    _profile = globals().get('external_io_profile_v263')
-    if callable(_profile) and _profile() in {'local_lab','safe_isolation'}:
-        return True
     """R16: Redis is the first remote durable witness; Worker HTTP is fallback only.
 
     This removes an entire Render#1 -> Render#2 -> Redis hop from the Telegram hot path.
@@ -400,9 +394,6 @@ def _split_ack_mirrored_events_v268(event_ids):
     _SPLIT_STATE['event_mirrored']=int(_SPLIT_STATE.get('event_mirrored') or 0)+len(ids)
 
 def _split_remote_pending_rows_v268(limit=100):
-    _gate = globals().get('external_io_allowed_v263')
-    if callable(_gate) and (not _gate('peer_http', 'front:redis:recover')):
-        return []
     # R16: query the authoritative Redis event journal first; Worker is a fallback.
     if _split_redis is not None:
         url=str(_split_os.getenv('REDIS_URL','') or '').strip()
@@ -563,10 +554,6 @@ def _split_redis_snapshot_keys_v266():
 
 
 def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=None):
-    _gate = globals().get('external_io_allowed_v263')
-    if callable(_gate) and (not _gate('peer_http', 'front:redis:snapshot')):
-        _SPLIT_STATE['redis_fallback_last_error'] = 'blocked by external I/O profile'
-        return False
     """Best-effort durable bridge when worker is unavailable or being redeployed.
 
     Runs only from background sync/shutdown paths, never inline in Telegram handling.
@@ -1127,6 +1114,27 @@ _CONTINUITY_NAMES_V263 = (
 )
 _CONTINUITY_SCALARS_V263 = ('restore_mode', '_short_callback_counter')
 
+# R17: automatically include safe RAM-only interaction containers that future UI
+# modules may add without remembering to extend the static whitelist.  We purposely
+# exclude process/runtime/network objects so a deploy never resurrects old locks,
+# queues, timers, transport caches or worker state.
+_CONTINUITY_DYNAMIC_HINTS_R17 = ('SESSION', 'WAIT', 'PENDING', 'SELECTION', 'BINDING', 'CALLBACK', 'WINDOW', 'INPUT')
+_CONTINUITY_DYNAMIC_DENY_R17 = ('LOCK', 'THREAD', 'TIMER', 'QUEUE', 'POOL', 'CLIENT', 'SOCKET', 'EXECUTOR', 'SPLIT_', 'MEGA_', 'REDIS_', 'TG_', 'TELEGRAM_', 'MEDIA_GROUP', 'FORWARD_OUTCOME')
+
+def _continuity_dynamic_names_r17():
+    out = []
+    for name, value in list(globals().items()):
+        if name in _CONTINUITY_NAMES_V263 or name in _CONTINUITY_SCALARS_V263:
+            continue
+        upper = str(name).upper()
+        if not str(name).startswith('_') or not any(h in upper for h in _CONTINUITY_DYNAMIC_HINTS_R17):
+            continue
+        if any(bad in upper for bad in _CONTINUITY_DYNAMIC_DENY_R17):
+            continue
+        if isinstance(value, (dict, list, set, tuple, _split_collections.deque)):
+            out.append(str(name))
+    return tuple(sorted(set(out)))
+
 # R6 persistent user-state shadow. The normal SQLite root/chats remain canonical,
 # but this compact duplicate protects settings/UI/task/tenant metadata from any
 # missed point-save or cross-chat mutation. Financial cold ledgers are deliberately
@@ -1175,7 +1183,11 @@ def user_state_shadow_capture_v265(reason='checkpoint'):
             'reason': str(reason or 'checkpoint')[:180], 'front_version': _SPLIT_FRONT_VERSION,
             'root': root, 'chats': chats,
             'counts': {'root_keys': len(root), 'chats': len(chats),
-                       'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict))},
+                       'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict)),
+                       'tasks': len((root.get('_tasks_v172') or {})) if isinstance(root.get('_tasks_v172'), dict) else 0,
+                       'reminders': len((root.get('reminders') or root.get('_reminders') or {})) if isinstance((root.get('reminders') or root.get('_reminders') or {}), dict) else 0,
+                       'tenants': len((((root.get('_global_settings') or {}).get('tenants_v148') or {}).get('tenants') or {})) if isinstance(((root.get('_global_settings') or {}).get('tenants_v148') or {}), dict) else 0,
+                       'additional_owners': len(root.get('additional_owners') or root.get('additional_owner_ids') or []) if isinstance((root.get('additional_owners') or root.get('additional_owner_ids') or []), (list, tuple, set, dict)) else 0},
         }
         SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
         return payload
@@ -1352,11 +1364,12 @@ def _continuity_apply_v263(name, restored):
 def continuity_capture_v263(reason='checkpoint'):
     """Persist RAM-only user interaction continuity inside canonical SQLite."""
     payload = {
-        'schema': 1,
+        'schema': 2,
         'saved_at': _split_time.time(),
         'reason': str(reason or 'checkpoint')[:180],
         'front_version': _SPLIT_FRONT_VERSION,
         'globals': {},
+        'dynamic_globals_r17': {},
         'scalars': {},
     }
     for name in _CONTINUITY_NAMES_V263:
@@ -1371,6 +1384,10 @@ def continuity_capture_v263(reason='checkpoint'):
         enc = _continuity_encode_v263(globals().get(name))
         if enc is not _CONTINUITY_SKIP_V263:
             payload['scalars'][name] = enc
+    for name in _continuity_dynamic_names_r17():
+        enc = _continuity_encode_v263(globals().get(name))
+        if enc is not _CONTINUITY_SKIP_V263:
+            payload['dynamic_globals_r17'][name] = enc
     # Existing Telegram message IDs/windows are logical root state; add a compact
     # count here for diagnostics while the actual records stay in the normal root.
     try:
@@ -1399,6 +1416,12 @@ def continuity_restore_v263():
             continue
         if _continuity_apply_v263(name, _continuity_decode_v263(raw)):
             restored_names.append(name)
+    dynamic_allowed = set(_continuity_dynamic_names_r17())
+    for name, raw in (payload.get('dynamic_globals_r17') or {}).items():
+        if name not in dynamic_allowed:
+            continue
+        if _continuity_apply_v263(name, _continuity_decode_v263(raw)):
+            restored_names.append(name)
     for name, raw in (payload.get('scalars') or {}).items():
         if name not in _CONTINUITY_SCALARS_V263:
             continue
@@ -1416,7 +1439,7 @@ def continuity_restore_v263():
     except Exception:
         pass
     try:
-        log_info(f"CONTINUITY R4 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
+        log_info(f"CONTINUITY R17 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
     except Exception:
         pass
     return {'ok': True, 'restored': restored_names, 'saved_at': payload.get('saved_at')}
@@ -1659,13 +1682,24 @@ except Exception:
 _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN = runtime_graceful_shutdown
 
 def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
-    result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+    # R17 deploy handoff: capture user/config/RAM interaction state before the base
+    # shutdown tears down schedulers, then capture once more after queues are drained.
+    # This work happens only on shutdown, never in a Telegram button hot-path.
     try:
-        continuity_checkpoint_v263(None, reason=f'shutdown:{signal_name}', full=True, schedule=False)
-        _split_push_snapshot_now_v263(f'shutdown:{signal_name}')
+        continuity_checkpoint_v263(None, reason=f'shutdown-pre:{signal_name}', full=True, schedule=False)
     except Exception as exc:
-        try: log_error(f'CONTINUITY shutdown R4: {exc}')
+        try: log_error(f'CONTINUITY shutdown-pre R17: {exc}')
         except Exception: pass
+    result = None
+    try:
+        result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+    finally:
+        try:
+            continuity_checkpoint_v263(None, reason=f'shutdown-post:{signal_name}', full=True, schedule=False)
+            _split_push_snapshot_now_v263(f'shutdown-post:{signal_name}')
+        except Exception as exc:
+            try: log_error(f'CONTINUITY shutdown-post R17: {exc}')
+            except Exception: pass
     return result
 
 
@@ -2522,4 +2556,4 @@ except Exception:
 R15_FAST_HOTPATH = 'vys262-r15-fast-hotpath'
 try: bot_journal('r15_fast_hotpath_loaded', int(OWNER_ID or 0), 'remote witness fast; continuity background; full fallback idle-only')
 except Exception: pass
-# v263
+# v262

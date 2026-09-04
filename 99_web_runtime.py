@@ -1,4 +1,4 @@
-# v263
+# v262
 def _v205_http_audit_operation() -> str:
     try:
         path = str(request.path or '/')
@@ -421,12 +421,10 @@ def telegram_webhook():
         # R13: before Telegram gets HTTP 200 and before business execution starts,
         # make the raw update durable on Worker/Redis.  If both remote witnesses are
         # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
-        _io_profile = globals().get('external_io_profile_v263', lambda: 'normal')()
         _r13_witness_fn = globals().get('split_witness_event_v268')
-        if _io_profile not in {'local_lab', 'safe_isolation'}:
-            if callable(_r13_witness_fn) and not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
-                log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
-                return ('REMOTE DURABLE WITNESS FAILED', 503)
+        if callable(_r13_witness_fn) and not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
+            log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
+            return ('REMOTE DURABLE WITNESS FAILED', 503)
         _protect_pending_ui_timers_on_receipt(payload)
         if update_type == 'callback_query':
             try:
@@ -443,38 +441,23 @@ def telegram_webhook():
         durable_expected = _durable_expected_effects(payload) if durable_cloud else {}
         if durable_cloud:
             _v260_webhook_inbox_mark(update_id, 'external_pending')
-            if _io_profile == 'safe_isolation':
-                safe_isolation_block_operation_v263(update_chat_id, f'update={update_id}; reason={durable_reason}')
+            cloud_state = mega_task_known_state(update_id)
+            if cloud_state == 'done':
                 _v260_webhook_inbox_mark(update_id, 'done')
-                try:
-                    if update_chat_id is not None:
-                        bot.send_message(int(update_chat_id), '🛡 SAFE ISOLATION: эта операция требует внешней durable-записи, поэтому она безопасно НЕ выполнена. Данные не изменены.')
-                except Exception as _safe_msg_exc:
-                    log_error(f'SAFE ISOLATION notice update={update_id}: {_safe_msg_exc}')
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters['skipped_done'] += 1
                 return ('OK', 200)
-            if _io_profile == 'local_lab':
+            if cloud_state == 'running':
+                schedule_mega_task_recovery(0.2)
+                return ('TASK RUNNING', 503)
+            if cloud_state == 'failed':
+                _v260_webhook_inbox_mark(update_id, 'external_failed_review')
+                return ('TASK NEEDS REVIEW', 200)
+            if cloud_state != 'pending':
                 task_payload = _build_mega_task_payload(update_id, payload, update_chat_id, update_type, durable_reason)
                 durable_expected = _durable_expected_from_task_or_payload(task_payload, payload)
-                if not local_witness_prepare_v263(update_id, payload, update_chat_id, update_type, durable_reason):
-                    return ('LOCAL WITNESS FAILED', 503)
-            else:
-                cloud_state = mega_task_known_state(update_id)
-                if cloud_state == 'done':
-                    _v260_webhook_inbox_mark(update_id, 'done')
-                    with _MEGA_TASK_LOCK:
-                        _mega_task_counters['skipped_done'] += 1
-                    return ('OK', 200)
-                if cloud_state == 'running':
-                    schedule_mega_task_recovery(0.2)
-                    return ('TASK RUNNING', 503)
-                if cloud_state == 'failed':
-                    _v260_webhook_inbox_mark(update_id, 'external_failed_review')
-                    return ('TASK NEEDS REVIEW', 200)
-                if cloud_state != 'pending':
-                    task_payload = _build_mega_task_payload(update_id, payload, update_chat_id, update_type, durable_reason)
-                    durable_expected = _durable_expected_from_task_or_payload(task_payload, payload)
-                    if not _mega_task_upload_new_pending(update_id, task_payload):
-                        return ('TASK BACKUP UNAVAILABLE', 503)
+                if not _mega_task_upload_new_pending(update_id, task_payload):
+                    return ('TASK BACKUP UNAVAILABLE', 503)
         claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, update_type)
         if claim_state == 'done':
             return ('OK', 200)
@@ -492,14 +475,9 @@ def telegram_webhook():
                 durable_started = False
                 try:
                     if durable_cloud:
-                        if _io_profile == 'local_lab':
-                            durable_started = local_witness_begin_v263(update_id)
-                            if not durable_started:
-                                raise RuntimeError('LOCAL witness could not enter running state')
-                        else:
-                            durable_started = mega_task_begin(update_id, allow_existing_running=False)
-                            if not durable_started:
-                                raise RuntimeError('MEGA durable task could not enter running state')
+                        durable_started = mega_task_begin(update_id, allow_existing_running=False)
+                        if not durable_started:
+                            raise RuntimeError('MEGA durable task could not enter running state')
                     execution_ctx = _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
                     success = True
                     _v260_webhook_inbox_mark(update_id, 'done')
@@ -507,15 +485,12 @@ def telegram_webhook():
                     if callable(_r13_commit_fn): _r13_commit_fn(update_id, update_chat_id, update_type, True, '')
                     if durable_cloud:
                         durable_expected_after = _durable_expected_after_execution(durable_expected, execution_ctx, payload)
-                        if _io_profile == 'local_lab':
-                            local_witness_finish_v263(update_id, True, '')
-                        else:
-                            queued_finalize = enqueue_durable_finalize_background(update_id, update_chat_id, update_type, payload, durable_expected_after)
-                            if not queued_finalize:
-                                finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type, payload=payload, expected_effects=durable_expected_after)
-                                if not finalized:
-                                    schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 1.0, payload=payload, expected_effects=durable_expected_after)
-                                    log_error(f'MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending')
+                        queued_finalize = enqueue_durable_finalize_background(update_id, update_chat_id, update_type, payload, durable_expected_after)
+                        if not queued_finalize:
+                            finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type, payload=payload, expected_effects=durable_expected_after)
+                            if not finalized:
+                                schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 1.0, payload=payload, expected_effects=durable_expected_after)
+                                log_error(f'MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending')
                 except Exception as exc:
                     error_text = str(exc)
                     _failed_inbox_v260 = _v260_webhook_inbox_mark(update_id, 'external_failed_review' if durable_cloud else 'failed', error_text)
@@ -524,10 +499,7 @@ def telegram_webhook():
                     if not durable_cloud:
                         _v260_schedule_webhook_inbox_retry(_failed_inbox_v260 or update_id)
                     if durable_cloud and durable_started:
-                        if _io_profile == 'local_lab':
-                            local_witness_finish_v263(update_id, False, error_text)
-                        else:
-                            mega_task_finish(update_id, False, error_text)
+                        mega_task_finish(update_id, False, error_text)
                     log_error(f'WEBHOOK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
                     raise
                 finally:
@@ -638,11 +610,11 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = ('• 🧪 R17/v263: LOCAL LAB + SAFE ISOLATION hard gate.\n'
-'• ⚡ R16: финансы ускорены для add/edit/delete/пересылки — hot-path меняет только затронутые записи и агрегаты, полный normalize остаётся фоном.\n'
-'• 🛡 RAW update теперь сначала пишется прямо в Redis; Render #2 HTTP используется только как fallback, поэтому Worker не стоит в пользовательском hot-path.\n'
-'• 🎨 Все XLSX, включая OLD/backup/legacy/Excel статьи, получают цветную палитру выс-262; старый режим меняет только layout/примечания.\n'
-'• 📡 Полные базы по-прежнему только idle/reconcile; обычные операции зеркалируются маленькими delta.')
+STARTUP_RELEASE_SUMMARY = ('• ⚡ R17: FAST остаётся на пользовательском hot-path — проверки удалённого чата не добавляют сетевых запросов к кнопкам/текущим действиям.\n'
+'• 🧹 Подтверждённо удалённый/архивный чат становится terminal: live-пересылки снимаются, напоминалки больше не шлются туда, незавершённые задачи отменяются и диспетчер выключается; при Telegram migration состояние переносится на новый chat ID.\n'
+'• 🔁 На старте R17 автоматически очищает старые R16-привязки к уже terminal-чатам, поэтому фоновые циклы не продолжают бесконечные попытки.\n'
+'• 💾 Deploy/restart: полный user/config shadow + RAM continuity; снимок фиксируется до остановки и после drain, а безопасные новые UI-сессии подхватываются автоматически.\n'
+'• 🧱 HEAVY/Render #2 сохраняет тяжёлый контур восстановления, Redis/снимков/фоновой синхронизации; FAST не ждёт эти операции в обычной работе.')
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""
@@ -708,7 +680,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (R17 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -1135,4 +1107,4 @@ def main():
             runtime_graceful_shutdown('APP_EXIT')
         except Exception as e:
             log_error(f'final graceful shutdown: {e}')
-# v263
+# v262
