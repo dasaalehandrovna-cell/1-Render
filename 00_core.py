@@ -567,6 +567,111 @@ class KeyedTaskPool:
         with self._lock:
             return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error}
 
+
+class LatestKeyedTaskPool:
+    """R22 latest-wins keyed executor.
+
+    At most one task per key is executing and at most one *latest* task is waiting.
+    A newer render replaces an older queued render instead of building a stale UI
+    backlog.  Network RTT therefore never occupies the callback worker lane.
+    """
+
+    def __init__(self, name: str, workers: int=6, max_pending_keys: int=256):
+        self.name = str(name)
+        self.workers = max(1, int(workers))
+        self.max_pending_keys = max(10, int(max_pending_keys))
+        self._ready = queue.Queue()
+        self._lock = threading.RLock()
+        self._latest = {}
+        self._active_keys = set()
+        self._seq = defaultdict(int)
+        self._active_workers = 0
+        self._submitted = 0
+        self._replaced = 0
+        self._completed = 0
+        self._failed = 0
+        self._rejected = 0
+        self._max_wait = 0.0
+        self._last_error = ''
+        for idx in range(self.workers):
+            threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True).start()
+
+    def submit_latest(self, key, func, *args, **kwargs):
+        key = str(key)
+        with self._lock:
+            if key not in self._active_keys and len(self._active_keys) >= self.max_pending_keys:
+                self._rejected += 1
+                return 0
+            self._seq[key] += 1
+            seq = int(self._seq[key])
+            task = (seq, func, args, kwargs, time.monotonic())
+            if key in self._latest:
+                self._replaced += 1
+            self._latest[key] = task
+            self._submitted += 1
+            if key not in self._active_keys:
+                self._active_keys.add(key)
+                self._ready.put(key)
+            return seq
+
+    def is_latest(self, key, seq: int) -> bool:
+        key = str(key)
+        with self._lock:
+            return int(self._seq.get(key, 0) or 0) == int(seq or 0)
+
+    def _worker(self):
+        while True:
+            key = self._ready.get()
+            task = None
+            with self._lock:
+                task = self._latest.pop(key, None)
+                if task is not None:
+                    self._active_workers += 1
+            if task is None:
+                with self._lock:
+                    self._active_keys.discard(key)
+                self._ready.task_done()
+                continue
+            seq, func, args, kwargs, enqueued_mono = task
+            wait = max(0.0, time.monotonic() - enqueued_mono)
+            with self._lock:
+                self._max_wait = max(self._max_wait, wait)
+            try:
+                # If a newer render arrived before this task actually got CPU time,
+                # discard this stale task without touching Telegram.
+                if self.is_latest(key, seq):
+                    func(*args, **kwargs)
+                with self._lock:
+                    self._completed += 1
+            except Exception as exc:
+                with self._lock:
+                    self._failed += 1
+                    self._last_error = str(exc)[:300]
+                try:
+                    log_error(f'POOL {self.name}: {exc}')
+                except Exception:
+                    logging.exception('POOL %s', self.name)
+            finally:
+                with self._lock:
+                    self._active_workers = max(0, self._active_workers - 1)
+                    if key in self._latest:
+                        self._ready.put(key)
+                    else:
+                        self._active_keys.discard(key)
+                task = func = args = kwargs = None
+                self._ready.task_done()
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                'name': self.name, 'workers': self.workers, 'active': self._active_workers,
+                'pending': len(self._latest), 'keys': len(self._active_keys),
+                'submitted': self._submitted, 'replaced': self._replaced,
+                'completed': self._completed, 'failed': self._failed,
+                'rejected': self._rejected, 'max_wait': round(self._max_wait, 3),
+                'last_error': self._last_error,
+            }
+
 class DelayedTaskScheduler:
     """Один поток хранит все логические таймеры без сотен threading.Timer."""
 
@@ -675,6 +780,8 @@ UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI
 # R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
 # can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.
 FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 4, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
+# R22: Telegram editMessageText/caption runs here, never inside callback workers.
+WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 6, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 2000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 1, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
 UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
@@ -3082,7 +3189,7 @@ def build_all_processes_toast(chat_id=None) -> str:
         pass
     active_total = 0
     pending_total = 0
-    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
     for pool in pools:
         try:
             st = pool.stats() or {}

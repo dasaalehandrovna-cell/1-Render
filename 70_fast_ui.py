@@ -232,27 +232,19 @@ def _deserialize_inline_keyboard(rows_data):
             kb.row(*buttons)
     return kb
 
+_R22_NAV_REMOTE_HAS = {}
+_R22_NAV_REMOTE_PREFETCH = set()
+
 def _window_nav_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
 
 def _nav_history_push_v248(key, snap: dict) -> bool:
-    # If this key already fell back locally during a KV outage, keep one coherent stack.
-    with _WINDOW_NAV_HISTORY_LOCK:
-        stack = _WINDOW_NAV_HISTORY.get(key)
-        if stack:
-            if stack[-1].get('text') == snap.get('text') and stack[-1].get('markup') == snap.get('markup'):
-                return True
-            stack.append(snap)
-            if len(stack) > _WINDOW_NAV_HISTORY_LIMIT:
-                del stack[:-_WINDOW_NAV_HISTORY_LIMIT]
-            return True
-    push = globals().get('kv_nav_push_v248')
-    if callable(push):
-        try:
-            if push(int(key[0]), int(key[1]), snap, _WINDOW_NAV_HISTORY_LIMIT):
-                return True
-        except Exception:
-            pass
+    """R22 hot path: RAM first, KV durability later.
+
+    Navigation history is UI continuity, so Redis/Key Value RTT must never be in
+    front of a button.  The in-memory stack is authoritative for the live process;
+    the remote copy is mirrored on the cleanup lane.
+    """
     with _WINDOW_NAV_HISTORY_LOCK:
         stack = _WINDOW_NAV_HISTORY[key]
         if stack and stack[-1].get('text') == snap.get('text') and stack[-1].get('markup') == snap.get('markup'):
@@ -260,6 +252,24 @@ def _nav_history_push_v248(key, snap: dict) -> bool:
         stack.append(snap)
         if len(stack) > _WINDOW_NAV_HISTORY_LIMIT:
             del stack[:-_WINDOW_NAV_HISTORY_LIMIT]
+    try:
+        _R22_NAV_REMOTE_HAS[key] = True
+    except Exception:
+        pass
+
+    def _mirror():
+        push = globals().get('kv_nav_push_v248')
+        if callable(push):
+            try:
+                push(int(key[0]), int(key[1]), dict(snap), _WINDOW_NAV_HISTORY_LIMIT)
+            except Exception:
+                pass
+    try:
+        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None:
+            pool.submit(f'r22-nav-mirror:{int(key[0])}:{int(key[1])}', _mirror)
+    except Exception:
+        pass
     return True
 
 def _nav_history_peek_v248(key):
@@ -296,6 +306,7 @@ def _nav_history_clear_v248(chat_id: int, message_id: int) -> None:
     key = _window_nav_key(chat_id, message_id)
     with _WINDOW_NAV_HISTORY_LOCK:
         _WINDOW_NAV_HISTORY.pop(key, None)
+    _R22_NAV_REMOTE_HAS.pop(key, None)
     fn = globals().get('kv_nav_clear_v248')
     if callable(fn):
         try:
@@ -317,16 +328,32 @@ def remember_previous_window(call):
         return False
 
 def window_has_previous(chat_id: int, message_id: int) -> bool:
+    """Non-blocking R22 check. Never contacts Redis on the render hot path."""
     key = _window_nav_key(chat_id, message_id)
     with _WINDOW_NAV_HISTORY_LOCK:
         if bool(_WINDOW_NAV_HISTORY.get(key)):
             return True
-    fn = globals().get('kv_nav_has_v248')
-    if callable(fn):
+    if bool(_R22_NAV_REMOTE_HAS.get(key, False)):
+        return True
+    # One background prefetch is allowed for post-restart continuity. Its result
+    # can affect the next render, never the current button latency.
+    if key not in _R22_NAV_REMOTE_PREFETCH:
+        _R22_NAV_REMOTE_PREFETCH.add(key)
+        def _prefetch():
+            try:
+                fn = globals().get('kv_nav_has_v248')
+                if callable(fn):
+                    _R22_NAV_REMOTE_HAS[key] = bool(fn(int(key[0]), int(key[1])))
+            except Exception:
+                pass
+            finally:
+                _R22_NAV_REMOTE_PREFETCH.discard(key)
         try:
-            return bool(fn(int(chat_id), int(message_id)))
+            pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+            if pool is not None:
+                pool.submit_unique(f'r22-nav-has:{int(key[0])}:{int(key[1])}', _prefetch)
         except Exception:
-            pass
+            _R22_NAV_REMOTE_PREFETCH.discard(key)
     return False
 
 def ensure_previous_back_nav_keyboard(reply_markup, chat_id: int, message_id: int):

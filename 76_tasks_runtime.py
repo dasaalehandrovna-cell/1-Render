@@ -2946,7 +2946,7 @@ def _v213_show_task_home(chat_id: int, user_id: int=0, current_message_id: int=0
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_tasks_v213')
-            if result == 'ok':
+            if result in {'ok', 'scheduled'}:
                 try:
                     register_open_window(cid, mid, 'tasks', code='Ф248', params={'task_dispatcher': True, 'contour_home': True})
                 except Exception:
@@ -2973,7 +2973,7 @@ def _canon_v213_show_neutral_home__001(chat_id: int, current_message_id: int=0) 
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_neutral_v213')
-            if result == 'ok':
+            if result in {'ok', 'scheduled'}:
                 _v213_clear_finance_active_pointer(cid)
                 return mid
         except Exception:
@@ -4203,7 +4203,7 @@ def _v215_edit_or_send(chat_id: int, message_id: int, text: str, kb, purpose: st
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose=purpose)
-            if result in {'ok', 'not_modified'}:
+            if result in {'ok', 'scheduled', 'not_modified'}:
                 return mid
         except Exception:
             pass
@@ -5945,7 +5945,7 @@ def _v220_show_neutral_home(chat_id: int, current_message_id: int=0) -> int:
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_neutral_v220')
-            if result == 'ok':
+            if result in {'ok', 'scheduled'}:
                 _v213_clear_finance_active_pointer(cid)
                 return mid
         except Exception:
@@ -6421,7 +6421,7 @@ def show_contour_menu_closed_v221(chat_id: int, user_id: int=0, message_id: int=
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, V221_MENU_CLOSED_TEXT, reply_markup=kb, purpose='contour_menu_closed_v221')
-            if result == 'ok':
+            if result in {'ok', 'scheduled'}:
                 try:
                     register_open_window(cid, mid, 'contour_menu_closed', code=V221_MENU_CLOSED_MARKER, params={'parallel_allowed': True})
                 except Exception:

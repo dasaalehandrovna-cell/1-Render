@@ -163,13 +163,13 @@ def _v177_deferred_ui_retry(chat_id: int, message_id: int, text: str, reply_mark
         pass
 
 def _canon_v161_edit_retry__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='ui') -> str:
-    """Final UI edit policy: one synchronous Telegram attempt, optional retry in background."""
+    """R22 UI policy: enqueue latest render; callback worker never waits for Telegram RTT."""
     started = _v176_time.monotonic()
     try:
         result = str(fast_ui_edit_message_text(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose) or 'failed')
     except Exception:
         result = 'failed'
-    v177_perf_stage('telegram_edit', _v176_time.monotonic() - started)
+    v177_perf_stage('render_enqueue', _v176_time.monotonic() - started)
     if result in {'rate_limited', 'failed'} and v176_process_enabled('ui_retry'):
         try:
             pool = globals().get('GENERAL_TASK_POOL')

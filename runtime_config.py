@@ -1,4 +1,4 @@
-"""vys-262 R21 internal runtime configuration.
+"""vys-262 R22 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r21-every-button-fast-heavy-stage"
+CONFIG_VERSION = "vys-262-r22-zero-blocking-button-render"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,10 +23,12 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "RENDER_TELEGRAM_ONLY": "1",
     "MALLOC_ARENA_MAX": "2",
 
-    # R21: every callback has an immediate FAST stage; heavy work is dispatched separately.
+    # R22: callback starts on FAST before durable SQLite; Telegram render is latest-wins async.
     "UI_WORKERS": "6",
         "FAST_UI_WORKERS": "6",
         "FAST_UI_MAX_PENDING": "900",
+        "WINDOW_RENDER_WORKERS": "6",
+        "WINDOW_RENDER_MAX_PENDING_KEYS": "256",
     "UI_MAX_PENDING": "800",
     "CALLBACK_ACK_WORKERS": "2",
     "UI_CLEANUP_WORKERS": "2",

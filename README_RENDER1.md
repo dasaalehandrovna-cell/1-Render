@@ -108,3 +108,8 @@ R20 restores the original выс-262 principle of an independent monotonic setti
 See `FIXES_R21_EVERY_BUTTON_FAST_HEAVY_STAGE.txt`.
 
 Every Telegram callback has an immediate FAST stage on Render #1. The callback itself is never classified as a heavy button. Split-capable work is enqueued as a second-stage job for Render #2. Redis locking and durable I/O are never awaited before the user-facing callback returns. Owner READY notice shows `Пер-R21`.
+
+## Пер-R22 — ZERO-BLOCKING BUTTON / LATEST-WINS RENDER
+See `FIXES_R22_ZERO_BLOCKING_BUTTON_RENDER.txt`.
+
+R22 dispatches ordinary callbacks to FAST before waiting for the local SQLite inbox write. Telegram edit RTT is removed from callback workers and runs in a dedicated per-window latest-wins render pool. RAM navigation history is hot-path authoritative and KV mirroring is asynchronous. Owner READY notice shows `Пер-R22`.

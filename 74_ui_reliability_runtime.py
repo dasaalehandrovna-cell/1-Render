@@ -2979,12 +2979,67 @@ def _canon_delete_auto_finance_windows_for_chat__001(chat_id: int, *, persist_no
     return len(ids)
 _V160_FAST_EDIT_LOCKS = defaultdict(_v160_threading.RLock)
 _V160_FAST_EDIT_LAST = {}
-_V160_FAST_EDIT_MIN_GAP = max(0.03, min(0.2, float(_v160_os.getenv('V160_UI_MIN_GAP_SECONDS', '0.08') or '0.08')))
+_V160_FAST_EDIT_MIN_GAP = 0.0  # R22: latest-wins render queue replaces callback-thread sleeps
 
 def _canon_callback_should_debounce__001(call, data_str: str, min_interval: float=0.12) -> bool:
     return str(data_str or '') == 'none'
 
+def _r22_render_stage(payload: dict, stage: str, elapsed: float=0.0, result: str='') -> None:
+    """Record render timings without borrowing callback-thread locals."""
+    try:
+        action = str(payload.get('_r22_action') or '')[:120]
+        rows = globals().get('_V177_PERF_STAGES')
+        if rows is not None:
+            rows.append({'ts': _v160_time.time(), 'action': action, 'stage': str(stage or '')[:80], 'elapsed': max(0.0, float(elapsed or 0.0))})
+    except Exception:
+        pass
+    if stage == 'telegram_render_done':
+        try:
+            bot_journal('button_chain_render', int(payload.get('chat_id') or 0),
+                        f"action={str(payload.get('_r22_action') or '')[:120]}; purpose={str(payload.get('purpose') or '')[:80]}; queue_wait={float(payload.get('_r22_queue_wait') or 0.0):.3f}s; telegram={float(elapsed or 0.0):.3f}s; result={result}")
+        except Exception:
+            pass
+
+
+def _r22_execute_window_render(payload: dict) -> None:
+    """Actual Telegram network stage for R22; runs only on WINDOW_RENDER_TASK_POOL."""
+    try:
+        payload['_r22_queue_wait'] = max(0.0, _v160_time.monotonic() - float(payload.get('_r22_enqueued_mono') or _v160_time.monotonic()))
+        _r22_render_stage(payload, 'render_queue_wait', payload['_r22_queue_wait'])
+    except Exception:
+        pass
+    try:
+        apply_fn = globals().get('window_diag_fast_ui_apply')
+        if callable(apply_fn):
+            apply_fn(payload, delayed=bool(payload.get('_r22_queue_wait', 0.0) > 0.01))
+    except Exception:
+        pass
+    started = _v160_time.monotonic()
+    result = 'failed'
+    try:
+        result = str(_perform_fast_ui_edit(payload) or 'failed')
+    except Exception as exc:
+        result = 'failed'
+        try:
+            log_error(f'R22 WINDOW RENDER FAILED chat={payload.get("chat_id")} msg={payload.get("message_id")}: {exc}')
+        except Exception:
+            pass
+    elapsed = max(0.0, _v160_time.monotonic() - started)
+    _r22_render_stage(payload, 'telegram_render_done', elapsed, result)
+    # Preserve the old safe_edit recovery semantics, but recovery is also outside
+    # the callback worker. It is intentionally only for unusable Telegram messages.
+    if result in {'not_found', 'failed'} and str(payload.get('purpose') or '').startswith('safe_edit'):
+        try:
+            fallback = globals().get('_v177_safe_edit_fallback_send')
+            if callable(fallback):
+                fallback(bot, int(payload.get('chat_id')), int(payload.get('message_id')), str(payload.get('_r22_action') or ''),
+                         str(payload.get('text') or ''), payload.get('reply_markup'), payload.get('parse_mode'))
+        except Exception:
+            pass
+
+
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
+    """R22: prepare locally, enqueue latest render, never wait for Telegram RTT."""
     chat_id = int(chat_id)
     message_id = int(message_id)
     try:
@@ -3009,32 +3064,51 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
             reply_markup = augment(reply_markup, text, chat_id)
     except Exception:
         pass
-    payload = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'reply_markup': reply_markup, 'parse_mode': parse_mode, 'purpose': purpose}
+    payload = {
+        'chat_id': chat_id, 'message_id': message_id, 'text': text,
+        'reply_markup': reply_markup, 'parse_mode': parse_mode, 'purpose': purpose,
+        '_r22_enqueued_mono': _v160_time.monotonic(),
+    }
+    try:
+        local = globals().get('_V177_PERF_LOCAL')
+        payload['_r22_action'] = str(getattr(local, 'action', '') or '')[:120] if local is not None else ''
+    except Exception:
+        payload['_r22_action'] = ''
     try:
         prepare = globals().get('window_diag_prepare_fast_ui_payload')
         if callable(prepare):
             payload = prepare(payload) or payload
+            payload.setdefault('_r22_enqueued_mono', _v160_time.monotonic())
     except Exception:
         pass
     try:
+        # Cancel only legacy delayed timers. This is local memory work, no network.
         cancel_fast_ui_edit(chat_id, message_id)
     except Exception:
         pass
-    key = (chat_id, message_id)
-    with _V160_FAST_EDIT_LOCKS[key]:
-        now_m = _v160_time.monotonic()
-        last = float(_V160_FAST_EDIT_LAST.get(key, 0.0) or 0.0)
-        remain = _V160_FAST_EDIT_MIN_GAP - (now_m - last)
-        if remain > 0:
-            _v160_time.sleep(remain)
-        _V160_FAST_EDIT_LAST[key] = _v160_time.monotonic()
+    pool = globals().get('WINDOW_RENDER_TASK_POOL')
+    if pool is None:
+        # Compatibility fallback for incomplete deployments; still avoid sleeping.
         try:
-            apply_fn = globals().get('window_diag_fast_ui_apply')
-            if callable(apply_fn):
-                apply_fn(payload, delayed=False)
+            pool = globals().get('FAST_UI_TASK_POOL')
+            if pool is not None and pool.submit(f'r22-render:{chat_id}:{message_id}', _r22_execute_window_render, payload):
+                return 'scheduled'
         except Exception:
             pass
-        return _perform_fast_ui_edit(payload)
+        return 'failed'
+    try:
+        seq = pool.submit_latest(f'{chat_id}:{message_id}', _r22_execute_window_render, payload)
+        if seq:
+            payload['_r22_render_seq'] = int(seq)
+            _r22_render_stage(payload, 'render_enqueued', 0.0)
+            return 'scheduled'
+    except Exception as exc:
+        try:
+            log_error(f'R22 RENDER QUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
+        except Exception:
+            pass
+    return 'failed'
+
 _V160_CALLBACK_LOCK = _v160_threading.RLock()
 _V160_CALLBACK_IDS = {}
 
@@ -3153,7 +3227,7 @@ def _v177_legacy_0244_return_to_main_window_closing_previous(chat_id: int, day_k
             bot_journal('back_main_fast', chat_id, f'day={day_key} result={result} old={old_mid or None} current={current_mid}; parallel=1')
         except Exception:
             pass
-        if result == 'ok':
+        if result in {'ok', 'scheduled'}:
             set_active_window_id(chat_id, day_key, current_mid)
             if old_mid and old_mid != current_mid:
                 try:
@@ -4417,7 +4491,7 @@ def _canon_return_to_main_window_closing_previous__001(chat_id: int, day_key: st
             bot_journal('back_main_v161', chat_id, f'msg={current_mid}; old={old_mid or None}; result={result}; preserve_parallel=1')
         except Exception:
             pass
-        if result == 'ok':
+        if result in {'ok', 'scheduled'}:
             set_active_window_id(chat_id, day_key, current_mid)
             try:
                 schedule_balance_panel_refresh(chat_id, 0.05)
@@ -4537,7 +4611,7 @@ def _v161_cmd_start(msg):
     kb = build_main_keyboard(day_key, chat_id)
     for mid in _v161_known_main_candidates(chat_id, day_key):
         result = _v161_edit_retry(chat_id, mid, txt, reply_markup=kb, parse_mode='HTML', purpose='start_reuse_main')
-        if result == 'ok':
+        if result in {'ok', 'scheduled'}:
             set_active_window_id(chat_id, day_key, mid)
             try:
                 schedule_balance_panel_refresh(chat_id, 0.05)
@@ -4612,7 +4686,7 @@ def _v161_open_info(call, day_key: str) -> bool:
     text = window_mark(build_info_text(chat_id), 'Ф54')
     kb = build_info_keyboard(chat_id)
     result = _v161_edit_retry(chat_id, mid, text, reply_markup=kb, purpose='info_v161')
-    if result == 'ok':
+    if result in {'ok', 'scheduled'}:
         try:
             register_open_window(chat_id, mid, 'local_fin_view', code='info', day_key=str(day_key), params={'view_action': 'info', 'parallel_allowed': True})
         except Exception:

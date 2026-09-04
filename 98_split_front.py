@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-per-r21-every-button-fast-heavy-stage"
+_SPLIT_FRONT_VERSION = "vys-262-front-per-r22-zero-blocking-button-render"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -2875,7 +2875,8 @@ except Exception: pass
 # R21: every button has an immediate FAST stage. Heavy execution is a second stage.
 # This override intentionally runs after 89_callback_final.py so it replaces the canonical
 # monolith submitter without changing the v262 business handlers themselves.
-R21_EVERY_BUTTON_FAST_STAGE = 'per-r21-every-button-fast-heavy-stage'
+R22_ZERO_BLOCKING_BUTTON_STAGE = 'per-r22-zero-blocking-button-render'
+R21_EVERY_BUTTON_FAST_STAGE = R22_ZERO_BLOCKING_BUTTON_STAGE  # compatibility alias
 try:
     R21_HEAVY_DISPATCH_TASK_POOL = KeyedTaskPool(
         'heavy-dispatch',

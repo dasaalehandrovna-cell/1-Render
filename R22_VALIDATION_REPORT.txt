@@ -1,0 +1,34 @@
+Пер-R22 VALIDATION REPORT
+=========================
+Release: Пер-R22 — ZERO-BLOCKING BUTTON / LATEST-WINS RENDER
+Base: user-provided FAST/HEAVY R21 packages
+
+Validated changes
+- Callback immediate ACK remains before parsing/durability.
+- Ordinary callback claim + FAST enqueue occurs before SQLite webhook inbox put.
+- HTTP 200 still waits for successful local durable inbox write.
+- Callback worker no longer waits for editMessageText/editMessageCaption RTT.
+- WINDOW_RENDER_TASK_POOL is a separate latest-wins keyed executor.
+- Per-window pending render is replaced by the newest render.
+- Pure navigation gets unique FAST navigation keys; state-changing/finance work stays serialized.
+- RAM navigation history is synchronous; KV mirror/has prefetch is background.
+- Canonical fast_ui contains no sleep and no direct _perform_fast_ui_edit call.
+- Async safe_edit fallback exists for actual Telegram render failure/not_found.
+- button_chain_render records render queue wait + Telegram RTT + result.
+- Owner READY notice: «Пер-R22».
+- FAST/HEAVY internal config version: vys-262-r22-zero-blocking-button-render.
+- R20 durable capsule Redis key/format remains unchanged.
+
+PASS
+- python compile: every top-level FAST .py
+- python compile: every top-level HEAVY .py
+- INFO/tests/r22_zero_blocking_button_render_smoke.py
+- INFO/tests/startup_smoke_v262.py
+- INFO/tests/r20_durable_capsule_fastlane_smoke.py
+- INFO/tests/r20_heavy_capsule_contract_smoke.py against R22 HEAVY
+- INFO/tests/r19_runtime_lane_regression.py
+- INFO/tests/r21_every_button_fast_heavy_stage_smoke.py (supersession-compatible)
+- Runtime micro-test of LatestKeyedTaskPool: submitted [1,2,3] => executed [1,3], proving pending stale render replacement.
+
+Safety exception intentionally retained
+Rare critical finance toggle callbacks identified by durable_task_required() retain the old pre-execution cloud witness. This prevents double replay of a toggle after deploy from reversing the user's choice. They still receive the immediate callback ACK; ordinary UI/navigation uses the R22 zero-blocking path.

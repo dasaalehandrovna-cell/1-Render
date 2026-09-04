@@ -681,7 +681,7 @@ def _v177_legacy_0242_return_to_main_window_closing_previous(chat_id: int, day_k
     if current_message_id is not None:
         result = fast_ui_edit_message_text(chat_id, current_message_id, txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_instant')
         bot_journal('back_main_fast', chat_id, f'day={day_key} result={result} old={old_mid} current={current_message_id}')
-        if result == 'ok':
+        if result in {'ok', 'scheduled'}:
             set_active_window_id(chat_id, day_key, current_message_id)
             if old_mid and old_mid != current_message_id:
 

@@ -1,0 +1,24 @@
+Пер-R22 — ZERO-BLOCKING BUTTON / LATEST-WINS RENDER
+
+Цель релиза
+Убрать задержку между нажатием Telegram-кнопки и началом построения/отрисовки нового окна, сохранив разделение FAST (Render #1) / HEAVY (Render #2) и durability предыдущих релизов.
+
+Что изменено на FAST / Render #1
+1. Обычный callback теперь claim/enqueue в FAST выполняет ДО синхронной записи webhook inbox в SQLite.
+2. HTTP 200 по-прежнему не подтверждается до успешной локальной durable-записи callback, поэтому crash/deploy safety не выброшена ради скорости.
+3. SQLite inbox mark running/done/failed, remote event commit, timer protection и remote witness вынесены с callback-worker на cleanup/delta lanes.
+4. Telegram editMessageText/editMessageCaption больше не выполняется внутри callback-worker.
+5. Добавлен WINDOW_RENDER_TASK_POOL — отдельная latest-wins очередь Telegram render.
+6. Для одного chat_id/message_id в ожидании хранится только последняя отрисовка. Устаревший pending render заменяется новым, а не создаёт длинную очередь.
+7. Чистая навигация может обрабатываться параллельно по уникальному callback id; state-changing и финансовые мутации остаются сериализованными.
+8. История кнопки «Назад» пишется сначала в RAM. KV/Redis mirror и has-prefetch выполняются фоном; Redis RTT не стоит перед обычным render.
+9. Старый callback-thread sleep/min-gap для canonical fast_ui отключён. Частоту Telegram запросов теперь естественно ограничивает per-window latest-wins render lane.
+10. safe_edit/_v161_edit_retry считают queued render успешным интерактивным результатом и не создают второе окно только потому, что Telegram RTT ещё не завершился.
+11. Добавлена диагностика button_chain_render: action, render queue wait, Telegram RTT и итог edit.
+12. Owner READY показывает «Пер-R22».
+
+Особое правило надёжности
+Редкие finance-toggle callback, для которых прежняя durability policy требует cloud witness до бизнес-мутации, сохраняют этот pre-execution witness. Это защищает от двойного replay toggle после deploy. Обычная навигация/окна используют новый R22 zero-blocking путь.
+
+HEAVY / Render #2
+HEAVY остаётся владельцем split/durable/Google/MEGA тяжёлых операций. Формат R20 durable capsule и Redis key не менялись.
