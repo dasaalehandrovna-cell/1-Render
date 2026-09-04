@@ -22,10 +22,11 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r16-fast-finance-color-xlsx"
+_SPLIT_FRONT_VERSION = "vys-262-front-r18-instant-callback-exact-deploy-restore"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
+_SPLIT_SYNC_FIRST_DIRTY_AT = 0.0
 _SPLIT_LAST_CHANGE_AT = _split_time.time()
 _SPLIT_FULL_LOCK = _split_threading.RLock()
 _SPLIT_FULL_TIMER = None
@@ -33,6 +34,7 @@ _SPLIT_CONTINUITY_LOCK = _split_threading.RLock()
 _SPLIT_CONTINUITY_TIMER = None
 _SPLIT_CONTINUITY_CHAT_ID = None
 _SPLIT_CONTINUITY_REASON = ''
+_SPLIT_CONTINUITY_FIRST_DIRTY_AT = 0.0
 _SPLIT_CHANGE_LOCK = _split_threading.RLock()
 _SPLIT_CHANGE_EPOCH = _split_secrets.token_hex(6)
 _SPLIT_CHANGE_SEQ = 0
@@ -448,6 +450,31 @@ def _split_authorized_request():
     return bool(secret and _split_secrets.compare_digest(secret, supplied))
 
 
+_SPLIT_STATE_REV_KIND_R18 = 'split_state_revision_r18'
+_SPLIT_STATE_REV_KEY_R18 = 'latest'
+_SPLIT_STATE_REV_LOCK_R18 = _split_threading.RLock()
+
+def _split_touch_state_revision_r18(reason='update', update_id=None):
+    """Tiny monotonic durability marker written after successful Telegram work.
+
+    Unlike the heavier continuity shadow this write is O(1), so restore freshness
+    cannot remain hours old just because a trailing-edge serializer is coalescing.
+    """
+    try:
+        with _SPLIT_STATE_REV_LOCK_R18:
+            prev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
+            seq = int((prev or {}).get('seq') or 0) + 1
+            payload = {'schema':1, 'seq':seq, 'saved_at':_split_time.time(), 'reason':str(reason or '')[:140],
+                       'update_id':str(update_id)[:80] if update_id is not None else '',
+                       'state_token':_split_current_state_token_v264() if '_split_current_state_token_v264' in globals() else ''}
+            SQLITE.set_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, payload)
+            return payload
+    except Exception as exc:
+        try: log_error(f'R18 state revision touch: {exc}')
+        except Exception: pass
+        return {}
+
+
 def _split_mark_state_changed_v264(reason='change'):
     global _SPLIT_CHANGE_SEQ, _SPLIT_STATE_TOKEN, _SPLIT_LAST_CHANGE_AT
     with _SPLIT_CHANGE_LOCK:
@@ -516,7 +543,7 @@ def split_front_state_download_v262():
     try:
         snapshot_token = _split_current_state_token_v264()
         SQLITE.backup_to(raw)
-        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=9) as dst:
+        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
             _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
         with open(gz, 'rb') as fh:
             payload = fh.read()
@@ -574,7 +601,7 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
             gz = raw + '.gz'
             SQLITE.backup_to(raw)
-            with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=9) as dst:
+            with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
                 _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
         payload = open(gz, 'rb').read()
         max_mb = max(1, min(128, int(_split_os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16')))
@@ -583,14 +610,27 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
         # revision is derived from the same SQLite image by the worker; the side meta is informational.
         revision = 0.0
         try:
-            for kind in ('user_state_shadow_v265', 'runtime_continuity_v263'):
+            for kind in ('split_state_revision_r18', 'user_state_shadow_v265', 'runtime_continuity_v263'):
                 row = SQLITE.get_meta(kind, 'latest', {}) or {}
                 revision = max(revision, float((row or {}).get('saved_at') or 0.0))
         except Exception:
             pass
         key, meta_key = _split_redis_snapshot_keys_v266()
         client = _split_redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=8, health_check_interval=30)
-        meta = {'revision': revision, 'size': len(payload), 'saved_at': _split_time.time(), 'reason': str(reason or '')[:160], 'source': 'front-r6'}
+        existing_revision = 0.0
+        try:
+            existing_raw = client.get(meta_key)
+            if isinstance(existing_raw, (bytes, bytearray)):
+                existing_raw = existing_raw.decode('utf-8', 'replace')
+            existing_meta = _split_json.loads(existing_raw) if isinstance(existing_raw, str) and existing_raw else {}
+            existing_revision = float((existing_meta or {}).get('revision') or 0.0)
+        except Exception:
+            existing_revision = 0.0
+        if existing_revision > revision + 0.000001:
+            _SPLIT_STATE['redis_fallback_last_ok'] = _split_time.time()
+            _SPLIT_STATE['redis_fallback_last_error'] = 'newer Redis snapshot preserved'
+            return True
+        meta = {'revision': revision, 'size': len(payload), 'saved_at': _split_time.time(), 'reason': str(reason or '')[:160], 'source': 'front-r18'}
         pipe = client.pipeline(transaction=True)
         pipe.set(key, payload)
         pipe.set(meta_key, _split_json.dumps(meta, separators=(',', ':')))
@@ -666,6 +706,21 @@ def _split_peer_loop():
         _split_time.sleep(max(30, min(1800, interval)))
 
 
+def _split_request_worker_full_sync_r18(reason='need_full'):
+    """Queue a full rebase on HEAVY; FAST never waits for snapshot/MEGA work."""
+    base, secret = _split_peer_base(), _split_secret()
+    if not base or not secret:
+        return False, 'worker URL/secret not configured'
+    try:
+        body = {'type':'sync_state', 'reason':str(reason or 'need_full')[:160], 'state_token':_split_current_state_token_v264()}
+        r = requests.post(base + '/internal/job', json=body, headers=_split_headers('vys-262-front-r18-rebase'), timeout=2.5)
+        if 200 <= r.status_code < 300:
+            return True, f'worker full rebase queued HTTP {r.status_code}'
+        return False, f'worker full rebase HTTP {r.status_code}: {r.text[:160]}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:160]}'
+
+
 def _split_request_sync_now(reason='change'):
     """R12 normal durability path: send only changed SQLite pages.
 
@@ -682,20 +737,22 @@ def _split_request_sync_now(reason='change'):
         return True
     _SPLIT_STATE['delta_last_error'] = str(detail or '')[:220]
     if need_full:
-        # R15: never gzip/upload the full database from the hot mutation path.  R13's
-        # RAW event journal already protects every Telegram update.  A full rebase is
-        # coalesced and runs only after the bot has been quiet, so a burst of finance
-        # messages cannot burn CPU/network and stall the keyed dispatcher.
+        # R18: a hash/base mismatch must not leave HEAVY stale for minutes/hours.
+        # Queue the full rebase on HEAVY immediately.  This function already runs in
+        # a background timer, so the Telegram callback/message handler never waits.
         _SPLIT_STATE['delta_full_fallbacks'] = int(_SPLIT_STATE.get('delta_full_fallbacks') or 0) + 1
         _SPLIT_STATE['full_reconcile_pending'] = True
-        try: _split_schedule_idle_full_reconcile_v270('delta_resync:' + str(reason or 'change')[:90])
-        except Exception: pass
+        queued, qdetail = _split_request_worker_full_sync_r18('delta_resync:' + str(reason or 'change')[:90])
+        if not queued:
+            _SPLIT_STATE['full_reconcile_last_error'] = str(qdetail or '')[:220]
+            try: _split_schedule_idle_full_reconcile_v270('delta_resync_fallback:' + str(reason or 'change')[:80], delay=8.0)
+            except Exception: pass
     _SPLIT_STATE['sync_last_error'] = str(detail or 'delta sync failed')[:220]
     return False
 
 
 def _split_sync_timer_fire():
-    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT
+    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
     try:
         reason = str(_SPLIT_STATE.get('sync_reason') or 'change')
         _split_request_sync_now(reason)
@@ -703,6 +760,7 @@ def _split_sync_timer_fire():
         with _SPLIT_SYNC_LOCK:
             _SPLIT_SYNC_TIMER = None
             _SPLIT_SYNC_DUE_AT = 0.0
+            _SPLIT_SYNC_FIRST_DIRTY_AT = 0.0
 
 
 def _split_inside_telegram_update_v264():
@@ -711,7 +769,7 @@ def _split_inside_telegram_update_v264():
 
 def split_schedule_worker_sync_v262(reason='change', delay=None):
     """Coalesced state handoff; Telegram never waits for MEGA or snapshot transfer."""
-    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT
+    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
     if not _split_env_bool('SPLIT_WORKER_SYNC_ENABLED', True):
         return False
     # One Telegram update may call save_data/config/finance hooks many times. R4
@@ -740,7 +798,17 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
         min_interval = max(min_interval, 1.5)
     now = _split_time.time()
     last = float(_SPLIT_STATE.get('sync_last_attempt') or 0.0)
+    with _SPLIT_SYNC_LOCK:
+        if _SPLIT_SYNC_FIRST_DIRTY_AT <= 0.0:
+            _SPLIT_SYNC_FIRST_DIRTY_AT = now
+        first_dirty = _SPLIT_SYNC_FIRST_DIRTY_AT
+    try:
+        max_latency = max(1.0, min(12.0, float(_split_os.getenv('SPLIT_SYNC_MAX_LATENCY_SEC','3.0') or '3.0')))
+    except Exception:
+        max_latency = 3.0
     due = max(now + wait, last + min_interval if last else now + wait)
+    due = min(due, first_dirty + max_latency)
+    due = max(now + 0.05, due)
     _SPLIT_STATE['sync_pending'] = True
     _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
     with _SPLIT_SYNC_LOCK:
@@ -1114,6 +1182,27 @@ _CONTINUITY_NAMES_V263 = (
 )
 _CONTINUITY_SCALARS_V263 = ('restore_mode', '_short_callback_counter')
 
+# R17: automatically include safe RAM-only interaction containers that future UI
+# modules may add without remembering to extend the static whitelist.  We purposely
+# exclude process/runtime/network objects so a deploy never resurrects old locks,
+# queues, timers, transport caches or worker state.
+_CONTINUITY_DYNAMIC_HINTS_R17 = ('SESSION', 'WAIT', 'PENDING', 'SELECTION', 'BINDING', 'CALLBACK', 'WINDOW', 'INPUT')
+_CONTINUITY_DYNAMIC_DENY_R17 = ('LOCK', 'THREAD', 'TIMER', 'QUEUE', 'POOL', 'CLIENT', 'SOCKET', 'EXECUTOR', 'SPLIT_', 'MEGA_', 'REDIS_', 'TG_', 'TELEGRAM_', 'MEDIA_GROUP', 'FORWARD_OUTCOME')
+
+def _continuity_dynamic_names_r17():
+    out = []
+    for name, value in list(globals().items()):
+        if name in _CONTINUITY_NAMES_V263 or name in _CONTINUITY_SCALARS_V263:
+            continue
+        upper = str(name).upper()
+        if not str(name).startswith('_') or not any(h in upper for h in _CONTINUITY_DYNAMIC_HINTS_R17):
+            continue
+        if any(bad in upper for bad in _CONTINUITY_DYNAMIC_DENY_R17):
+            continue
+        if isinstance(value, (dict, list, set, tuple, _split_collections.deque)):
+            out.append(str(name))
+    return tuple(sorted(set(out)))
+
 # R6 persistent user-state shadow. The normal SQLite root/chats remain canonical,
 # but this compact duplicate protects settings/UI/task/tenant metadata from any
 # missed point-save or cross-chat mutation. Financial cold ledgers are deliberately
@@ -1162,7 +1251,11 @@ def user_state_shadow_capture_v265(reason='checkpoint'):
             'reason': str(reason or 'checkpoint')[:180], 'front_version': _SPLIT_FRONT_VERSION,
             'root': root, 'chats': chats,
             'counts': {'root_keys': len(root), 'chats': len(chats),
-                       'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict))},
+                       'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict)),
+                       'tasks': len((root.get('_tasks_v172') or {})) if isinstance(root.get('_tasks_v172'), dict) else 0,
+                       'reminders': len((root.get('reminders') or root.get('_reminders') or {})) if isinstance((root.get('reminders') or root.get('_reminders') or {}), dict) else 0,
+                       'tenants': len((((root.get('_global_settings') or {}).get('tenants_v148') or {}).get('tenants') or {})) if isinstance(((root.get('_global_settings') or {}).get('tenants_v148') or {}), dict) else 0,
+                       'additional_owners': len(root.get('additional_owners') or root.get('additional_owner_ids') or []) if isinstance((root.get('additional_owners') or root.get('additional_owner_ids') or []), (list, tuple, set, dict)) else 0},
         }
         SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
         return payload
@@ -1339,11 +1432,12 @@ def _continuity_apply_v263(name, restored):
 def continuity_capture_v263(reason='checkpoint'):
     """Persist RAM-only user interaction continuity inside canonical SQLite."""
     payload = {
-        'schema': 1,
+        'schema': 2,
         'saved_at': _split_time.time(),
         'reason': str(reason or 'checkpoint')[:180],
         'front_version': _SPLIT_FRONT_VERSION,
         'globals': {},
+        'dynamic_globals_r17': {},
         'scalars': {},
     }
     for name in _CONTINUITY_NAMES_V263:
@@ -1358,6 +1452,10 @@ def continuity_capture_v263(reason='checkpoint'):
         enc = _continuity_encode_v263(globals().get(name))
         if enc is not _CONTINUITY_SKIP_V263:
             payload['scalars'][name] = enc
+    for name in _continuity_dynamic_names_r17():
+        enc = _continuity_encode_v263(globals().get(name))
+        if enc is not _CONTINUITY_SKIP_V263:
+            payload['dynamic_globals_r17'][name] = enc
     # Existing Telegram message IDs/windows are logical root state; add a compact
     # count here for diagnostics while the actual records stay in the normal root.
     try:
@@ -1386,6 +1484,12 @@ def continuity_restore_v263():
             continue
         if _continuity_apply_v263(name, _continuity_decode_v263(raw)):
             restored_names.append(name)
+    dynamic_allowed = set(_continuity_dynamic_names_r17())
+    for name, raw in (payload.get('dynamic_globals_r17') or {}).items():
+        if name not in dynamic_allowed:
+            continue
+        if _continuity_apply_v263(name, _continuity_decode_v263(raw)):
+            restored_names.append(name)
     for name, raw in (payload.get('scalars') or {}).items():
         if name not in _CONTINUITY_SCALARS_V263:
             continue
@@ -1403,7 +1507,7 @@ def continuity_restore_v263():
     except Exception:
         pass
     try:
-        log_info(f"CONTINUITY R4 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
+        log_info(f"CONTINUITY R18 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
     except Exception:
         pass
     return {'ok': True, 'restored': restored_names, 'saved_at': payload.get('saved_at')}
@@ -1440,13 +1544,14 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
 # The finance record itself has already been committed by persist_finance_chat_local_fast;
 # serializing every chat after every message was pure foreground latency.
 def _split_continuity_checkpoint_fire_v270():
-    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
+    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON, _SPLIT_CONTINUITY_FIRST_DIRTY_AT
     with _SPLIT_CONTINUITY_LOCK:
         cid = _SPLIT_CONTINUITY_CHAT_ID
         reason = str(_SPLIT_CONTINUITY_REASON or 'coalesced')
         _SPLIT_CONTINUITY_TIMER = None
         _SPLIT_CONTINUITY_CHAT_ID = None
         _SPLIT_CONTINUITY_REASON = ''
+        _SPLIT_CONTINUITY_FIRST_DIRTY_AT = 0.0
     try:
         if cid is not None:
             _V263_BASE_SAVE_DATA(data, chat_ids=[int(cid)])
@@ -1461,16 +1566,24 @@ def _split_continuity_checkpoint_fire_v270():
         except Exception: pass
 
 def split_schedule_continuity_checkpoint_v270(chat_id=None, reason='update', delay=4.0):
-    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
+    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON, _SPLIT_CONTINUITY_FIRST_DIRTY_AT
     with _SPLIT_CONTINUITY_LOCK:
         if chat_id is not None:
             try: _SPLIT_CONTINUITY_CHAT_ID = int(chat_id)
             except Exception: pass
         _SPLIT_CONTINUITY_REASON = str(reason or 'update')[:160]
+        now = _split_time.time()
+        if _SPLIT_CONTINUITY_FIRST_DIRTY_AT <= 0.0:
+            _SPLIT_CONTINUITY_FIRST_DIRTY_AT = now
+        try:
+            max_latency = max(1.0, min(15.0, float(_split_os.getenv('SPLIT_CONTINUITY_MAX_LATENCY_SEC','5.0') or '5.0')))
+        except Exception:
+            max_latency = 5.0
+        due = min(now + max(0.5, float(delay or 4.0)), _SPLIT_CONTINUITY_FIRST_DIRTY_AT + max_latency)
         if _SPLIT_CONTINUITY_TIMER is not None:
             try: _SPLIT_CONTINUITY_TIMER.cancel()
             except Exception: pass
-        _SPLIT_CONTINUITY_TIMER = _split_threading.Timer(max(0.5, float(delay or 4.0)), _split_continuity_checkpoint_fire_v270)
+        _SPLIT_CONTINUITY_TIMER = _split_threading.Timer(max(0.05, due - now), _split_continuity_checkpoint_fire_v270)
         _SPLIT_CONTINUITY_TIMER.daemon = True
         _SPLIT_CONTINUITY_TIMER.start()
     return True
@@ -1481,6 +1594,13 @@ _V263_BASE_SAVE_DATA = save_data
 
 def save_data(d, chat_ids=None, full=False, root_only=False):
     result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
+    # Non-Telegram/background mutations need their own freshness marker.  Telegram
+    # updates receive exactly one marker after the handler, avoiding extra hot-path IO.
+    try:
+        if not _split_inside_telegram_update_v264():
+            _split_touch_state_revision_r18('logical_save_bg')
+    except Exception:
+        pass
     try:
         # Heavy all-chat shadow is background-only during normal READY operation.
         ready_fn = globals().get('runtime_is_ready')
@@ -1527,6 +1647,10 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
         _SPLIT_UPDATE_CONTEXT.active = False
         _SPLIT_UPDATE_CONTEXT.finance_dirty = False
     try:
+        _split_touch_state_revision_r18(f'tg:{str(update_type or "other")}', update_id)
+    except Exception:
+        pass
+    try:
         cid = update_chat_id
         if cid is None and isinstance(payload, dict):
             cid = _extract_update_chat_id(payload)
@@ -1552,7 +1676,7 @@ def _split_push_snapshot_now_v263(reason='shutdown'):
     gz = raw + '.gz'
     try:
         SQLITE.backup_to(raw)
-        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=9) as dst:
+        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
             _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
         # Seed shared durable cache before contacting worker; this survives worker deploys.
         try:
@@ -1646,13 +1770,28 @@ except Exception:
 _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN = runtime_graceful_shutdown
 
 def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
-    result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+    # R18 deploy handoff order is deliberate: do NOT put slow MEGA/archive work in
+    # front of the only state copy a replacement instance needs.  First serialize all
+    # user/config/RAM interaction state, immediately seed Redis + HEAVY, and only then
+    # run the legacy drain/archive shutdown.  A second post-drain push closes the tail.
     try:
-        continuity_checkpoint_v263(None, reason=f'shutdown:{signal_name}', full=True, schedule=False)
-        _split_push_snapshot_now_v263(f'shutdown:{signal_name}')
+        continuity_checkpoint_v263(None, reason=f'shutdown-pre:{signal_name}', full=True, schedule=False)
+        _split_touch_state_revision_r18(f'shutdown-pre:{signal_name}')
+        _split_push_snapshot_now_v263(f'shutdown-pre-fast:{signal_name}')
     except Exception as exc:
-        try: log_error(f'CONTINUITY shutdown R4: {exc}')
+        try: log_error(f'CONTINUITY shutdown-pre R18: {exc}')
         except Exception: pass
+    result = None
+    try:
+        result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+    finally:
+        try:
+            continuity_checkpoint_v263(None, reason=f'shutdown-post:{signal_name}', full=True, schedule=False)
+            _split_touch_state_revision_r18(f'shutdown-post:{signal_name}')
+            _split_push_snapshot_now_v263(f'shutdown-post:{signal_name}')
+        except Exception as exc:
+            try: log_error(f'CONTINUITY shutdown-post R18: {exc}')
+            except Exception: pass
     return result
 
 
@@ -1747,7 +1886,11 @@ def runtime_mark_ready(detail: str=''):
     try:
         user_state_shadow_capture_v265('boot_ready')
         continuity_capture_v263('boot_ready')
+        _split_touch_state_revision_r18('boot_ready')
         _split_mark_state_changed_v264('boot_ready')
+        # Establish an exact binary base on HEAVY immediately after every boot.
+        # The POST is tiny; HEAVY performs the job asynchronously and pulls the snapshot.
+        _split_request_worker_full_sync_r18('boot_ready_exact_rebase')
         split_schedule_worker_sync_v262(reason='boot_ready', delay=0.8)
     except Exception as exc:
         try: log_error(f'R6 boot-ready sync: {exc}')

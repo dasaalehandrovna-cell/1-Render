@@ -1,0 +1,47 @@
+R18 VALIDATION REPORT
+=====================
+
+USER LOG DIAGNOSIS
+------------------
+The supplied deploy log restored revision 1788507473.6075437.
+That timestamp is 2026-09-04 07:37:53 UTC, while the deploy began around 2026-09-04 15:47 UTC.
+Therefore the restore mechanism ran, but its authoritative Worker/Redis image was about eight hours stale.
+
+R18 ROOT-CAUSE FIXES VERIFIED
+-----------------------------
+PASS - callback receipt ACK is scheduled before webhook logging, Update.de_json, SQLite durable inbox and Redis/Worker witness.
+PASS - ordinary silent callback ACK no longer becomes the visible "⏳ Выполняю…" toast.
+PASS - late normal callback toasts do not create extra chat messages; explicit alert/error feedback is moved off the dedicated ACK pool.
+PASS - callback remote witness runs on background DELTA lane; normal message/finance strict witness behavior is retained.
+PASS - delta base/hash mismatch immediately queues HEAVY `sync_state`; it no longer depends on 300 seconds of quiet.
+PASS - continuity checkpoint has maximum latency 5 seconds; state mirror maximum latency 3 seconds.
+PASS - `split_state_revision_r18` provides a lightweight freshness marker after successful Telegram work and background logical saves.
+PASS - new FAST preboot asks HEAVY to capture the still-live old FAST before normal restore, creating an R17 -> R18 rolling-deploy bridge.
+PASS - boot arbitrates Worker vs Redis freshness and rejects stale incoming databases.
+PASS - FAST and HEAVY Redis writers preserve an already newer Redis snapshot.
+PASS - SIGTERM order is fresh continuity checkpoint + immediate Redis/HEAVY push BEFORE legacy slow shutdown/MEGA, followed by a second post-drain push.
+PASS - shutdown/full-state gzip on FAST uses fast compression for lower handoff latency.
+PASS - R17 terminal-chat cleanup/migration behavior remains intact.
+
+REGRESSION TESTS
+----------------
+PASS - Python compile: all FAST top-level .py files.
+PASS - Python compile: all HEAVY top-level .py files.
+PASS - modular package SHA-256 manifest and # v262 first/last markers for all 34 source modules.
+PASS - INFO/tests/startup_smoke_v262.py -> V262_STARTUP_SMOKE_OK.
+PASS - INFO/tests/v262_fast_ui_smoke.py -> V262_FAST_UI_SMOKE_OK.
+PASS - INFO/tests/v262_exact_once_regression.py -> V262_EXACT_ONCE_SMOKE_OK.
+PASS - INFO/tests/v262_linked_finance_smoke.py -> V262_LINKED_FINANCE_SMOKE_OK.
+PASS - INFO/tests/r17_terminal_restore_smoke.py -> R17 terminal lifecycle retained under R18.
+PASS - INFO/tests/r18_instant_restore_smoke.py -> stale DB rejected, newer DB accepted, callback/deploy ordering assertions passed.
+PASS - HEAVY static restore/rebase assertions: R18 version, R18 revision parsing, newer-Redis preservation, sync_state endpoint.
+
+PERFORMANCE CONTRACT
+--------------------
+FAST / Render #1 owns immediate Telegram receipt, local UI rendering and necessary local state commit.
+HEAVY / Render #2 owns full-state rebase, Redis/MEGA durability, Google/Drive/XLSX and other heavy background work.
+No full SQLite serialization, MEGA operation or Worker full-state download was added to the normal callback handler path.
+
+LIMITATION
+----------
+The local validation environment cannot reproduce Render's exact live cut-over timing or Telegram network RTT. R18 therefore includes two independent deploy bridges (preboot old-front capture and pre-MEGA SIGTERM handoff) plus Worker/Redis freshness arbitration so correctness does not depend on one specific Render shutdown order.

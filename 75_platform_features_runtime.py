@@ -1918,8 +1918,23 @@ def _canon_execute_telegram_payload__001(payload: dict, update_id=None, update_c
     return execution_ctx
 
 def _canon_schedule_callback_receipt_ack__001(callback_id: str, chat_id=None, delay: float | None=None):
-    if callable(_V166_PREV_ACK):
-        return _V166_PREV_ACK(callback_id, chat_id, 0.05)
+    # R18: receipt ACK is a dedicated immediate lane, not a delayed scheduler job.
+    callback_id = str(callback_id or '')
+    if not callback_id:
+        return False
+    try:
+        with _CALLBACK_ACK_LOCK:
+            _callback_ack_prune_locked()
+            row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
+            row['chat_id'] = int(chat_id) if chat_id is not None else row.get('chat_id')
+            row['ts'] = time.time()
+            if row.get('answered') or row.get('inflight'):
+                return True
+        return bool(CALLBACK_ACK_TASK_POOL.submit_unique(f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id))
+    except Exception:
+        if callable(_V166_PREV_ACK):
+            return _V166_PREV_ACK(callback_id, chat_id, 0.03)
+        return False
 
 def _v166_pair_key(a: int, b: int):
     a, b = (int(a), int(b))

@@ -1143,6 +1143,21 @@ def _canon_v149_reminder_chat_allowed__001(cfg: dict, chat_id: int) -> bool:
         return False
     if cid not in _v173_reminder_selected_chat_ids(cfg):
         return False
+    # R17: one final lifecycle authority for every reminder path.  A confirmed
+    # removed/migrated/archived chat is terminal and must never be retried by the
+    # scheduler, even if its old id is still present in a stale reminder snapshot.
+    try:
+        lifecycle_fn = globals().get('_v150_lifecycle')
+        status = str((lifecycle_fn(cid) or {}).get('status') or '') if callable(lifecycle_fn) else ''
+        if status in {'bot_removed', 'migrated', 'archived'}:
+            return False
+    except Exception:
+        try:
+            removed_fn = globals().get('is_chat_bot_removed')
+            if callable(removed_fn) and bool(removed_fn(cid)):
+                return False
+        except Exception:
+            pass
     platform_id = str(globals().get('TENANT_PLATFORM_ID') or 'platform')
     try:
         tid = str(_v149_reminder_cfg_tenant(cfg) or platform_id)
@@ -4416,6 +4431,12 @@ _V215_PREV_REMINDER_GROUP_SEND = _canon_reminder_group_send_job__001
 
 def _canon_reminder_group_send_job__002(target_chat_id: int, day_key: str, force: bool=False) -> None:
     cid = int(target_chat_id)
+    try:
+        lifecycle_fn = globals().get('_v150_lifecycle')
+        if callable(lifecycle_fn) and str((lifecycle_fn(cid) or {}).get('status') or '') in {'bot_removed', 'migrated', 'archived'}:
+            return
+    except Exception:
+        pass
     if _v215_circle_business_chat(cid) and (not contour_reminders_mode_enabled(cid)):
         return
     return _V215_PREV_REMINDER_GROUP_SEND(cid, day_key, force)
@@ -7828,4 +7849,284 @@ try:
     _v177_legacy_0007_bot_journal('v229_tasks_single_window_ready', int(OWNER_ID or 0), f'enabled={int(tasks_single_window_enabled_v229())}; annotation_source_gate=1')
 except Exception:
     pass
+
+# ---------------------------------------------------------------------------
+# R17 terminal chat lifecycle coordinator.
+# Confirmed terminal Telegram state is propagated once to every feature that can
+# otherwise keep scheduling work for a dead chat.  No network request is added to
+# normal button/message hot paths; this runs only on a terminal transition or boot
+# reconciliation.
+# ---------------------------------------------------------------------------
+_R17_TERMINAL_CHAT_STATUSES = {'bot_removed', 'migrated', 'archived'}
+_R17_TERMINAL_LOCK = _v172_threading.RLock()
+
+def _r17_terminal_status(chat_id: int) -> str:
+    try:
+        fn = globals().get('_v150_lifecycle')
+        if callable(fn):
+            return str((fn(int(chat_id)) or {}).get('status') or '')
+    except Exception:
+        pass
+    try:
+        fn = globals().get('is_chat_bot_removed')
+        if callable(fn) and bool(fn(int(chat_id))):
+            return 'bot_removed'
+    except Exception:
+        pass
+    return ''
+
+def _r17_drop_chat_keyed_runtime(root, chat_id: int) -> int:
+    """Remove RAM-only rows keyed by (chat_id, user_id) without touching others."""
+    if not isinstance(root, dict):
+        return 0
+    cid = int(chat_id); removed = 0
+    for key, value in list(root.items()):
+        hit = False
+        try:
+            if isinstance(key, tuple) and key and int(key[0]) == cid:
+                hit = True
+            elif isinstance(value, dict) and int(value.get('chat_id', 0) or 0) == cid:
+                hit = True
+        except Exception:
+            hit = False
+        if hit:
+            root.pop(key, None); removed += 1
+    return removed
+
+def _r17_move_chat_keyed_runtime(root, old_chat_id: int, new_chat_id: int) -> int:
+    """Move RAM rows keyed by (chat_id, user_id) during Telegram chat migration."""
+    if not isinstance(root, dict):
+        return 0
+    old = int(old_chat_id); new = int(new_chat_id); moved = 0
+    for key, value in list(root.items()):
+        new_key = None
+        try:
+            if isinstance(key, tuple) and key and int(key[0]) == old:
+                new_key = (new,) + tuple(key[1:])
+            elif isinstance(value, dict) and int(value.get('chat_id', 0) or 0) == old:
+                value['chat_id'] = new
+                moved += 1
+                continue
+        except Exception:
+            new_key = None
+        if new_key is not None:
+            row = root.pop(key, None)
+            if row is not None:
+                root[new_key] = row; moved += 1
+    return moved
+
+def r17_suspend_terminal_chat_bindings(chat_id: int, reason: str='', *, source: str='lifecycle', persist: bool=True) -> dict:
+    """Stop all active work targeting a confirmed terminal chat, preserving audit.
+
+    Forwarding edges are moved to the existing reversible suspended registry.
+    Reminder target ids are removed; a reminder with no remaining recipients is
+    disabled.  Active task records are retained but marked cancelled and the chat
+    task dispatcher is disabled.  This prevents endless scheduler retries while
+    preserving enough state for owner diagnostics.
+    """
+    cid = int(chat_id)
+    status = _r17_terminal_status(cid)
+    if status not in _R17_TERMINAL_CHAT_STATUSES:
+        return {'changed': False, 'chat_id': cid, 'status': status, 'reason': 'not_terminal'}
+    report = {'changed': False, 'chat_id': cid, 'status': status, 'forwarding': 0, 'reminders_pruned': 0, 'reminders_disabled': 0, 'tasks_cancelled': 0, 'tasks_migrated': 0, 'runtime_rows_cleared': 0, 'runtime_rows_migrated': 0}
+    why = str(reason or status)[:500]
+    migrated_to = 0
+    if status == 'migrated':
+        try:
+            migrated_to = int((_v150_lifecycle(cid) or {}).get('migrated_to') or 0)
+        except Exception:
+            migrated_to = 0
+        if migrated_to == cid:
+            migrated_to = 0
+    report['migrated_to'] = migrated_to
+    with _R17_TERMINAL_LOCK:
+        # Forwarding: preserve edges in the v199 suspended registry so an explicit
+        # successful probe/re-add can restore them, but remove them from live routing.
+        try:
+            if status == 'migrated' and migrated_to:
+                fn = globals().get('reactivate_forward_target_v199')
+                if callable(fn) and bool(fn(cid, migrated_to=migrated_to, persist=False)):
+                    report['forwarding'] = 1; report['changed'] = True
+            else:
+                fn = globals().get('suspend_forward_target_v199')
+                if callable(fn) and bool(fn(cid, f'R17 terminal {status}: {why}', persist=False)):
+                    report['forwarding'] = 1; report['changed'] = True
+        except Exception as exc:
+            report['forwarding_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+
+        # Reminders: physically prune the dead target so due cycles have no stale
+        # recipient left to revisit forever.  Keep a bounded audit on each config.
+        try:
+            for rid, cfg in list(_v149_reminder_all_rows(include_completed=True)):
+                if not isinstance(cfg, dict):
+                    continue
+                selected = _v149_reminder_chat_ids(cfg)
+                if cid not in selected:
+                    continue
+                if status == 'migrated' and migrated_to:
+                    replacement = []
+                    for value in selected:
+                        value = migrated_to if int(value) == cid else int(value)
+                        if value not in replacement:
+                            replacement.append(value)
+                    cfg['chat_ids'] = replacement
+                else:
+                    cfg['chat_ids'] = [int(x) for x in selected if int(x) != cid]
+                if isinstance(cfg.get('last_message_ids'), dict):
+                    cfg['last_message_ids'].pop(str(cid), None)
+                acked = []
+                for raw in cfg.get('delivery_acked_chats_v245') or []:
+                    try:
+                        value = int(raw)
+                        if value != cid and value not in acked:
+                            acked.append(value)
+                    except Exception:
+                        pass
+                cfg['delivery_acked_chats_v245'] = acked
+                audit = cfg.setdefault('removed_targets_r17', [])
+                if isinstance(audit, list):
+                    audit.append({'chat_id': cid, 'status': status, 'migrated_to': migrated_to or None, 'at': _v172_iso(), 'reason': why[:240], 'source': str(source or '')[:80]})
+                    del audit[:-40]
+                cfg['terminal_target_pruned_at_r17'] = _v172_iso()
+                try:
+                    _reminder_touch(cfg)
+                except Exception:
+                    cfg['updated_at'] = _v172_iso()
+                report['reminders_pruned'] += 1; report['changed'] = True
+                if not _v149_reminder_chat_ids(cfg):
+                    cfg['enabled'] = False
+                    cfg['next_run_at'] = ''
+                    cfg['delivery_cycle_v245'] = ''
+                    cfg['delivery_acked_chats_v245'] = []
+                    cfg['suspended_terminal_chat_r17'] = True
+                    cfg['suspended_terminal_chat_reason_r17'] = why[:300]
+                    report['reminders_disabled'] += 1
+            try:
+                state_root = _v149_group_state_root()
+                if isinstance(state_root, dict) and state_root.pop(str(cid), None) is not None:
+                    report['changed'] = True
+            except Exception:
+                pass
+        except Exception as exc:
+            report['reminders_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+
+        # Tasks: removed/archived chats cancel unfinished work.  Telegram migration
+        # is different: move the dispatcher/task state to the successor chat so a
+        # supergroup upgrade is invisible to users instead of destroying tasks.
+        try:
+            settings = _v172_chat_settings(cid)
+            if status == 'migrated' and migrated_to:
+                new_settings = _v172_chat_settings(migrated_to)
+                old_enabled = bool(settings.get('enabled', False))
+                for key, value in list(settings.items()):
+                    if key in {'enabled', 'disabled_terminal_chat_r17', 'disabled_terminal_chat_status_r17', 'disabled_terminal_chat_at_r17', 'disabled_terminal_chat_reason_r17'}:
+                        continue
+                    if key == 'next_number':
+                        try:
+                            new_settings[key] = max(int(new_settings.get(key) or 1), int(value or 1))
+                        except Exception:
+                            pass
+                    elif key not in new_settings:
+                        new_settings[key] = value
+                if old_enabled and not bool(new_settings.get('enabled', False)):
+                    new_settings['enabled'] = True
+                settings['enabled'] = False
+                settings['migrated_to_r17'] = migrated_to
+                settings['migrated_at_r17'] = _v172_iso()
+                for task in _v172_tasks_for_chat(cid, include_deleted=True):
+                    if not isinstance(task, dict):
+                        continue
+                    task['chat_id'] = migrated_to
+                    task['updated_at'] = _v172_iso()
+                    _v172_history(task, 'chat_migrated_r17', 0, 'system', f'{cid} -> {migrated_to}: {why[:360]}')
+                    report['tasks_migrated'] += 1; report['changed'] = True
+                try:
+                    src_root = _v172_source_root()
+                    for key, value in list(src_root.items()):
+                        prefix = f'{cid}:'
+                        if str(key).startswith(prefix):
+                            src_root[f'{migrated_to}:{str(key)[len(prefix):]}'] = value
+                            src_root.pop(key, None)
+                            report['changed'] = True
+                except Exception:
+                    pass
+                for name in ('_V172_INPUT_WAIT', '_V174_INPUT_WAIT', '_V172_SEARCH_CACHE'):
+                    report['runtime_rows_migrated'] += _r17_move_chat_keyed_runtime(globals().get(name), cid, migrated_to)
+                report['changed'] = True
+            else:
+                if bool(settings.get('enabled', False)):
+                    settings['enabled'] = False; report['changed'] = True
+                old_marker = (settings.get('disabled_terminal_chat_r17'), settings.get('disabled_terminal_chat_status_r17'))
+                settings['disabled_terminal_chat_r17'] = True
+                settings['disabled_terminal_chat_status_r17'] = status
+                settings['disabled_terminal_chat_at_r17'] = _v172_iso()
+                settings['disabled_terminal_chat_reason_r17'] = why[:300]
+                if old_marker != (True, status):
+                    report['changed'] = True
+                for task in _v172_tasks_for_chat(cid, include_deleted=True):
+                    if not isinstance(task, dict) or bool(task.get('deleted', False)) or _v172_is_complete(task):
+                        continue
+                    task['status'] = 'cancelled'
+                    task['updated_at'] = _v172_iso()
+                    task['completed_at'] = task.get('completed_at') or _v172_iso()
+                    task['cancel_reason_r17'] = f'terminal_chat:{status}'
+                    _v172_history(task, 'cancelled_chat_removed_r17', 0, 'system', f'{status}: {why[:400]}')
+                    report['tasks_cancelled'] += 1; report['changed'] = True
+                for name in ('_V172_INPUT_WAIT', '_V174_INPUT_WAIT', '_V172_SEARCH_CACHE'):
+                    report['runtime_rows_cleared'] += _r17_drop_chat_keyed_runtime(globals().get(name), cid)
+        except Exception as exc:
+            report['tasks_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+
+        if persist and report['changed']:
+            try:
+                save_data(data, chat_ids=[cid])
+            except Exception as exc:
+                report['persist_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+            try:
+                schedule_config_backup_for_chats(cid, int(OWNER_ID or 0), delay=0.25)
+            except Exception:
+                pass
+        try:
+            bot_journal('r17_terminal_chat_suspended', cid, f"status={status}; forward={report['forwarding']}; reminders={report['reminders_pruned']}; disabled={report['reminders_disabled']}; tasks_cancelled={report['tasks_cancelled']}; tasks_migrated={report['tasks_migrated']}; source={source}; reason={why[:180]}", 'WARN')
+        except Exception:
+            pass
+    return report
+
+def r17_reconcile_terminal_chats_on_boot() -> dict:
+    """Repair stale R16 bindings for chats already terminal before R17 boot."""
+    total = {'chats': 0, 'changed': 0, 'reminders': 0, 'tasks': 0, 'forwarding': 0}
+    try:
+        keys = list(((data or {}).get('chats') or {}).keys())
+    except Exception:
+        keys = []
+    for raw in keys:
+        try:
+            cid = int(raw)
+        except Exception:
+            continue
+        if _r17_terminal_status(cid) not in _R17_TERMINAL_CHAT_STATUSES:
+            continue
+        total['chats'] += 1
+        rep = r17_suspend_terminal_chat_bindings(cid, reason='R17 boot reconciliation', source='r17_boot', persist=False)
+        if rep.get('changed'):
+            total['changed'] += 1
+        total['reminders'] += int(rep.get('reminders_pruned') or 0)
+        total['tasks'] += int(rep.get('tasks_cancelled') or 0)
+        total['forwarding'] += int(rep.get('forwarding') or 0)
+    if total['changed']:
+        try:
+            save_data(data, root_only=True)
+        except Exception:
+            pass
+    try:
+        bot_journal('r17_terminal_boot_reconcile', int(OWNER_ID or 0), f"terminal={total['chats']}; changed={total['changed']}; reminders={total['reminders']}; tasks={total['tasks']}; forwarding={total['forwarding']}")
+    except Exception:
+        pass
+    return total
+
+try:
+    _R17_TERMINAL_BOOT_REPORT = r17_reconcile_terminal_chats_on_boot()
+except Exception as _r17_boot_exc:
+    _R17_TERMINAL_BOOT_REPORT = {'error': f'{type(_r17_boot_exc).__name__}: {str(_r17_boot_exc)[:180]}'}
+
 # v262

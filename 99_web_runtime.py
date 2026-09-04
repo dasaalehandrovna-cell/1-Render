@@ -393,6 +393,19 @@ def telegram_webhook():
         runtime_mark_webhook(payload if isinstance(payload, dict) else None, blocked='boot')
         return ('BOOTING', 503)
     runtime_mark_webhook(payload if isinstance(payload, dict) else None)
+    # R18 absolute UI hot path: start Telegram callback ACK immediately after the
+    # READY/shutdown gate, before logging, Update.de_json, SQLite inbox, Redis/Worker
+    # witness, locks or routing.  The ACK uses a dedicated pool, so Telegram network
+    # RTT runs in parallel with local window rendering.
+    if isinstance(payload, dict) and 'callback_query' in payload:
+        try:
+            _r18_cq = payload.get('callback_query') or {}
+            _r18_msg = _r18_cq.get('message') or {}
+            _r18_chat = _r18_msg.get('chat') or {}
+            _r18_cid = _r18_chat.get('id')
+            schedule_callback_receipt_ack(str(_r18_cq.get('id') or ''), _r18_cid, delay=0.0)
+        except Exception as ack_exc:
+            log_error(f'CALLBACK IMMEDIATE ACK: {ack_exc}')
     try:
         if isinstance(payload, dict):
             if 'edited_message' in payload:
@@ -422,16 +435,26 @@ def telegram_webhook():
         # make the raw update durable on Worker/Redis.  If both remote witnesses are
         # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
         _r13_witness_fn = globals().get('split_witness_event_v268')
-        if callable(_r13_witness_fn) and not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
-            log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
-            return ('REMOTE DURABLE WITNESS FAILED', 503)
+        if callable(_r13_witness_fn):
+            if update_type == 'callback_query':
+                # UI callbacks are already in the local durable inbox.  Mirror the raw
+                # event remotely on DELTA lane, but never put Redis/Worker RTT in front
+                # of a user's button.  Message/finance traffic keeps the strict witness.
+                def _r18_callback_witness():
+                    try:
+                        if not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
+                            log_error(f'R18 CALLBACK REMOTE WITNESS FAILED update={update_id}')
+                    except Exception as _r18w_exc:
+                        log_error(f'R18 CALLBACK REMOTE WITNESS ERROR update={update_id}: {_r18w_exc}')
+                if not DELTA_TASK_POOL.submit_unique(f'callback-witness:{update_id}', _r18_callback_witness):
+                    try:
+                        threading.Thread(target=_r18_callback_witness, name=f'r18-cb-witness-{update_id}', daemon=True).start()
+                    except Exception:
+                        pass
+            elif not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
+                log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
+                return ('REMOTE DURABLE WITNESS FAILED', 503)
         _protect_pending_ui_timers_on_receipt(payload)
-        if update_type == 'callback_query':
-            try:
-                cq_raw = (payload or {}).get('callback_query') or {}
-                schedule_callback_receipt_ack(str(cq_raw.get('id') or ''), update_chat_id, delay=0.03)
-            except Exception as ack_exc:
-                log_error(f'CALLBACK RECEIPT ACK SCHEDULE: {ack_exc}')
         if durable_update_processed(update_id):
             _v260_webhook_inbox_mark(update_id, 'done')
             with _MEGA_TASK_LOCK:
@@ -610,10 +633,13 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = ('• ⚡ R16: финансы ускорены для add/edit/delete/пересылки — hot-path меняет только затронутые записи и агрегаты, полный normalize остаётся фоном.\n'
-'• 🛡 RAW update теперь сначала пишется прямо в Redis; Render #2 HTTP используется только как fallback, поэтому Worker не стоит в пользовательском hot-path.\n'
-'• 🎨 Все XLSX, включая OLD/backup/legacy/Excel статьи, получают цветную палитру выс-262; старый режим меняет только layout/примечания.\n'
-'• 📡 Полные базы по-прежнему только idle/reconcile; обычные операции зеркалируются маленькими delta.')
+STARTUP_RELEASE_SUMMARY = ('• ⚡ R18: callback ACK идёт мгновенно отдельной FAST-дорожкой; автоматическое «⏳ Выполняю…» для обычной навигации удалено.\n'
+'• 🚀 Callback больше не ждёт Redis/Worker witness: локальный durable inbox остаётся на FAST, remote witness уходит в фоновую delta-дорожку. Сообщения/финансы сохраняют строгую durability.\n'
+'• 💾 После каждого успешного Telegram update фиксируется лёгкая monotonic revision; shadow/continuity теперь имеют максимальную задержку 5 секунд и не могут откладываться бесконечно.\n'
+'• 🔁 При delta base/hash mismatch HEAVY немедленно сам ставит full rebase в очередь; старое ожидание 300 секунд тишины удалено.\n'
+'• 🛡 Deploy restore выбирает самый свежий Worker/Redis revision и не позволяет старому FAST или HEAVY перезаписать более новый Redis snapshot.\n'
+'• 🔒 При deploy новый FAST просит HEAVY заранее снять состояние ещё живого старого FAST; при SIGTERM свежий checkpoint отправляется в Redis/HEAVY ДО тяжёлого shutdown/MEGA.')
+
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""
@@ -679,7 +705,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (R18 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:

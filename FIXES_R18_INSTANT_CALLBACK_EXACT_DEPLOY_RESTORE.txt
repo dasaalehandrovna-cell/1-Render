@@ -1,0 +1,44 @@
+R18 INSTANT CALLBACK + EXACT DEPLOY RESTORE
+============================================
+
+Release package: R18 (internal compatibility line remains vys-262).
+
+Why R17 restored old/missing settings
+--------------------------------------
+The supplied deploy log proves the restore source was stale:
+- deploy started around 2026-09-04 15:47 UTC;
+- restored durable revision was 1788507473.6075437 = 2026-09-04 07:37:53 UTC.
+So R17 correctly executed its restore code, but restored an image roughly eight hours older than the deployment.
+
+Root causes fixed in R18:
+1. Delta base/hash mismatch could postpone a full rebase until 300 seconds of quiet. With an active bot that quiet period could keep moving forever, leaving HEAVY/Redis old.
+2. The R17 final direct deploy push happened after the legacy slow shutdown/MEGA path. A short Render SIGTERM window could terminate FAST before the direct push ran.
+3. A new FAST could seed Redis from its restored copy without a strong enough freshness arbitration across Worker/Redis/current state.
+4. Trailing-edge continuity checkpoints could be postponed by continuous activity, making saved_at too old even while the bot was busy.
+
+R18 restore/durability changes
+------------------------------
+- Every completed Telegram update records a tiny monotonic `split_state_revision_r18` marker. Background logical saves also update the marker outside the Telegram hot path.
+- Continuity has a 5-second maximum latency; worker-state mirror has a 3-second maximum latency. Continuous activity can no longer postpone them indefinitely.
+- On delta `need_full`/hash mismatch, FAST queues `sync_state` immediately on HEAVY. HEAVY pulls and validates the complete SQLite itself; FAST does not upload/serialize the full state in the user handler.
+- New FAST preboot asks HEAVY to capture the still-live old FAST before Render cuts the primary URL over. This specifically helps bridge R17 -> R18 even if the previous remote cache is stale.
+- Boot compares Worker and Redis revisions and adopts the newest valid database. Older incoming snapshots are rejected.
+- Redis snapshot writes on both FAST and HEAVY preserve an already-newer Redis revision instead of overwriting it.
+- SIGTERM order is now: full user/RAM continuity checkpoint -> revision touch -> fast SQLite gzip -> Redis/HEAVY direct handoff -> legacy drain/MEGA -> second final checkpoint/handoff.
+- Shutdown gzip uses fast compression because restore safety and handoff latency matter more than maximum compression on FAST.
+
+Why buttons showed a pause / “Выполняю…”
+----------------------------------------
+R17 had two avoidable items in front of normal UI navigation:
+- the callback receipt ACK was not started until after logging/JSON parsing and other receipt work, and the remote witness could still be in the front-side sequence;
+- the ACK wrapper converted a silent callback acknowledgement into the visible `⏳ Выполняю…` toast.
+
+R18 callback hot path
+---------------------
+- Immediately after READY/shutdown checks, callback ACK is submitted to a dedicated ACK pool BEFORE journaling, Update.de_json, SQLite inbox, Redis/Worker witness, routing or business work.
+- Telegram ACK network RTT runs in parallel with local UI rendering; ordinary navigation ACK is silent.
+- Callback remote witness is moved to the DELTA background lane. Normal message/finance traffic keeps the stricter remote durability behavior.
+- A handler's later ordinary toast is not converted into a new chat message after the receipt ACK has already won. Explicit show_alert permission/error feedback is preserved as a short late notice.
+- FAST remains responsible for immediate Telegram/UI/local-state work. HEAVY remains responsible for full snapshot rebase, Redis/MEGA, Google/Drive/XLSX and other heavy background operations.
+
+Terminal-chat behavior from R17 is retained unchanged.
