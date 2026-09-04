@@ -1126,17 +1126,8 @@ def _v173_reminder_selected_chat_ids(cfg: dict) -> set[int]:
             continue
     return out
 
-def _canon_v149_reminder_chat_allowed__001(cfg: dict, chat_id: int) -> bool:
-    """Final send-time authority for reminder targets.
-
-    Platform owner reminder:
-      explicit selection in cfg.chat_ids is enough; Telegram itself is the final
-      reachability check.  Do not re-filter through a tenant-scoped chat picker.
-
-    Non-platform tenant reminder:
-      retain strict tenant membership so second-circle spaces cannot notify chats
-      belonging to another space merely by injecting an id into stored config.
-    """
+def _v263_reminder_scope_allowed(cfg: dict, chat_id: int) -> bool:
+    """Tenant/selection check only; intentionally ignores Telegram reachability."""
     try:
         cid = int(chat_id)
     except Exception:
@@ -1159,6 +1150,149 @@ def _canon_v149_reminder_chat_allowed__001(cfg: dict, chat_id: int) -> bool:
             except Exception:
                 pass
         return False
+
+def _v263_reminder_target_suppressed(chat_id: int) -> bool:
+    """True only for Telegram-terminal targets; transient network errors still retry."""
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return True
+    try:
+        if bool(is_chat_bot_removed(cid)):
+            return True
+    except Exception:
+        pass
+    try:
+        life = _v150_lifecycle(cid)
+        status = str((life or {}).get('status') or '')
+        err = str((life or {}).get('last_error') or '').casefold()
+        if status == 'unreachable' and any(token in err for token in (
+            'not enough rights', 'have no rights', 'not enough permissions',
+            'chat_write_forbidden', "bot can't initiate conversation", 'forbidden',
+        )):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _canon_v149_reminder_chat_allowed__001(cfg: dict, chat_id: int) -> bool:
+    """Final send-time authority: tenant-safe and terminal-chat aware."""
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return False
+    if not _v263_reminder_scope_allowed(cfg, cid):
+        return False
+    return not _v263_reminder_target_suppressed(cid)
+
+def _v245_expected_delivery_chats(cfg: dict) -> set[int]:
+    """Expected cycle targets include suppressed chats so they can be terminally ACKed."""
+    out = set()
+    for cid in _v149_reminder_chat_ids(cfg):
+        try:
+            if _v263_reminder_scope_allowed(cfg, int(cid)):
+                out.add(int(cid))
+        except Exception:
+            pass
+    return out
+
+def _v245_delivery_cycle_prepare(cfg: dict, due_token: str) -> set[int]:
+    """ACK terminally unavailable chats for this cycle instead of retrying every 15 seconds."""
+    token = str(due_token or '')
+    if str(cfg.get('delivery_cycle_v245') or '') != token:
+        cfg['delivery_cycle_v245'] = token
+        cfg['delivery_acked_chats_v245'] = []
+    acked = set()
+    for raw in cfg.get('delivery_acked_chats_v245') or []:
+        try:
+            acked.add(int(raw))
+        except Exception:
+            pass
+    for cid in _v245_expected_delivery_chats(cfg):
+        try:
+            if _v263_reminder_target_suppressed(int(cid)):
+                acked.add(int(cid))
+        except Exception:
+            pass
+    cfg['delivery_acked_chats_v245'] = sorted(acked)
+    return acked
+
+_V263_REMINDER_FAILURE_LOG_LOCK = _v173_threading.RLock()
+_V263_REMINDER_FAILURE_LOGGED = {}
+
+def _v263_note_reminder_send_failure(chat_id: int, exc, context: str='send') -> str:
+    """Classify one Telegram delivery failure and quarantine only definitive targets.
+
+    Returns ``terminal`` when the caller must not attempt another Telegram method for
+    the same chat in the current operation, ``handled`` when logging was rate-limited,
+    and an empty string when legacy error logging should remain in charge.
+    """
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return ''
+    text = str(exc or '')
+    low = text.casefold()
+    try:
+        status, code = _v150_error_class(exc)
+    except Exception:
+        status, code = ('unreachable', 'telegram_unknown_error')
+    terminal = status in {'bot_removed', 'migrated'} or any(token in low for token in (
+        'not enough rights', 'have no rights', 'not enough permissions',
+        'chat_write_forbidden', "bot can't initiate conversation", 'forbidden',
+    ))
+    if status == 'migrated':
+        try:
+            target = _v199_extract_migration_target(exc)
+        except Exception:
+            target = None
+        if target and int(target) != cid:
+            try:
+                migrate_chat_id_everywhere(cid, int(target), reason='reminder telegram migration')
+                bot_journal('reminder_target_migrated_v263', cid, f'to={int(target)} context={context}', 'WARN')
+                return 'terminal'
+            except Exception:
+                pass
+    if terminal:
+        try:
+            if status == 'bot_removed':
+                if not bool(is_chat_bot_removed(cid)):
+                    set_chat_status_v150(cid, 'bot_removed', text, source='reminder_send_v263', persist=True, schedule_backup=True)
+            else:
+                life = _v150_lifecycle(cid)
+                old_status = str((life or {}).get('status') or '')
+                old_error = str((life or {}).get('last_error') or '')
+                if old_status != 'unreachable' or old_error != text[:500]:
+                    set_chat_status_v150(cid, 'unreachable', text, source='reminder_send_v263', persist=True, schedule_backup=True)
+        except Exception:
+            pass
+        with _V263_REMINDER_FAILURE_LOG_LOCK:
+            signature = (status, code, text[:180])
+            if _V263_REMINDER_FAILURE_LOGGED.get(cid) != signature:
+                _V263_REMINDER_FAILURE_LOGGED[cid] = signature
+                try:
+                    bot_journal('reminder_target_suppressed_v263', cid, f'context={context}; status={status}; code={code}; error={text[:260]}', 'WARN')
+                except Exception:
+                    pass
+        return 'terminal'
+    return ''
+
+def _v263_note_reminder_send_success(chat_id: int, context: str='send') -> None:
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return
+    try:
+        with _V263_REMINDER_FAILURE_LOG_LOCK:
+            _V263_REMINDER_FAILURE_LOGGED.pop(cid, None)
+    except Exception:
+        pass
+    try:
+        life = _v150_lifecycle(cid)
+        if str((life or {}).get('status') or '') == 'unreachable':
+            set_chat_status_v150(cid, 'active', f'reminder delivery success ({context})', source='reminder_send_v263', persist=True, schedule_backup=True)
+    except Exception:
+        pass
 _V173_BASE_REMINDER_SEND_INDIVIDUAL = globals().get('_v149_send_individual')
 if callable(_V173_BASE_REMINDER_SEND_INDIVIDUAL):
 

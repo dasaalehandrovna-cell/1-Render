@@ -1,0 +1,18 @@
+R16.1 / vys-262 — Excel parity hardening
+
+FAST changes:
+- Explicit XLSX layout + annotation mode is sent to Render #2.
+- Canonical 3-column signed Amount tables are colored correctly.
+- Mixed ARS compact/category + full USD sections keep correct styles and annotations.
+- OLD XLSX keeps legacy mode but now uses the R16 all-color palette.
+- Excel Notes use a valid non-empty author; threaded Comments use valid IDs/person namespace.
+- Freeze pane stays on the first table header, not the appended USD header.
+- Notes/Comments validation covers the final generated package.
+- Added INFO/tests/v262_excel_parity_regression.py.
+
+Modified runtime files:
+- 10_mega_runtime.py
+- 98_split_front.py
+- modules_manifest.json (SHA-256 refreshed)
+
+No finance DB/exact-once business logic was changed.

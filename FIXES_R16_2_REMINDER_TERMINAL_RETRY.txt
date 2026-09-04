@@ -1,0 +1,10 @@
+R16.2 REMINDER TERMINAL RETRY FIX
+
+- Telegram terminal reminder errors (chat not found / bot removed / migration / permanent write forbidden) are classified and suppressed.
+- A dead target is terminally ACKed for the current reminder cycle, so one unavailable chat cannot keep the whole reminder overdue forever.
+- Successful targets are not resent while a dead target is being reconciled.
+- Group edit on a dead chat no longer falls through to a second useless send attempt.
+- If every selected target is unavailable, the cadence advances without falsely overwriting last_sent_at; last_skipped_at_v263 is recorded instead.
+- Removed chats cannot be newly selected again from the reminder picker until the chat lifecycle becomes active.
+- Existing reminder configuration is preserved; targets are not silently deleted.
+- Reminder card now visibly marks unavailable targets with ➖ and shows unavailable/selected count.

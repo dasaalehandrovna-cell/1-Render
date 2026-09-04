@@ -74,11 +74,27 @@ def _v150_reminder_chat_lines(cfg: dict) -> list[str]:
             chat_ids.append(cid)
     if not chat_ids:
         return ['💬 Чат: не выбран']
+
+    def _label(cid: int) -> str:
+        title = str(get_chat_display_name(cid))
+        try:
+            suppressed = globals().get('_v263_reminder_target_suppressed')
+            if callable(suppressed) and suppressed(int(cid)):
+                return '➖ ' + title
+        except Exception:
+            pass
+        try:
+            if is_chat_bot_removed(int(cid)):
+                return '➖ ' + title
+        except Exception:
+            pass
+        return title
+
     if len(chat_ids) == 1:
-        return [f'💬 Чат: {get_chat_display_name(chat_ids[0])}']
+        return [f'💬 Чат: {_label(chat_ids[0])}']
     lines = ['💬 Чаты:']
     for cid in chat_ids:
-        lines.append(f'• {get_chat_display_name(cid)}')
+        lines.append(f'• {_label(cid)}')
     return lines
 
 def _canon_build_reminder_menu_text__001(reminder_id: int) -> str:
@@ -102,6 +118,14 @@ def _canon_build_reminder_menu_text__001(reminder_id: int) -> str:
                 insert_at = idx
                 break
         out[insert_at:insert_at] = _v150_reminder_chat_lines(cfg) + ['']
+    try:
+        selected = [int(x) for x in (cfg.get('chat_ids') or []) if str(x).lstrip('-').isdigit()]
+        suppressed_fn = globals().get('_v263_reminder_target_suppressed')
+        unavailable = [cid for cid in selected if callable(suppressed_fn) and suppressed_fn(cid)]
+        if unavailable:
+            out += ['', f'⚠️ Доставка: недоступно {len(unavailable)} из {len(selected)} выбранных чатов.']
+    except Exception:
+        pass
     return '\n'.join(out)[:3900]
 
 def _canon_build_reminder_menu_keyboard__001(reminder_id: int, day_key: str | None=None, page: int=0, viewer_chat_id: int | None=None):

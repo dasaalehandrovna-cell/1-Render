@@ -2085,6 +2085,35 @@ def _r7_export_annotations_payload(annotations):
     return out
 
 
+def _r16_export_annotation_mode(style: str) -> str:
+    style = str(style or '').strip().lower()
+    if style == 'new_comments':
+        return 'comments'
+    if style in {'new_notes', 'google_notes'}:
+        return 'notes'
+    return ''
+
+
+def _r16_export_annotations_for_rows(rows, layout: str, existing=None):
+    """Return the exact annotation map used by the local XLSX writer."""
+    existing = dict(existing or {})
+    try:
+        if layout == 'simple' and callable(globals().get('_modern_simple_excel_styles_comments')):
+            _styles, notes, _freeze, _widths = _modern_simple_excel_styles_comments(rows)
+            return dict(notes or {})
+        if layout == 'compact' and callable(globals().get('_modern_compact_excel_styles_comments')):
+            _styles, notes, _freeze, _widths = _modern_compact_excel_styles_comments(rows, existing)
+            return dict(notes or {})
+        if layout == 'category' and callable(globals().get('_modern_category_excel_styles_comments')):
+            _styles, notes, _freeze, _widths = _modern_category_excel_styles_comments(rows)
+            return dict(notes or {})
+        if layout == 'category_compact' and callable(globals().get('_modern_category_no_description_styles_comments')):
+            _styles, notes, _freeze, _widths = _modern_category_no_description_styles_comments(rows, existing)
+            return dict(notes or {})
+    except Exception:
+        pass
+    return existing
+
 def _r7_worker_file_submit(body: dict):
     base = _split_peer_base()
     if not base or not _split_secret():
@@ -2118,7 +2147,8 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             send_info(recipient_chat_id, f'Нет данных {label}.')
             return True
         annotations = {}
-        category_layout = False
+        category_layout = False  # compatibility field for older workers
+        layout = 'simple'
         sheet_name = 'Экспорт'
         description_column = True if not custom_options else bool(custom_options.get('description_column'))
         annotations_enabled = bool(not custom_options or custom_options.get('comments') or custom_options.get('notes'))
@@ -2127,10 +2157,14 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             start_key, end_key = _period_export_bounds(store, clean_mode, day_key)
             payload_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
             category_layout = True
+            layout = 'category'
             sheet_name = 'Статьи'
             if custom_options and not description_column:
                 payload_rows, annotations = _category_rows_without_description(payload_rows)
                 category_layout = 'category_compact'
+                layout = 'category_compact'
+            elif annotations_enabled:
+                annotations = _r16_export_annotations_for_rows(payload_rows, layout, annotations)
             if not annotations_enabled: annotations = {}
             safe_chat = mega_safe_name(get_chat_display_name(target_chat_id), 'chat')
             display_name = f'{safe_chat}_{clean_mode}_{day_key}_excel_статьи.xlsx'
@@ -2139,6 +2173,7 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             start_key, _end_key = _period_export_bounds(store, clean_mode, day_key)
             opening = _opening_balance_before_exact(store, start_key, 0)
             if description_column:
+                layout = 'simple'
                 payload_rows = [['Дата', 'Описание', 'Приход', 'Расход']]
                 for date_v, amount_v, note_v in rows:
                     try: parsed = parse_csv_amount(amount_v)
@@ -2146,7 +2181,10 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
                     payload_rows.append(_xlsx_record_row(date_v, parsed, note_v))
                 payload_rows = insert_blank_rows_between_days(payload_rows, header_rows=1)
                 payload_rows = _xlsx_simple_rows_with_balances(payload_rows, opening, target_chat_id)
+                if annotations_enabled:
+                    annotations = _r16_export_annotations_for_rows(payload_rows, layout, annotations)
             else:
+                layout = 'compact'
                 payload_rows, annotations = _compact_simple_excel_rows_and_annotations(rows, opening, target_chat_id)
                 if not annotations_enabled: annotations = {}
             display_name = export_display_filename(target_chat_id, clean_mode, day_key, 'xlsx')
@@ -2167,7 +2205,8 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             'job_id': _split_secrets.token_hex(12), 'recipient_chat_id': recipient_chat_id,
             'target_chat_id': target_chat_id, 'tenant_id': tenant_id,
             'file_type': ext, 'source_file_type': file_type, 'style': style,
-            'sheet_name': sheet_name, 'category_layout': category_layout,
+            'annotation_mode': _r16_export_annotation_mode(style),
+            'sheet_name': sheet_name, 'category_layout': category_layout, 'layout': layout,
             'rows': _r7_json_rows(payload_rows), 'annotations': _r7_export_annotations_payload(annotations),
             'filename': display_name, 'label': str(label), 'chat_name': get_chat_display_name(target_chat_id),
             'delivery': delivery,
@@ -2293,16 +2332,19 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
                 bot.send_message(recipient_chat_id,'⚡ Google Excel точного периода готовится на Render #2. Ссылка придёт отдельным сообщением.')
             return True
         ext='xlsx' if file_type in {'xlsx','xlsxstat'} else 'csv'
-        annotations={}; layout=False; sheet_name='Точный период'
+        annotations={}; category_layout=False; layout='simple'; sheet_name='Точный период'
         if file_type=='xlsxstat':
             payload_rows=build_exact_category_stats_xlsx_rows(target_chat_id,start_key,int(start_rid),end_key,int(end_rid))
-            layout=True; sheet_name='Excel стат'
+            category_layout=True; layout='category'; sheet_name='Excel стат'
             if custom_options and not description_column:
-                payload_rows,annotations=_category_rows_without_description(payload_rows); layout='category_compact'
+                payload_rows,annotations=_category_rows_without_description(payload_rows); category_layout='category_compact'; layout='category_compact'
+            elif annotations_enabled:
+                annotations=_r16_export_annotations_for_rows(payload_rows,layout,annotations)
             if not annotations_enabled: annotations={}
         elif ext=='xlsx':
             opening=_opening_balance_before_exact(get_chat_store(target_chat_id),start_key,int(start_rid))
             if description_column:
+                layout='simple'
                 payload_rows=[['Дата','Описание','Приход','Расход']]
                 for date_v,amount_v,note_v in rows:
                     try: parsed=parse_csv_amount(amount_v)
@@ -2310,7 +2352,10 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
                     payload_rows.append(_xlsx_record_row(date_v,parsed,note_v))
                 payload_rows=insert_blank_rows_between_days(payload_rows,header_rows=1)
                 payload_rows=_xlsx_simple_rows_with_balances(payload_rows,opening,target_chat_id)
+                if annotations_enabled:
+                    annotations=_r16_export_annotations_for_rows(payload_rows,layout,annotations)
             else:
+                category_layout=False; layout='compact'
                 payload_rows,annotations=_compact_simple_excel_rows_and_annotations(rows,opening,target_chat_id)
                 if not annotations_enabled: annotations={}
         else:
@@ -2327,7 +2372,8 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
         caption=f"🎯 {(('Excel стат ' if file_type=='xlsxstat' else 'Excel ') + _export_style_caption(style) if ext=='xlsx' else 'CSV')} — точный период\n▶️ {exact_boundary_text(store,start_key,start_rid,True)}\n⏹ {exact_boundary_text(store,end_key,end_rid,False)}"
         tid=str(tenant_id_for_chat(target_chat_id,create=False) or TENANT_PLATFORM_ID); cfg=tenant_google_config(tid,create=False) or {}
         body={'job_id':_split_secrets.token_hex(12),'recipient_chat_id':recipient_chat_id,'target_chat_id':target_chat_id,'tenant_id':tid,
-              'file_type':ext,'source_file_type':file_type,'style':style,'sheet_name':sheet_name,'category_layout':layout,
+              'file_type':ext,'source_file_type':file_type,'style':style,'annotation_mode':_r16_export_annotation_mode(style),
+              'sheet_name':sheet_name,'category_layout':category_layout,'layout':layout,
               'rows':_r7_json_rows(payload_rows),'annotations':_r7_export_annotations_payload(annotations),'filename':display_name,
               'label':'точный период','chat_name':get_chat_display_name(target_chat_id),'caption':caption,'delivery':delivery,
               'drive_folder_id':str(cfg.get('drive_folder_id') or '')}
