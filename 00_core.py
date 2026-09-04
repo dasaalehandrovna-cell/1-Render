@@ -1065,6 +1065,7 @@ if not BOT_TOKEN:
     raise RuntimeError('B_T is not set')
 RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
+RELEASE_TAG = 'R17'
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
 BOT_DISPLAY_NAME = VERSION

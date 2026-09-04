@@ -84,12 +84,14 @@ def _db_revision(path: Path) -> float:
         con = sqlite3.connect(str(path))
         try:
             rev = 0.0
-            for kind in ('split_state_revision_r18', 'user_state_shadow_v265', 'runtime_continuity_v263'):
+            for kind in ('user_state_shadow_v265', 'runtime_continuity_v263'):
                 row = con.execute("SELECT v FROM meta WHERE kind=? AND k='latest'", (kind,)).fetchone()
                 if row:
                     try:
                         obj = json.loads(row[0]) or {}
-                        rev = max(rev, float(obj.get('saved_at') or 0.0))
+                        change_ns = int((obj or {}).get('change_rev_ns') or 0)
+                        candidate = (change_ns / 1_000_000_000.0) if change_ns > 0 else float((obj or {}).get('saved_at') or 0.0)
+                        rev = max(rev, candidate)
                     except Exception:
                         pass
             # legacy/fallback monotonic-ish timestamp if continuity metadata predates R4.
@@ -97,7 +99,11 @@ def _db_revision(path: Path) -> float:
             if row:
                 try:
                     root = json.loads(row[0]) or {}
-                    stamp = str((root.get('_state_meta') or {}).get('last_saved_at') or '')
+                    state_meta = root.get('_state_meta') or {}
+                    r17_ns = int(state_meta.get('r17_change_rev_ns') or 0)
+                    if r17_ns > 0:
+                        rev = max(rev, r17_ns / 1_000_000_000.0)
+                    stamp = str(state_meta.get('last_saved_at') or '')
                     if stamp and rev <= 0.0:
                         from datetime import datetime
                         rev = datetime.fromisoformat(stamp.replace('Z','+00:00')).timestamp()
@@ -108,6 +114,67 @@ def _db_revision(path: Path) -> float:
             con.close()
     except Exception:
         return 0.0
+
+
+def _redis_deploy_state_key():
+    return str(os.getenv('WORKER_REDIS_DEPLOY_STATE_KEY', 'vys262:deploy_state:r17') or 'vys262:deploy_state:r17').strip()
+
+
+def _apply_redis_deploy_state_overlay(target: Path):
+    """Overlay the newest compact R17 settings/UI capsule onto restored SQLite.
+
+    Worker/MEGA snapshots remain canonical for finance.  This tiny Redis capsule only
+    contains non-financial state and can therefore rescue the final clicks even when a
+    rolling deploy cuts over before the old Front finishes a full SQLite handoff.
+    """
+    if _redis is None or not _db_valid(target):
+        return False, 'redis unavailable or DB invalid'
+    url = str(os.getenv('REDIS_URL', '') or '').strip()
+    if not url:
+        return False, 'REDIS_URL empty'
+    key = _redis_deploy_state_key()
+    try:
+        client = _redis.Redis.from_url(url, socket_connect_timeout=1.0, socket_timeout=2.0, health_check_interval=30)
+        wire = client.get(key)
+        if not wire:
+            return False, 'R17 deploy-state capsule missing'
+        try:
+            raw = gzip.decompress(wire)
+            body = json.loads(raw.decode('utf-8')) or {}
+        except Exception as exc:
+            return False, f'R17 capsule decode failed: {type(exc).__name__}: {str(exc)[:160]}'
+        if not isinstance(body, dict) or int(body.get('schema') or 0) < 17:
+            return False, 'R17 deploy-state capsule schema invalid'
+        expected = str(body.get('sha256') or '')
+        if expected:
+            check = dict(body); check.pop('sha256', None)
+            digest = __import__('hashlib').sha256(json.dumps(check, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()
+            if digest != expected:
+                return False, 'R17 deploy-state capsule hash mismatch'
+        incoming_ns = int(body.get('change_rev_ns') or 0)
+        incoming_rev = incoming_ns / 1_000_000_000.0 if incoming_ns > 0 else float(body.get('saved_at') or 0.0)
+        local_rev = _db_revision(target)
+        if incoming_rev <= 0.0 or incoming_rev <= local_rev + 0.0000005:
+            return True, f'R17 capsule not newer incoming={incoming_rev:.6f} local={local_rev:.6f}'
+        shadow = body.get('shadow') or {}
+        continuity = body.get('continuity') or {}
+        if not isinstance(shadow, dict) or not shadow:
+            return False, 'R17 capsule shadow missing'
+        con = sqlite3.connect(str(target))
+        try:
+            con.execute('CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, k))')
+            con.execute("INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v",
+                        ('user_state_shadow_v265', 'latest', json.dumps(shadow, ensure_ascii=False, separators=(',', ':'))))
+            if isinstance(continuity, dict) and continuity:
+                con.execute("INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v",
+                            ('runtime_continuity_v263', 'latest', json.dumps(continuity, ensure_ascii=False, separators=(',', ':'))))
+            con.commit()
+        finally:
+            con.close()
+        return True, f'R17 capsule overlay applied incoming={incoming_rev:.6f} local={local_rev:.6f}'
+    except Exception as exc:
+        return False, f'R17 capsule {type(exc).__name__}: {str(exc)[:180]}'
+
 
 def _install_gzip_db(gz_path: Path, target: Path):
     tmp = target.with_suffix(target.suffix + '.restore.tmp')
@@ -142,60 +209,6 @@ def _peer_base():
 
 def _secret():
     return str(os.getenv('PEER_SHARED_SECRET', '') or '').strip()
-
-
-def _redis_snapshot_revision_r18(client=None):
-    """Return shared Redis snapshot revision without replacing anything."""
-    if _redis is None:
-        return 0.0
-    url = str(os.getenv('REDIS_URL', '') or '').strip()
-    if not url:
-        return 0.0
-    key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
-    try:
-        client = client or _redis.Redis.from_url(url, socket_connect_timeout=1.0, socket_timeout=2.0, health_check_interval=30)
-        raw = client.get(key + ':meta')
-        if not raw:
-            return 0.0
-        if isinstance(raw, (bytes, bytearray)):
-            raw = raw.decode('utf-8', 'replace')
-        meta = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        return float((meta or {}).get('revision') or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _restore_from_redis_direct_r18(target: Path):
-    """Freshness arbiter: use Redis snapshot only when it is newer than current target.
-
-    This is intentionally boot-only.  It closes the race where Worker /tmp is stale
-    while the shared Redis durable cache already contains the final old-front state.
-    """
-    if _redis is None:
-        return False, 'redis package unavailable'
-    url = str(os.getenv('REDIS_URL', '') or '').strip()
-    if not url:
-        return False, 'REDIS_URL empty'
-    key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
-    tmpdir = Path(tempfile.mkdtemp(prefix='r18_redis_restore_'))
-    try:
-        client = _redis.Redis.from_url(url, socket_connect_timeout=2.0, socket_timeout=5.0, health_check_interval=30)
-        remote_rev = _redis_snapshot_revision_r18(client)
-        local_rev = _db_revision(target) if _db_valid(target) else 0.0
-        if remote_rev <= 0.0 or (_db_valid(target) and remote_rev <= local_rev + 0.000001):
-            return False, f'Redis not newer remote={remote_rev} local={local_rev}'
-        payload = client.get(key)
-        if not payload:
-            return False, 'Redis snapshot missing'
-        gz = tmpdir / 'latest.sqlite3.gz'
-        gz.write_bytes(payload)
-        if _install_gzip_db(gz, target):
-            return True, f'Redis newer snapshot installed revision={remote_rev}'
-        return False, 'Redis snapshot rejected/invalid'
-    except Exception as exc:
-        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _restore_from_worker(target: Path):
@@ -241,54 +254,6 @@ def _worker_cache_revision():
         return 0.0
 
 
-def _preboot_capture_old_front_r18():
-    """Ask HEAVY to capture the still-live old FAST before Render cuts traffic over.
-
-    During a rolling deploy the public FAST URL normally still points at the old
-    instance while the new instance is in preboot.  This closes the R17->R18 bridge:
-    even if the old process later gets a short SIGTERM grace period, HEAVY has already
-    pulled its live SQLite state.  Failure is harmless; normal Worker/Redis restore
-    follows immediately.
-    """
-    base, secret = _peer_base(), _secret()
-    if not base or not secret:
-        return False, 'worker URL/secret not configured'
-    started = time.time()
-    try:
-        before_rev = _worker_cache_revision()
-        body = {'type':'sync_state', 'reason':'preboot_capture_old_front_r18', 'state_token':f'preboot:{int(started*1000)}'}
-        r = requests.post(base + '/internal/job', json=body, headers={'X-Peer-Secret':secret, 'User-Agent':'vys-262-front-r18-preboot-capture'}, timeout=2.5)
-        if r.status_code not in (200, 202):
-            return False, f'worker preboot queue HTTP {r.status_code}: {r.text[:160]}'
-        try:
-            wait = max(0.0, min(8.0, float(os.getenv('SPLIT_PREBOOT_CAPTURE_WAIT_SEC','4.0') or '4.0')))
-        except Exception:
-            wait = 4.0
-        deadline = time.time() + wait
-        last_detail = f'queued HTTP {r.status_code}'
-        while time.time() < deadline:
-            try:
-                st = requests.get(base + '/internal/status', headers={'X-Peer-Secret':secret, 'User-Agent':'vys-262-front-r18-preboot-status'}, timeout=2.0)
-                if st.status_code == 200:
-                    row = (st.json() or {}).get('state') or {}
-                    rev = float(row.get('cache_revision') or 0.0)
-                    snap_at = float(row.get('last_snapshot_at') or 0.0)
-                    done_at = float(row.get('job_last_done') or 0.0)
-                    reason = str(row.get('job_last_reason') or '')
-                    err = str(row.get('job_last_error') or '')
-                    if snap_at >= started - 0.5 or rev > before_rev + 0.000001:
-                        return True, f'old FAST captured cache_revision={rev}'
-                    if done_at >= started - 0.5 and 'preboot_capture_old_front_r18' in reason:
-                        return (not bool(err)), (f'preboot capture finished revision={rev}' if not err else f'preboot capture failed: {err[:160]}')
-                    last_detail = f'waiting worker revision={rev} reason={reason[:60]}'
-            except Exception as exc:
-                last_detail = f'poll {type(exc).__name__}: {str(exc)[:120]}'
-            time.sleep(0.25)
-        return False, 'preboot capture wait expired; ' + last_detail
-    except Exception as exc:
-        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
-
-
 def _settle_worker_handoff(target: Path):
     """Catch the old front's final SIGTERM snapshot during a rolling deploy."""
     try:
@@ -301,19 +266,13 @@ def _settle_worker_handoff(target: Path):
     local_rev = _db_revision(target)
     highest = local_rev
     while time.time() < deadline:
-        worker_rev = _worker_cache_revision()
-        redis_rev = _redis_snapshot_revision_r18()
-        remote_rev = max(worker_rev, redis_rev)
+        remote_rev = _worker_cache_revision()
         if remote_rev > highest + 0.000001:
-            if redis_rev >= worker_rev and redis_rev > highest + 0.000001:
-                ok, detail = _restore_from_redis_direct_r18(target)
-                print('[SPLIT FRONT] rolling handoff newer Redis snapshot:', ok, detail, 'remote_revision=', redis_rev, flush=True)
-            else:
-                ok, detail = _restore_from_worker(target)
-                print('[SPLIT FRONT] rolling handoff newer Worker snapshot:', ok, detail, 'remote_revision=', worker_rev, flush=True)
+            ok, detail = _restore_from_worker(target)
+            print('[SPLIT FRONT] rolling handoff newer snapshot:', ok, detail, 'remote_revision=', remote_rev, flush=True)
             if ok:
                 highest = max(highest, _db_revision(target), remote_rev)
-        time.sleep(0.75)
+        time.sleep(1.0)
 
 
 def _run(cmd, timeout=60):
@@ -425,28 +384,29 @@ def _redis_seed_current_db(target: Path, reason='front_boot'):
         max_mb = max(1, min(128, int(os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16')))
         if len(payload) > max_mb * 1024 * 1024:
             return False, f'snapshot too large for Redis: {len(payload)}'
-        revision = 0.0
-        try:
-            con = sqlite3.connect(str(target))
-            try:
-                for kind in ('split_state_revision_r18', 'user_state_shadow_v265', 'runtime_continuity_v263'):
-                    row = con.execute("SELECT v FROM meta WHERE kind=? AND k='latest'", (kind,)).fetchone()
-                    if row:
-                        obj = json.loads(row[0])
-                        revision = max(revision, float((obj or {}).get('saved_at') or 0.0))
-            finally:
-                con.close()
-        except Exception:
-            pass
-        client = _redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=8, health_check_interval=30)
-        existing_revision = _redis_snapshot_revision_r18(client)
-        if existing_revision > revision + 0.000001:
-            return True, f'Redis newer state kept existing={existing_revision} incoming={revision}'
-        meta = {'revision':revision, 'size':len(payload), 'saved_at':time.time(), 'reason':str(reason or '')[:120], 'source':'front-start-r18'}
-        pipe = client.pipeline(transaction=True)
-        pipe.set(key, payload)
-        pipe.set(key + ':meta', json.dumps(meta, separators=(',', ':')))
-        pipe.execute()
+        # R17 revision is the timestamp of the LAST REAL USER MUTATION, not
+        # the time a snapshot happened to be captured.  Otherwise a late old
+        # Render instance can look newer merely because it shut down later.
+        revision = float(_db_revision(target) or 0.0)
+        client = _redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=4, health_check_interval=30)
+        meta = {'revision':revision, 'size':len(payload), 'saved_at':time.time(), 'reason':str(reason or '')[:120], 'source':'front-start-r17'}
+        meta_raw = json.dumps(meta, separators=(',', ':'))
+        script = """
+local old = redis.call('GET', KEYS[2])
+local oldrev = 0
+if old then
+  local ok,obj = pcall(cjson.decode, old)
+  if ok and obj and obj['revision'] then oldrev = tonumber(obj['revision']) or 0 end
+end
+local newrev = tonumber(ARGV[3]) or 0
+if oldrev > newrev then return 0 end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+"""
+        accepted = int(client.eval(script, 2, key, key + ':meta', payload, meta_raw, str(revision)) or 0)
+        if not accepted:
+            return True, f'Redis durable seed stale-rejected revision={revision}'
         return True, f'Redis durable seed OK size={len(payload)} revision={revision}'
     except Exception as exc:
         return False, f'{type(exc).__name__}: {str(exc)[:180]}'
@@ -458,10 +418,6 @@ def main():
     server = _start_boot_port()
     target = _db_path()
     try:
-        # Capture the old live instance before Render switches the primary URL to this
-        # new preboot process.  This is the migration bridge from stale R17 caches.
-        _cap_ok, _cap_detail = _preboot_capture_old_front_r18()
-        print('[SPLIT FRONT] preboot old-front capture:', _cap_ok, _cap_detail, flush=True)
         force = _bool('SPLIT_FORCE_BOOT_RESTORE', False)
         always_remote = _bool('SPLIT_BOOT_ALWAYS_RESTORE', True)
         local_valid = _db_valid(target)
@@ -484,13 +440,12 @@ def main():
                     print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
                     break
                 time.sleep(max(5, min(120, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '20') or '20'))))
-        # R18 freshness quorum: Worker /tmp can lag behind the shared Redis durable
-        # snapshot during a rolling deploy.  Prefer whichever has the newest revision.
+        # Rolling deploy handoff: old instance can publish a newer final snapshot only
+        # after Render sees this preboot instance as healthy. Pick that newer revision.
         if _db_valid(target):
-            _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
-            print('[SPLIT FRONT] Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
-            # Old instance can publish an even newer final checkpoint after cut-over.
             _settle_worker_handoff(target)
+            capsule_ok, capsule_detail = _apply_redis_deploy_state_overlay(target)
+            print('[SPLIT FRONT] R17 deploy-state overlay:', capsule_ok, capsule_detail, flush=True)
         # R14: packaged runtime_config.py is authoritative for all internal tunables.
         install_internal_runtime_config('front')
         # Service-account private key must never be loaded by the Telegram front.

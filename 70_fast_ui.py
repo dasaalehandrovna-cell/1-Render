@@ -2233,25 +2233,19 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         _callback_ack_prune_locked()
         row = _CALLBACK_ACK_STATE.setdefault(callback_id, {'ts': time.time()})
         row['ts'] = time.time()
-        # R18: an empty ACK must stay empty.  R17 converted every silent receipt ACK
-        # into the visible Telegram toast "⏳ Выполняю…", which made navigation feel
-        # delayed even when the actual window render was fast.  Long jobs must request
-        # an explicit progress text themselves.
+        if not str(text or '').strip() and (not bool(kwargs.get('show_alert', False))):
+            process_text = build_all_processes_toast(row.get('chat_id'))
+            if args:
+                args = (process_text,) + tuple(args[1:])
+                kwargs.pop('text', None)
+            else:
+                kwargs['text'] = process_text
+            text = process_text
         if row.get('answered'):
-            # R18: the receipt ACK wins immediately.  A later ordinary toast from a
-            # handler must not create a new Telegram message (R17 could turn every
-            # navigation click into extra chat noise).  Preserve only explicit alert
-            # semantics, which are normally permission/error messages.
             chat_id = row.get('chat_id')
-            if bool(kwargs.get('show_alert')) and str(text or '').strip() and (not row.get('late_notice_sent')):
+            if str(text or '').strip() and (not row.get('late_notice_sent')):
                 row['late_notice_sent'] = True
-                # Keep the dedicated ACK pool pure: late permission/error feedback is
-                # ordinary background Telegram work and must never queue ahead of ACKs.
-                _late_pool = globals().get('GENERAL_TASK_POOL')
-                if _late_pool is not None:
-                    _late_pool.submit_unique(f'callback-late-alert:{callback_id}', _late_callback_notice, chat_id, text)
-                else:
-                    threading.Thread(target=_late_callback_notice, args=(chat_id, text), name=f'r18-late-alert-{callback_id}', daemon=True).start()
+                CALLBACK_ACK_TASK_POOL.submit(f'callback-late-notice:{callback_id}', _late_callback_notice, chat_id, text)
             return True
         if row.get('inflight'):
             return True
@@ -2276,9 +2270,12 @@ bot.answer_callback_query = _tracked_answer_callback_query
 
 def _answer_callback_query_quiet(callback_id: str, chat_id=None):
     try:
-        bot.answer_callback_query(callback_id, show_alert=False)
+        bot.answer_callback_query(callback_id, text=build_all_processes_toast(chat_id), show_alert=False)
     except Exception:
-        pass
+        try:
+            bot.answer_callback_query(callback_id)
+        except Exception:
+            pass
 
 def answer_callback_query_background(callback_id: str):
     """Immediate ACK from a callback handler, isolated from GENERAL/MEGA work."""
