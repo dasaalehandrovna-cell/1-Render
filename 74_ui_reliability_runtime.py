@@ -3092,6 +3092,11 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         try:
             pool = globals().get('FAST_UI_TASK_POOL')
             if pool is not None and pool.submit(f'r22-render:{chat_id}:{message_id}', _r22_execute_window_render, payload):
+                try:
+                    mark_fn = globals().get('r23_fast_callback_mark_render_enqueued')
+                    if callable(mark_fn): mark_fn(str(purpose or ''))
+                except Exception:
+                    pass
                 return 'scheduled'
         except Exception:
             pass
@@ -3100,6 +3105,11 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         seq = pool.submit_latest(f'{chat_id}:{message_id}', _r22_execute_window_render, payload)
         if seq:
             payload['_r22_render_seq'] = int(seq)
+            try:
+                mark_fn = globals().get('r23_fast_callback_mark_render_enqueued')
+                if callable(mark_fn): mark_fn(str(purpose or ''))
+            except Exception:
+                pass
             _r22_render_stage(payload, 'render_enqueued', 0.0)
             return 'scheduled'
     except Exception as exc:

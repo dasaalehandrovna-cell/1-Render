@@ -1,0 +1,26 @@
+Пер-R23 — FAST RAM-FIRST / REMOTE GUARD
+
+Цель релиза
+Вернуть поведение интерфейса «нажал кнопку → окно сразу начинает открываться», при этом сохранить split FAST/HEAVY и durability предыдущих релизов.
+
+Что изменено на FAST / Render #1
+1. Введён R23 FAST hot-path constitution: callback handler помечается thread-local режимом FAST до завершения обработчика.
+2. Redis/KV запрещён в обычном callback hot path. Чтения cache/nav возвращают RAM/local fallback, записи откладываются в отдельную KV mirror очередь.
+3. Единственное исключение Redis-read — восстановление старого callback token после рестарта, когда без token невозможно маршрутизировать нажатие. Нормальные живые кнопки берутся из RAM.
+4. Исправлен главный скрытый тормоз: make_short_callback больше не делает kv_callback_store для каждой кнопки синхронно. Длинные callback token сначала кладутся в RAM, затем зеркалируются в Redis пакетами.
+5. Локальный hot-cache callback tokens увеличен до 4096 по умолчанию, чтобы обычные клики не требовали Redis resolve.
+6. Добавлен KV_MIRROR_TASK_POOL — удалённое KV-зеркало отделено от UI и SQLite persistence.
+7. Не-Telegram HTTP внутри FAST callback запрещён runtime guard-ом. Telegram API разрешён; случайный Worker/Google/currency/другой HTTP вызов падает быстро вместо сетевого ожидания.
+8. usd_rate_cached во время FAST callback использует только локальный cache и ставит refresh в background. Redis/DolarAPI перед окном не вызываются.
+9. Обычный UI/settings save_data внутри FAST callback больше не ждёт SQLite commit. Он идёт в UI_PERSIST_TASK_POOL с latest-wins/coalescing по чату.
+10. Финансовые business callbacks сохраняют синхронное локальное persistence для корректного порядка денег и exact-once поведения.
+11. Telegram editMessageText/editMessageCaption остаётся в отдельном WINDOW_RENDER_TASK_POOL из R22; callback-worker не ждёт Telegram RTT.
+12. Добавлена диагностика r23_fast_hotpath: handler time, first-render enqueue time, число заблокированных remote попыток и deferred persistence.
+13. Owner READY показывает «Пер-R23».
+
+HEAVY / Render #2
+Render #2 остаётся владельцем shared durability, Google, MEGA, snapshot/export и остальных тяжёлых/удалённых операций. Формат R20 durable capsule и Redis key не менялись.
+
+Архитектурное правило R23
+Telegram callback → ACK → RAM/local state → render enqueue.
+Только после этого: SQLite UI persistence / Redis mirror / HEAVY / Google / MEGA / remote sync.

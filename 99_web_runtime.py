@@ -431,9 +431,9 @@ def _r22_callback_sidejobs(payload: dict, update_id, update_chat_id) -> None:
         fn = globals().get('split_witness_event_v268')
         if callable(fn):
             if not fn(update_id, payload, update_chat_id, 'callback_query'):
-                log_error(f'R22 CALLBACK REMOTE WITNESS FAILED update={update_id}')
+                log_error(f'R23 CALLBACK REMOTE WITNESS FAILED update={update_id}')
     except Exception as exc:
-        try: log_error(f'R22 CALLBACK REMOTE WITNESS ERROR update={update_id}: {exc}')
+        try: log_error(f'R23 CALLBACK REMOTE WITNESS ERROR update={update_id}: {exc}')
         except Exception: pass
     try:
         _protect_pending_ui_timers_on_receipt(payload)
@@ -442,7 +442,7 @@ def _r22_callback_sidejobs(payload: dict, update_id, update_chat_id) -> None:
 
 
 def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_key):
-    """R22 callback admission.
+    """R23 callback admission.
 
     Ordering guarantee: claim + FAST enqueue happen before any SQLite/Redis/network
     durability work.  HTTP 200 is still withheld until the local SQLite inbox is
@@ -457,8 +457,21 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             wait = started - update_enqueued_at
             UPDATE_DISPATCHER.mark_started(update_id)
             try:
-                UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-running:{update_id}', _r22_callback_inbox_mark_background, update_id, 'running', '')
-                UI_CLEANUP_TASK_POOL.submit(f'r22-journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, 'callback_query', wait, False)
+                _cq = (payload or {}).get('callback_query') or {}
+                _raw = str(_cq.get('data') or '')
+            except Exception:
+                _raw = ''
+            try:
+                _sync_persist = bool(globals().get('_v166_is_finance_business_callback', lambda _x: False)(_raw))
+            except Exception:
+                _sync_persist = False
+            try:
+                r23_fast_callback_hotpath_begin(update_id, update_chat_id, _raw, _sync_persist)
+            except Exception:
+                pass
+            try:
+                UI_CLEANUP_TASK_POOL.submit(f'r23-inbox-running:{update_id}', _r22_callback_inbox_mark_background, update_id, 'running', '')
+                UI_CLEANUP_TASK_POOL.submit(f'r23-journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, 'callback_query', wait, False)
             except Exception:
                 pass
             success = False
@@ -467,15 +480,15 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                 _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
                 success = True
                 try:
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-done:{update_id}', _r22_callback_inbox_mark_background, update_id, 'done', '')
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-event-commit:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, True, '')
+                    UI_CLEANUP_TASK_POOL.submit(f'r23-inbox-done:{update_id}', _r22_callback_inbox_mark_background, update_id, 'done', '')
+                    UI_CLEANUP_TASK_POOL.submit(f'r23-event-commit:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, True, '')
                 except Exception:
                     pass
             except Exception as exc:
                 error_text = str(exc)
                 try:
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-failed:{update_id}', _r22_callback_inbox_mark_background, update_id, 'failed', error_text)
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-event-failed:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, False, error_text)
+                    UI_CLEANUP_TASK_POOL.submit(f'r23-inbox-failed:{update_id}', _r22_callback_inbox_mark_background, update_id, 'failed', error_text)
+                    UI_CLEANUP_TASK_POOL.submit(f'r23-event-failed:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, False, error_text)
                 except Exception:
                     pass
                 try:
@@ -483,11 +496,15 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                 except Exception:
                     pass
                 try:
-                    log_error(f'R22 CALLBACK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
+                    log_error(f'R23 CALLBACK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
                 except Exception:
                     pass
                 raise
             finally:
+                try:
+                    r23_fast_callback_hotpath_end()
+                except Exception:
+                    pass
                 UPDATE_DISPATCHER.finish(update_id, success, error_text)
                 _r19_schedule_post_update_cleanup(update_id, update_chat_id, 'callback_query', wait, started, success, False)
 
@@ -515,7 +532,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
     try:
         pool = globals().get('DELTA_TASK_POOL') or globals().get('UI_CLEANUP_TASK_POOL')
         if pool is not None:
-            pool.submit_unique(f'r22-callback-sidejobs:{update_id}', _r22_callback_sidejobs, payload, update_id, update_chat_id)
+            pool.submit_unique(f'r23-callback-sidejobs:{update_id}', _r22_callback_sidejobs, payload, update_id, update_chat_id)
     except Exception:
         pass
     return ('OK', 200)
@@ -567,7 +584,7 @@ def telegram_webhook():
                 upd_type = 'edited_message' if 'edited_message' in payload else 'message' if 'message' in payload else 'callback_query' if 'callback_query' in payload else 'other'
                 if upd_type == 'callback_query':
                     cid_j = _extract_update_chat_id(payload)
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-webhook-journal:{payload.get("update_id", time.time_ns())}', bot_journal, 'webhook_update', cid_j, upd_type)
+                    UI_CLEANUP_TASK_POOL.submit(f'r23-webhook-journal:{payload.get("update_id", time.time_ns())}', bot_journal, 'webhook_update', cid_j, upd_type)
                 else:
                     bot_journal('webhook_update', _extract_update_chat_id(payload), upd_type)
             except Exception:
@@ -581,7 +598,7 @@ def telegram_webhook():
         update_type = 'edited_message' if isinstance(payload, dict) and 'edited_message' in payload else 'callback_query' if isinstance(payload, dict) and 'callback_query' in payload else 'message' if isinstance(payload, dict) and 'message' in payload else 'other'
         if update_type == 'callback_query':
             # Rare finance toggles keep the pre-execution cloud witness because replaying
-            # a toggle twice can reverse state. All normal/navigation callbacks take R22.
+            # a toggle twice can reverse state. All normal/navigation callbacks take R23.
             _r22_cloud_critical, _r22_cloud_reason = durable_task_required(payload)
             if not _r22_cloud_critical:
                 return _r22_accept_callback_fast(payload, update_id, update_chat_id, update_key)
@@ -796,11 +813,11 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
-    '• ⚡ Пер-R22: callback ставится в FAST до SQLite; Telegram render вынесен в отдельную latest-wins очередь и не держит callback-worker.\n'
-    '• 🛰 SQLite/Redis/remote witness больше не стоят перед началом отрисовки кнопки; HEAVY/split остаётся на Render #2.\n'
-    '• 💾 Сохраняется надёжная R20/v262 схема durable capsule: максимум config generation + максимум user-state seq без отката.\n'
-    '• 🔒 Полный SQLite + delta/event journal остаются вторым уровнем защиты финансов и остальных данных; capsule не содержит финансовые cold-ledger записи.\n'
-    '• 🚀 Быстрые навигационные клики могут исполняться параллельно; stale render заменяется новым до обращения к Telegram.'
+    '• ⚡ Пер-R23: FAST callback — RAM-first; до первого render нет Redis/KV, HEAVY HTTP, Google/MEGA и других удалённых ожиданий.\n'
+    '• 🧩 Длинные callback-токены больше не пишутся в Redis по одному при построении клавиатуры: зеркало идёт фоновыми batch-командами.\n'
+    '• 💾 Обычные UI/settings save_data коалесцируются в отдельной latest-wins SQLite-очереди; финансовые мутации сохраняются синхронно.\n'
+    '• 🚀 Telegram render остаётся отдельной latest-wins очередью: callback-worker не ждёт editMessageText RTT, устаревшие render отбрасываются.\n'
+    '• 🛰 Render #2 остаётся HEAVY: shared durability, Google, MEGA, snapshot/export и тяжёлые задачи выполняются вторым этапом.'
 )
 
 
@@ -868,7 +885,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R22 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R23 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -955,7 +972,7 @@ def main():
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
     restored = bool(_split_preboot_authoritative_r19)
     db_restored = bool(_split_preboot_authoritative_r19)
-    db_detail = (f'Пер-R22 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    db_detail = (f'Пер-R23 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
     if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:

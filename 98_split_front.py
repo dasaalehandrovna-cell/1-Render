@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-per-r22-zero-blocking-button-render"
+_SPLIT_FRONT_VERSION = "vys-262-front-per-r23-fast-ram-first-remote-guard"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -1799,6 +1799,40 @@ def split_schedule_continuity_checkpoint_v270(chat_id=None, reason='update', del
 _V263_BASE_SAVE_DATA = save_data
 
 def save_data(d, chat_ids=None, full=False, root_only=False):
+    # R23: ordinary UI/settings callbacks are RAM-authoritative until their first
+    # response is queued. SQLite persistence is coalesced on a separate lane and
+    # therefore cannot hold the FAST callback key. Correctness-critical finance
+    # mutations retain synchronous persistence.
+    hot_fn = globals().get('r23_fast_callback_hotpath_active')
+    sync_fn = globals().get('r23_fast_callback_sync_persistence_required')
+    try:
+        if callable(hot_fn) and hot_fn() and not (callable(sync_fn) and sync_fn()):
+            ids_copy = None
+            if chat_ids is not None:
+                ids_copy = list(chat_ids) if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
+            elif not full and not root_only:
+                # current_state_chat_id() is thread-local, so capture it before leaving FAST.
+                try:
+                    _hot_cid = current_state_chat_id()
+                    if _hot_cid is None:
+                        _hot_cid = getattr(globals().get('_R23_FAST_HOTPATH_LOCAL'), 'chat_id', None)
+                    if _hot_cid is not None:
+                        ids_copy = [int(_hot_cid)]
+                except Exception:
+                    ids_copy = None
+            key_part = 'root'
+            if ids_copy:
+                try: key_part = str(int(ids_copy[0]))
+                except Exception: key_part = str(ids_copy[0])[:80]
+            pool = globals().get('UI_PERSIST_TASK_POOL')
+            if pool is not None:
+                seq = pool.submit_latest(f'ui-save:{key_part}', save_data, d, ids_copy, bool(full), bool(root_only))
+                if seq:
+                    note_fn = globals().get('r23_fast_callback_note_deferred_persist')
+                    if callable(note_fn): note_fn()
+                    return True
+    except Exception:
+        pass
     result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
     # Non-Telegram/background mutations need their own freshness marker.  Telegram
     # updates receive exactly one marker after the handler, avoiding extra hot-path IO.
@@ -2875,8 +2909,41 @@ except Exception: pass
 # R21: every button has an immediate FAST stage. Heavy execution is a second stage.
 # This override intentionally runs after 89_callback_final.py so it replaces the canonical
 # monolith submitter without changing the v262 business handlers themselves.
-R22_ZERO_BLOCKING_BUTTON_STAGE = 'per-r22-zero-blocking-button-render'
-R21_EVERY_BUTTON_FAST_STAGE = R22_ZERO_BLOCKING_BUTTON_STAGE  # compatibility alias
+
+# R23 FAST network constitution ------------------------------------------------
+# All modules share the same requests package.  Guard Session.request once, using
+# thread-local callback state. Telegram API is the only network allowed on FAST;
+# Redis has its own RESP guard in 05_key_value_runtime.py.
+_R23_REQUESTS_SESSION_REQUEST = requests.sessions.Session.request
+
+def _r23_guarded_requests_session_request(self, method, url, *args, **kwargs):
+    hot_fn = globals().get('r23_fast_callback_hotpath_active')
+    try:
+        hot = bool(callable(hot_fn) and hot_fn())
+    except Exception:
+        hot = False
+    if hot:
+        target = str(url or '')
+        try:
+            host = str(urllib.parse.urlparse(target).hostname or '').casefold()
+        except Exception:
+            host = ''
+        if host not in {'api.telegram.org', 'telegram.org'} and not host.endswith('.telegram.org'):
+            note_fn = globals().get('r23_fast_callback_note_remote_block')
+            try:
+                if callable(note_fn): note_fn('http', target[:180])
+            except Exception:
+                pass
+            raise RuntimeError('R23_FAST_HOTPATH_REMOTE_HTTP_BLOCKED')
+    return _R23_REQUESTS_SESSION_REQUEST(self, method, url, *args, **kwargs)
+
+if not bool(getattr(requests.sessions.Session.request, '_r23_fast_guard', False)):
+    _r23_guarded_requests_session_request._r23_fast_guard = True
+    requests.sessions.Session.request = _r23_guarded_requests_session_request
+
+R23_FAST_RAM_FIRST_STAGE = 'per-r23-fast-ram-first-remote-guard'
+R22_ZERO_BLOCKING_BUTTON_STAGE = R23_FAST_RAM_FIRST_STAGE  # compatibility alias
+R21_EVERY_BUTTON_FAST_STAGE = R23_FAST_RAM_FIRST_STAGE  # compatibility alias
 try:
     R21_HEAVY_DISPATCH_TASK_POOL = KeyedTaskPool(
         'heavy-dispatch',

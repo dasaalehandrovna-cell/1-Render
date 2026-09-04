@@ -113,3 +113,9 @@ Every Telegram callback has an immediate FAST stage on Render #1. The callback i
 See `FIXES_R22_ZERO_BLOCKING_BUTTON_RENDER.txt`.
 
 R22 dispatches ordinary callbacks to FAST before waiting for the local SQLite inbox write. Telegram edit RTT is removed from callback workers and runs in a dedicated per-window latest-wins render pool. RAM navigation history is hot-path authoritative and KV mirroring is asynchronous. Owner READY notice shows `Пер-R22`.
+
+
+## Пер-R23 — FAST RAM-FIRST / REMOTE GUARD
+See `FIXES_R23_FAST_RAM_FIRST_REMOTE_GUARD.txt`.
+
+R23 turns Render #1 into a strict UI front: normal callback handlers use RAM/local state, enqueue the Telegram render immediately, and may not wait for Redis/KV, Render #2 HTTP, Google, MEGA or other remote services. Long callback tokens are mirrored to Redis in background batches instead of one network command per button. Non-critical UI/settings SQLite saves are coalesced on a dedicated latest-wins persistence lane; correctness-critical finance mutations keep synchronous local persistence. Owner READY notice shows `Пер-R23`.

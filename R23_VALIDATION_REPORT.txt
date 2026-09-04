@@ -1,0 +1,50 @@
+Пер-R23 VALIDATION REPORT
+=========================
+Release: Пер-R23 — FAST RAM-FIRST / REMOTE GUARD
+Base: user-provided FAST/HEAVY Пер-R22 packages
+
+Goal
+- Render #1 FAST must react to ordinary user buttons from RAM/local state and enqueue the first Telegram render without waiting for Redis/KV, Render #2 HTTP, Google, MEGA, backups or other remote services.
+- Render #2 HEAVY remains the second stage for heavyweight/durable/background work.
+
+Main R23 changes
+- Added an explicit FAST callback hot-path context with timing/diagnostics.
+- Added runtime remote guard: non-Telegram requests are blocked from the ordinary FAST callback hot path before first render.
+- Redis/KV commands are blocked from ordinary FAST hot path; local/default behavior is used instead.
+- One narrow Redis read exception remains for restoring an OLD shortened callback token after process restart, because without resolving that token the button cannot be routed at all.
+- Found and removed a major hidden latency source: make_short_callback() previously mirrored each long callback token to Redis synchronously while constructing a keyboard. R23 stores tokens in RAM immediately and mirrors them later in a batched KV_MIRROR_TASK_POOL pipeline.
+- Increased the local shortened-callback hot cache to 4096 entries.
+- USD rate lookup is RAM/cache-first during FAST callback; remote Redis/DolarAPI refresh is scheduled in background.
+- Ordinary UI/settings save_data() calls inside FAST callback are coalesced on UI_PERSIST_TASK_POOL and do not wait for SQLite commit. Latest state wins.
+- Correctness-critical finance business callbacks retain synchronous local persistence.
+- Telegram editMessageText/editMessageCaption remains on the separate R22 latest-wins WINDOW_RENDER_TASK_POOL, so callback workers do not wait for Telegram RTT.
+- Navigation/history remains RAM-first with asynchronous persistence/mirroring.
+- Task-pool diagnostics now expose window-render, ui-persist and kv-mirror pools.
+- Owner READY notice now shows «Пер-R23».
+- FAST/HEAVY internal config version: vys-262-r23-fast-ram-first-remote-guard.
+- Existing R20 durable capsule Redis key/format remains unchanged.
+
+Validation PASS
+- python compile: every top-level FAST .py
+- python compile: every top-level HEAVY .py
+- modules_manifest.json SHA-256 verification: PASS
+- INFO/tests/r23_fast_ram_first_remote_guard_smoke.py
+- INFO/tests/r22_zero_blocking_button_render_smoke.py
+- INFO/tests/r21_every_button_fast_heavy_stage_smoke.py
+- INFO/tests/r20_durable_capsule_fastlane_smoke.py
+- INFO/tests/r20_heavy_capsule_contract_smoke.py against R23 HEAVY
+- INFO/tests/r19_runtime_lane_regression.py
+- INFO/tests/startup_smoke_v262.py
+- INFO/tests/v262_exact_once_regression.py
+- INFO/tests/v262_linked_finance_smoke.py
+- INFO/tests/v262_fast_ui_smoke.py
+- Isolated shortened-callback micro-test: token creation performs no synchronous Redis call; queued mirror flush uses one batch pipeline.
+
+Safety exception intentionally retained
+- Rare callbacks selected by durable_task_required() (primarily correctness-sensitive finance toggles) keep the strict pre-execution durability path. This avoids a deploy/replay turning a toggle back the other way.
+- Ordinary navigation, menus, pages, settings windows and non-critical UI callbacks use the R23 RAM-first path.
+
+Expected user-visible effect
+- Windows with many generated buttons no longer issue one Redis network write per long callback_data before Telegram render.
+- Redis/KV/HEAVY/Google/MEGA slowness should not delay an ordinary first FAST render.
+- Repeated quick navigation remains latest-wins rather than building a backlog of stale Telegram renders.

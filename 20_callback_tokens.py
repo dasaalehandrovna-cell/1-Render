@@ -3,7 +3,85 @@ _short_callback_lock = threading.RLock()
 _short_callback_store = {}
 _short_callback_counter = 0
 SHORT_CALLBACK_TTL_SECONDS = 6 * 60 * 60
-SHORT_CALLBACK_LOCAL_HOT_MAX_V248 = max(64, min(1000, int(os.getenv('SHORT_CALLBACK_LOCAL_HOT_MAX', '256') or '256')))
+SHORT_CALLBACK_LOCAL_HOT_MAX_V248 = max(512, min(20000, int(os.getenv('SHORT_CALLBACK_LOCAL_HOT_MAX', '4096') or '4096')))
+
+# R23: long callback tokens are RAM-first. Redis mirroring is batched in a background
+# worker so constructing a keyboard with 20-50 buttons performs zero Redis RTTs.
+_SHORT_CALLBACK_MIRROR_LOCK_R23 = threading.RLock()
+_SHORT_CALLBACK_MIRROR_PENDING_R23 = {}
+_SHORT_CALLBACK_MIRROR_SCHEDULED_R23 = False
+_SHORT_CALLBACK_MIRROR_BATCH_R23 = max(20, min(500, int(os.getenv('SHORT_CALLBACK_MIRROR_BATCH', '160') or '160')))
+_SHORT_CALLBACK_MIRROR_MAX_PENDING_R23 = max(1000, min(50000, int(os.getenv('SHORT_CALLBACK_MIRROR_MAX_PENDING', '8000') or '8000')))
+
+def _flush_short_callback_mirrors_r23():
+    global _SHORT_CALLBACK_MIRROR_SCHEDULED_R23
+    while True:
+        with _SHORT_CALLBACK_MIRROR_LOCK_R23:
+            if not _SHORT_CALLBACK_MIRROR_PENDING_R23:
+                _SHORT_CALLBACK_MIRROR_SCHEDULED_R23 = False
+                return
+            keys = list(_SHORT_CALLBACK_MIRROR_PENDING_R23.keys())[:_SHORT_CALLBACK_MIRROR_BATCH_R23]
+            batch = [(k, _SHORT_CALLBACK_MIRROR_PENDING_R23.pop(k)) for k in keys]
+        try:
+            if not bool(globals().get('key_value_configured_v248', lambda: False)()):
+                with _SHORT_CALLBACK_MIRROR_LOCK_R23:
+                    _SHORT_CALLBACK_MIRROR_SCHEDULED_R23 = False
+                return
+            client = globals().get('KEY_VALUE_CLIENT_V248')
+            key_fn = globals().get('_kv_key_v248')
+            if client is None or not callable(key_fn):
+                raise RuntimeError('KV client unavailable')
+            commands = [('SET', key_fn(f'cb:{token}'), str(value), 'EX', int(SHORT_CALLBACK_TTL_SECONDS)) for token, value in batch]
+            client.pipeline(commands)
+            try:
+                client._stats['writes'] = int(client._stats.get('writes', 0) or 0) + len(batch)
+            except Exception:
+                pass
+        except Exception:
+            # Keep RAM authoritative. Requeue once for the normal KV circuit/cooldown;
+            # do not spin and never make the user's current keyboard wait.
+            with _SHORT_CALLBACK_MIRROR_LOCK_R23:
+                for token, value in batch:
+                    if len(_SHORT_CALLBACK_MIRROR_PENDING_R23) < _SHORT_CALLBACK_MIRROR_MAX_PENDING_R23:
+                        _SHORT_CALLBACK_MIRROR_PENDING_R23[token] = value
+                _SHORT_CALLBACK_MIRROR_SCHEDULED_R23 = False
+            try:
+                sched = globals().get('DELAYED_SCHEDULER')
+                if sched is not None:
+                    sched.schedule('r23-short-callback-mirror-retry', 2.0, _schedule_short_callback_mirror_flush_r23)
+            except Exception:
+                pass
+            return
+
+def _schedule_short_callback_mirror_flush_r23():
+    global _SHORT_CALLBACK_MIRROR_SCHEDULED_R23
+    with _SHORT_CALLBACK_MIRROR_LOCK_R23:
+        if _SHORT_CALLBACK_MIRROR_SCHEDULED_R23 or not _SHORT_CALLBACK_MIRROR_PENDING_R23:
+            return True
+        _SHORT_CALLBACK_MIRROR_SCHEDULED_R23 = True
+    try:
+        pool = globals().get('KV_MIRROR_TASK_POOL')
+        if pool is not None and hasattr(pool, 'submit_latest'):
+            if pool.submit_latest('r23-short-callback-mirror', _flush_short_callback_mirrors_r23):
+                return True
+        pool = globals().get('BACKGROUND_TASK_POOL') or globals().get('UI_CLEANUP_TASK_POOL')
+        if pool is not None and pool.submit_unique('r23-short-callback-mirror', _flush_short_callback_mirrors_r23):
+            return True
+    except Exception:
+        pass
+    with _SHORT_CALLBACK_MIRROR_LOCK_R23:
+        _SHORT_CALLBACK_MIRROR_SCHEDULED_R23 = False
+    return False
+
+def _queue_short_callback_mirror_r23(token: str, data_str: str) -> bool:
+    with _SHORT_CALLBACK_MIRROR_LOCK_R23:
+        if len(_SHORT_CALLBACK_MIRROR_PENDING_R23) >= _SHORT_CALLBACK_MIRROR_MAX_PENDING_R23:
+            try:
+                _SHORT_CALLBACK_MIRROR_PENDING_R23.pop(next(iter(_SHORT_CALLBACK_MIRROR_PENDING_R23)), None)
+            except Exception:
+                pass
+        _SHORT_CALLBACK_MIRROR_PENDING_R23[str(token)] = str(data_str)
+    return _schedule_short_callback_mirror_flush_r23()
 
 def base36(num: int) -> str:
     try:
@@ -40,22 +118,18 @@ def make_short_callback(data_str: str, prefix: str | None=None) -> str:
         _short_callback_counter += 1
         token = base36(_short_callback_counter) + base36(int(time.time() * 1000) % 46656)
         _short_callback_store[token] = {'data': data_str, 'ts': time.time()}
-    mirrored = False
-    mirror_fn = globals().get('kv_callback_store_v248')
-    if callable(mirror_fn):
-        try:
-            mirrored = bool(mirror_fn(token, data_str))
-        except Exception:
-            mirrored = False
+    # R23: never contact Redis while constructing a keyboard.  The token is already
+    # usable from RAM; the background batch mirror is only restart continuity.
+    _queue_short_callback_mirror_r23(token, data_str)
     with _short_callback_lock:
-        max_local = SHORT_CALLBACK_LOCAL_HOT_MAX_V248 if mirrored else 2000
+        max_local = SHORT_CALLBACK_LOCAL_HOT_MAX_V248
         if len(_short_callback_store) > max_local:
             cutoff = time.time() - SHORT_CALLBACK_TTL_SECONDS
             for k in list(_short_callback_store.keys()):
                 if len(_short_callback_store) <= max_local:
                     break
                 row = _short_callback_store.get(k) or {}
-                if mirrored or float(row.get('ts', 0) or 0) < cutoff:
+                if float(row.get('ts', 0) or 0) < cutoff or len(_short_callback_store) > max_local:
                     _short_callback_store.pop(k, None)
     return f'{prefix}:{token}'
 

@@ -22,6 +22,35 @@ KEY_VALUE_NAV_TTL_SECONDS = max(300, min(86400, int(os.getenv('KEY_VALUE_NAV_TTL
 KEY_VALUE_CALLBACK_TTL_SECONDS = max(900, min(86400, int(os.getenv('KEY_VALUE_CALLBACK_TTL_SECONDS', str(6 * 60 * 60)) or str(6 * 60 * 60))))
 
 
+# R23 FAST constitution -------------------------------------------------------
+def _kv_r23_fast_hotpath() -> bool:
+    fn = globals().get('r23_fast_callback_hotpath_active')
+    try:
+        return bool(callable(fn) and fn())
+    except Exception:
+        return False
+
+def _kv_r23_note_block(target: str='') -> None:
+    fn = globals().get('r23_fast_callback_note_remote_block')
+    try:
+        if callable(fn): fn('redis', str(target or '')[:120])
+    except Exception:
+        pass
+
+def _kv_r23_defer_write(key: str, fn, *args, **kwargs) -> bool:
+    _kv_r23_note_block(key)
+    try:
+        pool = globals().get('KV_MIRROR_TASK_POOL')
+        if pool is not None and hasattr(pool, 'submit_latest'):
+            return bool(pool.submit_latest(f'r23-kv:{str(key)[:160]}', fn, *args, **kwargs))
+        pool = globals().get('BACKGROUND_TASK_POOL') or globals().get('UI_CLEANUP_TASK_POOL')
+        if pool is not None:
+            return bool(pool.submit(f'r23-kv:{str(key)[:160]}:{time.time_ns()}', fn, *args, **kwargs))
+    except Exception:
+        pass
+    return False
+
+
 def key_value_configured_v248() -> bool:
     return bool(KEY_VALUE_ENABLED and KEY_VALUE_URL and KEY_VALUE_URL.startswith(('redis://', 'rediss://')))
 
@@ -167,6 +196,16 @@ class _RenderKeyValueRESPClientV248:
         return sock
 
     def command(self, *parts):
+        if _kv_r23_fast_hotpath():
+            # One exceptional read is allowed: resolving an old callback token after a
+            # restart. Without it the callback cannot be routed at all. Normal buttons
+            # hit the large RAM token cache and never take this path.
+            cmd = str(parts[0] if parts else '').upper()
+            key = str(parts[1] if len(parts) > 1 else '')
+            essential_callback_restore = (cmd == 'GET' and ':cb:' in key)
+            if not essential_callback_restore:
+                _kv_r23_note_block(f'{cmd}:{key}')
+                raise RuntimeError('R23_FAST_HOTPATH_REDIS_BLOCKED')
         if not key_value_configured_v248():
             raise ConnectionError('Key Value not configured')
         with self._lock:
@@ -184,6 +223,9 @@ class _RenderKeyValueRESPClientV248:
                 raise
 
     def pipeline(self, commands):
+        if _kv_r23_fast_hotpath():
+            _kv_r23_note_block('pipeline')
+            raise RuntimeError('R23_FAST_HOTPATH_REDIS_PIPELINE_BLOCKED')
         commands = [tuple(x) for x in commands if x]
         if not commands:
             return []
@@ -246,6 +288,9 @@ def key_value_status_v248() -> dict:
 
 
 def kv_get_text_v248(suffix: str):
+    if _kv_r23_fast_hotpath() and not str(suffix or '').startswith('cb:'):
+        _kv_r23_note_block(f'GET:{suffix}')
+        return None
     if not key_value_configured_v248():
         return None
     try:
@@ -260,6 +305,8 @@ def kv_get_text_v248(suffix: str):
 
 
 def kv_set_text_v248(suffix: str, value, ttl_seconds: int | None=None) -> bool:
+    if _kv_r23_fast_hotpath():
+        return _kv_r23_defer_write(f'set:{suffix}', kv_set_text_v248, suffix, value, ttl_seconds)
     if not key_value_configured_v248():
         return False
     try:
@@ -293,6 +340,8 @@ def kv_set_json_v248(suffix: str, value, ttl_seconds: int | None=None) -> bool:
 
 
 def kv_delete_v248(suffix: str) -> bool:
+    if _kv_r23_fast_hotpath():
+        return _kv_r23_defer_write(f'del:{suffix}', kv_delete_v248, suffix)
     if not key_value_configured_v248():
         return False
     try:
@@ -302,6 +351,9 @@ def kv_delete_v248(suffix: str) -> bool:
 
 
 def kv_exists_v248(suffix: str) -> bool:
+    if _kv_r23_fast_hotpath():
+        _kv_r23_note_block(f'EXISTS:{suffix}')
+        return False
     if not key_value_configured_v248():
         return False
     try:
@@ -315,6 +367,8 @@ def kv_nav_suffix_v248(chat_id: int, message_id: int) -> str:
 
 
 def kv_nav_push_v248(chat_id: int, message_id: int, snapshot: dict, limit: int=12) -> bool:
+    if _kv_r23_fast_hotpath():
+        return _kv_r23_defer_write(f'nav-push:{chat_id}:{message_id}', kv_nav_push_v248, chat_id, message_id, snapshot, limit)
     if not key_value_configured_v248():
         return False
     try:
@@ -335,6 +389,9 @@ def kv_nav_push_v248(chat_id: int, message_id: int, snapshot: dict, limit: int=1
 
 
 def kv_nav_peek_v248(chat_id: int, message_id: int):
+    if _kv_r23_fast_hotpath():
+        _kv_r23_note_block(f'nav-peek:{chat_id}:{message_id}')
+        return None
     if not key_value_configured_v248():
         return None
     try:
@@ -349,6 +406,8 @@ def kv_nav_peek_v248(chat_id: int, message_id: int):
 
 
 def kv_nav_pop_v248(chat_id: int, message_id: int) -> bool:
+    if _kv_r23_fast_hotpath():
+        return _kv_r23_defer_write(f'nav-pop:{chat_id}:{message_id}', kv_nav_pop_v248, chat_id, message_id)
     if not key_value_configured_v248():
         return False
     try:
@@ -367,6 +426,9 @@ def kv_nav_clear_v248(chat_id: int, message_id: int) -> bool:
 
 
 def kv_nav_clear_chat_v248(chat_id: int) -> int:
+    if _kv_r23_fast_hotpath():
+        _kv_r23_defer_write(f'nav-clear-chat:{chat_id}', kv_nav_clear_chat_v248, chat_id)
+        return 0
     if not key_value_configured_v248():
         return 0
     index_key = _kv_key_v248(f'ui:navindex:{int(chat_id)}')
@@ -396,6 +458,9 @@ def kv_callback_resolve_v248(token: str):
 
 def kv_distributed_lock_try_v248(name: str, ttl_seconds: int=600):
     """Return (allowed, token, backend). Fallback is fail-open because local locks remain authoritative."""
+    if _kv_r23_fast_hotpath():
+        _kv_r23_note_block(f'lock:{name}')
+        return (True, None, 'r23_fast_local')
     if not key_value_configured_v248():
         return (True, None, 'local')
     token = secrets.token_hex(12)

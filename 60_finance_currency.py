@@ -716,6 +716,18 @@ def _clean_category_display_name(value: str) -> str:
 def usd_rate_cached(force: bool=False) -> dict | None:
     gs = data.setdefault('_global_settings', {})
     cache = gs.get('usd_rate_cache') if isinstance(gs.get('usd_rate_cache'), dict) else {}
+    # R23: a finance window may use a stale local rate for one render, but it may
+    # never wait for Redis/DolarAPI. Refresh is scheduled on background immediately.
+    hot_fn = globals().get('r23_fast_callback_hotpath_active')
+    try:
+        if callable(hot_fn) and hot_fn():
+            try:
+                GENERAL_TASK_POOL.submit_unique('r23-usd-rate-refresh', usd_rate_cached, True)
+            except Exception:
+                pass
+            return cache if cache.get('rate') else None
+    except Exception:
+        pass
     gate = globals().get('external_access_allowed_v233')
     if callable(gate) and (not gate('currency')):
         try:

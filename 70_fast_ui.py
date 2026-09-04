@@ -763,7 +763,7 @@ def build_owner_instruction_keyboard(chat_id: int):
     return kb
 
 def all_task_pool_stats() -> list[dict]:
-    return [WEBHOOK_TASK_POOL.stats(), FAST_UI_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
+    return [WEBHOOK_TASK_POOL.stats(), FAST_UI_TASK_POOL.stats(), UI_TASK_POOL.stats(), WINDOW_RENDER_TASK_POOL.stats(), UI_PERSIST_TASK_POOL.stats(), KV_MIRROR_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
 
 def build_queue_status_text() -> str:
     lines = ['🚦 Очереди и нагрузка', '']

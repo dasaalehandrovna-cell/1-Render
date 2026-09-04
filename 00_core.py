@@ -782,6 +782,85 @@ UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI
 FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 4, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
 # R22: Telegram editMessageText/caption runs here, never inside callback workers.
 WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 6, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 2000))
+# R23: non-critical callback persistence never holds a FAST callback worker.
+# The latest pending save per logical key wins, just like the window render queue.
+UI_PERSIST_TASK_POOL = LatestKeyedTaskPool('ui-persist', _env_int('UI_PERSIST_WORKERS', 2, 1, 4), _env_int('UI_PERSIST_MAX_PENDING_KEYS', 256, 32, 2000))
+KV_MIRROR_TASK_POOL = LatestKeyedTaskPool('kv-mirror', _env_int('KV_MIRROR_WORKERS', 2, 1, 4), _env_int('KV_MIRROR_MAX_PENDING_KEYS', 512, 64, 4000))
+
+# R23 FAST hot-path constitution.  This thread-local flag is set only while a
+# Telegram callback handler is running on FAST.  Redis/KV and non-Telegram HTTP
+# are forbidden there; local RAM work is authoritative for the immediate UI.
+_R23_FAST_HOTPATH_LOCAL = threading.local()
+
+def r23_fast_callback_hotpath_begin(update_id=None, chat_id=None, raw_callback: str='', sync_persistence: bool=False):
+    local = _R23_FAST_HOTPATH_LOCAL
+    local.active = True
+    local.update_id = update_id
+    local.chat_id = chat_id
+    local.raw_callback = str(raw_callback or '')[:180]
+    local.sync_persistence = bool(sync_persistence)
+    local.started_mono = time.monotonic()
+    local.first_render_mono = 0.0
+    local.first_render_purpose = ''
+    local.blocked_remote = 0
+    local.deferred_persist = 0
+
+def r23_fast_callback_hotpath_active() -> bool:
+    return bool(getattr(_R23_FAST_HOTPATH_LOCAL, 'active', False))
+
+def r23_fast_callback_sync_persistence_required() -> bool:
+    return bool(getattr(_R23_FAST_HOTPATH_LOCAL, 'sync_persistence', False))
+
+def r23_fast_callback_mark_render_enqueued(purpose: str='') -> None:
+    if not r23_fast_callback_hotpath_active():
+        return
+    local = _R23_FAST_HOTPATH_LOCAL
+    if not float(getattr(local, 'first_render_mono', 0.0) or 0.0):
+        local.first_render_mono = time.monotonic()
+        local.first_render_purpose = str(purpose or '')[:100]
+
+def r23_fast_callback_note_remote_block(kind: str='', target: str='') -> None:
+    if not r23_fast_callback_hotpath_active():
+        return
+    local = _R23_FAST_HOTPATH_LOCAL
+    local.blocked_remote = int(getattr(local, 'blocked_remote', 0) or 0) + 1
+
+def r23_fast_callback_note_deferred_persist() -> None:
+    if r23_fast_callback_hotpath_active():
+        local = _R23_FAST_HOTPATH_LOCAL
+        local.deferred_persist = int(getattr(local, 'deferred_persist', 0) or 0) + 1
+
+def _r23_hotpath_stats_background(row: dict) -> None:
+    try:
+        bot_journal('r23_fast_hotpath', row.get('chat_id'),
+                    f"action={row.get('raw','')}; handler={row.get('handler',0.0):.3f}s; first_render={row.get('first_render',-1.0):.3f}s; blocked_remote={row.get('blocked_remote',0)}; deferred_persist={row.get('deferred_persist',0)}")
+    except Exception:
+        pass
+
+def r23_fast_callback_hotpath_end() -> dict:
+    local = _R23_FAST_HOTPATH_LOCAL
+    if not bool(getattr(local, 'active', False)):
+        return {}
+    now = time.monotonic()
+    started = float(getattr(local, 'started_mono', now) or now)
+    first = float(getattr(local, 'first_render_mono', 0.0) or 0.0)
+    row = {
+        'chat_id': getattr(local, 'chat_id', None),
+        'update_id': getattr(local, 'update_id', None),
+        'raw': str(getattr(local, 'raw_callback', '') or '')[:180],
+        'handler': max(0.0, now - started),
+        'first_render': (max(0.0, first - started) if first else -1.0),
+        'blocked_remote': int(getattr(local, 'blocked_remote', 0) or 0),
+        'deferred_persist': int(getattr(local, 'deferred_persist', 0) or 0),
+    }
+    local.active = False
+    try:
+        pool = globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None:
+            pool.submit(f"r23-hotpath-stats:{row.get('update_id')}:{time.time_ns()}", _r23_hotpath_stats_background, row)
+    except Exception:
+        pass
+    return row
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 1, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
 UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
