@@ -56,7 +56,7 @@ def _runtime_contract_gate_v222() -> None:
         "resolve_forward_targets": ({"source_chat_id"}, "72_multitenant_runtime.py"),
         "send_and_auto_delete": ({"chat_id", "text", "delay"}, "74_ui_reliability_runtime.py"),
         "send_html_and_auto_delete": ({"chat_id", "html_text", "delay"}, "74_ui_reliability_runtime.py"),
-        "submit_interactive_file_job": ({"chat_id", "kind", "label", "func"}, "74_ui_reliability_runtime.py"),
+        "submit_interactive_file_job": ({"chat_id", "kind", "label", "func"}, "98_split_front.py"),
     }
     problems=[]
     for name,(required,owner_file) in contracts.items():

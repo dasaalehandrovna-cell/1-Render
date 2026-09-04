@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r20-v262-durable-capsule-fast-ui"
+_SPLIT_FRONT_VERSION = "vys-262-front-per-r21-every-button-fast-heavy-stage"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -2870,4 +2870,138 @@ except Exception:
 R15_FAST_HOTPATH = 'vys262-r15-fast-hotpath'
 try: bot_journal('r15_fast_hotpath_loaded', int(OWNER_ID or 0), 'remote witness fast; continuity background; full fallback idle-only')
 except Exception: pass
+
+
+# R21: every button has an immediate FAST stage. Heavy execution is a second stage.
+# This override intentionally runs after 89_callback_final.py so it replaces the canonical
+# monolith submitter without changing the v262 business handlers themselves.
+R21_EVERY_BUTTON_FAST_STAGE = 'per-r21-every-button-fast-heavy-stage'
+try:
+    R21_HEAVY_DISPATCH_TASK_POOL = KeyedTaskPool(
+        'heavy-dispatch',
+        _env_int('R21_HEAVY_DISPATCH_WORKERS', 4, 2, 8),
+        _env_int('R21_HEAVY_DISPATCH_MAX_PENDING', 500, 50, 2000),
+    )
+except Exception:
+    R21_HEAVY_DISPATCH_TASK_POOL = globals().get('GENERAL_TASK_POOL') or globals().get('EXPORT_TASK_POOL')
+
+_R21_REMOTE_FILE_KINDS = {'period_export', 'exact_export', 'xlsx', 'csv'}
+_R21_REMOTE_FILE_FUNCS = {'_r7_send_export_for_chat_to', '_r7_send_exact_range_export'}
+
+def _r21_file_job_remote_capable(kind, func) -> bool:
+    name = str(getattr(func, '__name__', '') or '')
+    return str(kind or '') in _R21_REMOTE_FILE_KINDS or name in _R21_REMOTE_FILE_FUNCS
+
+def _r21_file_job_key(chat_id: int, kind: str) -> str:
+    # Coalesce only duplicate taps for the same chat+operation. R20's single global
+    # file key made an unrelated download in another chat look busy.
+    return f'r21:file:{int(chat_id)}:{str(kind or "file")[:80]}'
+
+def _r21_file_job_lock_denied(meta: dict, text: str='Такая задача уже выполняется.'):
+    key = str((meta or {}).get('key') or '')
+    cid = int((meta or {}).get('chat_id') or 0)
+    mid = int((meta or {}).get('status_msg_id') or 0)
+    try:
+        if mid:
+            bot.edit_message_text(window_mark('⏳ '+str(text), 'Ф233'), chat_id=cid, message_id=mid)
+    except Exception:
+        pass
+    try:
+        with _FILE_JOB_LOCK:
+            _FILE_JOB_STATE.pop(key, None)
+    except Exception:
+        pass
+
+def _r21_interactive_file_dispatch_runner(job_meta: dict, func, args, kwargs):
+    """Acquire distributed single-flight only after the callback has returned.
+
+    No Redis/Key Value RTT is ever in front of a Telegram button in R21.  For split-capable
+    exports this runner only prepares/dispatches the Render #2 job; the expensive file
+    generation happens on HEAVY.  Runtime-only diagnostics that require live FAST process
+    data stay on the low-priority export pool, never on the callback lane.
+    """
+    meta = dict(job_meta or {})
+    cid = int(meta.get('chat_id') or 0)
+    kind = str(meta.get('kind') or 'file')
+    kv_name = f'interactive_file_job:r21:{cid}:{kind}'
+    token = None
+    backend = 'local'
+    fn = globals().get('kv_distributed_lock_try_v248')
+    if callable(fn):
+        try:
+            allowed, token, backend = fn(kv_name, 900)
+        except Exception:
+            allowed, token, backend = (True, None, 'local_fallback')
+        if not allowed:
+            _r21_file_job_lock_denied(meta)
+            return False
+    meta['kv_lock_token_v248'] = token
+    meta['kv_lock_backend_v248'] = backend
+    meta['kv_lock_name_v259'] = kv_name
+    return _interactive_file_job_runner(meta, func, args, kwargs)
+
+def _r21_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
+    """R21 FAST half of every file/export button.
+
+    Synchronous path: RAM duplicate check -> Telegram status window -> local queue submit.
+    It performs no Redis lock, save_data(), backup, MEGA, Google or file construction.
+    """
+    cid = int(chat_id)
+    kind_s = str(kind or 'file')
+    label_s = str(label or 'Задача')
+    key = _r21_file_job_key(cid, kind_s)
+    now_m = time.monotonic()
+    with _FILE_JOB_LOCK:
+        existing = _FILE_JOB_STATE.get(key)
+        if isinstance(existing, dict):
+            return (False, 'Такая задача уже выполняется')
+        meta = {
+            'key': key, 'chat_id': cid, 'kind': kind_s, 'label': label_s,
+            'queued_monotonic': now_m, 'started_monotonic': 0.0,
+            'phase': 'передаю Render #2' if _r21_file_job_remote_capable(kind_s, func) else 'в фоне',
+            'status_msg_id': None, 'last_ui_monotonic': 0.0,
+        }
+        _FILE_JOB_STATE[key] = meta
+
+    # One visible UI operation is allowed in the FAST half. Do not persist this transient
+    # message id: after deploy it is intentionally disposable.
+    try:
+        phase = str(meta.get('phase') or 'в фоне')
+        text = _v159_file_status_text(label_s, '0:00', phase) if callable(globals().get('_v159_file_status_text')) else f'⏳ {label_s}\nЭтап: {phase}'
+        msg = bot.send_message(cid, text)
+        mid = int(getattr(msg, 'message_id', 0) or 0)
+        if mid:
+            with _FILE_JOB_LOCK:
+                if isinstance(_FILE_JOB_STATE.get(key), dict):
+                    _FILE_JOB_STATE[key]['status_msg_id'] = mid
+            meta['status_msg_id'] = mid
+    except Exception:
+        pass
+
+    pool = R21_HEAVY_DISPATCH_TASK_POOL if _r21_file_job_remote_capable(kind_s, func) else EXPORT_TASK_POOL
+    try:
+        ok = bool(pool.submit_unique(key, _r21_interactive_file_dispatch_runner, dict(meta), func, args, kwargs))
+    except Exception:
+        ok = False
+    if not ok:
+        with _FILE_JOB_LOCK:
+            _FILE_JOB_STATE.pop(key, None)
+        return (False, 'Очередь фоновых задач заполнена')
+    try:
+        _v160_schedule(f'v160:file-tick:{key}', internal_timer_seconds('process_status_refresh', 10.0), _file_job_tick, key)
+    except Exception:
+        pass
+    try:
+        bot_journal('r21_fast_file_stage', cid, f'kind={kind_s}; remote={int(_r21_file_job_remote_capable(kind_s, func))}; pool={getattr(pool,"name","")}')
+    except Exception:
+        pass
+    return (True, 'Запущено')
+
+globals()['submit_interactive_file_job'] = _r21_submit_interactive_file_job
+
+try:
+    bot_journal('r21_every_button_fast_loaded', int(OWNER_ID or 0),
+                'all_callbacks=fast-stage; heavy=second-stage; redis-lock=background; file-singleflight=chat+kind')
+except Exception:
+    pass
 # v262

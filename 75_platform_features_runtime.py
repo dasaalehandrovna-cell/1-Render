@@ -1804,12 +1804,17 @@ def _v166_is_safe_window_callback(raw: str) -> bool:
     return any((token in low for token in ('menu', 'page', 'list', 'view', 'status', 'open'))) and not any(token in low for token in heavy_tokens)
 
 def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update_key):
-    """R19 FAST callback routing.
+    """R21 every-button FAST stage routing.
 
-    Only callbacks that can mutate financial records remain chat-serial. Forward-pair
-    configuration keeps its pair lock. Every other callback is isolated by the concrete
-    Telegram window (chat_id + message_id), so one slow/stuck window cannot freeze every
-    button in the chat.
+    A Telegram button is *always* a FAST/front event.  We no longer classify a button as
+    "heavy" and send that callback itself to a slow UI lane.  The callback handler must
+    perform only its immediate UI/state stage and, when needed, enqueue the heavy stage
+    separately (Render #2 for split-capable work).
+
+    Finance mutations keep their own short chat-serial lane for exact ordering, but that
+    lane contains finance mutations only; exports/Google/backup/journal buttons never sit
+    in front of them.  Forward-pair configuration is also kept on FAST_UI and serialized
+    only by the concrete pair key.
     """
     if str(update_type) == 'message' and _v163_start_payload(payload):
         chat_id = _extract_update_chat_id(payload)
@@ -1818,14 +1823,14 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
         raw, chat_id, message_id = _v166_callback_raw_parts(payload)
         pair = _v166_forward_pair_from_callback(raw)
         if pair is not None:
-            return (V166_FORWARD_CONFIG_TASK_POOL, f'pair:{pair[0]}:{pair[1]}')
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-pair:{pair[0]}:{pair[1]}')
         if _v166_is_finance_business_callback(raw):
-            return (UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
-        if _v166_is_safe_window_callback(raw) and chat_id and message_id:
-            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
+            # Correctness-critical money mutations remain ordered, but no heavy/file
+            # callback shares this lane in R21.
+            return (V166_FINANCE_UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
         if chat_id and message_id:
-            return (UI_TASK_POOL, f'window:{chat_id}:{message_id}')
-        return (UI_TASK_POOL, f'callback:{update_key}')
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
+        return (V166_WINDOW_UI_TASK_POOL, f'fast-callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)
 
 def _v166_pair_lock(pair):

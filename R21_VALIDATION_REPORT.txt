@@ -1,0 +1,29 @@
+Пер-R21 VALIDATION REPORT
+
+Scope
+-----
+- Every Telegram callback gets an immediate FAST/front stage.
+- No heavy/light button classification before FAST routing.
+- Finance mutations remain short ordered per-chat operations only for correctness.
+- Forward-pair configuration uses FAST_UI, not GENERAL background queue.
+- Interactive file submit performs no Redis/Key Value RTT and no save_data before queueing.
+- Distributed single-flight is acquired in background.
+- CSV/XLSX/exact exports remain split-capable and are dispatched toward Render #2.
+- R20/v262 durable capsule format remains unchanged for upgrade compatibility.
+- Owner startup notice: «Пер-R21».
+
+Tests run
+---------
+PASS: Python compileall FAST + HEAVY.
+PASS: INFO/tests/r21_every_button_fast_heavy_stage_smoke.py
+PASS: INFO/tests/startup_smoke_v262.py
+PASS: INFO/tests/v262_fast_ui_smoke.py
+PASS: INFO/tests/v262_exact_once_regression.py
+PASS: INFO/tests/v262_linked_finance_smoke.py
+PASS: INFO/tests/r19_google_missing_target_regression.py
+PASS: INFO/tests/r20_heavy_capsule_contract_smoke.py with R20_HEAVY_ROOT pointing at R21 HEAVY.
+PASS: modules_manifest.json SHA256 updated for all 34 modular source parts.
+
+Important implementation boundary
+---------------------------------
+Runtime-only owner diagnostics that require live in-process FAST data are isolated to the low-priority export pool. They never execute on callback workers. Normal split-capable export/Google/backup/MEGA work remains assigned to HEAVY.

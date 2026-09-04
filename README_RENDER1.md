@@ -103,3 +103,8 @@ R19 removes the second legacy boot restore on FAST, gives lightweight navigation
 See `FIXES_R20_DURABLE_CONFIG_FAST_LANE.txt`.
 
 R20 restores the original выс-262 principle of an independent monotonic settings checkpoint, but routes its durable storage to HEAVY/Redis/MEGA. FAST only schedules the checkpoint after the local config generation changes. Heavy export/file actions are excluded from the FAST navigation lane.
+
+## Пер-R21 — EVERY BUTTON FAST / HEAVY SECOND STAGE
+See `FIXES_R21_EVERY_BUTTON_FAST_HEAVY_STAGE.txt`.
+
+Every Telegram callback has an immediate FAST stage on Render #1. The callback itself is never classified as a heavy button. Split-capable work is enqueued as a second-stage job for Render #2. Redis locking and durable I/O are never awaited before the user-facing callback returns. Owner READY notice shows `Пер-R21`.
