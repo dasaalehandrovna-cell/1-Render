@@ -1,19 +1,3 @@
-# Render #1 FAST — R17 FAST-FIRST + FULL DEPLOY CONTINUITY
-
-R17 restores the original split architecture priority: Telegram callbacks on Render #1 wait only for the local SQLite durability barrier. Redis event witness, user-state shadow/capsule, config projection and Worker mirroring run after the response in background.
-
-Deploy continuity fixes:
-- last real user mutation carries a monotonic R17 revision; snapshot/shutdown time cannot make an old instance look newer;
-- compact non-financial state + RAM/UI continuity is mirrored to Redis with compare-and-set protection;
-- the early R6 loader and the late split loader both reject stale shadows;
-- rolling-deploy restore overlays a newer R17 Redis capsule on the Worker/MEGA SQLite without touching finance ledgers;
-- full config projection is idle-debounced and never runs in the active callback burst;
-- scheduled Google Thu–Wed export without a selected sheet is suspended instead of retry-spamming.
-
-User-visible READY message shows `R17`. Heavy file/Google/backup work remains on Render #2.
-
----
-
 # Render #1 FAST — R13 Event Journal
 
 R13 adds a pre-commit remote Telegram event witness and monotonic operation states `RECEIVED → COMMITTED → MIRRORED`. Normal changes use compact SQLite page deltas. A full database moves from Front only after a rare hash mismatch or explicit deploy/shutdown checkpoint. Worker creates its own periodic checkpoints from the mirrored SQLite.
@@ -97,3 +81,20 @@ All runtime tuning values (intervals, limits, ports, feature switches and intern
 
 ## R16 FAST FINANCE + ALL COLOR XLSX
 See FIXES_R16_FAST_FINANCE_ALL_COLOR_XLSX.txt.
+
+## R17 FAST TERMINAL CHAT + FULL RESTORE
+See FIXES_R17_FAST_TERMINAL_CHAT_FULL_RESTORE.txt.
+
+Key rule: Render #1 / FAST must stay responsive. Terminal-chat cleanup is local and event-driven; remote durability and heavy restore/snapshot work remain asynchronous / Render #2.
+
+
+## R18 INSTANT CALLBACK + EXACT DEPLOY RESTORE
+See `FIXES_R18_INSTANT_CALLBACK_EXACT_DEPLOY_RESTORE.txt`.
+
+R18 supersedes the R15 quiet-only full-rebase rule: a delta/hash mismatch now queues an immediate HEAVY-driven full rebase without blocking Telegram. Callback receipt ACK starts before journaling/parsing/durability work, and rolling deploy has a preboot old-front capture plus Redis/Worker freshness arbitration. SIGTERM publishes a fresh restore point before slow legacy/MEGA shutdown work.
+
+
+## R19 FAST CALLBACK + AUTHORITATIVE RESTORE
+See `FIXES_R19_FAST_CALLBACK_AUTHORITATIVE_RESTORE.txt`.
+
+R19 removes the second legacy boot restore on FAST, gives lightweight navigation callbacks their own dedicated FAST UI lane, moves post-update cleanup off the UI lane, fixes the repeated full-state rebase loop by promoting the exact served full snapshot as the next delta baseline, and pauses automatic Google sync cleanly when no target table is configured.

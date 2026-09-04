@@ -505,7 +505,7 @@ def _v176_speed_text() -> str:
         lines += ['', f"Последних callback: {s['count']}", f"Медиана: {s['p50']:.3f} c · P90: {s['p90']:.3f} c · MAX: {s['max']:.3f} c", f"≥0.5 c: {s['slow05']} · ≥1.0 c: {s['slow10']}", '', 'Самые медленные действия:']
         for avg, mx, count, action in s.get('top', []):
             lines.append(f'• {action[:48]} — avg {avg:.3f} c / max {mx:.3f} c / n={count}')
-    pools = [x for x in (_v176_pool_line(n) for n in ('UI_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'GENERAL_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL', 'JOURNAL_TASK_POOL')) if x]
+    pools = [x for x in (_v176_pool_line(n) for n in ('FAST_UI_TASK_POOL', 'UI_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'GENERAL_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL', 'JOURNAL_TASK_POOL')) if x]
     if pools:
         lines += ['', 'Очереди active/pending:', ' · '.join(pools)]
     stages = list(_V177_PERF_STAGES)

@@ -22,10 +22,11 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r17-fast-first-deploy-state"
+_SPLIT_FRONT_VERSION = "vys-262-front-r19-fast-callback-authoritative-restore"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
+_SPLIT_SYNC_FIRST_DIRTY_AT = 0.0
 _SPLIT_LAST_CHANGE_AT = _split_time.time()
 _SPLIT_FULL_LOCK = _split_threading.RLock()
 _SPLIT_FULL_TIMER = None
@@ -33,6 +34,7 @@ _SPLIT_CONTINUITY_LOCK = _split_threading.RLock()
 _SPLIT_CONTINUITY_TIMER = None
 _SPLIT_CONTINUITY_CHAT_ID = None
 _SPLIT_CONTINUITY_REASON = ''
+_SPLIT_CONTINUITY_FIRST_DIRTY_AT = 0.0
 _SPLIT_CHANGE_LOCK = _split_threading.RLock()
 _SPLIT_CHANGE_EPOCH = _split_secrets.token_hex(6)
 _SPLIT_CHANGE_SEQ = 0
@@ -448,6 +450,31 @@ def _split_authorized_request():
     return bool(secret and _split_secrets.compare_digest(secret, supplied))
 
 
+_SPLIT_STATE_REV_KIND_R18 = 'split_state_revision_r18'
+_SPLIT_STATE_REV_KEY_R18 = 'latest'
+_SPLIT_STATE_REV_LOCK_R18 = _split_threading.RLock()
+
+def _split_touch_state_revision_r18(reason='update', update_id=None):
+    """Tiny monotonic durability marker written after successful Telegram work.
+
+    Unlike the heavier continuity shadow this write is O(1), so restore freshness
+    cannot remain hours old just because a trailing-edge serializer is coalescing.
+    """
+    try:
+        with _SPLIT_STATE_REV_LOCK_R18:
+            prev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
+            seq = int((prev or {}).get('seq') or 0) + 1
+            payload = {'schema':1, 'seq':seq, 'saved_at':_split_time.time(), 'reason':str(reason or '')[:140],
+                       'update_id':str(update_id)[:80] if update_id is not None else '',
+                       'state_token':_split_current_state_token_v264() if '_split_current_state_token_v264' in globals() else ''}
+            SQLITE.set_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, payload)
+            return payload
+    except Exception as exc:
+        try: log_error(f'R18 state revision touch: {exc}')
+        except Exception: pass
+        return {}
+
+
 def _split_mark_state_changed_v264(reason='change'):
     global _SPLIT_CHANGE_SEQ, _SPLIT_STATE_TOKEN, _SPLIT_LAST_CHANGE_AT
     with _SPLIT_CHANGE_LOCK:
@@ -516,8 +543,18 @@ def split_front_state_download_v262():
     try:
         snapshot_token = _split_current_state_token_v264()
         SQLITE.backup_to(raw)
-        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=9) as dst:
+        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
             _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
+        # R19: this raw SQLite image is exactly the full image HEAVY is about to receive.
+        # Promote that SAME image to FAST's acknowledged delta baseline. R18 left the
+        # old baseline in place after a full rebase, so every next tiny change produced
+        # another 409 -> full /internal/split/state GET (~1.3 MB) loop.
+        try:
+            _split_promote_delta_baseline_v267(raw)
+            _SPLIT_STATE['full_reconcile_last_ok'] = _split_time.time()
+            _SPLIT_STATE['full_reconcile_pending'] = False
+        except Exception as _r19_base_exc:
+            _SPLIT_STATE['full_reconcile_last_error'] = 'R19 served baseline: ' + str(_r19_base_exc)[:180]
         with open(gz, 'rb') as fh:
             payload = fh.read()
         response = app.response_class(payload, status=200, mimetype='application/gzip')
@@ -574,7 +611,7 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
             gz = raw + '.gz'
             SQLITE.backup_to(raw)
-            with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=9) as dst:
+            with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
                 _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
         payload = open(gz, 'rb').read()
         max_mb = max(1, min(128, int(_split_os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16')))
@@ -583,14 +620,27 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
         # revision is derived from the same SQLite image by the worker; the side meta is informational.
         revision = 0.0
         try:
-            for kind in ('user_state_shadow_v265', 'runtime_continuity_v263'):
+            for kind in ('split_state_revision_r18', 'user_state_shadow_v265', 'runtime_continuity_v263'):
                 row = SQLITE.get_meta(kind, 'latest', {}) or {}
                 revision = max(revision, float((row or {}).get('saved_at') or 0.0))
         except Exception:
             pass
         key, meta_key = _split_redis_snapshot_keys_v266()
         client = _split_redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=8, health_check_interval=30)
-        meta = {'revision': revision, 'size': len(payload), 'saved_at': _split_time.time(), 'reason': str(reason or '')[:160], 'source': 'front-r6'}
+        existing_revision = 0.0
+        try:
+            existing_raw = client.get(meta_key)
+            if isinstance(existing_raw, (bytes, bytearray)):
+                existing_raw = existing_raw.decode('utf-8', 'replace')
+            existing_meta = _split_json.loads(existing_raw) if isinstance(existing_raw, str) and existing_raw else {}
+            existing_revision = float((existing_meta or {}).get('revision') or 0.0)
+        except Exception:
+            existing_revision = 0.0
+        if existing_revision > revision + 0.000001:
+            _SPLIT_STATE['redis_fallback_last_ok'] = _split_time.time()
+            _SPLIT_STATE['redis_fallback_last_error'] = 'newer Redis snapshot preserved'
+            return True
+        meta = {'revision': revision, 'size': len(payload), 'saved_at': _split_time.time(), 'reason': str(reason or '')[:160], 'source': 'front-r18'}
         pipe = client.pipeline(transaction=True)
         pipe.set(key, payload)
         pipe.set(meta_key, _split_json.dumps(meta, separators=(',', ':')))
@@ -666,6 +716,21 @@ def _split_peer_loop():
         _split_time.sleep(max(30, min(1800, interval)))
 
 
+def _split_request_worker_full_sync_r18(reason='need_full'):
+    """Queue a full rebase on HEAVY; FAST never waits for snapshot/MEGA work."""
+    base, secret = _split_peer_base(), _split_secret()
+    if not base or not secret:
+        return False, 'worker URL/secret not configured'
+    try:
+        body = {'type':'sync_state', 'reason':str(reason or 'need_full')[:160], 'state_token':_split_current_state_token_v264()}
+        r = requests.post(base + '/internal/job', json=body, headers=_split_headers('vys-262-front-r18-rebase'), timeout=2.5)
+        if 200 <= r.status_code < 300:
+            return True, f'worker full rebase queued HTTP {r.status_code}'
+        return False, f'worker full rebase HTTP {r.status_code}: {r.text[:160]}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:160]}'
+
+
 def _split_request_sync_now(reason='change'):
     """R12 normal durability path: send only changed SQLite pages.
 
@@ -682,20 +747,22 @@ def _split_request_sync_now(reason='change'):
         return True
     _SPLIT_STATE['delta_last_error'] = str(detail or '')[:220]
     if need_full:
-        # R15: never gzip/upload the full database from the hot mutation path.  R13's
-        # RAW event journal already protects every Telegram update.  A full rebase is
-        # coalesced and runs only after the bot has been quiet, so a burst of finance
-        # messages cannot burn CPU/network and stall the keyed dispatcher.
+        # R18: a hash/base mismatch must not leave HEAVY stale for minutes/hours.
+        # Queue the full rebase on HEAVY immediately.  This function already runs in
+        # a background timer, so the Telegram callback/message handler never waits.
         _SPLIT_STATE['delta_full_fallbacks'] = int(_SPLIT_STATE.get('delta_full_fallbacks') or 0) + 1
         _SPLIT_STATE['full_reconcile_pending'] = True
-        try: _split_schedule_idle_full_reconcile_v270('delta_resync:' + str(reason or 'change')[:90])
-        except Exception: pass
+        queued, qdetail = _split_request_worker_full_sync_r18('delta_resync:' + str(reason or 'change')[:90])
+        if not queued:
+            _SPLIT_STATE['full_reconcile_last_error'] = str(qdetail or '')[:220]
+            try: _split_schedule_idle_full_reconcile_v270('delta_resync_fallback:' + str(reason or 'change')[:80], delay=8.0)
+            except Exception: pass
     _SPLIT_STATE['sync_last_error'] = str(detail or 'delta sync failed')[:220]
     return False
 
 
 def _split_sync_timer_fire():
-    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT
+    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
     try:
         reason = str(_SPLIT_STATE.get('sync_reason') or 'change')
         _split_request_sync_now(reason)
@@ -703,6 +770,7 @@ def _split_sync_timer_fire():
         with _SPLIT_SYNC_LOCK:
             _SPLIT_SYNC_TIMER = None
             _SPLIT_SYNC_DUE_AT = 0.0
+            _SPLIT_SYNC_FIRST_DIRTY_AT = 0.0
 
 
 def _split_inside_telegram_update_v264():
@@ -711,7 +779,7 @@ def _split_inside_telegram_update_v264():
 
 def split_schedule_worker_sync_v262(reason='change', delay=None):
     """Coalesced state handoff; Telegram never waits for MEGA or snapshot transfer."""
-    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT
+    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
     if not _split_env_bool('SPLIT_WORKER_SYNC_ENABLED', True):
         return False
     # One Telegram update may call save_data/config/finance hooks many times. R4
@@ -735,18 +803,22 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
     # R15: RAW events are already remotely witnessed.  State mirroring may therefore
     # debounce short finance bursts instead of snapshotting/gzipping on every message.
     _reason_l = str(reason or '').lower()
-    # R16.3 settings/UI checkpoints are small but deploy-critical. Mirror them to
-    # Worker quickly so a replacement instance usually restores the final click
-    # even before the old instance receives SIGTERM. Finance keeps its debounce.
-    if 'deploy_state:' in _reason_l and 'finance' not in _reason_l:
-        wait = min(wait, 0.25)
-        min_interval = min(min_interval, 0.8)
     if 'finance' in _reason_l or 'critical' in _reason_l or 'event_commit' in _reason_l:
         wait = max(wait, 0.8)
         min_interval = max(min_interval, 1.5)
     now = _split_time.time()
     last = float(_SPLIT_STATE.get('sync_last_attempt') or 0.0)
+    with _SPLIT_SYNC_LOCK:
+        if _SPLIT_SYNC_FIRST_DIRTY_AT <= 0.0:
+            _SPLIT_SYNC_FIRST_DIRTY_AT = now
+        first_dirty = _SPLIT_SYNC_FIRST_DIRTY_AT
+    try:
+        max_latency = max(1.0, min(12.0, float(_split_os.getenv('SPLIT_SYNC_MAX_LATENCY_SEC','3.0') or '3.0')))
+    except Exception:
+        max_latency = 3.0
     due = max(now + wait, last + min_interval if last else now + wait)
+    due = min(due, first_dirty + max_latency)
+    due = max(now + 0.05, due)
     _SPLIT_STATE['sync_pending'] = True
     _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
     with _SPLIT_SYNC_LOCK:
@@ -1120,6 +1192,27 @@ _CONTINUITY_NAMES_V263 = (
 )
 _CONTINUITY_SCALARS_V263 = ('restore_mode', '_short_callback_counter')
 
+# R17: automatically include safe RAM-only interaction containers that future UI
+# modules may add without remembering to extend the static whitelist.  We purposely
+# exclude process/runtime/network objects so a deploy never resurrects old locks,
+# queues, timers, transport caches or worker state.
+_CONTINUITY_DYNAMIC_HINTS_R17 = ('SESSION', 'WAIT', 'PENDING', 'SELECTION', 'BINDING', 'CALLBACK', 'WINDOW', 'INPUT')
+_CONTINUITY_DYNAMIC_DENY_R17 = ('LOCK', 'THREAD', 'TIMER', 'QUEUE', 'POOL', 'CLIENT', 'SOCKET', 'EXECUTOR', 'SPLIT_', 'MEGA_', 'REDIS_', 'TG_', 'TELEGRAM_', 'MEDIA_GROUP', 'FORWARD_OUTCOME')
+
+def _continuity_dynamic_names_r17():
+    out = []
+    for name, value in list(globals().items()):
+        if name in _CONTINUITY_NAMES_V263 or name in _CONTINUITY_SCALARS_V263:
+            continue
+        upper = str(name).upper()
+        if not str(name).startswith('_') or not any(h in upper for h in _CONTINUITY_DYNAMIC_HINTS_R17):
+            continue
+        if any(bad in upper for bad in _CONTINUITY_DYNAMIC_DENY_R17):
+            continue
+        if isinstance(value, (dict, list, set, tuple, _split_collections.deque)):
+            out.append(str(name))
+    return tuple(sorted(set(out)))
+
 # R6 persistent user-state shadow. The normal SQLite root/chats remain canonical,
 # but this compact duplicate protects settings/UI/task/tenant metadata from any
 # missed point-save or cross-chat mutation. Financial cold ledgers are deliberately
@@ -1128,125 +1221,58 @@ _USER_STATE_META_KIND_V265 = 'user_state_shadow_v265'
 _USER_STATE_META_KEY_V265 = 'latest'
 _USER_STATE_ROOT_EXCLUDE_V265 = {'overall_balance', 'records', 'bot_errors', '_state_meta'}
 _USER_STATE_CHAT_EXCLUDE_V265 = set(globals().get('LOWRAM_COLD_KEYS') or set()) | {'balance', 'next_id'}
-# R16.3: serialize shadow updates. A deploy can arrive while Telegram updates are
-# processed on different worker threads; without this lock two incremental captures
-# could both read the same previous shadow and silently drop the other chat's update.
-_USER_STATE_SHADOW_LOCK_V271 = _split_threading.RLock()
-_CONTINUITY_CAPTURE_LOCK_V271 = _split_threading.RLock()
-_USER_STATE_COPY_FAILED_V271 = object()
 
 def _user_state_json_copy_v265(value):
     try:
         return _split_json.loads(_split_json.dumps(value, ensure_ascii=False, separators=(',', ':'), default=str))
     except Exception:
-        return _USER_STATE_COPY_FAILED_V271
-
-def _user_state_chat_meta_v271(store):
-    if not isinstance(store, dict):
         return None
-    meta = {}
+
+def user_state_shadow_capture_v265(reason='checkpoint'):
     try:
-        items = list(dict.items(store))
-    except Exception:
-        try: items = list(store.items())
-        except Exception: items = []
-    for key, value in items:
-        if str(key) in _USER_STATE_CHAT_EXCLUDE_V265:
-            continue
-        copied = _user_state_json_copy_v265(value)
-        if copied is not _USER_STATE_COPY_FAILED_V271:
-            meta[str(key)] = copied
-    return meta
-
-
-def user_state_shadow_capture_v265(reason='checkpoint', chat_id=None, chat_ids=None, full=True):
-    """Persist a non-financial mirror of every user-visible setting/state.
-
-    R16.3 adds an incremental mode.  Normal point saves update only the touched
-    chat while retaining all other chat shadows from the previous checkpoint.
-    This makes the commit cheap enough to do synchronously before Telegram update
-    acknowledgement/deploy handoff, while full checkpoints still rebuild all chats.
-    """
-    with _USER_STATE_SHADOW_LOCK_V271:
-        try:
-            previous = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
-            root_src = _sqlite_pack_root(data) if callable(globals().get('_sqlite_pack_root')) else {k:v for k,v in (data or {}).items() if k != 'chats'}
-            root = {}
-            for key, value in (root_src or {}).items():
-                if str(key) in _USER_STATE_ROOT_EXCLUDE_V265:
+        root_src = _sqlite_pack_root(data) if callable(globals().get('_sqlite_pack_root')) else {k:v for k,v in (data or {}).items() if k != 'chats'}
+        root = {}
+        for key, value in (root_src or {}).items():
+            if str(key) in _USER_STATE_ROOT_EXCLUDE_V265:
+                continue
+            copied = _user_state_json_copy_v265(value)
+            if copied is not None:
+                root[str(key)] = copied
+        chats = {}
+        for cid, store in ((data or {}).get('chats') or {}).items():
+            if not isinstance(store, dict):
+                continue
+            meta = {}
+            try:
+                items = dict.items(store)
+            except Exception:
+                items = []
+            for key, value in items:
+                if str(key) in _USER_STATE_CHAT_EXCLUDE_V265:
                     continue
                 copied = _user_state_json_copy_v265(value)
-                if copied is not _USER_STATE_COPY_FAILED_V271:
-                    root[str(key)] = copied
-            prev_root = (previous or {}).get('root') if isinstance(previous, dict) else {}
-            prev_root = prev_root if isinstance(prev_root, dict) else {}
-            deleted_root_keys = sorted(str(k) for k in prev_root.keys() if str(k) not in root and str(k) not in _USER_STATE_ROOT_EXCLUDE_V265)
-
-            prev_chats = (previous or {}).get('chats') if isinstance(previous, dict) else {}
-            prev_chats = prev_chats if isinstance(prev_chats, dict) else {}
-            prev_deleted_chat = (previous or {}).get('deleted_chat_keys') if isinstance(previous, dict) else {}
-            prev_deleted_chat = prev_deleted_chat if isinstance(prev_deleted_chat, dict) else {}
-            if full or not isinstance(previous, dict) or not isinstance(previous.get('chats'), dict):
-                chats = {}
-                deleted_chat_keys = {}
-                for cid, store in ((data or {}).get('chats') or {}).items():
-                    meta = _user_state_chat_meta_v271(store)
-                    if meta is not None:
-                        cid_s = str(cid)
-                        chats[cid_s] = meta
-                        old_meta = prev_chats.get(cid_s) or {}
-                        if isinstance(old_meta, dict):
-                            gone = sorted(str(k) for k in old_meta.keys() if str(k) not in meta and str(k) not in _USER_STATE_CHAT_EXCLUDE_V265)
-                            if gone:
-                                deleted_chat_keys[cid_s] = gone
-            else:
-                # Shallow copy is enough: individual rows are replaced, never mutated.
-                chats = dict(prev_chats)
-                deleted_chat_keys = {str(k): list(v) for k, v in prev_deleted_chat.items() if isinstance(v, list)}
-                ids = []
-                if chat_ids is not None:
-                    src = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
-                    ids.extend(src)
-                if chat_id is not None:
-                    ids.append(chat_id)
-                seen = set()
-                for cid in ids:
-                    try: cid_i = int(cid)
-                    except Exception: continue
-                    if cid_i in seen:
-                        continue
-                    seen.add(cid_i)
-                    cid_s = str(cid_i)
-                    store = ((data or {}).get('chats') or {}).get(cid_s)
-                    meta = _user_state_chat_meta_v271(store)
-                    if meta is not None:
-                        old_meta = prev_chats.get(cid_s) or {}
-                        chats[cid_s] = meta
-                        gone = sorted(str(k) for k in old_meta.keys() if isinstance(old_meta, dict) and str(k) not in meta and str(k) not in _USER_STATE_CHAT_EXCLUDE_V265)
-                        if gone:
-                            deleted_chat_keys[cid_s] = gone
-                        else:
-                            deleted_chat_keys.pop(cid_s, None)
-                    # If a chat is intentionally absent from RAM, preserve the previous
-                    # row instead of treating low-RAM eviction as user deletion.
-
-            seq = int((previous or {}).get('seq') or 0) + 1
-            payload = {
-                'schema': 4, 'seq': seq, 'saved_at': _split_time.time(),
-                'reason': str(reason or 'checkpoint')[:180], 'front_version': _SPLIT_FRONT_VERSION,
-                'root': root, 'chats': chats,
-                'deleted_root_keys': deleted_root_keys, 'deleted_chat_keys': deleted_chat_keys,
-                'counts': {'root_keys': len(root), 'chats': len(chats),
-                           'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict)),
-                           'root_tombstones': len(deleted_root_keys),
-                           'chat_tombstones': sum(len(v) for v in deleted_chat_keys.values() if isinstance(v, list))},
-            }
-            SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
-            return payload
-        except Exception as exc:
-            try: log_error(f'USER_STATE shadow capture R16.3: {exc}')
-            except Exception: pass
-            return {}
+                if copied is not None:
+                    meta[str(key)] = copied
+            chats[str(cid)] = meta
+        previous = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
+        seq = int((previous or {}).get('seq') or 0) + 1
+        payload = {
+            'schema': 2, 'seq': seq, 'saved_at': _split_time.time(),
+            'reason': str(reason or 'checkpoint')[:180], 'front_version': _SPLIT_FRONT_VERSION,
+            'root': root, 'chats': chats,
+            'counts': {'root_keys': len(root), 'chats': len(chats),
+                       'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict)),
+                       'tasks': len((root.get('_tasks_v172') or {})) if isinstance(root.get('_tasks_v172'), dict) else 0,
+                       'reminders': len((root.get('reminders') or root.get('_reminders') or {})) if isinstance((root.get('reminders') or root.get('_reminders') or {}), dict) else 0,
+                       'tenants': len((((root.get('_global_settings') or {}).get('tenants_v148') or {}).get('tenants') or {})) if isinstance(((root.get('_global_settings') or {}).get('tenants_v148') or {}), dict) else 0,
+                       'additional_owners': len(root.get('additional_owners') or root.get('additional_owner_ids') or []) if isinstance((root.get('additional_owners') or root.get('additional_owner_ids') or []), (list, tuple, set, dict)) else 0},
+        }
+        SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
+        return payload
+    except Exception as exc:
+        try: log_error(f'USER_STATE shadow capture R6: {exc}')
+        except Exception: pass
+        return {}
 
 def user_state_shadow_apply_v265(loaded):
     if not isinstance(loaded, dict):
@@ -1257,19 +1283,22 @@ def user_state_shadow_apply_v265(loaded):
         payload = {}
     if not isinstance(payload, dict) or not payload:
         return loaded
+    try:
+        incoming_seq = int(payload.get('seq') or 0)
+        applied_seq = int(globals().get('_USER_STATE_APPLIED_SEQ_R19', 0) or 0)
+        if applied_seq and incoming_seq and incoming_seq < applied_seq:
+            log_error(f'USER_STATE R19 stale shadow rejected seq={incoming_seq} < applied={applied_seq}')
+            return loaded
+        globals()['_USER_STATE_APPLIED_SEQ_R19'] = max(applied_seq, incoming_seq)
+    except Exception:
+        pass
     restored_root = 0; restored_chats = 0; restored_settings = 0
-    for key in (payload.get('deleted_root_keys') or []):
-        if str(key) not in _USER_STATE_ROOT_EXCLUDE_V265:
-            loaded.pop(str(key), None)
     root = payload.get('root') or {}
     if isinstance(root, dict):
         for key, value in root.items():
             if str(key) in _USER_STATE_ROOT_EXCLUDE_V265:
                 continue
-            _copied = _user_state_json_copy_v265(value)
-            if _copied is _USER_STATE_COPY_FAILED_V271:
-                continue
-            loaded[str(key)] = _copied
+            loaded[str(key)] = _user_state_json_copy_v265(value)
             restored_root += 1
     chats = loaded.setdefault('chats', {})
     shadow_chats = payload.get('chats') or {}
@@ -1281,17 +1310,10 @@ def user_state_shadow_apply_v265(loaded):
             if not isinstance(current, dict):
                 current = {}
                 chats[str(cid)] = current
-            _gone = (payload.get('deleted_chat_keys') or {}).get(str(cid)) or []
-            for _key in _gone:
-                if str(_key) not in _USER_STATE_CHAT_EXCLUDE_V265:
-                    current.pop(str(_key), None)
             for key, value in meta.items():
                 if str(key) in _USER_STATE_CHAT_EXCLUDE_V265:
                     continue
-                _copied = _user_state_json_copy_v265(value)
-                if _copied is _USER_STATE_COPY_FAILED_V271:
-                    continue
-                current[str(key)] = _copied
+                current[str(key)] = _user_state_json_copy_v265(value)
             try:
                 if LOWRAM_ENABLED and not isinstance(current, ColdChatStore):
                     current = _lowram_wrap_store(int(cid), current)
@@ -1428,37 +1450,44 @@ def _continuity_apply_v263(name, restored):
 
 def continuity_capture_v263(reason='checkpoint'):
     """Persist RAM-only user interaction continuity inside canonical SQLite."""
-    with _CONTINUITY_CAPTURE_LOCK_V271:
-        payload = {
-            'schema': 2,
-            'saved_at': _split_time.time(),
-            'reason': str(reason or 'checkpoint')[:180],
-            'front_version': _SPLIT_FRONT_VERSION,
-            'globals': {},
-            'scalars': {},
+    payload = {
+        'schema': 2,
+        'saved_at': _split_time.time(),
+        'reason': str(reason or 'checkpoint')[:180],
+        'front_version': _SPLIT_FRONT_VERSION,
+        'globals': {},
+        'dynamic_globals_r17': {},
+        'scalars': {},
+    }
+    for name in _CONTINUITY_NAMES_V263:
+        if name not in globals():
+            continue
+        enc = _continuity_encode_v263(globals().get(name))
+        if enc is not _CONTINUITY_SKIP_V263:
+            payload['globals'][name] = enc
+    for name in _CONTINUITY_SCALARS_V263:
+        if name not in globals():
+            continue
+        enc = _continuity_encode_v263(globals().get(name))
+        if enc is not _CONTINUITY_SKIP_V263:
+            payload['scalars'][name] = enc
+    for name in _continuity_dynamic_names_r17():
+        enc = _continuity_encode_v263(globals().get(name))
+        if enc is not _CONTINUITY_SKIP_V263:
+            payload['dynamic_globals_r17'][name] = enc
+    # Existing Telegram message IDs/windows are logical root state; add a compact
+    # count here for diagnostics while the actual records stay in the normal root.
+    try:
+        payload['ui_counts'] = {
+            'active_message_chats': len((data.get('active_messages') or {})),
+            'open_windows': len((data.get('open_window_registry') or {})),
+            'chat_count': len((data.get('chats') or {})),
         }
-        for name in _CONTINUITY_NAMES_V263:
-            if name not in globals():
-                continue
-            enc = _continuity_encode_v263(globals().get(name))
-            if enc is not _CONTINUITY_SKIP_V263:
-                payload['globals'][name] = enc
-        for name in _CONTINUITY_SCALARS_V263:
-            if name not in globals():
-                continue
-            enc = _continuity_encode_v263(globals().get(name))
-            if enc is not _CONTINUITY_SKIP_V263:
-                payload['scalars'][name] = enc
-        try:
-            payload['ui_counts'] = {
-                'active_message_chats': len((data.get('active_messages') or {})),
-                'open_windows': len((data.get('open_window_registry') or {})),
-                'chat_count': len((data.get('chats') or {})),
-            }
-        except Exception:
-            payload['ui_counts'] = {}
-        SQLITE.set_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, payload)
-        return payload
+    except Exception:
+        payload['ui_counts'] = {}
+    SQLITE.set_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, payload)
+    return payload
+
 
 def continuity_restore_v263():
     """Restore interaction state before main() starts accepting Telegram updates."""
@@ -1471,6 +1500,12 @@ def continuity_restore_v263():
     restored_names = []
     for name, raw in (payload.get('globals') or {}).items():
         if name not in _CONTINUITY_NAMES_V263:
+            continue
+        if _continuity_apply_v263(name, _continuity_decode_v263(raw)):
+            restored_names.append(name)
+    dynamic_allowed = set(_continuity_dynamic_names_r17())
+    for name, raw in (payload.get('dynamic_globals_r17') or {}).items():
+        if name not in dynamic_allowed:
             continue
         if _continuity_apply_v263(name, _continuity_decode_v263(raw)):
             restored_names.append(name)
@@ -1491,7 +1526,7 @@ def continuity_restore_v263():
     except Exception:
         pass
     try:
-        log_info(f"CONTINUITY R4 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
+        log_info(f"CONTINUITY R19 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
     except Exception:
         pass
     return {'ok': True, 'restored': restored_names, 'saved_at': payload.get('saved_at')}
@@ -1510,7 +1545,7 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
         try: log_error(f'CONTINUITY local save R4: {exc}')
         except Exception: pass
     try:
-        user_state_shadow_capture_v265(reason, chat_id=chat_id, full=bool(full))
+        user_state_shadow_capture_v265(reason)
         continuity_capture_v263(reason)
         _split_mark_state_changed_v264(f'continuity:{reason}')
     except Exception as exc:
@@ -1528,19 +1563,20 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
 # The finance record itself has already been committed by persist_finance_chat_local_fast;
 # serializing every chat after every message was pure foreground latency.
 def _split_continuity_checkpoint_fire_v270():
-    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
+    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON, _SPLIT_CONTINUITY_FIRST_DIRTY_AT
     with _SPLIT_CONTINUITY_LOCK:
         cid = _SPLIT_CONTINUITY_CHAT_ID
         reason = str(_SPLIT_CONTINUITY_REASON or 'coalesced')
         _SPLIT_CONTINUITY_TIMER = None
         _SPLIT_CONTINUITY_CHAT_ID = None
         _SPLIT_CONTINUITY_REASON = ''
+        _SPLIT_CONTINUITY_FIRST_DIRTY_AT = 0.0
     try:
         if cid is not None:
             _V263_BASE_SAVE_DATA(data, chat_ids=[int(cid)])
         else:
             _V263_BASE_SAVE_DATA(data, root_only=True)
-        user_state_shadow_capture_v265('bg:' + reason, full=True)
+        user_state_shadow_capture_v265('bg:' + reason)
         continuity_capture_v263('bg:' + reason)
         _split_mark_state_changed_v264('bg_continuity:' + reason)
         split_schedule_worker_sync_v262(reason='bg_continuity:' + reason, delay=1.2)
@@ -1549,16 +1585,24 @@ def _split_continuity_checkpoint_fire_v270():
         except Exception: pass
 
 def split_schedule_continuity_checkpoint_v270(chat_id=None, reason='update', delay=4.0):
-    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
+    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON, _SPLIT_CONTINUITY_FIRST_DIRTY_AT
     with _SPLIT_CONTINUITY_LOCK:
         if chat_id is not None:
             try: _SPLIT_CONTINUITY_CHAT_ID = int(chat_id)
             except Exception: pass
         _SPLIT_CONTINUITY_REASON = str(reason or 'update')[:160]
+        now = _split_time.time()
+        if _SPLIT_CONTINUITY_FIRST_DIRTY_AT <= 0.0:
+            _SPLIT_CONTINUITY_FIRST_DIRTY_AT = now
+        try:
+            max_latency = max(1.0, min(15.0, float(_split_os.getenv('SPLIT_CONTINUITY_MAX_LATENCY_SEC','5.0') or '5.0')))
+        except Exception:
+            max_latency = 5.0
+        due = min(now + max(0.5, float(delay or 4.0)), _SPLIT_CONTINUITY_FIRST_DIRTY_AT + max_latency)
         if _SPLIT_CONTINUITY_TIMER is not None:
             try: _SPLIT_CONTINUITY_TIMER.cancel()
             except Exception: pass
-        _SPLIT_CONTINUITY_TIMER = _split_threading.Timer(max(0.5, float(delay or 4.0)), _split_continuity_checkpoint_fire_v270)
+        _SPLIT_CONTINUITY_TIMER = _split_threading.Timer(max(0.05, due - now), _split_continuity_checkpoint_fire_v270)
         _SPLIT_CONTINUITY_TIMER.daemon = True
         _SPLIT_CONTINUITY_TIMER.start()
     return True
@@ -1569,26 +1613,33 @@ _V263_BASE_SAVE_DATA = save_data
 
 def save_data(d, chat_ids=None, full=False, root_only=False):
     result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
+    # Non-Telegram/background mutations need their own freshness marker.  Telegram
+    # updates receive exactly one marker after the handler, avoiding extra hot-path IO.
     try:
-        # R16.3: shadow persistence is synchronous.  A user-visible setting is not
-        # considered committed until its compact deploy shadow has the same value.
-        if full:
-            user_state_shadow_capture_v265('logical_save', full=True)
+        if not _split_inside_telegram_update_v264():
+            _split_touch_state_revision_r18('logical_save_bg')
+    except Exception:
+        pass
+    try:
+        # Heavy all-chat shadow is background-only during normal READY operation.
+        ready_fn = globals().get('runtime_is_ready')
+        if full or not (callable(ready_fn) and ready_fn()):
+            user_state_shadow_capture_v265('logical_save')
         else:
-            _ids = chat_ids
-            if _ids is None and not root_only:
+            _cid = None
+            if chat_ids is not None:
                 try:
-                    _cur = current_state_chat_id()
-                    _ids = [_cur] if _cur is not None else None
-                except Exception:
-                    _ids = None
-            user_state_shadow_capture_v265('logical_save', chat_ids=_ids, full=False)
-    except Exception as exc:
-        try: log_error(f'USER_STATE synchronous logical save R16.3: {exc}')
-        except Exception: pass
+                    _src = list(chat_ids) if isinstance(chat_ids,(list,tuple,set)) else [chat_ids]
+                    _cid = int(_src[0]) if _src else None
+                except Exception: _cid = None
+            split_schedule_continuity_checkpoint_v270(_cid, 'logical_save', delay=4.0)
+    except Exception:
+        pass
     try:
         if not bool(globals().get('_V241_RESTORE_ACTIVE', False)):
             _split_mark_state_changed_v264('logical_save')
+            # Boot migrations can call save_data many times. They are local-only until
+            # READY, then R6 emits one final canonical snapshot instead of 4-10 GETs.
             ready_fn = globals().get('runtime_is_ready')
             is_ready = bool(ready_fn()) if callable(ready_fn) else False
             if is_ready or _split_inside_telegram_update_v264():
@@ -1598,86 +1649,7 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
                 _SPLIT_STATE['sync_reason'] = 'boot_coalesced'
     except Exception:
         pass
-    # Keep a delayed full all-chat sweep as a second line of defence for handlers
-    # that mutate another chat indirectly; the touched/root state is already durable.
-    try:
-        ready_fn = globals().get('runtime_is_ready')
-        if (not full) and callable(ready_fn) and ready_fn():
-            _first = None
-            if chat_ids is not None:
-                try:
-                    _src = list(chat_ids) if isinstance(chat_ids,(list,tuple,set)) else [chat_ids]
-                    _first = int(_src[0]) if _src else None
-                except Exception: _first = None
-            split_schedule_continuity_checkpoint_v270(_first, 'logical_save_sweep', delay=3.0)
-    except Exception:
-        pass
     return result
-
-
-def _split_save_current_chat_meta_v271(chat_id):
-    """Save settings/UI metadata without rewriting the finance cold ledger."""
-    try:
-        cid = int(chat_id)
-    except Exception:
-        return False
-    with data_lock:
-        store = ((data or {}).get('chats') or {}).get(str(cid))
-        if not isinstance(store, dict):
-            return False
-        try:
-            if bool(globals().get('LOWRAM_ENABLED')) and callable(globals().get('_lowram_store_meta_payload')):
-                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
-            else:
-                SQLITE.save_chat(cid, store)
-            return True
-        except Exception:
-            return False
-
-
-def _split_commit_user_state_now_v271(chat_id=None, reason='update', full=False, finance=False, schedule=True):
-    """Immediate local deploy barrier for every successful Telegram update.
-
-    The old code waited 2.5-4 seconds.  Render can SIGTERM/redeploy inside that
-    window, so settings changed by the last click disappeared.  This barrier commits
-    root + user chat metadata + RAM continuity synchronously, then only remote
-    mirroring remains asynchronous.
-    """
-    cid = None
-    try:
-        if chat_id is not None:
-            cid = int(chat_id)
-    except Exception:
-        cid = None
-    try:
-        if full:
-            _V263_BASE_SAVE_DATA(data, full=True)
-        elif finance and cid is not None and bool(globals().get('LOWRAM_ENABLED')):
-            # Finance data itself is committed by persist_finance_chat_local_fast.
-            # Save root and lightweight chat metadata so UI/settings survive too.
-            _V263_BASE_SAVE_DATA(data, root_only=True)
-            _split_save_current_chat_meta_v271(cid)
-        elif cid is not None:
-            _V263_BASE_SAVE_DATA(data, chat_ids=[cid])
-        else:
-            _V263_BASE_SAVE_DATA(data, root_only=True)
-        user_state_shadow_capture_v265('immediate:' + str(reason or 'update'), chat_id=cid, full=(bool(full) or not finance))
-        continuity_capture_v263('immediate:' + str(reason or 'update'))
-        _split_mark_state_changed_v264('deploy_state:' + str(reason or 'update'))
-        _SPLIT_STATE['continuity_immediate_ok'] = int(_SPLIT_STATE.get('continuity_immediate_ok') or 0) + 1
-        _SPLIT_STATE['continuity_immediate_at'] = _split_time.time()
-        if schedule:
-            split_schedule_worker_sync_v262(
-                reason='deploy_state:' + str(reason or 'update'),
-                delay=0.8 if finance else 0.18,
-            )
-        return True
-    except Exception as exc:
-        _SPLIT_STATE['continuity_immediate_error'] = str(exc)[:220]
-        _SPLIT_STATE['continuity_immediate_error_at'] = _split_time.time()
-        try: log_error(f'R16.3 immediate deploy-state commit: {exc}')
-        except Exception: pass
-        return False
 
 
 # Persist RAM-only sessions after every successfully executed Telegram update.
@@ -1694,18 +1666,19 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
         _SPLIT_UPDATE_CONTEXT.active = False
         _SPLIT_UPDATE_CONTEXT.finance_dirty = False
     try:
+        _split_touch_state_revision_r18(f'tg:{str(update_type or "other")}', update_id)
+    except Exception:
+        pass
+    try:
         cid = update_chat_id
         if cid is None and isinstance(payload, dict):
             cid = _extract_update_chat_id(payload)
         prefix = 'finance' if finance_dirty else 'tg'
         _reason = f'{prefix}:{str(update_type or "other")}'
-        # R16.3: local durability is immediate.  The delayed job is now only an
-        # all-chat sweep for indirect/cross-chat mutations; it is not the first save.
-        _split_commit_user_state_now_v271(cid, _reason, full=False, finance=finance_dirty, schedule=True)
-        split_schedule_continuity_checkpoint_v270(
-            cid, 'sweep:' + _reason,
-            delay=float(_split_os.getenv('SPLIT_CONTINUITY_FULL_SWEEP_DELAY_SEC','3.0') or '3.0'),
-        )
+        # Fast hot path: the business handler already committed its own SQLite rows.
+        # Persist RAM/UI continuity once after the burst, not inline for every update.
+        split_schedule_continuity_checkpoint_v270(cid, _reason, delay=float(_split_os.getenv('SPLIT_CONTINUITY_FINANCE_DELAY_SEC','4.0') or '4.0') if finance_dirty else float(_split_os.getenv('SPLIT_CONTINUITY_OTHER_DELAY_SEC','2.5') or '2.5'))
+        split_schedule_worker_sync_v262(reason=f'continuity:{_reason}', delay=float(_split_os.getenv('SPLIT_FINANCE_SYNC_DELAY_SEC','0.8') or '0.8') if finance_dirty else float(_split_os.getenv('SPLIT_STATE_SYNC_DELAY_SEC','1.2') or '1.2'))
     except Exception as exc:
         try: log_error(f'CONTINUITY post-update R11: {exc}')
         except Exception: pass
@@ -1722,7 +1695,7 @@ def _split_push_snapshot_now_v263(reason='shutdown'):
     gz = raw + '.gz'
     try:
         SQLITE.backup_to(raw)
-        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=9) as dst:
+        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
             _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
         # Seed shared durable cache before contacting worker; this survives worker deploys.
         try:
@@ -1816,34 +1789,36 @@ except Exception:
 _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN = runtime_graceful_shutdown
 
 def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
-    # R16.3: freeze/capture continuity before the base shutdown starts draining and
-    # taking its own snapshots, then capture once more after drain before direct push.
-    global _SPLIT_CONTINUITY_TIMER
+    # R18 deploy handoff order is deliberate: do NOT put slow MEGA/archive work in
+    # front of the only state copy a replacement instance needs.  First serialize all
+    # user/config/RAM interaction state, immediately seed Redis + HEAVY, and only then
+    # run the legacy drain/archive shutdown.  A second post-drain push closes the tail.
     try:
-        with _SPLIT_CONTINUITY_LOCK:
-            if _SPLIT_CONTINUITY_TIMER is not None:
-                try: _SPLIT_CONTINUITY_TIMER.cancel()
-                except Exception: pass
-                _SPLIT_CONTINUITY_TIMER = None
-        continuity_checkpoint_v263(None, reason=f'pre_shutdown:{signal_name}', full=True, schedule=False)
+        continuity_checkpoint_v263(None, reason=f'shutdown-pre:{signal_name}', full=True, schedule=False)
+        _split_touch_state_revision_r18(f'shutdown-pre:{signal_name}')
+        _split_push_snapshot_now_v263(f'shutdown-pre-fast:{signal_name}')
     except Exception as exc:
-        try: log_error(f'CONTINUITY pre-shutdown R16.3: {exc}')
+        try: log_error(f'CONTINUITY shutdown-pre R18: {exc}')
         except Exception: pass
-    result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+    result = None
     try:
-        continuity_checkpoint_v263(None, reason=f'shutdown:{signal_name}', full=True, schedule=False)
-        _split_push_snapshot_now_v263(f'shutdown:{signal_name}')
-    except Exception as exc:
-        try: log_error(f'CONTINUITY shutdown R16.3: {exc}')
-        except Exception: pass
+        result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+    finally:
+        try:
+            continuity_checkpoint_v263(None, reason=f'shutdown-post:{signal_name}', full=True, schedule=False)
+            _split_touch_state_revision_r18(f'shutdown-post:{signal_name}')
+            _split_push_snapshot_now_v263(f'shutdown-post:{signal_name}')
+        except Exception as exc:
+            try: log_error(f'CONTINUITY shutdown-post R18: {exc}')
+            except Exception: pass
     return result
 
 
 # R6 loader-order safety: 99_web_runtime loads data before this final module.
 # The base load_data now restores the shadow early, and this second idempotent overlay
 # protects already-loaded data if a future module order changes again.
-def _split_rehydrate_persisted_runtime_settings_v271():
-    """Apply persisted settings that also have mutable RAM mirrors."""
+try:
+    data = user_state_shadow_apply_v265(data)
     try:
         _fac = (data or {}).get('finance_active_chats') or {}
         finance_active_chats.clear()
@@ -1859,32 +1834,8 @@ def _split_rehydrate_persisted_runtime_settings_v271():
         backup_flags['channel'] = bool(_bf.get('channel', backup_flags.get('channel', True)))
     except Exception:
         pass
-    try:
-        _ka_key = str(globals().get('KEEPALIVE_CONFIG_KEY') or 'keepalive_v205')
-        _ka = (((data or {}).get('_global_settings') or {}).get(_ka_key) or {})
-        if isinstance(_ka, dict):
-            if 'self_enabled' in _ka:
-                globals()['KEEP_ALIVE_ENABLED'] = bool(_ka.get('self_enabled'))
-            if 'self_interval_seconds' in _ka:
-                try: globals()['KEEP_ALIVE_INTERVAL_SECONDS'] = int(_ka.get('self_interval_seconds'))
-                except Exception: pass
-    except Exception:
-        pass
-    # Process controls have persisted flags and a derived runtime map.  Reapply them
-    # if the subsystem is already defined; it also runs again during READY startup.
-    try:
-        _apply = globals().get('_v176_apply_runtime_flags')
-        if callable(_apply):
-            _apply()
-    except Exception:
-        pass
-    return True
-
-try:
-    data = user_state_shadow_apply_v265(data)
-    _split_rehydrate_persisted_runtime_settings_v271()
 except Exception as _r6_live_apply_exc:
-    try: log_error(f'R16.3 live user-state apply: {_r6_live_apply_exc}')
+    try: log_error(f'R6 live user-state apply: {_r6_live_apply_exc}')
     except Exception: pass
 
 # The DB was restored by start_front.py before bot.py was loaded, so RAM continuity
@@ -1954,7 +1905,11 @@ def runtime_mark_ready(detail: str=''):
     try:
         user_state_shadow_capture_v265('boot_ready')
         continuity_capture_v263('boot_ready')
+        _split_touch_state_revision_r18('boot_ready')
         _split_mark_state_changed_v264('boot_ready')
+        # Establish an exact binary base on HEAVY immediately after every boot.
+        # The POST is tiny; HEAVY performs the job asynchronously and pulls the snapshot.
+        _split_request_worker_full_sync_r18('boot_ready_exact_rebase')
         split_schedule_worker_sync_v262(reason='boot_ready', delay=0.8)
     except Exception as exc:
         try: log_error(f'R6 boot-ready sync: {exc}')
@@ -2292,35 +2247,6 @@ def _r7_export_annotations_payload(annotations):
     return out
 
 
-def _r16_export_annotation_mode(style: str) -> str:
-    style = str(style or '').strip().lower()
-    if style == 'new_comments':
-        return 'comments'
-    if style in {'new_notes', 'google_notes'}:
-        return 'notes'
-    return ''
-
-
-def _r16_export_annotations_for_rows(rows, layout: str, existing=None):
-    """Return the exact annotation map used by the local XLSX writer."""
-    existing = dict(existing or {})
-    try:
-        if layout == 'simple' and callable(globals().get('_modern_simple_excel_styles_comments')):
-            _styles, notes, _freeze, _widths = _modern_simple_excel_styles_comments(rows)
-            return dict(notes or {})
-        if layout == 'compact' and callable(globals().get('_modern_compact_excel_styles_comments')):
-            _styles, notes, _freeze, _widths = _modern_compact_excel_styles_comments(rows, existing)
-            return dict(notes or {})
-        if layout == 'category' and callable(globals().get('_modern_category_excel_styles_comments')):
-            _styles, notes, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-            return dict(notes or {})
-        if layout == 'category_compact' and callable(globals().get('_modern_category_no_description_styles_comments')):
-            _styles, notes, _freeze, _widths = _modern_category_no_description_styles_comments(rows, existing)
-            return dict(notes or {})
-    except Exception:
-        pass
-    return existing
-
 def _r7_worker_file_submit(body: dict):
     base = _split_peer_base()
     if not base or not _split_secret():
@@ -2354,8 +2280,7 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             send_info(recipient_chat_id, f'Нет данных {label}.')
             return True
         annotations = {}
-        category_layout = False  # compatibility field for older workers
-        layout = 'simple'
+        category_layout = False
         sheet_name = 'Экспорт'
         description_column = True if not custom_options else bool(custom_options.get('description_column'))
         annotations_enabled = bool(not custom_options or custom_options.get('comments') or custom_options.get('notes'))
@@ -2364,14 +2289,10 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             start_key, end_key = _period_export_bounds(store, clean_mode, day_key)
             payload_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
             category_layout = True
-            layout = 'category'
             sheet_name = 'Статьи'
             if custom_options and not description_column:
                 payload_rows, annotations = _category_rows_without_description(payload_rows)
                 category_layout = 'category_compact'
-                layout = 'category_compact'
-            elif annotations_enabled:
-                annotations = _r16_export_annotations_for_rows(payload_rows, layout, annotations)
             if not annotations_enabled: annotations = {}
             safe_chat = mega_safe_name(get_chat_display_name(target_chat_id), 'chat')
             display_name = f'{safe_chat}_{clean_mode}_{day_key}_excel_статьи.xlsx'
@@ -2380,7 +2301,6 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             start_key, _end_key = _period_export_bounds(store, clean_mode, day_key)
             opening = _opening_balance_before_exact(store, start_key, 0)
             if description_column:
-                layout = 'simple'
                 payload_rows = [['Дата', 'Описание', 'Приход', 'Расход']]
                 for date_v, amount_v, note_v in rows:
                     try: parsed = parse_csv_amount(amount_v)
@@ -2388,10 +2308,7 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
                     payload_rows.append(_xlsx_record_row(date_v, parsed, note_v))
                 payload_rows = insert_blank_rows_between_days(payload_rows, header_rows=1)
                 payload_rows = _xlsx_simple_rows_with_balances(payload_rows, opening, target_chat_id)
-                if annotations_enabled:
-                    annotations = _r16_export_annotations_for_rows(payload_rows, layout, annotations)
             else:
-                layout = 'compact'
                 payload_rows, annotations = _compact_simple_excel_rows_and_annotations(rows, opening, target_chat_id)
                 if not annotations_enabled: annotations = {}
             display_name = export_display_filename(target_chat_id, clean_mode, day_key, 'xlsx')
@@ -2412,8 +2329,7 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
             'job_id': _split_secrets.token_hex(12), 'recipient_chat_id': recipient_chat_id,
             'target_chat_id': target_chat_id, 'tenant_id': tenant_id,
             'file_type': ext, 'source_file_type': file_type, 'style': style,
-            'annotation_mode': _r16_export_annotation_mode(style),
-            'sheet_name': sheet_name, 'category_layout': category_layout, 'layout': layout,
+            'sheet_name': sheet_name, 'category_layout': category_layout,
             'rows': _r7_json_rows(payload_rows), 'annotations': _r7_export_annotations_payload(annotations),
             'filename': display_name, 'label': str(label), 'chat_name': get_chat_display_name(target_chat_id),
             'delivery': delivery,
@@ -2539,19 +2455,16 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
                 bot.send_message(recipient_chat_id,'⚡ Google Excel точного периода готовится на Render #2. Ссылка придёт отдельным сообщением.')
             return True
         ext='xlsx' if file_type in {'xlsx','xlsxstat'} else 'csv'
-        annotations={}; category_layout=False; layout='simple'; sheet_name='Точный период'
+        annotations={}; layout=False; sheet_name='Точный период'
         if file_type=='xlsxstat':
             payload_rows=build_exact_category_stats_xlsx_rows(target_chat_id,start_key,int(start_rid),end_key,int(end_rid))
-            category_layout=True; layout='category'; sheet_name='Excel стат'
+            layout=True; sheet_name='Excel стат'
             if custom_options and not description_column:
-                payload_rows,annotations=_category_rows_without_description(payload_rows); category_layout='category_compact'; layout='category_compact'
-            elif annotations_enabled:
-                annotations=_r16_export_annotations_for_rows(payload_rows,layout,annotations)
+                payload_rows,annotations=_category_rows_without_description(payload_rows); layout='category_compact'
             if not annotations_enabled: annotations={}
         elif ext=='xlsx':
             opening=_opening_balance_before_exact(get_chat_store(target_chat_id),start_key,int(start_rid))
             if description_column:
-                layout='simple'
                 payload_rows=[['Дата','Описание','Приход','Расход']]
                 for date_v,amount_v,note_v in rows:
                     try: parsed=parse_csv_amount(amount_v)
@@ -2559,10 +2472,7 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
                     payload_rows.append(_xlsx_record_row(date_v,parsed,note_v))
                 payload_rows=insert_blank_rows_between_days(payload_rows,header_rows=1)
                 payload_rows=_xlsx_simple_rows_with_balances(payload_rows,opening,target_chat_id)
-                if annotations_enabled:
-                    annotations=_r16_export_annotations_for_rows(payload_rows,layout,annotations)
             else:
-                category_layout=False; layout='compact'
                 payload_rows,annotations=_compact_simple_excel_rows_and_annotations(rows,opening,target_chat_id)
                 if not annotations_enabled: annotations={}
         else:
@@ -2579,8 +2489,7 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
         caption=f"🎯 {(('Excel стат ' if file_type=='xlsxstat' else 'Excel ') + _export_style_caption(style) if ext=='xlsx' else 'CSV')} — точный период\n▶️ {exact_boundary_text(store,start_key,start_rid,True)}\n⏹ {exact_boundary_text(store,end_key,end_rid,False)}"
         tid=str(tenant_id_for_chat(target_chat_id,create=False) or TENANT_PLATFORM_ID); cfg=tenant_google_config(tid,create=False) or {}
         body={'job_id':_split_secrets.token_hex(12),'recipient_chat_id':recipient_chat_id,'target_chat_id':target_chat_id,'tenant_id':tid,
-              'file_type':ext,'source_file_type':file_type,'style':style,'annotation_mode':_r16_export_annotation_mode(style),
-              'sheet_name':sheet_name,'category_layout':category_layout,'layout':layout,
+              'file_type':ext,'source_file_type':file_type,'style':style,'sheet_name':sheet_name,'category_layout':layout,
               'rows':_r7_json_rows(payload_rows),'annotations':_r7_export_annotations_payload(annotations),'filename':display_name,
               'label':'точный период','chat_name':get_chat_display_name(target_chat_id),'caption':caption,'delivery':delivery,
               'drive_folder_id':str(cfg.get('drive_folder_id') or '')}
@@ -2762,567 +2671,4 @@ except Exception:
 R15_FAST_HOTPATH = 'vys262-r15-fast-hotpath'
 try: bot_journal('r15_fast_hotpath_loaded', int(OWNER_ID or 0), 'remote witness fast; continuity background; full fallback idle-only')
 except Exception: pass
-
-# ---------------------------------------------------------------------------
-# R17 — FAST-FIRST deploy continuity.
-# The Telegram hot path does LOCAL SQLite only.  Full state projection, Redis
-# witness/capsule and Worker mirroring are trailing background work.
-# ---------------------------------------------------------------------------
-R17_RELEASE_TAG = 'R17'
-R17_FAST_FIRST = True
-_R17_STATE_LOCK = _split_threading.RLock()
-_R17_STATE_TIMER = None
-_R17_STATE_FIRST_DIRTY_AT = 0.0
-_R17_STATE_DUE_AT = 0.0
-_R17_STATE_DIRTY_CHATS = set()
-_R17_STATE_FORCE_FULL = False
-_R17_STATE_REASON = ''
-_R17_LAST_CHANGE_REV_NS = 0
-_R17_PERSIST_CONTEXT = _split_threading.local()
-_R17_REDIS_LOCK = _split_threading.RLock()
-_R17_REDIS_CLIENT = None
-_R17_REDIS_BREAKER_UNTIL = 0.0
-_R17_REDIS_FAILS = 0
-_R17_CONFIG_LOCK = _split_threading.RLock()
-_R17_CONFIG_TIMER = None
-_R17_CONFIG_REASON = ''
-_R17_CONTINUITY_LAST_CAPTURE = 0.0
-_R17_DEPLOY_STATE_KEY = str(_split_os.getenv('WORKER_REDIS_DEPLOY_STATE_KEY', 'vys262:deploy_state:r17') or 'vys262:deploy_state:r17').strip()
-_R17_DEPLOY_STATE_META_KEY = _R17_DEPLOY_STATE_KEY + ':meta'
-
-try:
-    _r17_seed_shadow = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
-    _R17_LAST_CHANGE_REV_NS = int((_r17_seed_shadow or {}).get('change_rev_ns') or 0)
-    if _R17_LAST_CHANGE_REV_NS <= 0:
-        _R17_LAST_CHANGE_REV_NS = int(float((_r17_seed_shadow or {}).get('saved_at') or 0.0) * 1_000_000_000)
-except Exception:
-    _R17_LAST_CHANGE_REV_NS = 0
-
-
-def _r17_revision_sec(payload=None):
-    row = payload if isinstance(payload, dict) else {}
-    try:
-        ns = int(row.get('change_rev_ns') or 0)
-        if ns > 0:
-            return ns / 1_000_000_000.0
-    except Exception:
-        pass
-    try:
-        return float(row.get('saved_at') or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _r17_note_change_v17(reason='change'):
-    global _R17_LAST_CHANGE_REV_NS
-    now_ns = _split_time.time_ns()
-    with _R17_STATE_LOCK:
-        if now_ns <= int(_R17_LAST_CHANGE_REV_NS or 0):
-            now_ns = int(_R17_LAST_CHANGE_REV_NS or 0) + 1
-        _R17_LAST_CHANGE_REV_NS = now_ns
-    try:
-        data.setdefault('_state_meta', {})['r17_change_rev_ns'] = int(now_ns)
-        data['_state_meta']['r17_change_reason'] = str(reason or 'change')[:120]
-    except Exception:
-        pass
-    return now_ns
-
-
-def _r17_current_change_rev_v17():
-    try:
-        live = int(((data or {}).get('_state_meta') or {}).get('r17_change_rev_ns') or 0)
-    except Exception:
-        live = 0
-    with _R17_STATE_LOCK:
-        return max(int(_R17_LAST_CHANGE_REV_NS or 0), live)
-
-
-def _r17_redis_client_v17():
-    global _R17_REDIS_CLIENT, _R17_REDIS_BREAKER_UNTIL
-    if _split_redis is None:
-        return None
-    if _split_time.time() < float(_R17_REDIS_BREAKER_UNTIL or 0.0):
-        return None
-    url = str(_split_os.getenv('REDIS_URL', '') or '').strip()
-    if not url:
-        return None
-    with _R17_REDIS_LOCK:
-        if _R17_REDIS_CLIENT is None:
-            _R17_REDIS_CLIENT = _split_redis.Redis.from_url(
-                url,
-                socket_connect_timeout=max(0.08, min(0.7, float(_split_os.getenv('R17_REDIS_CONNECT_TIMEOUT_SEC', '0.25') or '0.25'))),
-                socket_timeout=max(0.12, min(1.2, float(_split_os.getenv('R17_REDIS_SOCKET_TIMEOUT_SEC', '0.45') or '0.45'))),
-                health_check_interval=30,
-                retry_on_timeout=False,
-            )
-        return _R17_REDIS_CLIENT
-
-
-def _r17_redis_fail_v17(exc=None):
-    global _R17_REDIS_CLIENT, _R17_REDIS_BREAKER_UNTIL, _R17_REDIS_FAILS
-    with _R17_REDIS_LOCK:
-        _R17_REDIS_FAILS = int(_R17_REDIS_FAILS or 0) + 1
-        cooldown = min(30.0, 2.0 * (2 ** min(4, max(0, _R17_REDIS_FAILS - 1))))
-        _R17_REDIS_BREAKER_UNTIL = _split_time.time() + cooldown
-        _R17_REDIS_CLIENT = None
-    _SPLIT_STATE['r17_redis_breaker_until'] = _R17_REDIS_BREAKER_UNTIL
-    _SPLIT_STATE['r17_redis_last_error'] = str(exc or '')[:220]
-
-
-def _r17_redis_ok_v17():
-    global _R17_REDIS_FAILS, _R17_REDIS_BREAKER_UNTIL
-    with _R17_REDIS_LOCK:
-        _R17_REDIS_FAILS = 0
-        _R17_REDIS_BREAKER_UNTIL = 0.0
-    _SPLIT_STATE['r17_redis_breaker_until'] = 0.0
-    _SPLIT_STATE['r17_redis_last_error'] = ''
-
-
-# Reuse one Redis connection for the event journal. Worker HTTP is no longer a
-# synchronous fallback anywhere in the Telegram request path.
-def _split_event_redis_write_v268(row, state=None, error=''):
-    client = _r17_redis_client_v17()
-    if client is None:
-        return False, 'redis unavailable/circuit-open'
-    try:
-        event_id = str((row or {}).get('event_id') or (row or {}).get('update_id') or '')
-        if not event_id:
-            return False, 'event id empty'
-        prefix = _split_event_prefix_v268(); key = f'{prefix}:event:{event_id}'; pending = f'{prefix}:pending'
-        current = {}
-        existing = client.get(key)
-        if existing:
-            try: current = _split_json.loads(existing.decode('utf-8') if isinstance(existing, (bytes, bytearray)) else existing)
-            except Exception: current = {}
-        merged = dict(current or {}); merged.update(row or {})
-        rank = {'received':1,'failed_retry':1,'committed':2,'mirrored':3,'checkpointed':4,'done':4}
-        old_state = str((current or {}).get('state') or '')
-        new_state = str(state or merged.get('state') or '')
-        if rank.get(old_state, 0) > rank.get(new_state, 0): new_state = old_state
-        if new_state: merged['state'] = new_state
-        if error and rank.get(new_state, 0) < 3: merged['last_error'] = str(error)[:300]
-        merged['updated_at'] = _split_time.time()
-        ttl = max(86400, min(2592000, int(_split_os.getenv('WORKER_EVENT_RETENTION_SEC','604800') or '604800')))
-        pipe = client.pipeline(transaction=True)
-        pipe.set(key, _split_json.dumps(merged, ensure_ascii=False, separators=(',', ':'), default=str), ex=ttl)
-        if str(merged.get('state') or '') in {'mirrored','checkpointed','done'}:
-            pipe.zrem(pending, event_id)
-        else:
-            pipe.zadd(pending, {event_id: float(merged.get('received_at') or _split_time.time())})
-        pipe.execute()
-        _r17_redis_ok_v17()
-        return True, 'redis event stored'
-    except Exception as exc:
-        _r17_redis_fail_v17(exc)
-        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
-
-
-def split_witness_event_v268(update_id, payload, chat_id=None, update_type='other'):
-    """R17 background event witness; never blocks Telegram HTTP acknowledgement."""
-    row = _split_event_row_v268(update_id, payload, chat_id, update_type)
-    ok, detail = _split_event_redis_write_v268(row, 'received', '')
-    if ok:
-        _SPLIT_STATE['event_last_receipt_ok'] = _split_time.time()
-        _SPLIT_STATE['event_last_error'] = ''
-        _SPLIT_STATE['event_received'] = int(_SPLIT_STATE.get('event_received') or 0) + 1
-        return True
-    _SPLIT_STATE['event_last_error'] = ('R17 async witness: ' + str(detail))[:260]
-    return False
-
-
-def split_schedule_event_witness_v17(update_id, payload, chat_id=None, update_type='other'):
-    try:
-        return bool(_split_event_bg_v268(split_witness_event_v268, update_id, payload, chat_id, update_type))
-    except Exception:
-        return False
-
-
-# R17 user-state metadata carries the revision of the LAST REAL MUTATION. A late
-# shutdown from an old Render instance therefore cannot outrank a newer instance.
-_R17_BASE_USER_STATE_CAPTURE = user_state_shadow_capture_v265
-def user_state_shadow_capture_v265(reason='checkpoint', chat_id=None, chat_ids=None, full=True):
-    payload = _R17_BASE_USER_STATE_CAPTURE(reason, chat_id=chat_id, chat_ids=chat_ids, full=full)
-    if isinstance(payload, dict) and payload:
-        payload['schema'] = max(17, int(payload.get('schema') or 0))
-        payload['release'] = R17_RELEASE_TAG
-        payload['change_rev_ns'] = int(_r17_current_change_rev_v17())
-        payload['saved_at'] = _split_time.time()
-        try:
-            payload['canonical_root_saved_at'] = str(((data or {}).get('_state_meta') or {}).get('last_saved_at') or '')
-        except Exception:
-            pass
-        SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
-    return payload
-
-
-_R17_BASE_CONTINUITY_CAPTURE = continuity_capture_v263
-def continuity_capture_v263(reason='checkpoint'):
-    payload = _R17_BASE_CONTINUITY_CAPTURE(reason)
-    if isinstance(payload, dict) and payload:
-        payload['schema'] = max(17, int(payload.get('schema') or 0))
-        payload['release'] = R17_RELEASE_TAG
-        payload['change_rev_ns'] = int(_r17_current_change_rev_v17())
-        SQLITE.set_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, payload)
-    return payload
-
-
-_R17_BASE_USER_STATE_APPLY = user_state_shadow_apply_v265
-def user_state_shadow_apply_v265(loaded):
-    if not isinstance(loaded, dict):
-        return loaded
-    try:
-        payload = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
-        shadow_rev = int((payload or {}).get('change_rev_ns') or 0)
-        root_rev = int(((loaded.get('_state_meta') or {}).get('r17_change_rev_ns') or 0))
-        if root_rev > 0 and shadow_rev > 0 and root_rev > shadow_rev:
-            log_info(f'R17 USER_STATE stale shadow ignored root_rev={root_rev} shadow_rev={shadow_rev}')
-            return loaded
-    except Exception:
-        pass
-    return _R17_BASE_USER_STATE_APPLY(loaded)
-
-
-def _r17_deploy_capsule_bytes_v17(shadow=None, continuity=None):
-    shadow = shadow if isinstance(shadow, dict) else (SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {})
-    continuity = continuity if isinstance(continuity, dict) else (SQLITE.get_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, {}) or {})
-    change_rev_ns = max(
-        int((shadow or {}).get('change_rev_ns') or 0),
-        int((continuity or {}).get('change_rev_ns') or 0),
-        int(_r17_current_change_rev_v17()),
-    )
-    body = {
-        'schema': 17, 'release': R17_RELEASE_TAG, 'change_rev_ns': change_rev_ns,
-        'saved_at': _split_time.time(), 'front_instance': str(_split_os.getenv('RENDER_INSTANCE_ID','') or '')[-64:],
-        'shadow': shadow or {}, 'continuity': continuity or {},
-    }
-    raw = _split_json.dumps(body, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
-    body['sha256'] = _split_hashlib.sha256(raw).hexdigest()
-    raw = _split_json.dumps(body, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
-    return _split_gzip.compress(raw, compresslevel=3), body
-
-
-def _r17_publish_deploy_capsule_v17(shadow=None, continuity=None):
-    client = _r17_redis_client_v17()
-    if client is None:
-        return False
-    try:
-        wire, body = _r17_deploy_capsule_bytes_v17(shadow, continuity)
-        rev = int(body.get('change_rev_ns') or 0)
-        meta = _split_json.dumps({'change_rev_ns': rev, 'revision': rev / 1_000_000_000.0, 'saved_at': body.get('saved_at'), 'release': R17_RELEASE_TAG}, separators=(',', ':'))
-        script = """
-local old = redis.call('GET', KEYS[2])
-local oldrev = 0
-if old then
-  local ok,obj = pcall(cjson.decode, old)
-  if ok and obj and obj['change_rev_ns'] then oldrev = tonumber(obj['change_rev_ns']) or 0 end
-end
-local newrev = tonumber(ARGV[3]) or 0
-if oldrev > newrev then return 0 end
-redis.call('SET', KEYS[1], ARGV[1])
-redis.call('SET', KEYS[2], ARGV[2])
-return 1
-"""
-        result = client.eval(script, 2, _R17_DEPLOY_STATE_KEY, _R17_DEPLOY_STATE_META_KEY, wire, meta, str(rev))
-        _r17_redis_ok_v17()
-        _SPLIT_STATE['r17_capsule_last_ok'] = _split_time.time()
-        _SPLIT_STATE['r17_capsule_revision'] = rev
-        _SPLIT_STATE['r17_capsule_stale_rejected'] = (int(result or 0) == 0)
-        return True
-    except Exception as exc:
-        _r17_redis_fail_v17(exc)
-        _SPLIT_STATE['r17_capsule_last_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
-        return False
-
-
-# Config projection is expensive. The canonical function is retained, but runs only
-# after the interaction in a coalesced background timer.
-_R17_BASE_CONFIG_GUARD_NOTE = config_guard_note_after_save_v234
-def _r17_config_guard_fire_v17():
-    global _R17_CONFIG_TIMER, _R17_CONFIG_REASON
-    with _R17_CONFIG_LOCK:
-        reason = str(_R17_CONFIG_REASON or 'save_data')
-        _R17_CONFIG_TIMER = None
-        _R17_CONFIG_REASON = ''
-    try:
-        _R17_BASE_CONFIG_GUARD_NOTE('r17-bg:' + reason)
-    except Exception as exc:
-        try: log_error(f'R17 config guard background: {exc}')
-        except Exception: pass
-
-
-def config_guard_note_after_save_v234(reason: str='save_data') -> dict:
-    global _R17_CONFIG_TIMER, _R17_CONFIG_REASON
-    try:
-        if bool(getattr(_R17_PERSIST_CONTEXT, 'in_flush', False)):
-            return config_guard_latest_local_v234() or {}
-        with _R17_CONFIG_LOCK:
-            _R17_CONFIG_REASON = str(reason or 'save_data')[:120]
-            # True idle debounce: every new interaction postpones the expensive
-            # full config projection.  It must never steal CPU/GIL from a burst
-            # of Telegram callbacks on FAST.
-            if _R17_CONFIG_TIMER is not None:
-                try: _R17_CONFIG_TIMER.cancel()
-                except Exception: pass
-            try:
-                idle = float(_split_os.getenv('R17_CONFIG_IDLE_SEC', '1.5') or '1.5')
-            except Exception:
-                idle = 1.5
-            _R17_CONFIG_TIMER = _split_threading.Timer(max(0.75, min(8.0, idle)), _r17_config_guard_fire_v17)
-            _R17_CONFIG_TIMER.daemon = True
-            _R17_CONFIG_TIMER.start()
-        return config_guard_latest_local_v234() or {}
-    except Exception:
-        return {}
-
-
-# In split mode the SQLite/Redis state restored by start_front is canonical. Remote
-# Telegram/MEGA config checkpoints are mirrors and must never roll back that state.
-_R17_BASE_CONFIG_GUARD_BOOT = config_guard_boot_verify_v234
-def config_guard_boot_verify_v234() -> dict:
-    global CONFIG_GUARD_BOOT_VERIFIED_V234, CONFIG_GUARD_LAST_REPORT_V234
-    try:
-        shadow = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
-        has_local = bool((data or {}).get('chats') or shadow)
-        if has_local:
-            cp = config_guard_accept_current_v234('r17_split_local_authority')
-            report = {'ok': True, 'mode': 'r17_split_local_authority', 'repaired': False,
-                      'generation': int((cp or {}).get('generation') or 0),
-                      'metrics': (cp or {}).get('metrics') or {},
-                      'change_rev_ns': int((shadow or {}).get('change_rev_ns') or 0)}
-            CONFIG_GUARD_BOOT_VERIFIED_V234 = True
-            CONFIG_GUARD_LAST_REPORT_V234 = report
-            return report
-    except Exception as exc:
-        try: log_error(f'R17 local config authority: {exc}')
-        except Exception: pass
-    return _R17_BASE_CONFIG_GUARD_BOOT()
-
-
-# Final save_data owner for R17: local SQLite is synchronous; all duplicate/full
-# projections and remote durability are background.
-_R17_BASE_SAVE_DATA = _V263_BASE_SAVE_DATA
-def save_data(d, chat_ids=None, full=False, root_only=False):
-    logical_change = not bool(getattr(_R17_PERSIST_CONTEXT, 'in_flush', False))
-    if logical_change:
-        _r17_note_change_v17('save_data')
-    result = _R17_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
-    if logical_change:
-        ids = []
-        if chat_ids is not None:
-            src = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
-            for cid in src:
-                try: ids.append(int(cid))
-                except Exception: pass
-        elif not root_only:
-            try:
-                cid = current_state_chat_id()
-                if cid is not None: ids.append(int(cid))
-            except Exception: pass
-        r17_mark_state_dirty_v17(ids, 'logical_save', force_full=bool(full), change=False)
-    return result
-
-
-def _r17_state_flush_v17():
-    global _R17_STATE_TIMER, _R17_STATE_FIRST_DIRTY_AT, _R17_STATE_DUE_AT, _R17_STATE_FORCE_FULL, _R17_STATE_REASON, _R17_CONTINUITY_LAST_CAPTURE
-    with _R17_STATE_LOCK:
-        ids = list(_R17_STATE_DIRTY_CHATS)
-        _R17_STATE_DIRTY_CHATS.clear()
-        force_full = bool(_R17_STATE_FORCE_FULL)
-        reason = str(_R17_STATE_REASON or 'state')
-        _R17_STATE_FORCE_FULL = False
-        _R17_STATE_REASON = ''
-        _R17_STATE_TIMER = None
-        _R17_STATE_FIRST_DIRTY_AT = 0.0
-        _R17_STATE_DUE_AT = 0.0
-    started = _split_time.perf_counter()
-    try:
-        _R17_PERSIST_CONTEXT.in_flush = True
-        if force_full:
-            _R17_BASE_SAVE_DATA(data, full=True)
-        elif ids:
-            _R17_BASE_SAVE_DATA(data, chat_ids=ids)
-        else:
-            _R17_BASE_SAVE_DATA(data, root_only=True)
-        shadow = user_state_shadow_capture_v265('r17-bg:' + reason, chat_ids=ids, full=force_full)
-        continuity = None
-        now = _split_time.time()
-        if force_full or (now - float(_R17_CONTINUITY_LAST_CAPTURE or 0.0) >= 0.6):
-            continuity = continuity_capture_v263('r17-bg:' + reason)
-            _R17_CONTINUITY_LAST_CAPTURE = now
-        else:
-            continuity = SQLITE.get_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, {}) or {}
-        _split_mark_state_changed_v264('r17:' + reason)
-        _r17_publish_deploy_capsule_v17(shadow, continuity)
-        split_schedule_worker_sync_v262(reason='r17_state:' + reason, delay=0.9)
-        _SPLIT_STATE['r17_state_flush_ms'] = round((_split_time.perf_counter() - started) * 1000.0, 2)
-        _SPLIT_STATE['r17_state_flush_ok'] = int(_SPLIT_STATE.get('r17_state_flush_ok') or 0) + 1
-    except Exception as exc:
-        _SPLIT_STATE['r17_state_flush_error'] = f'{type(exc).__name__}: {str(exc)[:220]}'
-        try: log_error('R17 state background flush: ' + str(exc))
-        except Exception: pass
-    finally:
-        _R17_PERSIST_CONTEXT.in_flush = False
-
-
-def r17_mark_state_dirty_v17(chat_ids=None, reason='update', force_full=False, change=True, delay=None):
-    global _R17_STATE_TIMER, _R17_STATE_FIRST_DIRTY_AT, _R17_STATE_DUE_AT, _R17_STATE_FORCE_FULL, _R17_STATE_REASON
-    if change:
-        _r17_note_change_v17(reason)
-    ids = chat_ids
-    if ids is None: ids = []
-    if not isinstance(ids, (list, tuple, set)): ids = [ids]
-    now = _split_time.time()
-    try:
-        debounce = float(delay if delay is not None else _split_os.getenv('R17_STATE_DEBOUNCE_SEC', '0.12') or '0.12')
-    except Exception:
-        debounce = 0.12
-    try:
-        max_lag = float(_split_os.getenv('R17_STATE_MAX_LAG_SEC', '0.75') or '0.75')
-    except Exception:
-        max_lag = 0.75
-    debounce = max(0.03, min(1.0, debounce)); max_lag = max(debounce, min(3.0, max_lag))
-    with _R17_STATE_LOCK:
-        for cid in ids:
-            try: _R17_STATE_DIRTY_CHATS.add(int(cid))
-            except Exception: pass
-        _R17_STATE_FORCE_FULL = bool(_R17_STATE_FORCE_FULL or force_full)
-        _R17_STATE_REASON = str(reason or 'update')[:140]
-        if _R17_STATE_FIRST_DIRTY_AT <= 0.0:
-            _R17_STATE_FIRST_DIRTY_AT = now
-        due = min(now + debounce, _R17_STATE_FIRST_DIRTY_AT + max_lag)
-        # Never postpone an already-earlier flush; this bounds deploy lag during bursts.
-        if _R17_STATE_TIMER is not None and _R17_STATE_DUE_AT > 0 and _R17_STATE_DUE_AT <= due:
-            return True
-        if _R17_STATE_TIMER is not None:
-            try: _R17_STATE_TIMER.cancel()
-            except Exception: pass
-        _R17_STATE_DUE_AT = due
-        _R17_STATE_TIMER = _split_threading.Timer(max(0.01, due - now), _r17_state_flush_v17)
-        _R17_STATE_TIMER.daemon = True
-        _R17_STATE_TIMER.start()
-    return True
-
-
-def _r17_force_state_flush_v17(reason='shutdown'):
-    global _R17_STATE_TIMER, _R17_STATE_FORCE_FULL, _R17_STATE_REASON
-    with _R17_STATE_LOCK:
-        if _R17_STATE_TIMER is not None:
-            try: _R17_STATE_TIMER.cancel()
-            except Exception: pass
-            _R17_STATE_TIMER = None
-        _R17_STATE_FORCE_FULL = True
-        _R17_STATE_REASON = str(reason or 'shutdown')[:140]
-    _r17_state_flush_v17()
-    return True
-
-
-# Replace the R16.3 post-update barrier. It only marks dirty state and returns; the
-# expensive capture happens on a daemon timer after Telegram UI work is complete.
-_R17_BASE_EXECUTE_TELEGRAM_PAYLOAD = _V263_BASE_EXECUTE_TELEGRAM_PAYLOAD
-def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str='other'):
-    _SPLIT_UPDATE_CONTEXT.active = True
-    _SPLIT_UPDATE_CONTEXT.finance_dirty = False
-    finance_dirty = False
-    started = _split_time.perf_counter()
-    try:
-        result = _R17_BASE_EXECUTE_TELEGRAM_PAYLOAD(payload, update_id, update_chat_id, update_type)
-    finally:
-        finance_dirty = bool(getattr(_SPLIT_UPDATE_CONTEXT, 'finance_dirty', False))
-        _SPLIT_UPDATE_CONTEXT.active = False
-        _SPLIT_UPDATE_CONTEXT.finance_dirty = False
-    try:
-        cid = update_chat_id
-        if cid is None and isinstance(payload, dict): cid = _extract_update_chat_id(payload)
-        reason = ('finance:' if finance_dirty else 'tg:') + str(update_type or 'other')
-        r17_mark_state_dirty_v17([cid] if cid is not None else [], reason, force_full=False, change=True)
-        # Rare indirect/cross-chat mutations get a full safety sweep only after idle.
-        split_schedule_continuity_checkpoint_v270(cid, 'r17_idle_sweep:' + reason,
-            delay=float(_split_os.getenv('R17_FULL_SWEEP_DELAY_SEC', '2.5') or '2.5'))
-        _SPLIT_STATE['r17_handler_post_ms'] = round((_split_time.perf_counter() - started) * 1000.0, 2)
-    except Exception as exc:
-        try: log_error(f'R17 post-update mark: {exc}')
-        except Exception: pass
-    return result
-
-
-# Make the old continuity timer harmless for the hot path: its callback is background,
-# and it now publishes the R17 capsule instead of becoming the first persistence step.
-def _split_continuity_checkpoint_fire_v270():
-    global _SPLIT_CONTINUITY_TIMER, _SPLIT_CONTINUITY_CHAT_ID, _SPLIT_CONTINUITY_REASON
-    with _SPLIT_CONTINUITY_LOCK:
-        cid = _SPLIT_CONTINUITY_CHAT_ID
-        reason = str(_SPLIT_CONTINUITY_REASON or 'coalesced')
-        _SPLIT_CONTINUITY_TIMER = None; _SPLIT_CONTINUITY_CHAT_ID = None; _SPLIT_CONTINUITY_REASON = ''
-    r17_mark_state_dirty_v17([cid] if cid is not None else [], 'full:' + reason, force_full=True, change=False, delay=0.03)
-
-
-# Graceful deploy: full flush before and after queue drain. change_rev_ns is NOT
-# advanced by these captures, so an older instance cannot overwrite newer R17 state.
-_R17_BASE_RUNTIME_GRACEFUL_SHUTDOWN = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN
-def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
-    try:
-        _R17_PERSIST_CONTEXT.in_flush = True
-        _r17_force_state_flush_v17('pre_shutdown:' + str(signal_name))
-    except Exception as exc:
-        try: log_error(f'R17 pre-shutdown state: {exc}')
-        except Exception: pass
-    finally:
-        _R17_PERSIST_CONTEXT.in_flush = False
-    result = _R17_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
-    try:
-        _R17_PERSIST_CONTEXT.in_flush = True
-        _r17_force_state_flush_v17('shutdown:' + str(signal_name))
-        _split_push_snapshot_now_v263('r17_shutdown:' + str(signal_name))
-    except Exception as exc:
-        try: log_error(f'R17 shutdown state: {exc}')
-        except Exception: pass
-    finally:
-        _R17_PERSIST_CONTEXT.in_flush = False
-    return result
-
-
-# Start with a trailing full capsule after READY migration settles. No user request
-# waits for this work.
-try:
-    r17_mark_state_dirty_v17([], 'boot_seed', force_full=True, change=False, delay=0.6)
-    bot_journal('r17_fast_first_loaded', int(OWNER_ID or 0), 'hotpath=local-sqlite-only; state=background; redis-capsule=cas')
-except Exception:
-    pass
-
-# R17: a scheduled Google export with no configured target is a configuration
-# condition, not a transient network failure. Suspend quietly until a sheet is set.
-_R17_BASE_GOOGLE_UPDATE_TARGET = globals().get('_v167_google_update_target')
-def _v167_google_update_target(target_chat_id: int, reason: str='schedule', run_key: str='', target_day: str=''):
-    target_chat_id = int(target_chat_id)
-    try:
-        _split_google_target(target_chat_id=target_chat_id)
-    except Exception as exc:
-        text = str(exc)
-        if 'Google Таблица не выбрана' in text:
-            try:
-                cfg = _v167_google_schedule_cfg(target_chat_id)
-                first = str(cfg.get('r17_blocked_reason') or '') != 'no_sheet'
-                cfg['r17_blocked_reason'] = 'no_sheet'
-                cfg['pending_run_key'] = ''
-                cfg['pending_since_ts'] = 0.0
-                cfg['retry_count'] = 0
-                cfg['next_retry_ts'] = 0.0
-                _v167_persist_schedule(target_chat_id)
-                if first:
-                    bot_journal('google_schedule_suspended_r17', target_chat_id, 'sheet target is not configured; retries paused until target appears', 'WARN')
-            except Exception:
-                pass
-            return False
-        raise
-    try:
-        cfg = _v167_google_schedule_cfg(target_chat_id)
-        if cfg.get('r17_blocked_reason'):
-            cfg['r17_blocked_reason'] = ''
-            cfg['last_attempt_key'] = ''
-            cfg['next_retry_ts'] = 0.0
-            _v167_persist_schedule(target_chat_id)
-    except Exception:
-        pass
-    return bool(_R17_BASE_GOOGLE_UPDATE_TARGET(target_chat_id, reason, run_key, target_day)) if callable(_R17_BASE_GOOGLE_UPDATE_TARGET) else False
-
 # v262

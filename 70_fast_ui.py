@@ -736,7 +736,7 @@ def build_owner_instruction_keyboard(chat_id: int):
     return kb
 
 def all_task_pool_stats() -> list[dict]:
-    return [WEBHOOK_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
+    return [WEBHOOK_TASK_POOL.stats(), FAST_UI_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
 
 def build_queue_status_text() -> str:
     lines = ['🚦 Очереди и нагрузка', '']
@@ -2233,19 +2233,25 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         _callback_ack_prune_locked()
         row = _CALLBACK_ACK_STATE.setdefault(callback_id, {'ts': time.time()})
         row['ts'] = time.time()
-        if not str(text or '').strip() and (not bool(kwargs.get('show_alert', False))):
-            process_text = build_all_processes_toast(row.get('chat_id'))
-            if args:
-                args = (process_text,) + tuple(args[1:])
-                kwargs.pop('text', None)
-            else:
-                kwargs['text'] = process_text
-            text = process_text
+        # R18: an empty ACK must stay empty.  R17 converted every silent receipt ACK
+        # into the visible Telegram toast "⏳ Выполняю…", which made navigation feel
+        # delayed even when the actual window render was fast.  Long jobs must request
+        # an explicit progress text themselves.
         if row.get('answered'):
+            # R18: the receipt ACK wins immediately.  A later ordinary toast from a
+            # handler must not create a new Telegram message (R17 could turn every
+            # navigation click into extra chat noise).  Preserve only explicit alert
+            # semantics, which are normally permission/error messages.
             chat_id = row.get('chat_id')
-            if str(text or '').strip() and (not row.get('late_notice_sent')):
+            if bool(kwargs.get('show_alert')) and str(text or '').strip() and (not row.get('late_notice_sent')):
                 row['late_notice_sent'] = True
-                CALLBACK_ACK_TASK_POOL.submit(f'callback-late-notice:{callback_id}', _late_callback_notice, chat_id, text)
+                # Keep the dedicated ACK pool pure: late permission/error feedback is
+                # ordinary background Telegram work and must never queue ahead of ACKs.
+                _late_pool = globals().get('GENERAL_TASK_POOL')
+                if _late_pool is not None:
+                    _late_pool.submit_unique(f'callback-late-alert:{callback_id}', _late_callback_notice, chat_id, text)
+                else:
+                    threading.Thread(target=_late_callback_notice, args=(chat_id, text), name=f'r18-late-alert-{callback_id}', daemon=True).start()
             return True
         if row.get('inflight'):
             return True
@@ -2270,12 +2276,9 @@ bot.answer_callback_query = _tracked_answer_callback_query
 
 def _answer_callback_query_quiet(callback_id: str, chat_id=None):
     try:
-        bot.answer_callback_query(callback_id, text=build_all_processes_toast(chat_id), show_alert=False)
+        bot.answer_callback_query(callback_id, show_alert=False)
     except Exception:
-        try:
-            bot.answer_callback_query(callback_id)
-        except Exception:
-            pass
+        pass
 
 def answer_callback_query_background(callback_id: str):
     """Immediate ACK from a callback handler, isolated from GENERAL/MEGA work."""

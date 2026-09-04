@@ -672,7 +672,11 @@ def _env_int(name: str, default: int, minimum: int=1, maximum: int=128) -> int:
         return int(default)
 WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 2, 2, 8), _env_int('WEBHOOK_MAX_PENDING', 400, 50, 2000))
 UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI_MAX_PENDING', 400, 50, 2000))
+# R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
+# can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.
+FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 4, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 1, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
+UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
 REMINDER_TASK_POOL = KeyedTaskPool('reminder', _env_int('REMINDER_WORKERS', 1, 1, 3), _env_int('REMINDER_MAX_PENDING', 250, 20, 1000))
 FINANCE_TASK_POOL = KeyedTaskPool('finance', _env_int('FINANCE_WORKERS', 2, 2, 8), _env_int('FINANCE_MAX_PENDING', 400, 50, 2000))
@@ -1065,7 +1069,6 @@ if not BOT_TOKEN:
     raise RuntimeError('B_T is not set')
 RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
-RELEASE_TAG = 'R17'
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
 BOT_DISPLAY_NAME = VERSION
@@ -3079,7 +3082,7 @@ def build_all_processes_toast(chat_id=None) -> str:
         pass
     active_total = 0
     pending_total = 0
-    pools = (WEBHOOK_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
     for pool in pools:
         try:
             st = pool.stats() or {}

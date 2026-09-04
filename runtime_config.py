@@ -1,4 +1,4 @@
-"""vys-262 R14 internal runtime configuration.
+"""vys-262 R19 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r17-fast-first-deploy-state"
+CONFIG_VERSION = "vys-262-r19-fast-callback-authoritative-restore"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,6 +23,18 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "RENDER_TELEGRAM_ONLY": "1",
     "MALLOC_ARENA_MAX": "2",
 
+    # R19 FAST lanes: user callbacks must never wait behind cleanup/sync work.
+    "UI_WORKERS": "6",
+        "FAST_UI_WORKERS": "4",
+        "FAST_UI_MAX_PENDING": "600",
+    "UI_MAX_PENDING": "800",
+    "CALLBACK_ACK_WORKERS": "2",
+    "UI_CLEANUP_WORKERS": "2",
+    "UI_CLEANUP_MAX_PENDING": "1200",
+    "WEBHOOK_WORKERS": "3",
+    "DELTA_WORKERS": "2",
+    "BACKGROUND_WORKERS": "2",
+
     # Small user-facing runtime constants
     "QUICK_EXPENSE_REMINDER_MINUTES": "60",
 
@@ -30,7 +42,6 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "WORKER_REDIS_SNAPSHOT_KEY": "vys262:bot_state:latest_gz",
     "WORKER_REDIS_SNAPSHOT_MAX_MB": "16",
     "WORKER_REDIS_EVENT_PREFIX": "vys262:tg_events:v1",
-    "WORKER_REDIS_DEPLOY_STATE_KEY": "vys262:deploy_state:r17",
     "WORKER_EVENT_RETENTION_SEC": "604800",
 
     # Peer / event-journal transport
@@ -42,22 +53,19 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "SPLIT_FINANCE_SYNC_DELAY_SEC": "0.8",
     "SPLIT_CONTINUITY_FINANCE_DELAY_SEC": "4.0",
     "SPLIT_CONTINUITY_OTHER_DELAY_SEC": "2.5",
-    "SPLIT_FULL_RECONCILE_QUIET_SEC": "300",
+    "SPLIT_CONTINUITY_MAX_LATENCY_SEC": "5.0",
+    "SPLIT_SYNC_MAX_LATENCY_SEC": "3.0",
+    "SPLIT_FULL_RECONCILE_QUIET_SEC": "20",
     "SPLIT_DELTA_MAX_PAGES": "256",
     "SPLIT_DELTA_MAX_BYTES": "524288",
     "SPLIT_EVENT_RECEIPT_TIMEOUT_SEC": "1.2",
     "SPLIT_REDIS_FALLBACK_CONNECT_TIMEOUT_SEC": "0.35",
     "SPLIT_REDIS_FALLBACK_SOCKET_TIMEOUT_SEC": "0.65",
-    "R17_REDIS_CONNECT_TIMEOUT_SEC": "0.25",
-    "R17_REDIS_SOCKET_TIMEOUT_SEC": "0.45",
-    "R17_STATE_DEBOUNCE_SEC": "0.12",
-    "R17_STATE_MAX_LAG_SEC": "0.75",
-    "R17_FULL_SWEEP_DELAY_SEC": "2.5",
-    "R17_CONFIG_IDLE_SEC": "1.5",
 
     # Boot / rolling deploy recovery
     "SPLIT_BOOT_ALWAYS_RESTORE": "1",
-    "SPLIT_BOOT_HANDOFF_GRACE_SEC": "10",
+    "SPLIT_BOOT_HANDOFF_GRACE_SEC": "16",
+    "SPLIT_PREBOOT_CAPTURE_WAIT_SEC": "4.0",
     "SPLIT_BOOT_WORKER_ATTEMPTS": "3",
     "SPLIT_BOOT_WORKER_TIMEOUT": "12",
     "SPLIT_RESTORE_RETRY_SEC": "20",
@@ -87,7 +95,6 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
     "WORKER_REDIS_DELTA_KEY": "vys262:bot_state:latest_gz:deltas_v1",
     "WORKER_REDIS_DELTA_MAX_ITEMS": "2000",
     "WORKER_REDIS_EVENT_PREFIX": "vys262:tg_events:v1",
-    "WORKER_REDIS_DEPLOY_STATE_KEY": "vys262:deploy_state:r17",
     "WORKER_EVENT_RETENTION_SEC": "604800",
     "WORKER_EVENT_MAX_WIRE_KB": "512",
     "WORKER_EVENT_REDIS_QUEUE_MAX": "2048",

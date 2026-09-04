@@ -371,6 +371,42 @@ def recover_webhook_inbox_v260(limit: int=100) -> int:
             submitted+=1
     return submitted
 
+def _r19_update_journal_start(update_id, update_chat_id, update_type, wait, durable_cloud):
+    try:
+        bot_journal('update_process_start', update_chat_id, f'update_id={update_id} type={update_type} queue_wait={wait:.3f}s durable={durable_cloud}')
+    except Exception:
+        pass
+
+
+def _r19_post_update_cleanup(update_id, update_chat_id, update_type, wait, started, success, durable_cloud):
+    # Never hold the user-facing callback worker while flushing cold chat state or
+    # writing diagnostic rows. These actions are important, but not interactive.
+    try:
+        bot_journal('update_process_done', update_chat_id, f'update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time() - started:.3f}s total={time.time() - (started - wait):.3f}s success={success} durable={durable_cloud}')
+    except Exception:
+        pass
+    if not durable_cloud:
+        try:
+            _lowram_release_chat(update_chat_id)
+        except Exception as _lr_exc:
+            log_error(f'LOWRAM post-update release: {_lr_exc}')
+
+
+def _r19_schedule_post_update_cleanup(update_id, update_chat_id, update_type, wait, started, success, durable_cloud):
+    pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+    if pool is not None:
+        try:
+            if pool.submit(f'cleanup:{update_id}', _r19_post_update_cleanup, update_id, update_chat_id, update_type, wait, started, success, durable_cloud):
+                return True
+        except Exception:
+            pass
+    try:
+        threading.Thread(target=_r19_post_update_cleanup, args=(update_id, update_chat_id, update_type, wait, started, success, durable_cloud), name=f'r19-cleanup-{update_id}', daemon=True).start()
+        return True
+    except Exception:
+        return False
+
+
 @app.route(WEBHOOK_ROUTE_PATH, methods=['POST'])
 def telegram_webhook():
     if WEBHOOK_HEADER_SECRET_ENABLED:
@@ -393,6 +429,19 @@ def telegram_webhook():
         runtime_mark_webhook(payload if isinstance(payload, dict) else None, blocked='boot')
         return ('BOOTING', 503)
     runtime_mark_webhook(payload if isinstance(payload, dict) else None)
+    # R18 absolute UI hot path: start Telegram callback ACK immediately after the
+    # READY/shutdown gate, before logging, Update.de_json, SQLite inbox, Redis/Worker
+    # witness, locks or routing.  The ACK uses a dedicated pool, so Telegram network
+    # RTT runs in parallel with local window rendering.
+    if isinstance(payload, dict) and 'callback_query' in payload:
+        try:
+            _r18_cq = payload.get('callback_query') or {}
+            _r18_msg = _r18_cq.get('message') or {}
+            _r18_chat = _r18_msg.get('chat') or {}
+            _r18_cid = _r18_chat.get('id')
+            schedule_callback_receipt_ack(str(_r18_cq.get('id') or ''), _r18_cid, delay=0.0)
+        except Exception as ack_exc:
+            log_error(f'CALLBACK IMMEDIATE ACK: {ack_exc}')
     try:
         if isinstance(payload, dict):
             if 'edited_message' in payload:
@@ -416,33 +465,32 @@ def telegram_webhook():
         _inbox_state_v260 = _v260_webhook_inbox_state(update_id)
         if _inbox_state_v260 == 'done':
             return ('OK', 200)
-        _r17_local_started = time.perf_counter()
         if not _v260_webhook_inbox_put(update_id, payload, update_chat_id, update_type):
             return ('LOCAL DURABLE INBOX FAILED', 503)
-        _r17_local_ms = (time.perf_counter() - _r17_local_started) * 1000.0
-        # R17 FAST-FIRST: callback spinner and HTTP acknowledgement never wait for
-        # Redis/Worker. The local SQLite inbox is the synchronous durability barrier;
-        # remote event witness is detached immediately after it.
+        # R13: before Telegram gets HTTP 200 and before business execution starts,
+        # make the raw update durable on Worker/Redis.  If both remote witnesses are
+        # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
+        _r13_witness_fn = globals().get('split_witness_event_v268')
+        if callable(_r13_witness_fn):
+            if update_type == 'callback_query':
+                # UI callbacks are already in the local durable inbox.  Mirror the raw
+                # event remotely on DELTA lane, but never put Redis/Worker RTT in front
+                # of a user's button.  Message/finance traffic keeps the strict witness.
+                def _r18_callback_witness():
+                    try:
+                        if not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
+                            log_error(f'R18 CALLBACK REMOTE WITNESS FAILED update={update_id}')
+                    except Exception as _r18w_exc:
+                        log_error(f'R18 CALLBACK REMOTE WITNESS ERROR update={update_id}: {_r18w_exc}')
+                if not DELTA_TASK_POOL.submit_unique(f'callback-witness:{update_id}', _r18_callback_witness):
+                    try:
+                        threading.Thread(target=_r18_callback_witness, name=f'r18-cb-witness-{update_id}', daemon=True).start()
+                    except Exception:
+                        pass
+            elif not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
+                log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
+                return ('REMOTE DURABLE WITNESS FAILED', 503)
         _protect_pending_ui_timers_on_receipt(payload)
-        if update_type == 'callback_query':
-            try:
-                cq_raw = (payload or {}).get('callback_query') or {}
-                schedule_callback_receipt_ack(str(cq_raw.get('id') or ''), update_chat_id, delay=0.01)
-            except Exception as ack_exc:
-                log_error(f'CALLBACK RECEIPT ACK SCHEDULE: {ack_exc}')
-        try:
-            _r17_witness_schedule = globals().get('split_schedule_event_witness_v17')
-            if callable(_r17_witness_schedule):
-                _r17_witness_schedule(update_id, payload, update_chat_id, update_type)
-            else:
-                _r13_witness_fn = globals().get('split_witness_event_v268')
-                _r13_bg = globals().get('_split_event_bg_v268')
-                if callable(_r13_witness_fn) and callable(_r13_bg):
-                    _r13_bg(_r13_witness_fn, update_id, payload, update_chat_id, update_type)
-        except Exception as _r17_witness_exc:
-            log_error(f'R17 ASYNC EVENT WITNESS SCHEDULE update={update_id}: {_r17_witness_exc}')
-        if _r17_local_ms >= 80.0:
-            log_error(f'R17 FAST HOTPATH local_inbox_slow update={update_id} type={update_type} ms={_r17_local_ms:.1f}')
         if durable_update_processed(update_id):
             _v260_webhook_inbox_mark(update_id, 'done')
             with _MEGA_TASK_LOCK:
@@ -480,7 +528,13 @@ def telegram_webhook():
                 wait = started - update_enqueued_at
                 UPDATE_DISPATCHER.mark_started(update_id)
                 _v260_webhook_inbox_mark(update_id, 'external_running' if durable_cloud else 'running')
-                bot_journal('update_process_start', update_chat_id, f'update_id={update_id} type={update_type} queue_wait={wait:.3f}s durable={durable_cloud}')
+                if update_type == 'callback_query':
+                    try:
+                        UI_CLEANUP_TASK_POOL.submit(f'journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, update_type, wait, durable_cloud)
+                    except Exception:
+                        pass
+                else:
+                    _r19_update_journal_start(update_id, update_chat_id, update_type, wait, durable_cloud)
                 success = False
                 error_text = ''
                 durable_started = False
@@ -515,19 +569,9 @@ def telegram_webhook():
                     raise
                 finally:
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
-                    _r17_process_s = time.time() - started
-                    _r17_total_s = time.time() - update_enqueued_at
-                    bot_journal('update_process_done', update_chat_id, f'update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={_r17_process_s:.3f}s total={_r17_total_s:.3f}s success={success} durable={durable_cloud}')
-                    # Sparse production diagnostic: only slow work reaches Render logs.
-                    # This makes it obvious whether future lag is queueing, a handler,
-                    # or the tiny local inbox barrier without adding noise on fast clicks.
-                    if wait >= 0.15 or _r17_process_s >= 0.35:
-                        log_info(f'R17 FAST SLOW update={update_id} type={update_type} chat={update_chat_id} queue={wait:.3f}s handler={_r17_process_s:.3f}s total={_r17_total_s:.3f}s durable={durable_cloud}')
-                    if not durable_cloud:
-                        try:
-                            _lowram_release_chat(update_chat_id)
-                        except Exception as _lr_exc:
-                            log_error(f'LOWRAM post-update release: {_lr_exc}')
+                    # R19: release the callback/content worker immediately. Cleanup is
+                    # serialized on a separate pool and can never keep a UI key active.
+                    _r19_schedule_post_update_cleanup(update_id, update_chat_id, update_type, wait, started, success, durable_cloud)
             selector = globals().get('v163_webhook_select_lane')
             if callable(selector):
                 selected_pool, selected_key = selector(payload, update_type, update_key)
@@ -628,10 +672,13 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = ('• ⚡ R17 FAST-FIRST: webhook/callback ждёт только локальный SQLite; Redis, Worker, state shadow и config projection работают после ответа.\n'
-'• ♻️ R17 deploy-state: полный non-financial state + UI continuity зеркалируется компактной Redis-capsule с защитой от stale rolling deploy.\n'
-'• 🧩 Локальный восстановленный SQLite/Redis state теперь авторитетнее старого Telegram/MEGA config checkpoint — настройки не откатываются после deploy.\n'
-'• 🎨 Excel R16.1 и защита напоминаний R16.2 сохранены без изменений.')
+STARTUP_RELEASE_SUMMARY = ('• ⚡ R19: callback-кнопки разделены по конкретным окнам; одна зависшая кнопка больше не блокирует весь чат. FAST UI workers увеличены до 6.\n'
+'• 🧹 post-update LOW-RAM flush и служебный журнал вынесены из UI worker в отдельную cleanup-дорожку — окно освобождается сразу после обработчика.\n'
+'• 💾 R19 вводит единственный restore-authority: после Worker/Redis preboot старый Telegram/MEGA startup не может второй раз перезаписать SQLite более старым состоянием.\n'
+'• 🔒 Более новый split state сохраняется как authoritative; legacy deploy delta catch-up поверх него отключён.\n'
+'• 🔁 После full rebase FAST принимает ровно тот SQLite-снимок, который отдал HEAVY, как новую delta-baseline. Цикл 409 → полный GET /internal/split/state устранён.\n'
+'• 🚀 Полные state-transfer выполняются только при реальном rebase/restore; обычные изменения снова идут компактными page-delta на HEAVY.')
+
 
 def _v211_start_post_ready_runtime():
     """Start user-visible/background business schedulers only after true READY."""
@@ -697,7 +744,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (версия {VERSION} · R17).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (R19 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -715,6 +762,11 @@ def _v211_deploy_handoff_catchup(db_restored: bool) -> int:
     an exact Render SIGTERM/cut-over ordering; business durability remains protected by the
     existing write-before-execute tasks + delta/Data Constitution contracts.
     """
+    if str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R19', '') or '').strip().casefold() in {'1','true','yes','on'}:
+        # start_front already settled Worker/Redis handoff. Never re-apply legacy
+        # Telegram/MEGA deltas over the authoritative split database.
+        runtime_event('boot_handoff_r19_split_authority', 'legacy remote delta catch-up skipped')
+        return 0
     runtime_set_phase('boot_deploy_handoff', 'порт готов; финальная сверка remote delta/tasks перед READY')
     _v211_ensure_web_server_started('deploy-handoff')
     time.sleep(float(V211_DEPLOY_HANDOFF_GRACE_SECONDS))
@@ -758,6 +810,17 @@ def main():
     _local_primary = not (_tg_primary or _mega_primary)
     _render_selected = bool(_boot_profile == STORAGE_PROFILE_LOCAL_V237_1)
     _backend_name = 'Telegram durable' if _tg_primary else 'MEGA' if _mega_primary else 'Render local'
+    _split_preboot_authoritative_r19 = str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R19', '') or '').strip().casefold() in {'1','true','yes','on'}
+    _split_preboot_revision_r19 = str(os.getenv('SPLIT_PREBOOT_REVISION_R19', '') or '').strip()
+    if _split_preboot_authoritative_r19:
+        # R19: start_front has already chosen the freshest Worker/Redis/local SQLite.
+        # Disable every legacy boot source for this process so there is exactly one
+        # restore authority and no fresh->old rollback during bot.main().
+        _tg_primary = False
+        _mega_primary = False
+        _local_primary = True
+        _restore_backend = 'split'
+        _backend_name = 'Split Worker/Redis authoritative'
     try:
         runtime_event('boot_restore_backend_v246', f"selected_profile={_boot_profile}; restore_backend={_restore_backend}; evidence={json.dumps(globals().get('_STORAGE_PROFILE_REMOTE_EVIDENCE_V246', {}), ensure_ascii=False, default=str)[:1200]}")
     except Exception:
@@ -766,10 +829,10 @@ def main():
     if _render_selected and (_tg_primary or _mega_primary):
         globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
-    restored = False
-    db_restored = False
-    db_detail = ''
-    if LOWRAM_ENABLED:
+    restored = bool(_split_preboot_authoritative_r19)
+    db_restored = bool(_split_preboot_authoritative_r19)
+    db_detail = (f'R19 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:
                 if storage_mode_feature_enabled_v240('telegram_durable', 'boot_restore', recovery=_render_selected):
@@ -878,7 +941,7 @@ def main():
             _lowram_flush_all_hot(evict=True)
             with _RUNTIME_LOCK:
                 _RUNTIME_STATE['restore_ok'] = bool(not RESTORE_GUARD_ACTIVE)
-                _RUNTIME_STATE['restore_detail'] = 'Local Render state retained; no remote recovery source available'
+                _RUNTIME_STATE['restore_detail'] = (db_detail if _split_preboot_authoritative_r19 else 'Local Render state retained; no remote recovery source available')
     except Exception as e:
         log_error(f'main durable restore: {e}')
         restored = False

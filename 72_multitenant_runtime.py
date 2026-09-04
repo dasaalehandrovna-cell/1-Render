@@ -3142,55 +3142,18 @@ def _v149_send_or_edit_group(chat_id: int, text: str, old_message_id: int=0, rep
     if old_message_id:
         try:
             bot.edit_message_text(text, chat_id=int(chat_id), message_id=int(old_message_id), reply_markup=reply_markup)
-            try:
-                fn = globals().get('_v263_note_reminder_send_success')
-                if callable(fn):
-                    fn(int(chat_id), context='group_edit')
-            except Exception:
-                pass
             return (True, int(old_message_id))
         except Exception as exc:
             if 'message is not modified' in str(exc).lower():
                 return (True, int(old_message_id))
-            terminal = False
-            handled = False
-            try:
-                fn = globals().get('_v263_note_reminder_send_failure')
-                if callable(fn):
-                    action = str(fn(int(chat_id), exc, context='group_edit') or '')
-                    handled = bool(action)
-                    terminal = action == 'terminal'
-            except Exception:
-                pass
-            if terminal:
-                return (False, int(old_message_id or 0))
-            if not handled:
-                try:
-                    bot_journal('reminder_group_edit_error_v263', int(chat_id), str(exc)[:300], 'WARN')
-                except Exception:
-                    pass
     try:
         sent = bot.send_message(int(chat_id), text, reply_markup=reply_markup)
         new_id = int(sent.message_id)
-        try:
-            fn = globals().get('_v263_note_reminder_send_success')
-            if callable(fn):
-                fn(int(chat_id), context='group_send')
-        except Exception:
-            pass
         if old_message_id and old_message_id != new_id:
             _v149_delete_message(chat_id, old_message_id)
         return (True, new_id)
     except Exception as exc:
-        handled = False
-        try:
-            fn = globals().get('_v263_note_reminder_send_failure')
-            if callable(fn):
-                handled = bool(fn(int(chat_id), exc, context='group_send'))
-        except Exception:
-            pass
-        if not handled:
-            log_error(f'v149 reminder group send {chat_id}: {exc}')
+        log_error(f'v149 reminder group send {chat_id}: {exc}')
         return (False, int(old_message_id or 0))
 
 def _v149_send_individual(chat_id: int, reminder_id: int, cfg: dict, active_count: int) -> tuple[bool, int]:
@@ -3198,25 +3161,11 @@ def _v149_send_individual(chat_id: int, reminder_id: int, cfg: dict, active_coun
     try:
         sent = bot.send_message(int(chat_id), _v149_reminder_message_text(reminder_id, cfg, chat_id, active_count), reply_markup=_v207_reminder_complete_keyboard(reminder_id, cfg, chat_id))
         new_mid = int(sent.message_id)
-        try:
-            fn = globals().get('_v263_note_reminder_send_success')
-            if callable(fn):
-                fn(int(chat_id), context=f'individual:{int(reminder_id)}')
-        except Exception:
-            pass
         if old_mid and old_mid != new_mid:
             _v149_delete_message(chat_id, old_mid)
         return (True, new_mid)
     except Exception as exc:
-        handled = False
-        try:
-            fn = globals().get('_v263_note_reminder_send_failure')
-            if callable(fn):
-                handled = bool(fn(int(chat_id), exc, context=f'individual:{int(reminder_id)}'))
-        except Exception:
-            pass
-        if not handled:
-            log_error(f'v149 reminder {reminder_id} send {chat_id}: {exc}')
+        log_error(f'v149 reminder {reminder_id} send {chat_id}: {exc}')
         return (False, old_mid)
 
 def _v149_cleanup_legacy_group_state_once() -> bool:
@@ -3454,21 +3403,7 @@ def _v149_reminder_batch_job(force_chat_id: int | None=None) -> None:
                 cfg['delivery_acked_chats_v245'] = sorted(acked)
                 expected = _v245_expected_delivery_chats(cfg)
                 if expected and expected.issubset(acked):
-                    live_expected = set()
-                    for _cid in expected:
-                        try:
-                            suppressed_fn = globals().get('_v263_reminder_target_suppressed')
-                            if not (callable(suppressed_fn) and suppressed_fn(int(_cid))):
-                                live_expected.add(int(_cid))
-                        except Exception:
-                            live_expected.add(int(_cid))
-                    if live_expected:
-                        cfg['last_sent_at'] = now_dt.isoformat(timespec='seconds')
-                        cfg.pop('last_skipped_at_v263', None)
-                        cfg.pop('last_delivery_status_v263', None)
-                    else:
-                        cfg['last_skipped_at_v263'] = now_dt.isoformat(timespec='seconds')
-                        cfg['last_delivery_status_v263'] = 'all_targets_unavailable'
+                    cfg['last_sent_at'] = now_dt.isoformat(timespec='seconds')
                     cfg['delivery_cycle_v245'] = ''
                     cfg['delivery_acked_chats_v245'] = []
                     _reminder_advance_after_send(now_dt, cfg)
@@ -3477,8 +3412,7 @@ def _v149_reminder_batch_job(force_chat_id: int | None=None) -> None:
                     else:
                         _reminder_touch(cfg)
                     try:
-                        event_name = 'reminder_cycle_delivered_v245' if live_expected else 'reminder_cycle_skipped_unavailable_v263'
-                        bot_journal(event_name, None, f'reminder_id={rid} expected={len(expected)} live={len(live_expected)}')
+                        bot_journal('reminder_cycle_delivered_v245', None, f'reminder_id={rid} chats={len(expected)}')
                     except Exception:
                         pass
                 else:

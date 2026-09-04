@@ -1702,7 +1702,7 @@ except Exception:
 import contextlib as _v166_contextlib
 import threading as _v166_threading
 import time as _v166_time
-V166_WINDOW_UI_TASK_POOL = UI_TASK_POOL
+V166_WINDOW_UI_TASK_POOL = globals().get('FAST_UI_TASK_POOL', UI_TASK_POOL)
 V166_FORWARD_CONFIG_TASK_POOL = GENERAL_TASK_POOL
 V166_FINANCE_UI_TASK_POOL = UI_TASK_POOL
 V166_CONFIG_IO_TASK_POOL = GENERAL_TASK_POOL
@@ -1790,7 +1790,13 @@ def _v166_is_safe_window_callback(raw: str) -> bool:
     return any((token in low for token in ('menu', 'page', 'list', 'view', 'status', 'refresh', 'open')))
 
 def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update_key):
-    """v166: /start separate; forwarding pair by pair; safe UI by concrete message; finance serial."""
+    """R19 FAST callback routing.
+
+    Only callbacks that can mutate financial records remain chat-serial. Forward-pair
+    configuration keeps its pair lock. Every other callback is isolated by the concrete
+    Telegram window (chat_id + message_id), so one slow/stuck window cannot freeze every
+    button in the chat.
+    """
     if str(update_type) == 'message' and _v163_start_payload(payload):
         chat_id = _extract_update_chat_id(payload)
         return (START_UI_TASK_POOL, f'start:{(chat_id if chat_id is not None else update_key)}')
@@ -1799,9 +1805,13 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
         pair = _v166_forward_pair_from_callback(raw)
         if pair is not None:
             return (V166_FORWARD_CONFIG_TASK_POOL, f'pair:{pair[0]}:{pair[1]}')
-        if chat_id and message_id and _v166_is_safe_window_callback(raw):
-            return (V166_WINDOW_UI_TASK_POOL, f'window:{chat_id}:{message_id}')
-        return (UI_TASK_POOL, f'ui:{(chat_id if chat_id else update_key)}')
+        if _v166_is_finance_business_callback(raw):
+            return (UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
+        if _v166_is_safe_window_callback(raw) and chat_id and message_id:
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
+        if chat_id and message_id:
+            return (UI_TASK_POOL, f'window:{chat_id}:{message_id}')
+        return (UI_TASK_POOL, f'callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)
 
 def _v166_pair_lock(pair):
@@ -1889,7 +1899,10 @@ def _canon_execute_telegram_payload__001(payload: dict, update_id=None, update_c
                 lock_ctx = _v163_lock_for(_V163_START_EXEC_LOCKS, _V163_START_EXEC_LOCK_GUARD, int(update_chat_id))
             elif pair is not None:
                 lock_ctx = _v166_pair_lock(pair)
-            elif str(update_type) == 'callback_query' and source_message_id and _v166_is_safe_window_callback(callback_data):
+            elif str(update_type) == 'callback_query' and source_message_id and (not _v166_is_finance_business_callback(callback_data)):
+                # R19: non-financial UI is isolated per concrete Telegram window.
+                # Post-update cleanup is also offloaded, so this lock covers only the
+                # actual UI/business handler and cannot be held by backup/journal work.
                 lock_ctx = _v163_lock_for(_V163_WINDOW_EXEC_LOCKS, _V163_WINDOW_EXEC_LOCK_GUARD, (int(update_chat_id), int(source_message_id)))
             else:
                 lock_ctx = chat_lock_for(int(update_chat_id))
@@ -1918,8 +1931,23 @@ def _canon_execute_telegram_payload__001(payload: dict, update_id=None, update_c
     return execution_ctx
 
 def _canon_schedule_callback_receipt_ack__001(callback_id: str, chat_id=None, delay: float | None=None):
-    if callable(_V166_PREV_ACK):
-        return _V166_PREV_ACK(callback_id, chat_id, 0.05)
+    # R18: receipt ACK is a dedicated immediate lane, not a delayed scheduler job.
+    callback_id = str(callback_id or '')
+    if not callback_id:
+        return False
+    try:
+        with _CALLBACK_ACK_LOCK:
+            _callback_ack_prune_locked()
+            row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
+            row['chat_id'] = int(chat_id) if chat_id is not None else row.get('chat_id')
+            row['ts'] = time.time()
+            if row.get('answered') or row.get('inflight'):
+                return True
+        return bool(CALLBACK_ACK_TASK_POOL.submit_unique(f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id))
+    except Exception:
+        if callable(_V166_PREV_ACK):
+            return _V166_PREV_ACK(callback_id, chat_id, 0.03)
+        return False
 
 def _v166_pair_key(a: int, b: int):
     a, b = (int(a), int(b))
@@ -4703,6 +4731,63 @@ def _v228_google_next_daily(now_dt, mode: str):
     target_day = (nxt - _v167_timedelta(days=1)).strftime('%Y-%m-%d')
     return (nxt, target_day)
 
+def _v19_google_target_configured(target_chat_id: int) -> bool:
+    """Local-only preflight. Missing Google target is a configuration wait state, not a retry storm."""
+    try:
+        tid = str(_v149_tenant_id(target_chat_id=int(target_chat_id)))
+        gcfg = tenant_google_config(tid, create=False) if callable(globals().get('tenant_google_config')) else {}
+        raw = str((gcfg or {}).get('spreadsheet_id') or '').strip()
+        if (not raw) and tid == str(globals().get('TENANT_PLATFORM_ID') or ''):
+            raw = str(globals().get('_V149_PLATFORM_GOOGLE_SHEET') or _v167_os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '') or '').strip()
+        return bool(raw)
+    except Exception:
+        return False
+
+
+def _v19_google_suspend_missing_target(target_chat_id: int, cfg: dict | None=None, reason: str='schedule') -> bool:
+    cfg = cfg if isinstance(cfg, dict) else _v167_google_schedule_cfg(int(target_chat_id))
+    first = not bool(cfg.get('paused_missing_target_r19'))
+    if not first:
+        return False
+    cfg['paused_missing_target_r19'] = True
+    cfg['paused_missing_target_at_r19'] = now_local().isoformat(timespec='seconds')
+    cfg['pending_run_key'] = ''
+    cfg['pending_since_ts'] = 0.0
+    cfg['retry_count'] = 0
+    cfg['next_retry_ts'] = 0.0
+    cfg['last_error'] = 'Google Таблица не выбрана — автообновление ожидает настройки /google.'
+    _v167_persist_schedule(int(target_chat_id))
+    if first:
+        try:
+            bot_journal('google_auto_paused_missing_target_r19', int(target_chat_id), str(reason or 'schedule')[:160], 'WARN')
+        except Exception:
+            pass
+    return False
+
+
+def _v19_google_resume_if_target_ready(target_chat_id: int, cfg: dict | None=None) -> bool:
+    cfg = cfg if isinstance(cfg, dict) else _v167_google_schedule_cfg(int(target_chat_id), create=False)
+    if not isinstance(cfg, dict) or not cfg:
+        return False
+    if not _v19_google_target_configured(int(target_chat_id)):
+        return False
+    if cfg.pop('paused_missing_target_r19', None) is not None:
+        cfg.pop('paused_missing_target_at_r19', None)
+        if str(cfg.get('last_error') or '').startswith('Google Таблица не выбрана'):
+            cfg['last_error'] = ''
+        cfg['last_attempt_key'] = ''
+        cfg['pending_run_key'] = ''
+        cfg['pending_since_ts'] = 0.0
+        cfg['retry_count'] = 0
+        cfg['next_retry_ts'] = 0.0
+        _v167_persist_schedule(int(target_chat_id))
+        try:
+            bot_journal('google_auto_resumed_target_ready_r19', int(target_chat_id), 'Google target configured')
+        except Exception:
+            pass
+    return True
+
+
 def _v167_google_update_target(target_chat_id: int, reason: str='schedule', run_key: str='', target_day: str=''):
     target_chat_id = int(target_chat_id)
     run_key = str(run_key or '')
@@ -4713,6 +4798,9 @@ def _v167_google_update_target(target_chat_id: int, reason: str='schedule', run_
         _V167_GOOGLE_RUNNING.add(target_chat_id)
     cfg = _v167_google_schedule_cfg(target_chat_id)
     try:
+        if not _v19_google_target_configured(target_chat_id):
+            return _v19_google_suspend_missing_target(target_chat_id, cfg, reason)
+        _v19_google_resume_if_target_ready(target_chat_id, cfg)
         day = target_day or today_key()
         start_key, end_key = _v167_thuwed_bounds(day)
         tab = _v167_period_title(start_key, end_key)
@@ -4861,6 +4949,8 @@ def _v169_set_google_mode(target_chat_id: int, mode: str) -> dict:
 def _v169_google_settings_text(target_chat_id: int) -> str:
     target_chat_id = int(target_chat_id)
     cfg = _v167_google_schedule_cfg(target_chat_id)
+    if _v19_google_target_configured(target_chat_id):
+        _v19_google_resume_if_target_ready(target_chat_id, cfg)
     mode = _v169_google_mode(cfg)
     start_key, end_key = _v167_thuwed_bounds(today_key())
     tab = _v167_period_title(start_key, end_key)
@@ -4917,8 +5007,13 @@ def _v169_google_enqueue(target_chat_id: int, reason: str, run_key: str='', targ
     return False
 
 def _v169_google_change_fire(target_chat_id: int):
-    if _v169_google_mode(_v167_google_schedule_cfg(int(target_chat_id), create=False)) != 'change':
+    cfg = _v167_google_schedule_cfg(int(target_chat_id), create=False)
+    if _v169_google_mode(cfg) != 'change':
         return
+    if not _v19_google_target_configured(int(target_chat_id)):
+        _v19_google_suspend_missing_target(int(target_chat_id), cfg, 'finance-change')
+        return
+    _v19_google_resume_if_target_ready(int(target_chat_id), cfg)
     if not _v169_google_enqueue(int(target_chat_id), 'finance-change'):
         try:
             DELAYED_SCHEDULER.schedule(f'google-change-retry:{int(target_chat_id)}', 15.0, _v169_google_change_fire, int(target_chat_id))
@@ -4980,6 +5075,10 @@ def _v167_google_scheduler_tick():
             mode = _v169_google_mode(cfg)
             if mode in {'manual', 'change'}:
                 continue
+            if not _v19_google_target_configured(int(cid)):
+                _v19_google_suspend_missing_target(int(cid), cfg, 'scheduler')
+                continue
+            _v19_google_resume_if_target_ready(int(cid), cfg)
             run_key = ''
             reason = mode
             target_day = date_key

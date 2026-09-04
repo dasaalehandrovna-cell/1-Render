@@ -1,0 +1,30 @@
+R19 FAST CALLBACK + AUTHORITATIVE RESTORE
+
+Release package: R19 (internal compatibility line remains vys-262).
+
+ROOT CAUSES CONFIRMED FROM 2026-09-04 LOG
+1. Callback update tickets remained `queued` for 20-600+ seconds. R18 ACKed Telegram quickly, but the business callback still used a chat-wide keyed lane for many callback families. A completed callback could also keep that key occupied while post-update LOW-RAM flush/journal work ran.
+2. Restore had more than one authority. start_front restored Worker/Redis state, then bot.main could execute a second legacy Telegram/MEGA boot restore/delta pass and replace it with an older image.
+3. After a full HEAVY rebase, FAST kept the pre-rebase delta baseline. Every next state change then generated a base mismatch and triggered another full `/internal/split/state` download. The provided log shows 23.40 MB from this endpoint in about ten minutes.
+
+R19 FIXES
+- Lightweight navigation/window callbacks use a dedicated FAST UI pool and are keyed by concrete Telegram window (chat_id + message_id). Financial record mutations remain chat-serial; forwarding configuration remains pair-serial; heavier/unknown callbacks stay outside the FAST navigation lane.
+- FAST navigation has 4 dedicated workers; regular UI has 6. Callback ACK has 2 dedicated workers. Post-update cleanup has 2 dedicated workers.
+- LOW-RAM eviction/SQLite cold flush and end-of-update journal work are offloaded after UPDATE_DISPATCHER.finish, so they cannot keep the UI key active.
+- start_front sets `SPLIT_PREBOOT_AUTHORITATIVE_R19=1` after freshness arbitration. bot.main disables legacy Telegram/MEGA boot restore and legacy deploy-delta catch-up when this fence is present.
+- Process-level USER_STATE seq fence rejects a later lower `user_state_shadow_v265.seq`.
+- `/internal/split/state` promotes the exact transactionally consistent SQLite image served to HEAVY as FAST's new acknowledged delta baseline. Normal changes return to page deltas instead of repeated full GETs.
+- HEAVY version and transport markers updated to R19; heavy fetch identifies itself as an explicit rebase.
+- Missing Google Sheet target is treated as a configuration-wait state: automatic Thu-Wed/change sync pauses once without 60/180/600-second retry spam and resumes automatically after a table is configured.
+
+DEPLOY ORDER
+1. Deploy `2_HEAVY_R19...zip`.
+2. After HEAVY is live, deploy `1_FAST_R19...zip`.
+
+EXPECTED LOG SIGNALS
+- `[SPLIT FRONT] R19 authoritative preboot DB revision=...` before bot.py starts.
+- Owner notice: `Бот запущен и READY (R19 · версия выс-262)`.
+- `CONTINUITY R19 restored ...`.
+- No sequence of `USER_STATE ... seq=<newer>` followed by a lower seq being applied; lower seq is rejected if encountered.
+- `/internal/split/state` should no longer appear every few seconds. After any one real rebase, subsequent syncs should use `/internal/delta`.
+- `DISPATCHER STUCK ... type=callback_query state=queued` should not cascade across all buttons in the chat.

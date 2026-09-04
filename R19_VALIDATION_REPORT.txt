@@ -1,0 +1,34 @@
+R19 VALIDATION REPORT
+
+Scope verified against the supplied 2026-09-04 runtime log:
+- callback queue isolation / FAST UI lane
+- callback post-processing release
+- authoritative deploy restore / stale USER_STATE rejection
+- full-rebase -> delta baseline handoff
+- missing Google target retry suppression
+- retained R17 terminal-chat lifecycle
+- retained R18 stale/new restore arbitration
+- v262 FAST UI
+- v262 exact-once
+- v262 linked finance
+
+Passed checks:
+1. Python compile: all FAST + HEAVY top-level Python modules.
+2. r19_fast_callback_authoritative_restore_smoke.py — PASS.
+3. r19_runtime_lane_regression.py — PASS; deliberately blocked regular UI does not block FAST navigation lane.
+4. r19_google_missing_target_regression.py — PASS; missing target pause is idempotent and configured target is detected locally.
+5. r18_instant_restore_smoke.py — PASS, including stale restore rejection incoming=100 < local=200.
+6. r17_terminal_restore_smoke.py — PASS.
+7. v262_fast_ui_smoke.py — PASS.
+8. v262_exact_once_regression.py — PASS.
+9. v262_linked_finance_smoke.py — PASS.
+10. modules_manifest.json regenerated after final source edits and verified before ZIP packaging.
+
+Expected production signals after deploy:
+- [SPLIT FRONT] R19 authoritative preboot DB revision=...
+- CONTINUITY R19 restored ...
+- Бот запущен и READY (R19 · версия выс-262)
+- no lower USER_STATE seq applied after a higher seq
+- /internal/split/state only on real rebase/recovery, then normal /internal/delta
+- no cascading DISPATCHER STUCK queued callbacks for light navigation
+- google_auto_paused_missing_target_r19 at most once while a table is absent
