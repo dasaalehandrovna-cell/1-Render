@@ -1,4 +1,4 @@
-# v262
+# v263
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def _v240_env_int(name: str, default: int, low: int=1, high: int=64) -> int:
@@ -128,7 +128,22 @@ def _v240_priority_exit():
         _V240_PAR_CV.notify_all()
 
 def mega_parallel_execute_v240(exe: str, cmd: str, args, timeout_value):
-    """Execute MEGAcmd with bounded parallelism and per-shard serialization."""
+    """Execute MEGAcmd with bounded parallelism and per-shard serialization.
+
+    v263: this is also a last-ditch MEGA subprocess gate so a direct legacy
+    caller cannot bypass the coordinator in 10_mega_runtime.py.
+    """
+    _gate_text = ' '.join(str(x or '') for x in list(args or [])).casefold()
+    _critical = any(x in _gate_text for x in ('/tasks/', '/ledger/finance', 'storage_control', '/control/'))
+    _gate_category = 'mega_critical' if _critical else 'mega_backup'
+    _gate = globals().get('external_io_allowed_v263') or globals().get('external_access_allowed_v233')
+    if callable(_gate):
+        try:
+            _ok = bool(_gate(_gate_category, f'parallel:{cmd}:{_gate_text[:120]}') if getattr(_gate, '__name__', '') == 'external_io_allowed_v263' else _gate(_gate_category))
+        except TypeError:
+            _ok = bool(_gate(_gate_category))
+        if not _ok:
+            raise RuntimeError(f'external_io_blocked_v263:{_gate_category}:{str(cmd or "")}')
     if not MEGA_SHARDED_STORAGE_V240:
         with MEGA_COMMAND_LOCK:
             return subprocess.run([exe] + list(args or []), capture_output=True, text=True, timeout=timeout_value)
@@ -837,4 +852,4 @@ try:
     runtime_event('mega_sharded_parallel_v240', f"enabled={int(MEGA_SHARDED_STORAGE_V240)}; global={MEGA_PARALLEL_MAX_V240}; lanes={json.dumps(_V240_LANE_LIMITS, separators=(',', ':'))}", 'INFO')
 except Exception:
     pass
-# v262
+# v263

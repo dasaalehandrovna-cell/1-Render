@@ -1,4 +1,4 @@
-# v262
+# v263
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
 _EXPENSE_INBOX_LOCK = threading.RLock()
@@ -1232,4 +1232,325 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-# v262
+
+# v263 external I/O coordinator -------------------------------------------------
+EXTERNAL_IO_PROFILE_KEY_V263 = 'external_io_profile_v263'
+EXTERNAL_IO_SEGMENTS_KEY_V263 = 'external_io_segments_v263'
+EXTERNAL_IO_QUARANTINE_KEY_V263 = 'external_io_exit_quarantine_v263'
+EXTERNAL_IO_BOOT_ENV_V263 = 'EXTERNAL_IO_BOOT_MODE'
+EXTERNAL_IO_NORMAL_V263 = 'normal'
+EXTERNAL_IO_LOCAL_LAB_V263 = 'local_lab'
+EXTERNAL_IO_SAFE_V263 = 'safe_isolation'
+EXTERNAL_IO_SEGMENT_DEFAULTS_V263 = {
+    'mega_critical': True,
+    'mega_backup': True,
+    'google': True,
+    'currency': True,
+    'self_http': True,
+    'peer_http': True,
+    'other_http': True,
+}
+_EXTERNAL_IO_LOCK_V263 = threading.RLock()
+_EXTERNAL_IO_STATS_V263 = {
+    'blocked': {k: 0 for k in EXTERNAL_IO_SEGMENT_DEFAULTS_V263},
+    'outbound': {'telegram': 0, **{k: 0 for k in EXTERNAL_IO_SEGMENT_DEFAULTS_V263}},
+    'last_blocked': {},
+    'mode_changed_at': '',
+}
+
+def _external_io_now_v263() -> str:
+    try:
+        return now_local().isoformat(timespec='seconds')
+    except Exception:
+        return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+def _external_io_profile_norm_v263(value) -> str:
+    raw = str(value or '').strip().casefold().replace('-', '_').replace(' ', '_')
+    if raw in {'local', 'lab', 'local_lab', 'locallab', 'test_local'}:
+        return EXTERNAL_IO_LOCAL_LAB_V263
+    if raw in {'safe', 'safe_isolation', 'isolation', 'safe_offline'}:
+        return EXTERNAL_IO_SAFE_V263
+    return EXTERNAL_IO_NORMAL_V263
+
+def _external_io_category_v263(category: str) -> str:
+    cat = str(category or 'other_http').strip().casefold()
+    aliases = {
+        'mega': 'mega_backup', 'mega_put': 'mega_backup', 'mega_get': 'mega_backup',
+        'mega_control': 'mega_critical', 'telegram_backup': 'mega_backup',
+        'telegram_durable': 'mega_backup', 'backup_channel': 'mega_backup',
+        'redis': 'peer_http', 'worker_http': 'peer_http', 'watchdog': 'peer_http',
+        'usd': 'currency', 'currency_api': 'currency', 'google_api': 'google',
+        'http': 'other_http', 'web_http': 'other_http',
+    }
+    return aliases.get(cat, cat)
+
+def external_io_boot_override_v263() -> str:
+    raw = str(os.getenv(EXTERNAL_IO_BOOT_ENV_V263, '') or '').strip()
+    if not raw:
+        return ''
+    normalized = _external_io_profile_norm_v263(raw)
+    # Explicit ENV is a hard startup/runtime override, including explicit normal.
+    return normalized
+
+def external_io_profile_v263() -> str:
+    env_mode = external_io_boot_override_v263()
+    if env_mode:
+        return env_mode
+    try:
+        return _external_io_profile_norm_v263(_root_settings().get(EXTERNAL_IO_PROFILE_KEY_V263) or EXTERNAL_IO_NORMAL_V263)
+    except Exception:
+        return EXTERNAL_IO_NORMAL_V263
+
+def external_io_segments_v263() -> dict:
+    try:
+        root = _root_settings()
+        raw = root.setdefault(EXTERNAL_IO_SEGMENTS_KEY_V263, {})
+        if not isinstance(raw, dict):
+            raw = {}
+            root[EXTERNAL_IO_SEGMENTS_KEY_V263] = raw
+        for key, default in EXTERNAL_IO_SEGMENT_DEFAULTS_V263.items():
+            raw.setdefault(key, bool(default))
+        return {k: bool(raw.get(k, v)) for k, v in EXTERNAL_IO_SEGMENT_DEFAULTS_V263.items()}
+    except Exception:
+        return dict(EXTERNAL_IO_SEGMENT_DEFAULTS_V263)
+
+def external_io_exit_quarantine_v263() -> bool:
+    try:
+        return bool(_root_settings().get(EXTERNAL_IO_QUARANTINE_KEY_V263, False))
+    except Exception:
+        return False
+
+def _external_io_record_block_v263(category: str, source: str='', reason: str='') -> None:
+    cat = _external_io_category_v263(category)
+    if cat == 'telegram':
+        return
+    with _EXTERNAL_IO_LOCK_V263:
+        blocked = _EXTERNAL_IO_STATS_V263.setdefault('blocked', {})
+        blocked[cat] = int(blocked.get(cat, 0) or 0) + 1
+        _EXTERNAL_IO_STATS_V263['last_blocked'] = {
+            'category': cat,
+            'time': _external_io_now_v263(),
+            'source': str(source or '')[:180],
+            'reason': str(reason or '')[:240],
+        }
+    try:
+        bot_journal('EXTERNAL_IO_BLOCKED', None, f'category={cat}; source={str(source)[:140]}; reason={str(reason)[:180]}', 'INFO')
+    except Exception:
+        pass
+
+def external_io_note_outbound_v263(category: str, source: str='') -> None:
+    cat = _external_io_category_v263(category)
+    with _EXTERNAL_IO_LOCK_V263:
+        out = _EXTERNAL_IO_STATS_V263.setdefault('outbound', {})
+        out[cat] = int(out.get(cat, 0) or 0) + 1
+
+def external_io_allowed_v263(category: str='other_http', source: str='', *, record: bool=True) -> bool:
+    cat = _external_io_category_v263(category)
+    if cat in {'telegram', 'local', 'sqlite', 'memory', 'render_inbound'}:
+        return True
+    if cat not in EXTERNAL_IO_SEGMENT_DEFAULTS_V263:
+        cat = 'other_http'
+    profile = external_io_profile_v263()
+    segments = external_io_segments_v263()
+    reason = ''
+    allowed = True
+    if profile in {EXTERNAL_IO_LOCAL_LAB_V263, EXTERNAL_IO_SAFE_V263}:
+        allowed = False
+        reason = profile
+    elif not bool(segments.get(cat, True)):
+        allowed = False
+        reason = f'segment_off:{cat}'
+    elif external_io_exit_quarantine_v263() and cat in {'mega_critical', 'mega_backup', 'peer_http'}:
+        allowed = False
+        reason = 'normal_exit_quarantine'
+    if not allowed and record:
+        _external_io_record_block_v263(cat, source, reason)
+    return allowed
+
+def external_io_status_v263() -> dict:
+    with _EXTERNAL_IO_LOCK_V263:
+        stats = json.loads(json.dumps(_EXTERNAL_IO_STATS_V263, ensure_ascii=False, default=str))
+    profile = external_io_profile_v263()
+    seg = external_io_segments_v263()
+    return {
+        'profile': profile,
+        'boot_override': external_io_boot_override_v263(),
+        'segments': seg,
+        'effective': {k: external_io_allowed_v263(k, 'status_probe', record=False) for k in EXTERNAL_IO_SEGMENT_DEFAULTS_V263},
+        'telegram': True,
+        'quarantine': external_io_exit_quarantine_v263(),
+        **stats,
+    }
+
+def _external_io_save_local_v263(reason: str) -> None:
+    try:
+        save_data(data, root_only=True)
+    except TypeError:
+        save_data(data)
+    except Exception as exc:
+        try: log_error(f'external io local save v263 {reason}: {exc}')
+        except Exception: pass
+
+def _external_io_worker_control_v263(profile: str, segments: dict | None=None) -> bool:
+    """One control call while the previous profile still permits peer traffic."""
+    base = str(os.getenv('PEER_SERVICE_URL', '') or '').strip().rstrip('/')
+    secret = str(os.getenv('PEER_SHARED_SECRET', '') or '').strip()
+    if not base or not secret:
+        return False
+    if not base.startswith(('http://', 'https://')):
+        base = 'https://' + base
+    try:
+        response = requests.post(base + '/internal/isolation/control', json={'profile': _external_io_profile_norm_v263(profile), 'segments': dict(segments or external_io_segments_v263())}, headers={'X-Peer-Secret': secret, 'User-Agent': 'vys-263-isolation-control'}, timeout=4)
+        return 200 <= int(response.status_code) < 300
+    except Exception:
+        return False
+
+def set_external_io_profile_v263(profile: str, *, exit_strategy: str='', changed_by: int | None=None) -> str:
+    target = _external_io_profile_norm_v263(profile)
+    forced = external_io_boot_override_v263()
+    if forced and target != forced:
+        return external_io_profile_v263()
+    with _EXTERNAL_IO_LOCK_V263:
+        previous = external_io_profile_v263()
+        # Propagate isolation before closing the peer gate.
+        if target in {EXTERNAL_IO_LOCAL_LAB_V263, EXTERNAL_IO_SAFE_V263} and previous == EXTERNAL_IO_NORMAL_V263:
+            _external_io_worker_control_v263(target, external_io_segments_v263())
+        root = _root_settings()
+        root[EXTERNAL_IO_PROFILE_KEY_V263] = target
+        if target in {EXTERNAL_IO_LOCAL_LAB_V263, EXTERNAL_IO_SAFE_V263}:
+            root[EXTERNAL_IO_QUARANTINE_KEY_V263] = False
+        elif previous in {EXTERNAL_IO_LOCAL_LAB_V263, EXTERNAL_IO_SAFE_V263}:
+            if str(exit_strategy or '').strip().casefold() == 'promote_local':
+                root[EXTERNAL_IO_QUARANTINE_KEY_V263] = False
+            else:
+                # Returning to canonical remote state must never silently push the lab DB.
+                root[EXTERNAL_IO_QUARANTINE_KEY_V263] = True
+        _EXTERNAL_IO_STATS_V263['mode_changed_at'] = _external_io_now_v263()
+        _external_io_save_local_v263('mode_change')
+        if target == EXTERNAL_IO_NORMAL_V263:
+            _external_io_worker_control_v263(target, external_io_segments_v263())
+    try:
+        bot_journal('EXTERNAL_IO_MODE_CHANGED', int(changed_by or OWNER_ID or 0) or None, f'{previous}->{target}; exit={exit_strategy or "none"}; quarantine={int(external_io_exit_quarantine_v263())}')
+    except Exception:
+        pass
+    if target in {EXTERNAL_IO_LOCAL_LAB_V263, EXTERNAL_IO_SAFE_V263}:
+        try:
+            _external_pause_schedulers_v233()
+        except Exception:
+            pass
+    elif str(exit_strategy or '').strip().casefold() == 'promote_local':
+        try:
+            fn = globals().get('_external_resume_services_v233')
+            if callable(fn): fn()
+        except Exception:
+            pass
+    return target
+
+def clear_external_io_exit_quarantine_v263(*, promote_local: bool=False) -> bool:
+    root = _root_settings()
+    root[EXTERNAL_IO_QUARANTINE_KEY_V263] = False
+    _external_io_save_local_v263('exit_quarantine_clear')
+    if promote_local:
+        try:
+            fn = globals().get('_external_resume_services_v233')
+            if callable(fn): fn()
+        except Exception:
+            pass
+    return True
+
+def set_external_io_segment_v263(segment: str, enabled: bool, changed_by: int | None=None) -> bool:
+    key = _external_io_category_v263(segment)
+    if key not in EXTERNAL_IO_SEGMENT_DEFAULTS_V263:
+        return False
+    root = _root_settings()
+    row = root.setdefault(EXTERNAL_IO_SEGMENTS_KEY_V263, {})
+    if not isinstance(row, dict):
+        row = {}; root[EXTERNAL_IO_SEGMENTS_KEY_V263] = row
+    row[key] = bool(enabled)
+    _external_io_save_local_v263('segment_change')
+    try:
+        bot_journal('EXTERNAL_IO_SEGMENT_CHANGED', int(changed_by or OWNER_ID or 0) or None, f'{key}={int(bool(enabled))}')
+    except Exception:
+        pass
+    if external_io_profile_v263() == EXTERNAL_IO_NORMAL_V263:
+        _external_io_worker_control_v263(EXTERNAL_IO_NORMAL_V263, external_io_segments_v263())
+    return bool(row[key])
+
+def external_io_profile_label_v263(profile: str | None=None) -> str:
+    p = _external_io_profile_norm_v263(profile or external_io_profile_v263())
+    return {EXTERNAL_IO_NORMAL_V263:'🌍 NORMAL', EXTERNAL_IO_LOCAL_LAB_V263:'🧪 LOCAL LAB', EXTERNAL_IO_SAFE_V263:'🛡 SAFE ISOLATION'}[p]
+
+def local_witness_prepare_v263(update_id, payload: dict, chat_id=None, update_type: str='other', reason: str='') -> bool:
+    if external_io_profile_v263() != EXTERNAL_IO_LOCAL_LAB_V263:
+        return False
+    key = str(update_id)
+    try:
+        raw = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
+        row = {'state':'pending','update_id':key,'chat_id':chat_id,'update_type':str(update_type or 'other')[:40], 'reason':str(reason or '')[:160], 'payload_sha256':hashlib.sha256(raw.encode('utf-8')).hexdigest(), 'created_at':_external_io_now_v263(), 'test_only':True, 'remote_durable':False}
+        SQLITE.set_meta('local_witness_v263', key, row)
+        _root_settings()['external_io_local_lab_dirty_v263'] = True
+        _external_io_save_local_v263('local_witness')
+        bot_journal('LOCAL_WITNESS_USED', int(chat_id or 0) or None, f'update={key}; reason={str(reason)[:120]}; remote_durable=0')
+        return True
+    except Exception as exc:
+        try: log_error(f'LOCAL WITNESS prepare {key}: {exc}')
+        except Exception: pass
+        return False
+
+def local_witness_begin_v263(update_id) -> bool:
+    key = str(update_id)
+    try:
+        row = SQLITE.get_meta('local_witness_v263', key, {}) or {}
+        if not isinstance(row, dict) or not row:
+            return False
+        row['state']='running'; row['started_at']=_external_io_now_v263(); SQLITE.set_meta('local_witness_v263', key, row); return True
+    except Exception:
+        return False
+
+def local_witness_finish_v263(update_id, success: bool, error: str='') -> bool:
+    key = str(update_id)
+    try:
+        row = SQLITE.get_meta('local_witness_v263', key, {}) or {'update_id':key,'test_only':True,'remote_durable':False}
+        row['state']='done' if success else 'failed'; row['finished_at']=_external_io_now_v263(); row['error']=str(error or '')[:300]
+        SQLITE.set_meta('local_witness_v263', key, row); return True
+    except Exception:
+        return False
+
+def safe_isolation_block_operation_v263(chat_id, reason: str='remote durability required') -> None:
+    try:
+        bot_journal('SAFE_ISOLATION_OPERATION_BLOCKED', int(chat_id or 0) or None, str(reason or '')[:240], 'WARN')
+    except Exception:
+        pass
+
+# Backward-compatible final gate used by all older callers.
+_EXTERNAL_ACCESS_ALLOWED_V233_STORAGE_ONLY = external_access_allowed_v233
+
+def external_access_allowed_v233(category: str='other_http') -> bool:
+    cat = _external_io_category_v263(category)
+    # v263 is the last physical gate. Recovery authority may bypass only the older
+    # Render-only storage profile while the v263 profile itself is NORMAL.
+    if not external_io_allowed_v263(cat, f'legacy_gate:{category}'):
+        return False
+    if bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)) and cat in {'mega_critical', 'mega_backup'}:
+        return True
+    # Preserve the old "Только Render" storage switch exactly as a subordinate process gate.
+    if external_local_only_v233_enabled() and cat in {'mega_critical', 'mega_backup'}:
+        _external_io_record_block_v263(cat, f'legacy_storage_profile:{category}', 'legacy_render_only_storage')
+        return False
+    return True
+
+def external_block_log_v233(category: str, operation: str='') -> None:
+    # The final gate already accounts the blocked attempt. Keep this legacy hook
+    # journal-only so old callers do not double-increment v263 counters.
+    key = f"{str(category or '')}:{str(operation or '')[:80]}"
+    now_m = time.monotonic()
+    try:
+        if now_m - float(_EXTERNAL_BLOCK_LOG_V233.get(key, 0.0) or 0.0) < 60.0:
+            return
+        _EXTERNAL_BLOCK_LOG_V233[key] = now_m
+        bot_journal('external_call_blocked_v233', None, f'category={category}; operation={str(operation)[:160]}', 'INFO')
+    except Exception:
+        pass
+# end v263 external I/O coordinator -------------------------------------------
+
+# v263

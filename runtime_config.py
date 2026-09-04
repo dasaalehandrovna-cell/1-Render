@@ -1,4 +1,5 @@
-"""vys-262 R14 internal runtime configuration.
+# v263
+"""vys-263 R17 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,14 +14,14 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r16-fast-finance-color-xlsx"
+CONFIG_VERSION = "vys-263-r17-local-lab-hybrid-guard"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
     # Process / role
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
-    "RENDER_TELEGRAM_ONLY": "1",
+    "RENDER_TELEGRAM_ONLY": "0",
     "MALLOC_ARENA_MAX": "2",
 
     # Small user-facing runtime constants
@@ -62,7 +63,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     # for emergency boot restore, but normal MEGA runtime stays disabled here.
     "MEGA_ENABLED": "0",
     "MEGA_AUTORESTORE": "0",
-    "TG_DURABLE_ENABLED": "0",
+    "TG_DURABLE_ENABLED": "1",
     "MEGA_TIMEOUT": "120",
     "MEGA_LOGIN_TIMEOUT": "120",
     "SPLIT_GOOGLE_REMOTE_ENABLED": "1",
@@ -122,3 +123,4 @@ def install_internal_runtime_config(role: str) -> Dict[str, str]:
 def internal_runtime_config(role: str) -> Dict[str, str]:
     role = str(role or "").strip().lower()
     return dict(FRONT_INTERNAL_ENV if role == "front" else WORKER_INTERNAL_ENV if role == "worker" else {})
+# v263

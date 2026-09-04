@@ -1,4 +1,4 @@
-# v262
+# v263
 import os
 import io
 import json
@@ -357,18 +357,30 @@ def _traffic_classify_http(url: str, method: str) -> tuple[str, str]:
     render_host = str(os.getenv('RENDER_EXTERNAL_HOSTNAME', '') or '').casefold()
     if render_host and host == render_host:
         return ('self_http', f'self:{method.upper()}:{last}')
-    peer_url = str(os.getenv('PEER_KEEPALIVE_URL', '') or '')
+    peer_urls = [
+        str(os.getenv('PEER_KEEPALIVE_URL', '') or ''),
+        str(os.getenv('PEER_SERVICE_URL', '') or ''),
+        str(os.getenv('WORKER_SERVICE_URL', '') or ''),
+        str(os.getenv('FRONT_SERVICE_URL', '') or ''),
+    ]
     try:
         peer_fn = globals().get('keepalive_peer_target_url')
         if callable(peer_fn):
-            peer_url = str(peer_fn() or peer_url)
+            peer_urls.append(str(peer_fn() or ''))
     except Exception:
         pass
-    try:
-        peer_host = (urllib.parse.urlsplit(peer_url).hostname or '').casefold() if peer_url else ''
-    except Exception:
-        peer_host = ''
-    if peer_host and host == peer_host:
+    peer_hosts = set()
+    for _peer_url in peer_urls:
+        if not _peer_url:
+            continue
+        try:
+            _candidate = _peer_url if '://' in _peer_url else ('https://' + _peer_url)
+            _peer_host = (urllib.parse.urlsplit(_candidate).hostname or '').casefold()
+            if _peer_host:
+                peer_hosts.add(_peer_host)
+        except Exception:
+            pass
+    if host and host in peer_hosts:
         return ('peer_http', f'peer:{method.upper()}:{last}')
     rate_url = str(globals().get('USD_RATE_URL') or '')
     if 'dolarapi.com' in host or (rate_url and str(url or '') == rate_url):
@@ -388,8 +400,14 @@ def _install_requests_traffic_audit():
         category, operation = _traffic_classify_http(url, str(method))
         err = False
         response = None
-        gate = globals().get('external_access_allowed_v233')
-        if callable(gate) and (not gate(category)):
+        gate = globals().get('external_io_allowed_v263') or globals().get('external_access_allowed_v233')
+        _gate_ok = True
+        if callable(gate):
+            try:
+                _gate_ok = bool(gate(category, operation) if getattr(gate, '__name__', '') == 'external_io_allowed_v263' else gate(category))
+            except TypeError:
+                _gate_ok = bool(gate(category))
+        if not _gate_ok:
             try:
                 traffic_audit_record(category, f'blocked:{operation}', 0, 0, False)
                 logger_fn = globals().get('external_block_log_v233')
@@ -400,6 +418,11 @@ def _install_requests_traffic_audit():
             raise RuntimeError(f'external_local_only_v233:{category}:{operation}')
         try:
             response = original(self, method, url, *args, **kwargs)
+            try:
+                _note = globals().get('external_io_note_outbound_v263')
+                if callable(_note): _note(category, operation)
+            except Exception:
+                pass
             return response
         except Exception:
             err = True
@@ -1064,7 +1087,7 @@ BACKUP_CHAT_ID = os.getenv('BACKUP_CHAT_ID', '').strip()
 if not BOT_TOKEN:
     raise RuntimeError('B_T is not set')
 RELEASE_SERIES = 'выс'
-RELEASE_NUMBER = 262
+RELEASE_NUMBER = 263
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
 BOT_DISPLAY_NAME = VERSION
@@ -7774,4 +7797,4 @@ try:
     WINDOW_MARKER_CONSTANTS.setdefault('journal_name_reset:*', 'Ф89')
 except Exception:
     pass
-# v262
+# v263

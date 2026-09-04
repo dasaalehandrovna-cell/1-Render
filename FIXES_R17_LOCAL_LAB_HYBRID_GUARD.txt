@@ -1,0 +1,11 @@
+R17 / v263 LOCAL LAB + SAFE ISOLATION + HYBRID STORAGE REGRESSION GUARD
+
+- New system profile: NORMAL / LOCAL LAB / SAFE ISOLATION.
+- Owner-only isolation control window with independent MEGA critical, MEGA backup, Google, Currency, Self HTTP, Peer/Watchdog and Other HTTP segments.
+- Existing process switches are preserved; effective access is profile AND segment AND historical process state.
+- requests.Session is the last HTTP hard gate; MEGAcmd has a final subprocess gate; direct Front Redis paths are gated as peer storage.
+- EXTERNAL_IO_BOOT_MODE is honored by start_front.py before Worker/Redis/MEGA startup restore.
+- LOCAL LAB critical operations use LOCAL witness in SQLite and are explicitly marked test-only / not remote durable.
+- SAFE ISOLATION blocks critical remote-durability operations before business execution and tells the user.
+- Leaving isolation does not automatically upload experimental local state. Remote-return keeps storage/peer in quarantine; local promotion is an explicit owner action.
+- Existing v262 two-Render HOT/secondary architecture, stable slots, generation/config/data guards and finance hot-path are retained.

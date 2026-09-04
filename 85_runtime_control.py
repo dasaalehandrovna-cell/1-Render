@@ -1,4 +1,4 @@
-# v262
+# v263
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -2447,7 +2447,7 @@ _V233_INFO_KB_PREV = _v229_build_info_keyboard
 def external_local_only_status_text_v233() -> str:
     active = storage_profile_v237_1() == STORAGE_PROFILE_LOCAL_V237_1
     env_forced = str(os.getenv('RENDER_TELEGRAM_ONLY', '') or '').strip().casefold() in {'1', 'true', 'yes', 'on', 'вкл'}
-    return (f"🏠 ТОЛЬКО RENDER · выс-262\n\nПрофиль: {('✅ АКТИВЕН' if active else '⬜ не выбран')}" + (' · Render ENV' if env_forced else '') + '\n📡 Telegram backup-канал: ⬜ ВЫКЛ\n☁️ MEGA backup: ⬜ ВЫКЛ\n✅ Обычный Telegram API / команды / окна: ВКЛ\n✅ Google / курс валют / пользовательские функции: ВКЛ\n\nНа старте разрешено только чтение источника восстановления. После READY оба remote backup-контура остаются выключены. MEGA storage_control.json используется как маленький служебный маркер выбранного режима.')[:3900]
+    return (f"🏠 ТОЛЬКО RENDER · выс-263\n\nПрофиль: {('✅ АКТИВЕН' if active else '⬜ не выбран')}" + (' · Render ENV' if env_forced else '') + '\n📡 Telegram backup-канал: ⬜ ВЫКЛ\n☁️ MEGA backup: ⬜ ВЫКЛ\n✅ Обычный Telegram API / команды / окна: ВКЛ\n✅ Google / курс валют / пользовательские функции: ВКЛ\n\nНа старте разрешено только чтение источника восстановления. После READY оба remote backup-контура остаются выключены. MEGA storage_control.json используется как маленький служебный маркер выбранного режима.')[:3900]
 
 def external_local_only_keyboard_v233():
     kb = types.InlineKeyboardMarkup()
@@ -2483,7 +2483,7 @@ def _v233_build_info_keyboard(chat_id: int):
 try:
     V196_BRANCH_CATALOG['finance.ars'].update({'rev': 2, 'purpose': 'Принимать/считать ARS; в явном OWNER local-only продолжать работу на SQLite без внешней durability.', 'flow': ['ввод → распознавание', 'record.amount → SQLite', 'normal → MEGA/Constitution witness', 'local-only → SQLite + queued ledger', 'UI']})
     V196_BRANCH_CATALOG['export.google'].update({'rev': 6, 'purpose': 'Google export/catch-up продолжает работать в Только Render; режим блокирует только MEGA backup и Telegram backup-канал.'})
-    V196_BRANCH_CATALOG['ui.info'].update({'rev': 14, 'purpose': 'Owner INFO + diagnostics + взаимоисключающие режимы хранения выс-262.'})
+    V196_BRANCH_CATALOG['ui.info'].update({'rev': 14, 'purpose': 'Owner INFO + diagnostics + взаимоисключающие режимы хранения выс-263.'})
     V196_BRANCH_CATALOG['storage.mega'].update({'rev': 5, 'purpose': 'MEGA durable storage только в MEGA-профиле; в Только Render разрешён лишь control-plane marker/read для выбора восстановления.'})
     V196_BRANCH_CATALOG['storage.constitution'].update({'rev': 5, 'purpose': 'Semantic backup/restore protection + local-only immutable ledger queue/resume sync.'})
 except Exception:
@@ -2543,7 +2543,7 @@ _V237_1_STORAGE_INFO_KB_PREV = _v234_build_info_keyboard
 def storage_profiles_status_text_v237_1() -> str:
     st = storage_profile_status_v237_1()
     p = st.get('profile')
-    return f"🗄 ХРАНИЛИЩЕ / BACKUP · выс-262\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nTelegram backup-канал: {('✅ настроен' if st.get('telegram_available') else '⛔ не настроен')}\nMEGA credentials: {('✅ есть' if st.get('mega_configured') else '⛔ нет/MEGA_ENABLED=0')}\nMEGA active root: {st.get('mega_root') or '—'}\nБыстрый shard save: ~{(MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS):g} сек.\nSYSTEM SQLite generation: каждые {system_snapshot_hours_v242()} ч. при наличии изменений.\n\nПрофили взаимоисключающие: включение одного автоматически отключает два остальных. MEGA использует один канонический root; business shard сохраняются быстро, а полный SQLite generation создаётся редко."[:3900]
+    return f"🗄 ХРАНИЛИЩЕ / BACKUP · выс-263\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nTelegram backup-канал: {('✅ настроен' if st.get('telegram_available') else '⛔ не настроен')}\nMEGA credentials: {('✅ есть' if st.get('mega_configured') else '⛔ нет/MEGA_ENABLED=0')}\nMEGA active root: {st.get('mega_root') or '—'}\nБыстрый shard save: ~{(MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS):g} сек.\nSYSTEM SQLite generation: каждые {system_snapshot_hours_v242()} ч. при наличии изменений.\n\nПрофили взаимоисключающие: включение одного автоматически отключает два остальных. MEGA использует один канонический root; business shard сохраняются быстро, а полный SQLite generation создаётся редко."[:3900]
 
 def storage_profiles_keyboard_v237_1():
     p = storage_profile_v237_1()
@@ -2562,7 +2562,7 @@ def storage_profiles_keyboard_v237_1():
 def secret_storage_status_text_v234() -> str:
     requested = str(globals().get('secret_storage_backend_v234', lambda: 'telegram')())
     effective = str(globals().get('secret_storage_effective_backend_v234', lambda: requested)())
-    return f"🔐 SECRET STORAGE · выс-262\n\nПрофиль backup: {storage_profile_v237_1()}\nSECRET выбран: {('☁️ MEGA' if requested == 'mega' else '📡 Telegram')}\nЭффективно: {('☁️ MEGA' if effective == 'mega' else '📡 Telegram')}\n\nПри выборе общего профиля MEGA SECRET автоматически переводится в MEGA; при двух других профилях — в Telegram."[:3900]
+    return f"🔐 SECRET STORAGE · выс-263\n\nПрофиль backup: {storage_profile_v237_1()}\nSECRET выбран: {('☁️ MEGA' if requested == 'mega' else '📡 Telegram')}\nЭффективно: {('☁️ MEGA' if effective == 'mega' else '📡 Telegram')}\n\nПри выборе общего профиля MEGA SECRET автоматически переводится в MEGA; при двух других профилях — в Telegram."[:3900]
 
 def secret_storage_keyboard_v234():
     kb = types.InlineKeyboardMarkup()
@@ -2577,7 +2577,7 @@ def secret_storage_keyboard_v234():
 def telegram_durable_status_text_v236() -> str:
     st = telegram_durable_status_v234()
     slots = telegram_stable_slot_status_v236() if telegram_durable_primary_v234() else {'count': 0, 'chat_backup_count': 0, 'durable_count': 0}
-    return f"📡 TELEGRAM DURABLE · выс-262\n\nПрофиль: {('✅ АКТИВЕН' if telegram_durable_primary_v234() else '⬜ ВЫКЛ')}\nКанал: {('✅ настроен' if st.get('configured') else '⛔ нет')}\nHEAD gen: {int(st.get('generation') or 0)} · slots {int(slots.get('count') or 0)}\nФайлы используют постоянные message-slots: create once → edit; после удаления → recreate once → дальше edit."[:3900]
+    return f"📡 TELEGRAM DURABLE · выс-263\n\nПрофиль: {('✅ АКТИВЕН' if telegram_durable_primary_v234() else '⬜ ВЫКЛ')}\nКанал: {('✅ настроен' if st.get('configured') else '⛔ нет')}\nHEAD gen: {int(st.get('generation') or 0)} · slots {int(slots.get('count') or 0)}\nФайлы используют постоянные message-slots: create once → edit; после удаления → recreate once → дальше edit."[:3900]
 
 def telegram_durable_keyboard_v234():
     return storage_profiles_keyboard_v237_1()
@@ -2639,7 +2639,7 @@ def _v240_mode_name(mode: str) -> str:
 
 def storage_modes_text_v240() -> str:
     p = storage_profile_v237_1()
-    return f"⚙️ РЕЖИМЫ · выс-262\n\nАктивный режим: {_v240_mode_name(p)}\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nВ «Только Render» работают все обычные функции бота, Google, курс валют, команды, окна и переключатели; отключены только MEGA-хранилище и Telegram backup-канал. После deploy режим берётся из MEGA storage_control.json. Если сохранён Render, источник восстановления выбирается отдельно: сначала полнота snapshot, затем свежесть."[:3900]
+    return f"⚙️ РЕЖИМЫ · выс-263\n\nАктивный режим: {_v240_mode_name(p)}\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nВ «Только Render» работают все обычные функции бота, Google, курс валют, команды, окна и переключатели; отключены только MEGA-хранилище и Telegram backup-канал. После deploy режим берётся из MEGA storage_control.json. Если сохранён Render, источник восстановления выбирается отдельно: сначала полнота snapshot, затем свежесть."[:3900]
 
 def storage_modes_keyboard_v240():
     p = storage_profile_v237_1()
@@ -2760,4 +2760,79 @@ def mega_database_confirm_keyboard_v242(token: str):
     kb.row(IB('⬅️ Назад к базам', callback_data='v242:mdb:list'))
     kb.row(IB('❌ Закрыть', callback_data='info_close'))
     return kb
-# v262
+
+# v263 owner-only external I/O isolation window --------------------------------
+def external_io_control_text_v263() -> str:
+    st = external_io_status_v263()
+    p = str(st.get('profile') or 'normal')
+    labels = {
+        'mega_critical':'MEGA critical / restore', 'mega_backup':'MEGA backup / journal',
+        'google':'Google', 'currency':'USD / Currency API', 'self_http':'Self keepalive',
+        'peer_http':'Peer / Watchdog / Redis', 'other_http':'Other HTTP',
+    }
+    blocked = st.get('blocked') or {}; outbound = st.get('outbound') or {}; eff = st.get('effective') or {}
+    lines = [
+        f'🧪 КОНТРОЛЬ ИЗОЛЯЦИИ · {VERSION}', '',
+        f"Текущий профиль: {external_io_profile_label_v263(p)}" + (f" · ENV HARD OVERRIDE={st.get('boot_override')}" if st.get('boot_override') else ''),
+        f"Выходной quarantine: {('✅ АКТИВЕН' if st.get('quarantine') else '⬜ нет')}", '', 'Effective state сегментов:'
+    ]
+    for key, label in labels.items():
+        lines.append(f"{('✅' if eff.get(key) else '⬜')} {label} · blocked {int(blocked.get(key,0) or 0)} · outbound {int(outbound.get(key,0) or 0)}")
+    lines += ['', f"✅ Telegram UI · outbound {int(outbound.get('telegram',0) or 0)}"]
+    last = st.get('last_blocked') or {}
+    if last:
+        lines += ['', 'Последний заблокированный вызов:', f"• {last.get('category') or '—'} · {last.get('time') or '—'}", f"• {last.get('source') or '—'}", f"• {last.get('reason') or '—'}"]
+    if p == 'local_lab':
+        lines += ['', 'LOCAL LAB: критические операции используют только LOCAL witness (SQLite). Это тестовый witness и НЕ remote durable success.']
+    elif p == 'safe_isolation':
+        lines += ['', 'SAFE ISOLATION: операции, которым обязательна remote durability, безопасно запрещаются до изменения данных.']
+    elif st.get('quarantine'):
+        lines += ['', 'NORMAL восстановлен без автопереноса лабораторного состояния. Storage/peer запись остаётся в quarantine до явного решения владельца.']
+    return '\n'.join(lines)[:3900]
+
+def external_io_control_keyboard_v263():
+    st = external_io_status_v263(); p=str(st.get('profile') or 'normal'); seg=st.get('segments') or {}
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB(('✅ ' if p=='normal' else '⬜ ')+'🌍 NORMAL', callback_data='v263:io:profile:normal'))
+    kb.row(IB(('✅ ' if p=='local_lab' else '⬜ ')+'🧪 LOCAL LAB', callback_data='v263:io:profile:local_lab'))
+    kb.row(IB(('✅ ' if p=='safe_isolation' else '⬜ ')+'🛡 SAFE ISOLATION', callback_data='v263:io:profile:safe_isolation'))
+    labels={'mega_critical':'MEGA critical / restore','mega_backup':'MEGA backup / journal','google':'Google','currency':'USD / Currency API','self_http':'Self keepalive','peer_http':'Peer / Watchdog','other_http':'Other HTTP'}
+    for key,label in labels.items():
+        kb.row(IB(('✅ ' if bool(seg.get(key,True)) else '⬜ ')+label, callback_data=f'v263:io:seg:{key}'))
+    if st.get('quarantine'):
+        kb.row(IB('☁️ Разрешить перенос LOCAL → external', callback_data='v263:io:exit:promote'))
+    kb.row(IB('⬅️ Назад в INFO', callback_data='v176:back_info'), IB('✖️ Закрыть', callback_data='info_close'))
+    return kb
+
+def external_io_exit_text_v263() -> str:
+    return ('🧪 ВЫХОД ИЗ ИЗОЛЯЦИИ\n\nЛокальное экспериментальное состояние не будет автоматически выгружено наружу.\n\n'
+            '♻️ Вернуться к облачному состоянию — включить NORMAL, но оставить storage/peer запись в quarantine; канонический remote state будет использован при следующем штатном recovery/restart.\n\n'
+            '☁️ Перенести локальное состояние — явное подтверждение владельца: снять quarantine и разрешить текущим storage-процессам репликацию локального состояния.')
+
+def external_io_exit_keyboard_v263():
+    kb=types.InlineKeyboardMarkup()
+    kb.row(IB('♻️ Вернуться к облачному состоянию', callback_data='v263:io:exit:remote'))
+    kb.row(IB('☁️ Перенести локальное состояние', callback_data='v263:io:exit:promote'))
+    kb.row(IB('❌ Отмена', callback_data='v263:io:open'))
+    return kb
+
+# Wrap the final owner INFO keyboard without disturbing historical process switches.
+_V263_INFO_KB_PREV = _canon_build_info_keyboard__002
+
+def _canon_build_info_keyboard__003(chat_id: int):
+    kb = _V263_INFO_KB_PREV(int(chat_id))
+    if int(chat_id) != int(OWNER_ID or 0):
+        return kb
+    rows = _v177_info_rows(kb)
+    rows = [[b for b in r or [] if _v177_info_btn_cb(b) != 'v263:io:open'] for r in rows]
+    rows = [r for r in rows if r]
+    insert=len(rows)
+    for i,r in enumerate(rows):
+        if any(_v218_info_is_nav(b) for b in (r or [])):
+            insert=i; break
+    rows.insert(insert,[IB('🧪 Контроль изоляции', callback_data='v263:io:open')])
+    return _v177_info_set_rows(kb, rows)
+
+build_info_keyboard = _canon_build_info_keyboard__003
+
+# v263

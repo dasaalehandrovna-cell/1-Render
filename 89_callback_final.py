@@ -1,4 +1,4 @@
-# v262
+# v263
 """v179 single callback middleware for owner, circle 1, circle 2 and all users with feature access."""
 
 def _v179_resolve_callback(call):
@@ -270,6 +270,96 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                 except Exception:
                     pass
             return True
+    if resolved.startswith('v263:hybrid:'):
+        try:
+            cid = int(call.message.chat.id); uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
+        except Exception:
+            return True
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+            except Exception: pass
+            return True
+        action = resolved[len('v263:hybrid:'):]
+        if action == 'open':
+            try: bot.answer_callback_query(call.id)
+            except Exception: pass
+            safe_edit(bot, call, window_mark(hybrid_storage_text_v263(), 'Ф263H'), reply_markup=hybrid_storage_keyboard_v263())
+            return True
+        if action.startswith('mode:'):
+            target = action.split(':',1)[1]
+            before = hybrid_storage_control_v263(); after = hybrid_storage_set_mode_v263(target, uid)
+            changed = int(after.get('epoch') or 0) != int(before.get('epoch') or 0) or str(after.get('checksum') or '') != str(before.get('checksum') or '')
+            try: bot.answer_callback_query(call.id, hybrid_storage_mode_label_v263(after.get('mode')) if changed else ('Не изменено: ' + str((hybrid_storage_status_v263(False) or {}).get('last_error') or 'primary control не подтверждён'))[:180], show_alert=not changed)
+            except Exception: pass
+            safe_edit(bot, call, window_mark(hybrid_storage_text_v263(), 'Ф263H'), reply_markup=hybrid_storage_keyboard_v263())
+            return True
+        if action == 'sync':
+            rep = hybrid_storage_heal_now_v263()
+            try: bot.answer_callback_query(call.id, f"TG={'OK' if rep.get('telegram') else 'pending'} · MEGA={'OK' if rep.get('mega') else 'pending'}", show_alert=not bool(rep.get('ok')))
+            except Exception: pass
+            safe_edit(bot, call, window_mark(hybrid_storage_text_v263(), 'Ф263H'), reply_markup=hybrid_storage_keyboard_v263())
+            return True
+        if action == 'check':
+            try: bot.answer_callback_query(call.id, 'Проверяю оба хранилища…')
+            except Exception: pass
+            safe_edit(bot, call, window_mark(hybrid_storage_check_text_v263(), 'Ф263H'), reply_markup=hybrid_storage_keyboard_v263())
+            return True
+        return True
+    if resolved.startswith('v263:io:'):
+        try:
+            cid = int(call.message.chat.id); uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
+        except Exception:
+            return True
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+            except Exception: pass
+            return True
+        action = resolved[len('v263:io:'):]
+        if action == 'open':
+            try: bot.answer_callback_query(call.id)
+            except Exception: pass
+            safe_edit(bot, call, window_mark(external_io_control_text_v263(), 'Ф263'), reply_markup=external_io_control_keyboard_v263())
+            return True
+        if action.startswith('profile:'):
+            target = action.split(':',1)[1]
+            current = external_io_profile_v263()
+            forced = external_io_boot_override_v263()
+            if forced and target != forced:
+                try: bot.answer_callback_query(call.id, f'Заблокировано ENV: {forced}', show_alert=True)
+                except Exception: pass
+            elif target == 'normal' and current in {'local_lab','safe_isolation'}:
+                try: bot.answer_callback_query(call.id)
+                except Exception: pass
+                safe_edit(bot, call, window_mark(external_io_exit_text_v263(), 'Ф263'), reply_markup=external_io_exit_keyboard_v263())
+                return True
+            else:
+                set_external_io_profile_v263(target, changed_by=uid)
+                try: bot.answer_callback_query(call.id, external_io_profile_label_v263())
+                except Exception: pass
+            safe_edit(bot, call, window_mark(external_io_control_text_v263(), 'Ф263'), reply_markup=external_io_control_keyboard_v263())
+            return True
+        if action.startswith('seg:'):
+            key=action.split(':',1)[1]; cur=bool(external_io_segments_v263().get(key,True)); new=set_external_io_segment_v263(key, not cur, uid)
+            try: bot.answer_callback_query(call.id, f'{key}: {"ВКЛ" if new else "ВЫКЛ"}')
+            except Exception: pass
+            safe_edit(bot, call, window_mark(external_io_control_text_v263(), 'Ф263'), reply_markup=external_io_control_keyboard_v263())
+            return True
+        if action == 'exit:remote':
+            set_external_io_profile_v263('normal', exit_strategy='remote', changed_by=uid)
+            try: bot.answer_callback_query(call.id, 'NORMAL включён; локальное состояние не выгружается автоматически.')
+            except Exception: pass
+            safe_edit(bot, call, window_mark(external_io_control_text_v263(), 'Ф263'), reply_markup=external_io_control_keyboard_v263())
+            return True
+        if action == 'exit:promote':
+            if external_io_profile_v263() != 'normal':
+                set_external_io_profile_v263('normal', exit_strategy='promote_local', changed_by=uid)
+            else:
+                clear_external_io_exit_quarantine_v263(promote_local=True)
+            try: bot.answer_callback_query(call.id, 'Локальная репликация во внешние storage явно разрешена.')
+            except Exception: pass
+            safe_edit(bot, call, window_mark(external_io_control_text_v263(), 'Ф263'), reply_markup=external_io_control_keyboard_v263())
+            return True
+        return True
     if resolved.startswith('v240:modes:'):
         try:
             cid = int(call.message.chat.id)
@@ -1239,4 +1329,4 @@ v220_contour_access_callback_final = _v221_contour_access_callback_final
 wait_durable_subtasks = _canon_wait_durable_subtasks__001
 window_diag_fast_ui_apply = _canon_window_diag_fast_ui_apply__001
 window_diag_prepare_fast_ui_payload = _canon_window_diag_prepare_fast_ui_payload__001
-# v262
+# v263

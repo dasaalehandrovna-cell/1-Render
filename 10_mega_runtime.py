@@ -1,4 +1,4 @@
-# v262
+# v263
 def mega_is_configured(control_plane: bool=False) -> bool:
     recovery = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)) or bool(control_plane)
     if not recovery:
@@ -162,17 +162,19 @@ def _v178_mega_gate_exit() -> None:
 
 def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
     """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
-    gate = globals().get('external_access_allowed_v233')
-    gate_category = 'mega_control' if bool(control_plane) else 'mega'
-    if callable(gate) and (not gate(gate_category)):
-        try:
-            logger_fn = globals().get('external_block_log_v233')
-            if callable(logger_fn):
-                logger_fn(gate_category, str(cmd or ''))
-        except Exception:
-            pass
-        raise RuntimeError(f"external_local_only_v233:{gate_category}:{str(cmd or '')}")
     args = list(args or [])
+    _gate_text = ' '.join(str(x or '') for x in args).casefold()
+    _critical = bool(control_plane) or any(x in _gate_text for x in ('/tasks/', '/ledger/finance', 'storage_control', '/control/'))
+    gate_category = 'mega_critical' if _critical else 'mega_backup'
+    gate = globals().get('external_io_allowed_v263') or globals().get('external_access_allowed_v233')
+    _ok = True
+    if callable(gate):
+        try:
+            _ok = bool(gate(gate_category, f'{cmd}:{_gate_text[:120]}') if getattr(gate, '__name__', '') == 'external_io_allowed_v263' else gate(gate_category))
+        except TypeError:
+            _ok = bool(gate(gate_category))
+    if not _ok:
+        raise RuntimeError(f"external_io_blocked_v263:{gate_category}:{str(cmd or '')}")
     exe = shutil.which(cmd)
     if not exe:
         raise RuntimeError(f'MEGAcmd command not found: {cmd}')
@@ -197,6 +199,11 @@ def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, ch
                         raise RuntimeError(f'{cmd} timeout after {timeout or MEGA_TIMEOUT}s')
             finally:
                 _v178_mega_gate_exit()
+        try:
+            _note = globals().get('external_io_note_outbound_v263')
+            if callable(_note): _note(gate_category, str(cmd or ''))
+        except Exception:
+            pass
         if callable(mem_ctx):
             safe_args = _mega_memory_safe_args(cmd, args)
             with mem_ctx(f'mega:{cmd}', {'args': safe_args}, heavy=cmd in {'mega-find', 'mega-get', 'mega-put'}, quiet=True):
@@ -6714,11 +6721,7 @@ def _v177_legacy_0098_write_tabl_lsx_xlsx(path: str, rows: list[list], styles: l
             safe_text = _xlsx_xml_escape(str(text or ''))
             comment_nodes.append(f'<comment ref="{ref}" authorId="0"><text><t xml:space="preserve">{safe_text}</t></text></comment>')
             shapes.append(f'<v:shape id="_x0000_s{1024 + idx}" type="#_x0000_t202" style="position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:144pt;height:79.5pt;z-index:{idx};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">\n<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"/></v:textbox>\n<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{max(0, int(col_idx) - 1)}, 15, {max(0, int(row_idx) - 1)}, 2, {int(col_idx) + 2}, 15, {int(row_idx) + 4}, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{max(0, int(row_idx) - 1)}</x:Row><x:Column>{max(0, int(col_idx) - 1)}</x:Column></x:ClientData></v:shape>')
-        # Classic Excel Notes are stored in the legacy comments part and the
-        # OOXML schema requires a non-empty author entry.  Keeping an author here
-        # makes the package valid for strict XLSX parsers while it still remains
-        # a Note (VML ObjectType=Note), not a threaded Comment.
-        notes_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>Telegram Finance Bot</author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>"""
+        notes_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author></author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>"""
         vml_xml = f"""<?xml version="1.0" encoding="UTF-8"?>\n<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">\n<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>{''.join(shapes)}</xml>"""
         sheet_rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>\n<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>\n</Relationships>'
     elif annotation_mode == 'comments':
@@ -6726,15 +6729,12 @@ def _v177_legacy_0098_write_tabl_lsx_xlsx(path: str, rows: list[list], styles: l
         person_id = '{7C441D5B-9D3A-4B84-95C4-5BCE02D746A1}'
         comment_nodes = []
         comment_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-        for idx, (row_idx, col_idx) in enumerate(sorted(comments.keys()), start=1):
+        for row_idx, col_idx in sorted(comments.keys()):
             ref = f'{_xlsx_col_name(int(col_idx))}{int(row_idx)}'
             safe_text = _xlsx_xml_escape(str(comments[row_idx, col_idx] or ''))
-            # CT_ThreadedComment requires its own GUID in addition to personId.
-            comment_id = '{00000000-0000-0000-0000-' + f'{idx:012X}' + '}'
-            comment_nodes.append(f'<threadedComment ref="{ref}" dT="{comment_time}" personId="{person_id}" id="{comment_id}"><text>{safe_text}</text></threadedComment>')
+            comment_nodes.append(f'<threadedComment ref="{ref}" dT="{comment_time}" personId="{person_id}"><text>{safe_text}</text></threadedComment>')
         threaded_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">{''.join(comment_nodes)}</ThreadedComments>"""
-        # Persons and threaded comments share the threadedcomments namespace.
-        persons_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<personList xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"><person displayName="Telegram Finance Bot" id="{person_id}" userId="Telegram Finance Bot" providerId="None"/></personList>'
+        persons_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<personList xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/person"><person displayName="Telegram Finance Bot" id="{person_id}" userId="telegram-finance-bot" providerId="None"/></personList>'
         sheet_rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/>\n</Relationships>'
     content_types_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n<Default Extension="xml" ContentType="application/xml"/>{content_types_extra}\n<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>\n<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>\n</Types>'
     sheet_tmp = None
@@ -6806,10 +6806,8 @@ def _validate_xlsx_annotation_package(path: str, annotation_mode: str | None) ->
         if has_legacy_notes:
             if 'ObjectType="Note"' not in vml_text:
                 raise RuntimeError('XLSX notes VML does not declare ObjectType=Note')
-            if '<author></author>' in legacy_xml or '<author/>' in legacy_xml:
-                raise RuntimeError('XLSX notes mode contains an empty author')
-            if '<author>Telegram Finance Bot</author>' not in legacy_xml:
-                raise RuntimeError('XLSX notes mode is missing its required author')
+            if 'Telegram Finance Bot' in legacy_xml:
+                raise RuntimeError('XLSX notes mode must not carry a comment author')
             if '<comment ' in legacy_xml and (not re.search('<comment\\b[^>]*>.*?<t(?:\\s[^>]*)?>(?!\\s*</t>).*?</t>', legacy_xml, flags=re.S)):
                 raise RuntimeError('XLSX notes mode contains empty note bodies')
     if mode == 'comments' and has_legacy_notes:
@@ -6830,46 +6828,26 @@ def _excel_category_color_index(note: str) -> int:
         return 0
 
 def _v177_legacy_0099_modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern simple Excel.
-
-    Supports both the legacy 4-column Date/Description/Income/Expense grid and
-    the canonical v257+ 3-column Date/Description/signed-Amount grid.  In the
-    signed grid negative amounts receive category colours and expense notes.
-    """
+    """Modern 4-column/backup Excel: colored amounts + annotations on expenses."""
     max_cols = max((len(r) for r in rows), default=4)
-    signed_amount_layout = max_cols <= 3
     styles = []
     comments = {}
     header_row = 1
-    header_found = False
-
-    def _num(value):
-        if isinstance(value, dict) and value.get('formula'):
-            value = value.get('value')
-        if isinstance(value, bool) or value is None or value == '':
-            return None
-        try:
-            return float(value)
-        except Exception:
-            return None
-
-    for r_idx, row in enumerate(rows or [], start=1):
+    data_started = False
+    for r_idx, row in enumerate(rows, start=1):
         row = list(row or [])
         normalized0 = str(row[0] if row else '').strip().casefold()
         normalized1 = str(row[1] if len(row) > 1 else '').strip().casefold()
-        is_currency = str(row[0] if row else '').strip().upper() in {'ARS', 'USD'} and not normalized1
         is_header = normalized0 in {'дата', 'date'} and normalized1 in {'описание', 'description', 'amount'}
-        if is_currency:
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
         if is_header:
-            if not header_found:
-                header_row = r_idx
-            header_found = True
+            header_row = r_idx
+            data_started = True
             styles.append([2] * max_cols)
             continue
         st = [4] * max_cols if any((_excel_nonempty(v) for v in row)) else [0] * max_cols
-        if not header_found:
+        if not data_started:
+            if r_idx == 1 and any((_excel_nonempty(v) for v in row)):
+                st = [1] + [4] * max(0, max_cols - 1)
             styles.append(st)
             continue
         note = str(row[1] if len(row) > 1 else '').strip()
@@ -6880,27 +6858,17 @@ def _v177_legacy_0099_modern_simple_excel_styles_comments(rows: list[list]) -> t
         if note_key in {'приход за период', 'расход за период'}:
             styles.append([5] * max_cols)
             continue
-        if signed_amount_layout:
-            amount = row[2] if len(row) > 2 else ''
-            numeric = _num(amount)
-            if numeric is not None and len(st) > 2:
-                if numeric < 0:
-                    st[2] = 19 + _excel_category_color_index(note)
-                    if note:
-                        comments[r_idx, 3] = note
-                elif _excel_nonempty(amount):
-                    st[2] = 7
-        else:
-            income = row[2] if len(row) > 2 else ''
-            expense = row[3] if len(row) > 3 else ''
-            if _excel_nonempty(income) and len(st) > 2:
-                st[2] = 7
-            if _excel_nonempty(expense) and len(st) > 3:
-                st[3] = 19 + _excel_category_color_index(note)
-                if note:
-                    comments[r_idx, 4] = note
+        income = row[2] if len(row) > 2 else ''
+        expense = row[3] if len(row) > 3 else ''
+        if _excel_nonempty(income) and len(st) > 2:
+            st[2] = 7
+        if _excel_nonempty(expense) and len(st) > 3:
+            cat_idx = _excel_category_color_index(note)
+            st[3] = 19 + cat_idx
+            if note:
+                comments[r_idx, 4] = note
         styles.append(st)
-    widths = ([13, 38, 16] if signed_amount_layout else [13, 38, 15, 15]) + [14] * max(0, max_cols - (3 if signed_amount_layout else 4))
+    widths = [13, 38, 15, 15] + [14] * max(0, max_cols - 4)
     return (styles, comments, header_row, widths)
 try:
     _v177_legacy_0099_modern_simple_excel_styles_comments.__name__ = '_modern_simple_excel_styles_comments'
@@ -6908,66 +6876,18 @@ except Exception:
     pass
 
 def _v177_legacy_0100_modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern compact ARS grid, with an optional canonical full USD section."""
+    """Modern 3-column Excel without Description column; annotations are on amount cells."""
     max_cols = max((len(r) for r in rows), default=3)
     styles = []
-    merged_annotations = dict(annotations or {})
-    header_row = 1
-    header_found = False
-    usd_full = False
-
-    def _num(value):
-        if isinstance(value, dict) and value.get('formula'):
-            value = value.get('value')
-        if isinstance(value, bool) or value is None or value == '':
-            return None
-        try:
-            return float(value)
-        except Exception:
-            return None
-
     for r_idx, row in enumerate(rows or [], start=1):
         row = list(row or [])
-        raw_first = str(row[0] if row else '').strip()
-        first = raw_first.casefold()
-        second = str(row[1] if len(row) > 1 else '').strip().casefold()
-        if raw_first.upper() == 'USD' and not second:
-            usd_full = True
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
-        if raw_first.upper() == 'ARS' and not second:
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
+        first = str(row[0] if row else '').strip().casefold()
         is_header = first in {'дата', 'date'}
         if is_header:
-            if not header_found:
-                header_row = r_idx
-            header_found = True
             styles.append([2] * max_cols)
             continue
         if not any((_excel_nonempty(v) for v in row)):
             styles.append([0] * max_cols)
-            continue
-        if usd_full:
-            label = second
-            if label in {'остаток с прошлого раза', 'остаток на руках'}:
-                styles.append([6] * max_cols)
-                continue
-            if label in {'приход за период', 'расход за период'}:
-                styles.append([5] * max_cols)
-                continue
-            st = [4] * max_cols
-            amount = row[2] if len(row) > 2 else ''
-            numeric = _num(amount)
-            note = str(row[1] if len(row) > 1 else '').strip()
-            if numeric is not None and len(st) > 2:
-                if numeric < 0:
-                    st[2] = 19 + _excel_category_color_index(note)
-                    if note:
-                        merged_annotations[(r_idx, 3)] = note
-                elif _excel_nonempty(amount):
-                    st[2] = 7
-            styles.append(st)
             continue
         if first in {'остаток с прошлого раза', 'остаток на руках'}:
             styles.append([6] * max_cols)
@@ -6979,79 +6899,35 @@ def _v177_legacy_0100_modern_compact_excel_styles_comments(rows: list[list], ann
         if len(row) > 1 and _excel_nonempty(row[1]):
             st[1] = 7
         if len(row) > 2 and _excel_nonempty(row[2]):
-            note = str(merged_annotations.get((r_idx, 3)) or '')
+            note = str((annotations or {}).get((r_idx, 3)) or '')
             st[2] = 19 + _excel_category_color_index(note)
         styles.append(st)
-    return (styles, merged_annotations, header_row, [22, 16, 16] + [14] * max(0, max_cols - 3))
+    return (styles, dict(annotations or {}), 1, [22, 16, 16])
 try:
     _v177_legacy_0100_modern_compact_excel_styles_comments.__name__ = '_modern_compact_excel_styles_comments'
 except Exception:
     pass
 
 def _v177_legacy_0101_modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern ARS category/stat grid, with an optional canonical full USD section."""
+    """Modern category/stat Excel: each expense column gets its own fill and annotation."""
     max_cols = max((len(r) for r in rows), default=4)
     styles = []
     comments = {}
     header_row = 1
     header_found = False
-    usd_full = False
-
-    def _num(value):
-        if isinstance(value, dict) and value.get('formula'):
-            value = value.get('value')
-        if isinstance(value, bool) or value is None or value == '':
-            return None
-        try:
-            return float(value)
-        except Exception:
-            return None
-
-    for r_idx, row in enumerate(rows or [], start=1):
+    for r_idx, row in enumerate(rows, start=1):
         row = list(row or [])
-        raw_first = str(row[0] if row else '').strip()
-        first = raw_first.casefold()
+        first = str(row[0] if row else '').strip().casefold()
         second = str(row[1] if len(row) > 1 else '').strip().casefold()
-        if raw_first.upper() == 'USD' and not second:
-            usd_full = True
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
-        if raw_first.upper() == 'ARS' and not second:
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
         is_header = first in {'дата', 'date'} and second in {'описание', 'description', 'приход/выдача'}
         if is_header:
-            if not header_found:
-                header_row = r_idx
+            header_row = r_idx
             header_found = True
-            if usd_full:
-                styles.append([2] * min(3, max_cols) + [4] * max(0, max_cols - 3))
-            else:
-                styles.append([2] * min(3, max_cols) + [8 + (c - 3) % len(TABL_LSX_CATEGORIES) for c in range(3, max_cols)])
+            st = [2] * min(3, max_cols) + [8 + (c - 3) % len(TABL_LSX_CATEGORIES) for c in range(3, max_cols)]
+            styles.append(st)
             continue
         if not any((_excel_nonempty(v) for v in row)):
             styles.append([0] * max_cols)
-            continue
-        if usd_full:
-            label = second
-            if label in {'остаток с прошлого раза', 'остаток на руках'}:
-                styles.append([6] * max_cols)
-                continue
-            if label in {'приход за период', 'расход за период'}:
-                styles.append([5] * max_cols)
-                continue
-            st = [4] * max_cols
-            note = str(row[1] if len(row) > 1 else '').strip()
-            amount = row[2] if len(row) > 2 else ''
-            numeric = _num(amount)
-            if numeric is not None and len(st) > 2:
-                if numeric < 0:
-                    st[2] = 19 + _excel_category_color_index(note)
-                    if note:
-                        comments[(r_idx, 3)] = note
-                elif _excel_nonempty(amount):
-                    st[2] = 7
-            styles.append(st)
             continue
         label = second
         if label in {'сумма по статьям', 'расход'}:
@@ -7069,7 +6945,7 @@ def _v177_legacy_0101_modern_category_excel_styles_comments(rows: list[list]) ->
                 if c < len(row) and _excel_nonempty(row[c]):
                     st[c] = 19 + (c - 3) % len(TABL_LSX_CATEGORIES)
                     if note:
-                        comments[(r_idx, c + 1)] = note
+                        comments[r_idx, c + 1] = note
         styles.append(st)
     widths = [13, 36, 15] + [18] * max(0, max_cols - 3)
     return (styles, comments, header_row, widths)
@@ -7079,69 +6955,18 @@ except Exception:
     pass
 
 def _v177_legacy_0103_modern_category_no_description_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
-    """Compact ARS category report; preserve and style the full USD section."""
+    """Category report without Description column: Date / Income / article columns."""
     max_cols = max((len(r) for r in rows), default=3)
     styles = []
-    merged_annotations = dict(annotations or {})
-    header_row = 1
-    header_found = False
-    usd_full = False
-
-    def _num(value):
-        if isinstance(value, dict) and value.get('formula'):
-            value = value.get('value')
-        if isinstance(value, bool) or value is None or value == '':
-            return None
-        try:
-            return float(value)
-        except Exception:
-            return None
-
     for r_idx, row in enumerate(rows or [], start=1):
         row = list(row or [])
-        raw_first = str(row[0] if row else '').strip()
-        first = raw_first.casefold()
-        second = str(row[1] if len(row) > 1 else '').strip().casefold()
-        if raw_first.upper() == 'USD' and not second:
-            usd_full = True
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
-        if raw_first.upper() == 'ARS' and not second:
-            styles.append([1] + [4] * max(0, max_cols - 1))
-            continue
+        first = str(row[0] if row else '').strip().casefold()
         is_header = first in {'дата', 'date'}
         if is_header:
-            if not header_found:
-                header_row = r_idx
-            header_found = True
-            if usd_full:
-                styles.append([2] * min(3, max_cols) + [4] * max(0, max_cols - 3))
-            else:
-                styles.append([2] * min(2, max_cols) + [8 + (c - 2) % len(TABL_LSX_CATEGORIES) for c in range(2, max_cols)])
+            styles.append([2] * min(2, max_cols) + [8 + (c - 2) % len(TABL_LSX_CATEGORIES) for c in range(2, max_cols)])
             continue
         if not any((_excel_nonempty(v) for v in row)):
-            styles.append([3 if not usd_full else 0] * max_cols)
-            continue
-        if usd_full:
-            label = second
-            if label in {'остаток с прошлого раза', 'остаток на руках'}:
-                styles.append([6] * max_cols)
-                continue
-            if label in {'приход за период', 'расход за период'}:
-                styles.append([5] * max_cols)
-                continue
-            st = [4] * max_cols
-            note = str(row[1] if len(row) > 1 else '').strip()
-            amount = row[2] if len(row) > 2 else ''
-            numeric = _num(amount)
-            if numeric is not None and len(st) > 2:
-                if numeric < 0:
-                    st[2] = 19 + _excel_category_color_index(note)
-                    if note:
-                        merged_annotations[(r_idx, 3)] = note
-                elif _excel_nonempty(amount):
-                    st[2] = 7
-            styles.append(st)
+            styles.append([3] * max_cols)
             continue
         if first in {'сумма по статьям', 'расход', 'приход', 'остаток с прошлого раза', 'остаток на руках', 'на руках:'}:
             styles.append([5 if first in {'сумма по статьям', 'расход'} else 6] * max_cols)
@@ -7153,26 +6978,25 @@ def _v177_legacy_0103_modern_category_no_description_styles_comments(rows: list[
             if c < len(row) and _excel_nonempty(row[c]):
                 st[c] = 19 + (c - 2) % len(TABL_LSX_CATEGORIES)
         styles.append(st)
-    return (styles, merged_annotations, header_row, [22, 15] + [18] * max(0, max_cols - 2))
+    return (styles, dict(annotations or {}), 1, [22, 15] + [18] * max(0, max_cols - 2))
 try:
     _v177_legacy_0103_modern_category_no_description_styles_comments.__name__ = '_modern_category_no_description_styles_comments'
 except Exception:
     pass
 
 def _v177_legacy_0104_category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, int], str]:
-    """Return annotation cells for ARS category expenses and signed USD expenses."""
+    """Return the exact expense cells that must carry an annotation in category Excel.
+
+    This mirrors _modern_category_excel_styles_comments(). Summary / balance rows
+    intentionally do not receive expense notes, even if they contain category totals.
+    """
     expected: dict[tuple[int, int], str] = {}
     header_found = False
-    usd_full = False
-    skip_labels = {'сумма по статьям', 'расход', 'приход', 'остаток с прошлого раза', 'остаток на руках', 'на руках:', 'приход за период', 'расход за период'}
+    skip_labels = {'сумма по статьям', 'расход', 'приход', 'остаток с прошлого раза', 'остаток на руках', 'на руках:'}
     for r_idx, row in enumerate(rows or [], start=1):
         row = list(row or [])
-        raw_first = str(row[0] if row else '').strip()
-        first = raw_first.casefold()
+        first = str(row[0] if row else '').strip().casefold()
         second = str(row[1] if len(row) > 1 else '').strip().casefold()
-        if raw_first.upper() == 'USD' and not second:
-            usd_full = True
-            continue
         is_header = first in {'дата', 'date'} and second in {'описание', 'description', 'приход/выдача'}
         if is_header:
             header_found = True
@@ -7184,20 +7008,9 @@ def _v177_legacy_0104_category_excel_expected_annotations(rows: list[list]) -> d
         note_text = str(row[1] if len(row) > 1 else '').strip()
         if not note_text:
             continue
-        if usd_full:
-            amount = row[2] if len(row) > 2 else None
-            if isinstance(amount, dict) and amount.get('formula'):
-                amount = amount.get('value')
-            try:
-                is_expense = float(amount) < 0
-            except Exception:
-                is_expense = False
-            if is_expense:
-                expected[(r_idx, 3)] = note_text
-            continue
         for c in range(3, len(row)):
             if _excel_nonempty(row[c]):
-                expected[(r_idx, c + 1)] = note_text
+                expected[r_idx, c + 1] = note_text
     return expected
 try:
     _v177_legacy_0104_category_excel_expected_annotations.__name__ = '_category_excel_expected_annotations'
@@ -7257,9 +7070,12 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
         annotations = {}
     expected_annotations: dict[tuple[int, int], str] = {}
     if annotation_mode == 'notes':
-        # Validate exactly what the selected layout writer intends to attach,
-        # including derived expense Notes in canonical signed USD sections.
-        expected_annotations = {k: str(v).strip() for k, v in (annotations or {}).items() if str(v or '').strip()}
+        if category_layout == 'category_compact':
+            expected_annotations = {k: str(v).strip() for k, v in (compact_annotations or {}).items() if str(v or '').strip()}
+        elif category_layout:
+            expected_annotations = _category_excel_expected_annotations(rows)
+        elif compact_annotations is not None:
+            expected_annotations = {k: str(v).strip() for k, v in compact_annotations.items() if str(v or '').strip()}
         if expected_annotations:
             annotations = dict(expected_annotations)
     _write_tabl_lsx_xlsx(path, rows, styles, sheet_name=sheet_name, comments=annotations, freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode)
@@ -7270,9 +7086,7 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
 def create_tabl_lsx_file(chat_id: int, reference_day: str | None=None) -> str:
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
-    # R16 hotfix: OLD keeps the legacy annotation/layout choice, but every
-    # XLSX variant uses the same colored category cells.
-    modern_excel = True
+    modern_excel = excel_table_style(chat_id) != 'old'
     weeks = _tabl_lsx_weeks(reference_day or today_key(), 4)
     cols = ['Дата', 'Приход/выдача', 'Откуда/кому'] + TABL_LSX_CATEGORIES
     rows, styles = ([], [])
@@ -9090,4 +8904,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f'{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}')
     lines.extend(['', '✏️ Изменить: название статьи и/или её ключевые слова.'])
     return (wm_common('\n'.join(lines), 7), cats)
-# v262
+# v263

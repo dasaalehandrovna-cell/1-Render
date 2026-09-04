@@ -1403,13 +1403,6 @@ def reminder_callback(call):
                 except Exception:
                     pass
         else:
-            try:
-                if bool(is_chat_bot_removed(target)):
-                    if 'answer_removed_chat' in globals():
-                        answer_removed_chat(call, target)
-                    return
-            except Exception:
-                pass
             selected.add(target)
         cfg['chat_ids'] = sorted(selected)
         if cfg.get('enabled'):
