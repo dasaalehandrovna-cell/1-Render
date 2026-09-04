@@ -1,4 +1,4 @@
-"""vys-262 R19 internal runtime configuration.
+"""vys-262 R20 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r19-fast-callback-authoritative-restore"
+CONFIG_VERSION = "vys-262-r20-v262-durable-capsule-fast-ui"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,7 +23,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "RENDER_TELEGRAM_ONLY": "1",
     "MALLOC_ARENA_MAX": "2",
 
-    # R19 FAST lanes: user callbacks must never wait behind cleanup/sync work.
+    # R20 FAST lanes: user callbacks must never wait behind cleanup/sync work.
     "UI_WORKERS": "6",
         "FAST_UI_WORKERS": "4",
         "FAST_UI_MAX_PENDING": "600",
@@ -55,6 +55,9 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "SPLIT_CONTINUITY_OTHER_DELAY_SEC": "2.5",
     "SPLIT_CONTINUITY_MAX_LATENCY_SEC": "5.0",
     "SPLIT_SYNC_MAX_LATENCY_SEC": "3.0",
+    "SPLIT_CAPSULE_DELAY_SEC": "0.35",
+    "SPLIT_CAPSULE_MAX_LATENCY_SEC": "1.0",
+    "WORKER_REDIS_CAPSULE_KEY": "vys262:durable_capsule:r20",
     "SPLIT_FULL_RECONCILE_QUIET_SEC": "20",
     "SPLIT_DELTA_MAX_PAGES": "256",
     "SPLIT_DELTA_MAX_BYTES": "524288",
@@ -78,6 +81,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "MEGA_ENABLED": "0",
     "MEGA_AUTORESTORE": "0",
     "TG_DURABLE_ENABLED": "0",
+    "TELEGRAM_DURABLE_ENABLED": "0",
     "MEGA_TIMEOUT": "120",
     "MEGA_LOGIN_TIMEOUT": "120",
     "SPLIT_GOOGLE_REMOTE_ENABLED": "1",

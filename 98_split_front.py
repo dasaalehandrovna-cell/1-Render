@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-r19-fast-callback-authoritative-restore"
+_SPLIT_FRONT_VERSION = "vys-262-front-r20-v262-durable-capsule-fast-ui"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -80,6 +80,11 @@ _SPLIT_STATE = {
     "event_mirrored": 0,
     "event_redis_fallbacks": 0,
     "event_recovered": 0,
+    "capsule_last_attempt": 0.0,
+    "capsule_last_ok": 0.0,
+    "capsule_last_error": "",
+    "capsule_last_seq": 0,
+    "capsule_last_generation": 0,
 }
 
 
@@ -859,6 +864,13 @@ def _v262_split_mega_upload_latest_database_backup(force=False):
 
 
 def _v262_split_schedule_config_backup_for_chats(*chat_ids, delay=3.0):
+    # R20: the original v262 config hook is the authoritative signal that a
+    # user-visible setting changed.  Capture a small independent durable capsule
+    # immediately in a background timer; do not wait for full SQLite/delta sync.
+    try:
+        r20_schedule_durable_capsule('config_hook:' + ','.join(map(str, chat_ids[:8])), delay=0.12)
+    except Exception:
+        pass
     split_schedule_worker_sync_v262(reason='config:' + ','.join(map(str, chat_ids[:8])), delay=min(float(delay or 1.0), 5.0))
     return True
 
@@ -1526,7 +1538,7 @@ def continuity_restore_v263():
     except Exception:
         pass
     try:
-        log_info(f"CONTINUITY R19 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
+        log_info(f"CONTINUITY R20 restored names={len(restored_names)} saved_at={payload.get('saved_at')} ui={payload.get('ui_counts') or {}}")
     except Exception:
         pass
     return {'ok': True, 'restored': restored_names, 'saved_at': payload.get('saved_at')}
@@ -1558,6 +1570,181 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
             pass
     return True
 
+
+
+# R20: v262-style independent durable configuration/user-state capsule.
+# Full SQLite remains the accounting/state baseline, but user settings must never rely
+# on a full snapshot completing.  This compact checkpoint is built off the Telegram
+# handler thread and stored monotonically by HEAVY/Redis.
+_R20_CAPSULE_LOCK = _split_threading.RLock()
+_R20_CAPSULE_TIMER = None
+_R20_CAPSULE_FIRST_DIRTY_AT = 0.0
+_R20_CAPSULE_REASON = ''
+_R20_CAPSULE_LAST_GEN_SENT = 0
+_R20_CAPSULE_LAST_SEQ_SENT = 0
+
+def _r20_latest_config_checkpoint():
+    try:
+        fn = globals().get('config_guard_latest_local_v234')
+        row = fn() if callable(fn) else {}
+        return row if isinstance(row, dict) else {}
+    except Exception:
+        return {}
+
+def _r20_capsule_build(reason='state_change'):
+    # Capture the logical shadow in this background lane. Financial cold ledgers are
+    # excluded by user_state_shadow_capture_v265 by design.
+    user_state = user_state_shadow_capture_v265('r20:' + str(reason or '')[:120]) or {}
+    config_cp = _r20_latest_config_checkpoint()
+    try:
+        rev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
+    except Exception:
+        rev = {}
+    return {
+        'kind': 'vys262_durable_capsule_r20', 'schema': 1,
+        'saved_at': _split_time.time(), 'reason': str(reason or '')[:160],
+        'front_version': _SPLIT_FRONT_VERSION,
+        'user_state': user_state,
+        'config_checkpoint': config_cp,
+        'state_revision': rev,
+        'user_state_seq': int((user_state or {}).get('seq') or 0),
+        'config_generation': int((config_cp or {}).get('generation') or 0),
+    }
+
+def _r20_capsule_redis_key():
+    return str(_split_os.getenv('WORKER_REDIS_CAPSULE_KEY', 'vys262:durable_capsule:r20') or 'vys262:durable_capsule:r20').strip()
+
+def _r20_capsule_store_redis(payload: dict, packed: bytes):
+    if _split_redis is None:
+        return False, 'redis package unavailable'
+    url = str(_split_os.getenv('REDIS_URL', '') or '').strip()
+    if not url:
+        return False, 'REDIS_URL empty'
+    try:
+        client = _split_redis.Redis.from_url(url, socket_connect_timeout=0.5, socket_timeout=1.5, health_check_interval=30)
+        key = _r20_capsule_redis_key()
+        merged = dict(payload or {})
+        try:
+            old_raw = client.get(key)
+            old = _split_json.loads(_split_gzip.decompress(old_raw).decode('utf-8')) if old_raw else {}
+        except Exception:
+            old = {}
+        if isinstance(old, dict) and old:
+            old_seq = int(old.get('user_state_seq') or ((old.get('user_state') or {}).get('seq') or 0))
+            new_seq = int(merged.get('user_state_seq') or ((merged.get('user_state') or {}).get('seq') or 0))
+            if old_seq > new_seq:
+                merged['user_state'] = old.get('user_state') or {}
+                merged['user_state_seq'] = old_seq
+            old_gen = int(old.get('config_generation') or ((old.get('config_checkpoint') or {}).get('generation') or 0))
+            new_gen = int(merged.get('config_generation') or ((merged.get('config_checkpoint') or {}).get('generation') or 0))
+            if old_gen > new_gen:
+                merged['config_checkpoint'] = old.get('config_checkpoint') or {}
+                merged['config_generation'] = old_gen
+            try:
+                if float(((old.get('state_revision') or {}).get('saved_at') or 0.0)) > float(((merged.get('state_revision') or {}).get('saved_at') or 0.0)):
+                    merged['state_revision'] = old.get('state_revision') or {}
+            except Exception:
+                pass
+            merged['saved_at'] = max(float(old.get('saved_at') or 0.0), float(merged.get('saved_at') or 0.0))
+        packed = _split_gzip.compress(_split_json.dumps(merged, ensure_ascii=False, separators=(',',':'), default=str).encode('utf-8'), compresslevel=3)
+        seq = int(merged.get('user_state_seq') or 0); gen = int(merged.get('config_generation') or 0)
+        meta = {'user_state_seq': seq, 'config_generation': gen,
+                'saved_at': float(merged.get('saved_at') or _split_time.time()),
+                'size': len(packed), 'source': 'front-r20'}
+        pipe = client.pipeline(transaction=True)
+        pipe.set(key, packed)
+        pipe.set(key + ':meta', _split_json.dumps(meta, separators=(',',':')))
+        pipe.execute()
+        return True, f'redis capsule stored seq={seq} gen={gen}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
+
+def _r20_capsule_push_now(reason='state_change'):
+    global _R20_CAPSULE_LAST_GEN_SENT, _R20_CAPSULE_LAST_SEQ_SENT
+    _SPLIT_STATE['capsule_last_attempt'] = _split_time.time()
+    try:
+        payload = _r20_capsule_build(reason)
+        raw = _split_json.dumps(payload, ensure_ascii=False, separators=(',',':'), default=str).encode('utf-8')
+        packed = _split_gzip.compress(raw, compresslevel=3)
+        max_bytes = 8 * 1024 * 1024
+        if len(packed) > max_bytes:
+            raise RuntimeError(f'capsule too large: {len(packed)}')
+        seq = int(payload.get('user_state_seq') or 0)
+        gen = int(payload.get('config_generation') or 0)
+        # Shared Redis is the fastest durable witness and survives either Render being redeployed.
+        redis_ok, redis_detail = _r20_capsule_store_redis(payload, packed)
+        worker_ok = False; worker_detail = ''
+        base, secret = _split_peer_base(), _split_secret()
+        if base and secret:
+            try:
+                r = requests.post(base + '/internal/capsule', data=packed,
+                    headers={**_split_headers('vys-262-front-capsule-r20'), 'Content-Type':'application/json', 'Content-Encoding':'gzip'}, timeout=3.0)
+                worker_ok = 200 <= r.status_code < 300
+                worker_detail = f'HTTP {r.status_code}' if worker_ok else f'HTTP {r.status_code}: {r.text[:120]}'
+            except Exception as exc:
+                worker_detail = f'{type(exc).__name__}: {str(exc)[:140]}'
+        if redis_ok or worker_ok:
+            _R20_CAPSULE_LAST_GEN_SENT = max(_R20_CAPSULE_LAST_GEN_SENT, gen)
+            _R20_CAPSULE_LAST_SEQ_SENT = max(_R20_CAPSULE_LAST_SEQ_SENT, seq)
+            _SPLIT_STATE['capsule_last_ok'] = _split_time.time()
+            _SPLIT_STATE['capsule_last_error'] = ''
+            _SPLIT_STATE['capsule_last_seq'] = seq
+            _SPLIT_STATE['capsule_last_generation'] = gen
+            return True
+        _SPLIT_STATE['capsule_last_error'] = f'redis={redis_detail}; worker={worker_detail}'[:240]
+    except Exception as exc:
+        _SPLIT_STATE['capsule_last_error'] = f'{type(exc).__name__}: {str(exc)[:220]}'
+        try: log_error('R20 durable capsule: ' + _SPLIT_STATE['capsule_last_error'])
+        except Exception: pass
+    return False
+
+def _r20_capsule_timer_fire():
+    global _R20_CAPSULE_TIMER, _R20_CAPSULE_FIRST_DIRTY_AT, _R20_CAPSULE_REASON
+    with _R20_CAPSULE_LOCK:
+        reason = str(_R20_CAPSULE_REASON or 'coalesced')
+        _R20_CAPSULE_TIMER = None
+        _R20_CAPSULE_FIRST_DIRTY_AT = 0.0
+        _R20_CAPSULE_REASON = ''
+    return _r20_capsule_push_now(reason)
+
+def r20_schedule_durable_capsule(reason='state_change', delay=None):
+    global _R20_CAPSULE_TIMER, _R20_CAPSULE_FIRST_DIRTY_AT, _R20_CAPSULE_REASON
+    try:
+        wait = float(delay if delay is not None else _split_os.getenv('SPLIT_CAPSULE_DELAY_SEC','0.35') or '0.35')
+    except Exception:
+        wait = 0.35
+    try:
+        max_latency = float(_split_os.getenv('SPLIT_CAPSULE_MAX_LATENCY_SEC','1.0') or '1.0')
+    except Exception:
+        max_latency = 1.0
+    now = _split_time.time()
+    with _R20_CAPSULE_LOCK:
+        if _R20_CAPSULE_FIRST_DIRTY_AT <= 0.0:
+            _R20_CAPSULE_FIRST_DIRTY_AT = now
+        _R20_CAPSULE_REASON = str(reason or 'state_change')[:160]
+        due = min(now + max(0.05, wait), _R20_CAPSULE_FIRST_DIRTY_AT + max(0.2, max_latency))
+        if _R20_CAPSULE_TIMER is not None:
+            try: _R20_CAPSULE_TIMER.cancel()
+            except Exception: pass
+        _R20_CAPSULE_TIMER = _split_threading.Timer(max(0.03, due-now), _r20_capsule_timer_fire)
+        _R20_CAPSULE_TIMER.daemon = True
+        _R20_CAPSULE_TIMER.start()
+    return True
+
+# R20: redirect the original v262 config-guard remote sync to the HEAVY capsule.
+# This preserves the semantic trigger/generation of v262 without allowing FAST to
+# log into MEGA or perform a remote upload. HEAVY persists Redis + MEGA asynchronously.
+_R20_BASE_CONFIG_GUARD_SYNC_REMOTE = globals().get('config_guard_sync_remote_v234')
+def _r20_config_guard_sync_remote(*, recovery_write=False):
+    try:
+        r20_schedule_durable_capsule('config_guard_remote_sync', delay=0.05)
+        split_schedule_worker_sync_v262(reason='config_guard_remote_sync', delay=0.7)
+        return True
+    except Exception as exc:
+        try: log_error(f'R20 config durable schedule: {exc}')
+        except Exception: pass
+        return False
+globals()['config_guard_sync_remote_v234'] = _r20_config_guard_sync_remote
 
 # R15: full user-state shadow/continuity is a coalesced background checkpoint.
 # The finance record itself has already been committed by persist_finance_chat_local_fast;
@@ -1633,6 +1820,16 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
                     _cid = int(_src[0]) if _src else None
                 except Exception: _cid = None
             split_schedule_continuity_checkpoint_v270(_cid, 'logical_save', delay=4.0)
+    except Exception:
+        pass
+    try:
+        # R20: only meaningful configuration generations arm the independent capsule.
+        # Normal finance/window saves therefore do not serialize the full user-state
+        # shadow and cannot steal CPU from FAST navigation.
+        _r20_cp = _r20_latest_config_checkpoint() if '_r20_latest_config_checkpoint' in globals() else {}
+        _r20_gen = int((_r20_cp or {}).get('generation') or 0)
+        if _r20_gen > int(globals().get('_R20_CAPSULE_LAST_GEN_SENT', 0) or 0):
+            r20_schedule_durable_capsule('config_generation:' + str(_r20_gen), delay=0.20)
     except Exception:
         pass
     try:
@@ -1796,6 +1993,7 @@ def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
     try:
         continuity_checkpoint_v263(None, reason=f'shutdown-pre:{signal_name}', full=True, schedule=False)
         _split_touch_state_revision_r18(f'shutdown-pre:{signal_name}')
+        _r20_capsule_push_now(f'shutdown-pre:{signal_name}')
         _split_push_snapshot_now_v263(f'shutdown-pre-fast:{signal_name}')
     except Exception as exc:
         try: log_error(f'CONTINUITY shutdown-pre R18: {exc}')
@@ -1910,6 +2108,7 @@ def runtime_mark_ready(detail: str=''):
         # Establish an exact binary base on HEAVY immediately after every boot.
         # The POST is tiny; HEAVY performs the job asynchronously and pulls the snapshot.
         _split_request_worker_full_sync_r18('boot_ready_exact_rebase')
+        r20_schedule_durable_capsule('boot_ready', delay=0.15)
         split_schedule_worker_sync_v262(reason='boot_ready', delay=0.8)
     except Exception as exc:
         try: log_error(f'R6 boot-ready sync: {exc}')

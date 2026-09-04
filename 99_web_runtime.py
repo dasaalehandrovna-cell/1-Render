@@ -672,12 +672,13 @@ def _v211_boot_bind_failsafe():
         _v211_ensure_web_server_started('failsafe')
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
-STARTUP_RELEASE_SUMMARY = ('• ⚡ R19: callback-кнопки разделены по конкретным окнам; одна зависшая кнопка больше не блокирует весь чат. FAST UI workers увеличены до 6.\n'
-'• 🧹 post-update LOW-RAM flush и служебный журнал вынесены из UI worker в отдельную cleanup-дорожку — окно освобождается сразу после обработчика.\n'
-'• 💾 R19 вводит единственный restore-authority: после Worker/Redis preboot старый Telegram/MEGA startup не может второй раз перезаписать SQLite более старым состоянием.\n'
-'• 🔒 Более новый split state сохраняется как authoritative; legacy deploy delta catch-up поверх него отключён.\n'
-'• 🔁 После full rebase FAST принимает ровно тот SQLite-снимок, который отдал HEAVY, как новую delta-baseline. Цикл 409 → полный GET /internal/split/state устранён.\n'
-'• 🚀 Полные state-transfer выполняются только при реальном rebase/restore; обычные изменения снова идут компактными page-delta на HEAVY.')
+STARTUP_RELEASE_SUMMARY = (
+    '• ⚡ R20: FAST lane теперь только для лёгкой навигации/меню; CSV, XLSX, журнал, Google, backup и export не могут занять очередь быстрых кнопок.\n'
+    '• 💾 R20 возвращает принцип выс-262: настройки и пользовательское состояние имеют отдельный monotonic durable capsule, независимый от полного SQLite snapshot.\n'
+    '• 🧩 HEAVY/Redis хранит последний user-state seq и config generation; при deploy FAST накладывает более свежий capsule поверх восстановленной SQLite.\n'
+    '• 🔒 Полный SQLite + delta/event journal остаются вторым уровнем защиты финансов и остальных данных; capsule не содержит финансовые cold-ledger записи.\n'
+    '• 🚀 Вся сериализация/сеть capsule выполняется фоном и не находится перед Telegram callback ACK или открытием лёгкого окна.'
+)
 
 
 def _v211_start_post_ready_runtime():
@@ -744,7 +745,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (R19 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (R20 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -762,10 +763,10 @@ def _v211_deploy_handoff_catchup(db_restored: bool) -> int:
     an exact Render SIGTERM/cut-over ordering; business durability remains protected by the
     existing write-before-execute tasks + delta/Data Constitution contracts.
     """
-    if str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R19', '') or '').strip().casefold() in {'1','true','yes','on'}:
+    if str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R20', '') or '').strip().casefold() in {'1','true','yes','on'}:
         # start_front already settled Worker/Redis handoff. Never re-apply legacy
         # Telegram/MEGA deltas over the authoritative split database.
-        runtime_event('boot_handoff_r19_split_authority', 'legacy remote delta catch-up skipped')
+        runtime_event('boot_handoff_r20_split_authority', 'legacy remote delta catch-up skipped')
         return 0
     runtime_set_phase('boot_deploy_handoff', 'порт готов; финальная сверка remote delta/tasks перед READY')
     _v211_ensure_web_server_started('deploy-handoff')
@@ -810,8 +811,8 @@ def main():
     _local_primary = not (_tg_primary or _mega_primary)
     _render_selected = bool(_boot_profile == STORAGE_PROFILE_LOCAL_V237_1)
     _backend_name = 'Telegram durable' if _tg_primary else 'MEGA' if _mega_primary else 'Render local'
-    _split_preboot_authoritative_r19 = str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R19', '') or '').strip().casefold() in {'1','true','yes','on'}
-    _split_preboot_revision_r19 = str(os.getenv('SPLIT_PREBOOT_REVISION_R19', '') or '').strip()
+    _split_preboot_authoritative_r19 = str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R20', '') or '').strip().casefold() in {'1','true','yes','on'}
+    _split_preboot_revision_r19 = str(os.getenv('SPLIT_PREBOOT_REVISION_R20', '') or '').strip()
     if _split_preboot_authoritative_r19:
         # R19: start_front has already chosen the freshest Worker/Redis/local SQLite.
         # Disable every legacy boot source for this process so there is exactly one
@@ -831,7 +832,7 @@ def main():
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
     restored = bool(_split_preboot_authoritative_r19)
     db_restored = bool(_split_preboot_authoritative_r19)
-    db_detail = (f'R19 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    db_detail = (f'R20 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
     if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:

@@ -407,6 +407,113 @@ def _restore_from_mega_emergency(target: Path):
 
 
 
+
+def _r20_capsule_key():
+    return str(os.getenv('WORKER_REDIS_CAPSULE_KEY','vys262:durable_capsule:r20') or 'vys262:durable_capsule:r20').strip()
+
+def _r20_sqlite_meta_get(con, kind, key='latest'):
+    try:
+        row=con.execute('SELECT v FROM meta WHERE kind=? AND k=?',(kind,key)).fetchone()
+        return json.loads(row[0]) if row and row[0] else {}
+    except Exception:
+        return {}
+
+def _r20_sqlite_meta_set(con, kind, key, obj):
+    con.execute('CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind,k))')
+    con.execute('INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v',
+                (str(kind),str(key),json.dumps(obj,ensure_ascii=False,separators=(',',':'),default=str)))
+
+def _r20_apply_capsule_to_db(target: Path, capsule: dict):
+    if not _db_valid(target) or not isinstance(capsule,dict):
+        return False, 'invalid DB/capsule'
+    us=capsule.get('user_state') or {}; cp=capsule.get('config_checkpoint') or {}; rev=capsule.get('state_revision') or {}
+    in_seq=int((us or {}).get('seq') or capsule.get('user_state_seq') or 0)
+    in_gen=int((cp or {}).get('generation') or capsule.get('config_generation') or 0)
+    con=sqlite3.connect(str(target))
+    try:
+        cur_us=_r20_sqlite_meta_get(con,'user_state_shadow_v265','latest') or {}
+        cur_cp=_r20_sqlite_meta_get(con,'config_guard_v234','latest') or {}
+        cur_seq=int((cur_us or {}).get('seq') or 0); cur_gen=int((cur_cp or {}).get('generation') or 0)
+        applied=[]
+        if isinstance(us,dict) and us and in_seq >= cur_seq:
+            _r20_sqlite_meta_set(con,'user_state_shadow_v265','latest',us); applied.append(f'user_state {cur_seq}->{in_seq}')
+        if isinstance(cp,dict) and cp and in_gen >= cur_gen:
+            _r20_sqlite_meta_set(con,'config_guard_v234','latest',cp)
+            _r20_sqlite_meta_set(con,'config_guard_v234','generation',in_gen)
+            _r20_sqlite_meta_set(con,'config_guard_v234','last_signature',str(cp.get('config_hash') or ''))
+            _r20_sqlite_meta_set(con,'config_guard_v234','synced_hash',str(cp.get('config_hash') or ''))
+            applied.append(f'config {cur_gen}->{in_gen}')
+        if isinstance(rev,dict) and rev:
+            cur_rev=_r20_sqlite_meta_get(con,'split_state_revision_r18','latest') or {}
+            if float(rev.get('saved_at') or 0.0) >= float(cur_rev.get('saved_at') or 0.0):
+                _r20_sqlite_meta_set(con,'split_state_revision_r18','latest',rev)
+        con.commit()
+        return bool(applied), ', '.join(applied) if applied else f'capsule not newer seq={in_seq}/{cur_seq} gen={in_gen}/{cur_gen}'
+    finally:
+        con.close()
+
+def _r20_merge_capsules(*rows):
+    candidates=[x for x in rows if isinstance(x,dict) and x]
+    if not candidates:
+        return {}
+    base=dict(max(candidates,key=lambda x: float(x.get('saved_at') or 0.0)))
+    best_us=max(candidates,key=lambda x: int((x.get('user_state') or {}).get('seq') or x.get('user_state_seq') or 0))
+    best_cp=max(candidates,key=lambda x: int((x.get('config_checkpoint') or {}).get('generation') or x.get('config_generation') or 0))
+    base['user_state']=best_us.get('user_state') or {}
+    base['user_state_seq']=int((base['user_state'] or {}).get('seq') or best_us.get('user_state_seq') or 0)
+    base['config_checkpoint']=best_cp.get('config_checkpoint') or {}
+    base['config_generation']=int((base['config_checkpoint'] or {}).get('generation') or best_cp.get('config_generation') or 0)
+    try:
+        best_rev=max(candidates,key=lambda x: float(((x.get('state_revision') or {}).get('saved_at') or 0.0)))
+        base['state_revision']=best_rev.get('state_revision') or {}
+    except Exception:
+        pass
+    base['saved_at']=max(float(x.get('saved_at') or 0.0) for x in candidates)
+    base['kind']='vys262_durable_capsule_r20'; base['schema']=1
+    return base
+
+def _r20_load_capsule_from_redis():
+    if _redis is None: return {}, 'redis package unavailable'
+    url=str(os.getenv('REDIS_URL','') or '').strip()
+    if not url: return {}, 'REDIS_URL empty'
+    try:
+        client=_redis.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=2.5,health_check_interval=30)
+        raw=client.get(_r20_capsule_key())
+        if not raw: return {}, 'capsule missing in Redis'
+        payload=json.loads(gzip.decompress(raw).decode('utf-8'))
+        return (payload if isinstance(payload,dict) else {}), 'Redis capsule OK'
+    except Exception as exc:
+        return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
+
+def _r20_load_capsule_from_worker():
+    base,secret=_peer_base(),_secret()
+    if not base or not secret: return {}, 'worker URL/secret not configured'
+    try:
+        r=requests.get(base+'/internal/capsule/latest?deep=1',headers={'X-Peer-Secret':secret,'User-Agent':'vys-262-front-capsule-restore-r20'},timeout=max(5.0,min(30.0,float(os.getenv('SPLIT_CAPSULE_BOOT_TIMEOUT','15') or '15'))))
+        if r.status_code!=200: return {}, f'worker HTTP {r.status_code}'
+        raw=r.content
+        if str(r.headers.get('Content-Encoding') or '').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
+            raw=gzip.decompress(raw)
+        payload=json.loads(raw.decode('utf-8'))
+        return (payload if isinstance(payload,dict) else {}), 'Worker capsule OK'
+    except Exception as exc:
+        return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
+
+def _r20_restore_capsule(target: Path):
+    # Boot-only quorum: query both small capsule sources and merge the independently
+    # monotonic components. This prevents a newer user-state in one source from
+    # hiding a newer config generation in the other source.
+    redis_payload,redis_detail=_r20_load_capsule_from_redis()
+    worker_payload,worker_detail=_r20_load_capsule_from_worker()
+    payload=_r20_merge_capsules(redis_payload,worker_payload)
+    if not payload:
+        return False, 'redis='+redis_detail+'; worker='+worker_detail
+    try:
+        ok,apply_detail=_r20_apply_capsule_to_db(target,payload)
+        return True, 'redis='+redis_detail+'; worker='+worker_detail+'; '+apply_detail
+    except Exception as exc:
+        return False, f'capsule apply {type(exc).__name__}: {str(exc)[:180]}'
+
 def _redis_seed_current_db(target: Path, reason='front_boot'):
     """Best-effort seed of shared durable snapshot before worker can be redeployed."""
     if _redis is None or not _db_valid(target):
@@ -491,6 +598,11 @@ def main():
             print('[SPLIT FRONT] Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
             # Old instance can publish an even newer final checkpoint after cut-over.
             _settle_worker_handoff(target)
+        # R20: restore the newest independent v262-style settings/user-state capsule
+        # even when the full Worker SQLite image is slightly older.
+        if _db_valid(target):
+            _cap20_ok, _cap20_detail = _r20_restore_capsule(target)
+            print('[SPLIT FRONT] R20 durable capsule restore:', _cap20_ok, _cap20_detail, flush=True)
         # R14: packaged runtime_config.py is authoritative for all internal tunables.
         install_internal_runtime_config('front')
         # Service-account private key must never be loaded by the Telegram front.
@@ -504,9 +616,9 @@ def main():
         # potentially older Telegram/MEGA restore over this exact database.
         if _db_valid(target):
             _r19_revision = _db_revision(target)
-            os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R19'] = '1'
-            os.environ['SPLIT_PREBOOT_REVISION_R19'] = str(_r19_revision)
-            print(f'[SPLIT FRONT] R19 authoritative preboot DB revision={_r19_revision}', flush=True)
+            os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
+            os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(_r19_revision)
+            print(f'[SPLIT FRONT] R20 authoritative preboot DB revision={_r19_revision}', flush=True)
         _stop_boot_port(server)
         runpy.run_path(str(Path(__file__).with_name('bot.py')), run_name='__main__')
     finally:

@@ -1,0 +1,41 @@
+R20 VALIDATION REPORT
+=====================
+Release: R20 DURABLE CONFIG + TRUE FAST LANE
+Business/source compatibility line: выс-262 / v262
+
+DIAGNOSIS VERIFIED FROM THE 2026-09-04 JOURNAL
+- Boot config generation was 2713 while the live process later produced generation 2728: local setting changes were valid, but the split durable authority could lag.
+- callback-ack remained fast, while fast-ui reached a very large wait because expensive file/export callbacks were sharing the navigation lane.
+
+R20 TESTS — PASS
+1. Python compile/compileall for FAST + HEAVY.
+2. modules_manifest.json SHA-256 + first/last v262 markers for all 34 modular source files.
+3. r20_durable_capsule_fastlane_smoke.py:
+   - stale user-state/config cannot downgrade newer SQLite metadata;
+   - newer seq/generation applies before startup;
+   - user_state_seq and config_generation are merged independently;
+   - heavy CSV/XLSX/journal/export/Google/MEGA operations are excluded from FAST UI;
+   - correct TELEGRAM_DURABLE_ENABLED=0 is packaged on FAST;
+   - capsule overlay happens before bot.py starts.
+4. r20_heavy_capsule_contract_smoke.py:
+   - POST/GET capsule API present;
+   - local + Redis component merge present;
+   - asynchronous MEGA capsule archive/recovery present.
+5. startup_smoke_v262.py — PASS.
+6. v262_fast_ui_smoke.py — PASS.
+7. v262_exact_once_regression.py — PASS.
+8. v262_linked_finance_smoke.py — PASS.
+9. r19_google_missing_target_regression.py — PASS.
+10. r19_runtime_lane_regression.py — PASS.
+
+ARCHITECTURE CHECK
+- FAST does local commit + timer scheduling only in the new R20 durability path.
+- Redis/HTTP/MEGA capsule writes execute outside the Telegram callback foreground.
+- MEGA credentials remain HEAVY-only for normal operation.
+- Full SQLite/delta/event-journal durability remains intact as a second layer.
+
+EXPECTED R20 BOOT SIGNALS
+- [SPLIT FRONT] R20 durable capsule restore: ...
+- [SPLIT FRONT] R20 authoritative preboot DB revision=...
+- CONTINUITY R20 restored ...
+- Бот запущен и READY (R20 · версия выс-262)

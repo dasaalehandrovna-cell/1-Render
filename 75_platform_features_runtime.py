@@ -1781,13 +1781,27 @@ def _v166_is_safe_window_callback(raw: str) -> bool:
         return False
     if low in {'forward_menu_style_toggle', 'buttons_current_toggle', 'icon_buttons_toggle', 'reminder_ui_mode_toggle', 'internal_timers', 'process_center', 'problem_tasks', 'journal_open', 'journal_back', 'keepalive_status', 'info_queues', 'info_delta_status'}:
         return True
-    if low.startswith(('fw_new_src:', 'fw_new_tgt:', 'fw_new_pair:', 'fw_src:', 'fw_tgt:', 'fw_back', 'fw_new_back', 'fw_probe', 'fw_removed', 'chat_desc_', 'v164:circle:', 'rem:list', 'rem:open', 'rem:completed', 'itmr_', 'journal_', 'version_')):
+    # R20: FAST means truly light navigation only. File generation, journal export,
+    # Google/backup work and broad d:* actions must never share this lane.
+    heavy_tokens = ('csv', 'xlsx', 'export', 'journal_file', 'journal_download', 'backup_now',
+                    'mega_', 'google:', 'gsync', 'sheet_create', 'sheet_test', 'drive_',
+                    'report_build', 'full_journal', 'download')
+    if any(token in low for token in heavy_tokens):
+        return False
+    if low.startswith(('fw_back', 'fw_new_back', 'chat_desc_', 'v164:circle:', 'rem:list', 'rem:open',
+                       'rem:completed', 'itmr_', 'version_')):
+        return True
+    if low in {'journal_open','journal_back','journal_toggle','keepalive_status','info_queues','info_delta_status'}:
         return True
     if low == 'nav_prev' or 'back' in low or low.endswith('_close') or low.startswith('close_'):
         return True
     if low.startswith('d:') and (not _v166_is_finance_business_callback(raw)):
-        return True
-    return any((token in low for token in ('menu', 'page', 'list', 'view', 'status', 'refresh', 'open')))
+        try:
+            cmd = low.split(':',2)[2]
+        except Exception:
+            cmd = low
+        return any(token in cmd for token in ('info','back_main','calendar','prev','next','today','forward_menu','forward_finmode_menu'))
+    return any((token in low for token in ('menu', 'page', 'list', 'view', 'status', 'open'))) and not any(token in low for token in heavy_tokens)
 
 def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update_key):
     """R19 FAST callback routing.

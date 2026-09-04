@@ -1,0 +1,38 @@
+R20 DURABLE CONFIG + TRUE FAST LANE
+
+Release package: R20 (internal business line remains выс-262 / v262).
+
+WHY R19 STILL LOST SETTINGS
+- Original выс-262 did not depend on one full database image for settings. `save_data()` called the v234 config guard, which generated a monotonic configuration generation and scheduled an independent remote configuration checkpoint.
+- R17-R19 replaced the original remote startup authority with Worker/Redis full SQLite + deltas. FAST could successfully save a new local config generation while HEAVY still held an older full image. A deploy during that gap restored the old generation.
+- R19 also disabled the legacy Telegram durable path with `TG_DURABLE_ENABLED=0`, but выс-262 reads `TELEGRAM_DURABLE_ENABLED`; the old durable path could therefore remain active in parallel.
+
+R20 RESTORE MODEL
+1. Local SQLite commit remains immediate on FAST.
+2. The original v234 semantic config guard still decides whether a real setting changed and increments `generation`.
+3. That generation schedules an R20 durable capsule asynchronously. No Redis/MEGA request is waited on by the user callback.
+4. HEAVY stores the capsule in its local cache + shared Redis and asynchronously archives versioned capsules in MEGA.
+5. During FAST preboot, R20 reads Redis and asks HEAVY for a deep capsule restore (HEAVY may recover it from MEGA). It merges newest `user_state_seq` and newest `config_generation` independently.
+6. The capsule is applied to SQLite BEFORE bot.py starts, so the existing early user-state loader overlays settings/users/owners/chat configuration before factory defaults/bootstrap.
+7. Older seq/generation can never replace newer values.
+8. Full SQLite + page deltas + event journal stay as the second durability layer, especially for finance/cold ledgers.
+
+R20 FAST PATH
+- callback ACK remains on its dedicated ACK lane.
+- FAST UI lane is now only light navigation/menu/status/toggle operations.
+- CSV, XLSX, diagnostic journal file generation, exports, Google jobs, MEGA/backup/download operations are excluded from FAST UI.
+- Heavy exports continue through HEAVY where supported; local-only diagnostics use the normal/export lane and cannot block FAST navigation.
+- Correct `TELEGRAM_DURABLE_ENABLED=0` is forced on FAST to prevent legacy durable work competing with the split architecture.
+
+DEPLOY ORDER
+1. Deploy 2_HEAVY_R20 first and wait for it to be live.
+2. Deploy 1_FAST_R20 second.
+
+EXPECTED START LOGS
+- `[SPLIT FRONT] R20 durable capsule restore: ...`
+- `[SPLIT FRONT] R20 authoritative preboot DB revision=...`
+- `CONTINUITY R20 restored ...`
+- owner notice: `Бот запущен и READY (R20 · версия выс-262)`
+
+IMPORTANT
+MEGA credentials remain only on HEAVY. FAST never performs a normal MEGA upload/login.

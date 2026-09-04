@@ -98,3 +98,8 @@ R18 supersedes the R15 quiet-only full-rebase rule: a delta/hash mismatch now qu
 See `FIXES_R19_FAST_CALLBACK_AUTHORITATIVE_RESTORE.txt`.
 
 R19 removes the second legacy boot restore on FAST, gives lightweight navigation callbacks their own dedicated FAST UI lane, moves post-update cleanup off the UI lane, fixes the repeated full-state rebase loop by promoting the exact served full snapshot as the next delta baseline, and pauses automatic Google sync cleanly when no target table is configured.
+
+## R20 DURABLE CONFIG + TRUE FAST LANE
+See `FIXES_R20_DURABLE_CONFIG_FAST_LANE.txt`.
+
+R20 restores the original выс-262 principle of an independent monotonic settings checkpoint, but routes its durable storage to HEAVY/Redis/MEGA. FAST only schedules the checkpoint after the local config generation changes. Heavy export/file actions are excluded from the FAST navigation lane.
