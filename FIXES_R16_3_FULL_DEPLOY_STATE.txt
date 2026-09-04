@@ -1,0 +1,47 @@
+R16.3 — FULL DEPLOY STATE / INVISIBLE DEPLOY
+
+Цель
+- Пользовательские настройки и UI-состояние не должны откатываться после Render deploy/restart.
+- Последнее успешное нажатие должно быть зафиксировано локально до фонового handoff.
+
+Исправлено
+1. Убран риск потери последних 2.5–4 секунд настроек:
+   после каждого успешно обработанного Telegram update выполняется немедленный local deploy barrier.
+2. User-state shadow теперь сохраняется синхронно при save_data().
+3. Для обычных UI/update выполняется полный компактный снимок метаданных всех чатов;
+   finance hot-path использует инкрементальный снимок без переписывания cold finance ledger.
+4. Добавлена сериализация snapshot-update под lock: параллельные чаты не могут затереть shadow друг друга.
+5. Исправлена потеря значений None: очищенный edit_wait/edit_target и аналогичные nullable state теперь сохраняются точно.
+6. Добавлены tombstones для удалённых top-level root/chat state: удалённое состояние не воскресает из старого SQLite после deploy.
+7. Усилен graceful shutdown: полный checkpoint до drain, повторный checkpoint после drain, затем direct final snapshot push в HEAVY/Redis.
+8. Deploy-critical UI/settings state зеркалируется в Worker с меньшим debounce; finance сохраняет безопасный debounce.
+9. Config Guard schema=2 теперь включает ранее пропущенные реальные настройки:
+   - buttons_current_window;
+   - protected_branches_registry;
+   - version_mode_snapshots;
+   - forward_pair_order;
+   - global_settings / circle hierarchy;
+   - _task_settings_v172;
+   - _restore_mode_chat_v150.
+10. Старые schema-1 config checkpoints не сбрасывают новые sticky user settings, если в старом checkpoint этих ключей не было.
+11. При boot повторно применяются persisted RAM mirrors (finance_active_chats, backup_flags, keepalive, process controls).
+12. Сохранена delayed full sweep как дополнительная страховка для косвенных cross-chat mutations.
+
+Найденный дополнительный дефект
+- Старый shadow трактовал корректное значение None как "не удалось сериализовать" и пропускал его.
+  Из-за этого после deploy мог возвращаться старый режим ожидания/редактирования. Исправлено отдельным sentinel.
+
+Проверка
+- startup_smoke_v262: PASS
+- v262_fast_ui_smoke: PASS
+- v262_linked_finance_smoke: PASS
+- v262_exact_once_regression: PASS
+- v262_excel_parity_regression: PASS
+- v263_reminder_terminal_retry_regression: PASS
+- v263_full_deploy_state_regression: PASS
+- полный Python compileall: PASS
+- synthetic 100-chat deploy barrier: ~5.9 ms median non-finance, ~3.0 ms finance incremental.
+
+Известный старый baseline
+- v262_google_sync_modes_regression по-прежнему требует настроенный HEAVY Worker в финальном split override и локально падает с
+  "Google Sheets worker is not configured". К R16.3 persistence это не относится.

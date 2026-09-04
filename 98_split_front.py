@@ -735,6 +735,12 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
     # R15: RAW events are already remotely witnessed.  State mirroring may therefore
     # debounce short finance bursts instead of snapshotting/gzipping on every message.
     _reason_l = str(reason or '').lower()
+    # R16.3 settings/UI checkpoints are small but deploy-critical. Mirror them to
+    # Worker quickly so a replacement instance usually restores the final click
+    # even before the old instance receives SIGTERM. Finance keeps its debounce.
+    if 'deploy_state:' in _reason_l and 'finance' not in _reason_l:
+        wait = min(wait, 0.25)
+        min_interval = min(min_interval, 0.8)
     if 'finance' in _reason_l or 'critical' in _reason_l or 'event_commit' in _reason_l:
         wait = max(wait, 0.8)
         min_interval = max(min_interval, 1.5)
@@ -1122,54 +1128,125 @@ _USER_STATE_META_KIND_V265 = 'user_state_shadow_v265'
 _USER_STATE_META_KEY_V265 = 'latest'
 _USER_STATE_ROOT_EXCLUDE_V265 = {'overall_balance', 'records', 'bot_errors', '_state_meta'}
 _USER_STATE_CHAT_EXCLUDE_V265 = set(globals().get('LOWRAM_COLD_KEYS') or set()) | {'balance', 'next_id'}
+# R16.3: serialize shadow updates. A deploy can arrive while Telegram updates are
+# processed on different worker threads; without this lock two incremental captures
+# could both read the same previous shadow and silently drop the other chat's update.
+_USER_STATE_SHADOW_LOCK_V271 = _split_threading.RLock()
+_CONTINUITY_CAPTURE_LOCK_V271 = _split_threading.RLock()
+_USER_STATE_COPY_FAILED_V271 = object()
 
 def _user_state_json_copy_v265(value):
     try:
         return _split_json.loads(_split_json.dumps(value, ensure_ascii=False, separators=(',', ':'), default=str))
     except Exception:
-        return None
+        return _USER_STATE_COPY_FAILED_V271
 
-def user_state_shadow_capture_v265(reason='checkpoint'):
+def _user_state_chat_meta_v271(store):
+    if not isinstance(store, dict):
+        return None
+    meta = {}
     try:
-        root_src = _sqlite_pack_root(data) if callable(globals().get('_sqlite_pack_root')) else {k:v for k,v in (data or {}).items() if k != 'chats'}
-        root = {}
-        for key, value in (root_src or {}).items():
-            if str(key) in _USER_STATE_ROOT_EXCLUDE_V265:
-                continue
-            copied = _user_state_json_copy_v265(value)
-            if copied is not None:
-                root[str(key)] = copied
-        chats = {}
-        for cid, store in ((data or {}).get('chats') or {}).items():
-            if not isinstance(store, dict):
-                continue
-            meta = {}
-            try:
-                items = dict.items(store)
-            except Exception:
-                items = []
-            for key, value in items:
-                if str(key) in _USER_STATE_CHAT_EXCLUDE_V265:
+        items = list(dict.items(store))
+    except Exception:
+        try: items = list(store.items())
+        except Exception: items = []
+    for key, value in items:
+        if str(key) in _USER_STATE_CHAT_EXCLUDE_V265:
+            continue
+        copied = _user_state_json_copy_v265(value)
+        if copied is not _USER_STATE_COPY_FAILED_V271:
+            meta[str(key)] = copied
+    return meta
+
+
+def user_state_shadow_capture_v265(reason='checkpoint', chat_id=None, chat_ids=None, full=True):
+    """Persist a non-financial mirror of every user-visible setting/state.
+
+    R16.3 adds an incremental mode.  Normal point saves update only the touched
+    chat while retaining all other chat shadows from the previous checkpoint.
+    This makes the commit cheap enough to do synchronously before Telegram update
+    acknowledgement/deploy handoff, while full checkpoints still rebuild all chats.
+    """
+    with _USER_STATE_SHADOW_LOCK_V271:
+        try:
+            previous = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
+            root_src = _sqlite_pack_root(data) if callable(globals().get('_sqlite_pack_root')) else {k:v for k,v in (data or {}).items() if k != 'chats'}
+            root = {}
+            for key, value in (root_src or {}).items():
+                if str(key) in _USER_STATE_ROOT_EXCLUDE_V265:
                     continue
                 copied = _user_state_json_copy_v265(value)
-                if copied is not None:
-                    meta[str(key)] = copied
-            chats[str(cid)] = meta
-        previous = SQLITE.get_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, {}) or {}
-        seq = int((previous or {}).get('seq') or 0) + 1
-        payload = {
-            'schema': 2, 'seq': seq, 'saved_at': _split_time.time(),
-            'reason': str(reason or 'checkpoint')[:180], 'front_version': _SPLIT_FRONT_VERSION,
-            'root': root, 'chats': chats,
-            'counts': {'root_keys': len(root), 'chats': len(chats),
-                       'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict))},
-        }
-        SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
-        return payload
-    except Exception as exc:
-        try: log_error(f'USER_STATE shadow capture R6: {exc}')
-        except Exception: pass
-        return {}
+                if copied is not _USER_STATE_COPY_FAILED_V271:
+                    root[str(key)] = copied
+            prev_root = (previous or {}).get('root') if isinstance(previous, dict) else {}
+            prev_root = prev_root if isinstance(prev_root, dict) else {}
+            deleted_root_keys = sorted(str(k) for k in prev_root.keys() if str(k) not in root and str(k) not in _USER_STATE_ROOT_EXCLUDE_V265)
+
+            prev_chats = (previous or {}).get('chats') if isinstance(previous, dict) else {}
+            prev_chats = prev_chats if isinstance(prev_chats, dict) else {}
+            prev_deleted_chat = (previous or {}).get('deleted_chat_keys') if isinstance(previous, dict) else {}
+            prev_deleted_chat = prev_deleted_chat if isinstance(prev_deleted_chat, dict) else {}
+            if full or not isinstance(previous, dict) or not isinstance(previous.get('chats'), dict):
+                chats = {}
+                deleted_chat_keys = {}
+                for cid, store in ((data or {}).get('chats') or {}).items():
+                    meta = _user_state_chat_meta_v271(store)
+                    if meta is not None:
+                        cid_s = str(cid)
+                        chats[cid_s] = meta
+                        old_meta = prev_chats.get(cid_s) or {}
+                        if isinstance(old_meta, dict):
+                            gone = sorted(str(k) for k in old_meta.keys() if str(k) not in meta and str(k) not in _USER_STATE_CHAT_EXCLUDE_V265)
+                            if gone:
+                                deleted_chat_keys[cid_s] = gone
+            else:
+                # Shallow copy is enough: individual rows are replaced, never mutated.
+                chats = dict(prev_chats)
+                deleted_chat_keys = {str(k): list(v) for k, v in prev_deleted_chat.items() if isinstance(v, list)}
+                ids = []
+                if chat_ids is not None:
+                    src = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
+                    ids.extend(src)
+                if chat_id is not None:
+                    ids.append(chat_id)
+                seen = set()
+                for cid in ids:
+                    try: cid_i = int(cid)
+                    except Exception: continue
+                    if cid_i in seen:
+                        continue
+                    seen.add(cid_i)
+                    cid_s = str(cid_i)
+                    store = ((data or {}).get('chats') or {}).get(cid_s)
+                    meta = _user_state_chat_meta_v271(store)
+                    if meta is not None:
+                        old_meta = prev_chats.get(cid_s) or {}
+                        chats[cid_s] = meta
+                        gone = sorted(str(k) for k in old_meta.keys() if isinstance(old_meta, dict) and str(k) not in meta and str(k) not in _USER_STATE_CHAT_EXCLUDE_V265)
+                        if gone:
+                            deleted_chat_keys[cid_s] = gone
+                        else:
+                            deleted_chat_keys.pop(cid_s, None)
+                    # If a chat is intentionally absent from RAM, preserve the previous
+                    # row instead of treating low-RAM eviction as user deletion.
+
+            seq = int((previous or {}).get('seq') or 0) + 1
+            payload = {
+                'schema': 4, 'seq': seq, 'saved_at': _split_time.time(),
+                'reason': str(reason or 'checkpoint')[:180], 'front_version': _SPLIT_FRONT_VERSION,
+                'root': root, 'chats': chats,
+                'deleted_root_keys': deleted_root_keys, 'deleted_chat_keys': deleted_chat_keys,
+                'counts': {'root_keys': len(root), 'chats': len(chats),
+                           'chat_settings': sum(1 for v in chats.values() if isinstance(v, dict) and isinstance(v.get('settings'), dict)),
+                           'root_tombstones': len(deleted_root_keys),
+                           'chat_tombstones': sum(len(v) for v in deleted_chat_keys.values() if isinstance(v, list))},
+            }
+            SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
+            return payload
+        except Exception as exc:
+            try: log_error(f'USER_STATE shadow capture R16.3: {exc}')
+            except Exception: pass
+            return {}
 
 def user_state_shadow_apply_v265(loaded):
     if not isinstance(loaded, dict):
@@ -1181,12 +1258,18 @@ def user_state_shadow_apply_v265(loaded):
     if not isinstance(payload, dict) or not payload:
         return loaded
     restored_root = 0; restored_chats = 0; restored_settings = 0
+    for key in (payload.get('deleted_root_keys') or []):
+        if str(key) not in _USER_STATE_ROOT_EXCLUDE_V265:
+            loaded.pop(str(key), None)
     root = payload.get('root') or {}
     if isinstance(root, dict):
         for key, value in root.items():
             if str(key) in _USER_STATE_ROOT_EXCLUDE_V265:
                 continue
-            loaded[str(key)] = _user_state_json_copy_v265(value)
+            _copied = _user_state_json_copy_v265(value)
+            if _copied is _USER_STATE_COPY_FAILED_V271:
+                continue
+            loaded[str(key)] = _copied
             restored_root += 1
     chats = loaded.setdefault('chats', {})
     shadow_chats = payload.get('chats') or {}
@@ -1198,10 +1281,17 @@ def user_state_shadow_apply_v265(loaded):
             if not isinstance(current, dict):
                 current = {}
                 chats[str(cid)] = current
+            _gone = (payload.get('deleted_chat_keys') or {}).get(str(cid)) or []
+            for _key in _gone:
+                if str(_key) not in _USER_STATE_CHAT_EXCLUDE_V265:
+                    current.pop(str(_key), None)
             for key, value in meta.items():
                 if str(key) in _USER_STATE_CHAT_EXCLUDE_V265:
                     continue
-                current[str(key)] = _user_state_json_copy_v265(value)
+                _copied = _user_state_json_copy_v265(value)
+                if _copied is _USER_STATE_COPY_FAILED_V271:
+                    continue
+                current[str(key)] = _copied
             try:
                 if LOWRAM_ENABLED and not isinstance(current, ColdChatStore):
                     current = _lowram_wrap_store(int(cid), current)
@@ -1338,39 +1428,37 @@ def _continuity_apply_v263(name, restored):
 
 def continuity_capture_v263(reason='checkpoint'):
     """Persist RAM-only user interaction continuity inside canonical SQLite."""
-    payload = {
-        'schema': 1,
-        'saved_at': _split_time.time(),
-        'reason': str(reason or 'checkpoint')[:180],
-        'front_version': _SPLIT_FRONT_VERSION,
-        'globals': {},
-        'scalars': {},
-    }
-    for name in _CONTINUITY_NAMES_V263:
-        if name not in globals():
-            continue
-        enc = _continuity_encode_v263(globals().get(name))
-        if enc is not _CONTINUITY_SKIP_V263:
-            payload['globals'][name] = enc
-    for name in _CONTINUITY_SCALARS_V263:
-        if name not in globals():
-            continue
-        enc = _continuity_encode_v263(globals().get(name))
-        if enc is not _CONTINUITY_SKIP_V263:
-            payload['scalars'][name] = enc
-    # Existing Telegram message IDs/windows are logical root state; add a compact
-    # count here for diagnostics while the actual records stay in the normal root.
-    try:
-        payload['ui_counts'] = {
-            'active_message_chats': len((data.get('active_messages') or {})),
-            'open_windows': len((data.get('open_window_registry') or {})),
-            'chat_count': len((data.get('chats') or {})),
+    with _CONTINUITY_CAPTURE_LOCK_V271:
+        payload = {
+            'schema': 2,
+            'saved_at': _split_time.time(),
+            'reason': str(reason or 'checkpoint')[:180],
+            'front_version': _SPLIT_FRONT_VERSION,
+            'globals': {},
+            'scalars': {},
         }
-    except Exception:
-        payload['ui_counts'] = {}
-    SQLITE.set_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, payload)
-    return payload
-
+        for name in _CONTINUITY_NAMES_V263:
+            if name not in globals():
+                continue
+            enc = _continuity_encode_v263(globals().get(name))
+            if enc is not _CONTINUITY_SKIP_V263:
+                payload['globals'][name] = enc
+        for name in _CONTINUITY_SCALARS_V263:
+            if name not in globals():
+                continue
+            enc = _continuity_encode_v263(globals().get(name))
+            if enc is not _CONTINUITY_SKIP_V263:
+                payload['scalars'][name] = enc
+        try:
+            payload['ui_counts'] = {
+                'active_message_chats': len((data.get('active_messages') or {})),
+                'open_windows': len((data.get('open_window_registry') or {})),
+                'chat_count': len((data.get('chats') or {})),
+            }
+        except Exception:
+            payload['ui_counts'] = {}
+        SQLITE.set_meta(_CONTINUITY_META_KIND_V263, _CONTINUITY_META_KEY_V263, payload)
+        return payload
 
 def continuity_restore_v263():
     """Restore interaction state before main() starts accepting Telegram updates."""
@@ -1422,7 +1510,7 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
         try: log_error(f'CONTINUITY local save R4: {exc}')
         except Exception: pass
     try:
-        user_state_shadow_capture_v265(reason)
+        user_state_shadow_capture_v265(reason, chat_id=chat_id, full=bool(full))
         continuity_capture_v263(reason)
         _split_mark_state_changed_v264(f'continuity:{reason}')
     except Exception as exc:
@@ -1452,7 +1540,7 @@ def _split_continuity_checkpoint_fire_v270():
             _V263_BASE_SAVE_DATA(data, chat_ids=[int(cid)])
         else:
             _V263_BASE_SAVE_DATA(data, root_only=True)
-        user_state_shadow_capture_v265('bg:' + reason)
+        user_state_shadow_capture_v265('bg:' + reason, full=True)
         continuity_capture_v263('bg:' + reason)
         _split_mark_state_changed_v264('bg_continuity:' + reason)
         split_schedule_worker_sync_v262(reason='bg_continuity:' + reason, delay=1.2)
@@ -1482,25 +1570,25 @@ _V263_BASE_SAVE_DATA = save_data
 def save_data(d, chat_ids=None, full=False, root_only=False):
     result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
     try:
-        # Heavy all-chat shadow is background-only during normal READY operation.
-        ready_fn = globals().get('runtime_is_ready')
-        if full or not (callable(ready_fn) and ready_fn()):
-            user_state_shadow_capture_v265('logical_save')
+        # R16.3: shadow persistence is synchronous.  A user-visible setting is not
+        # considered committed until its compact deploy shadow has the same value.
+        if full:
+            user_state_shadow_capture_v265('logical_save', full=True)
         else:
-            _cid = None
-            if chat_ids is not None:
+            _ids = chat_ids
+            if _ids is None and not root_only:
                 try:
-                    _src = list(chat_ids) if isinstance(chat_ids,(list,tuple,set)) else [chat_ids]
-                    _cid = int(_src[0]) if _src else None
-                except Exception: _cid = None
-            split_schedule_continuity_checkpoint_v270(_cid, 'logical_save', delay=4.0)
-    except Exception:
-        pass
+                    _cur = current_state_chat_id()
+                    _ids = [_cur] if _cur is not None else None
+                except Exception:
+                    _ids = None
+            user_state_shadow_capture_v265('logical_save', chat_ids=_ids, full=False)
+    except Exception as exc:
+        try: log_error(f'USER_STATE synchronous logical save R16.3: {exc}')
+        except Exception: pass
     try:
         if not bool(globals().get('_V241_RESTORE_ACTIVE', False)):
             _split_mark_state_changed_v264('logical_save')
-            # Boot migrations can call save_data many times. They are local-only until
-            # READY, then R6 emits one final canonical snapshot instead of 4-10 GETs.
             ready_fn = globals().get('runtime_is_ready')
             is_ready = bool(ready_fn()) if callable(ready_fn) else False
             if is_ready or _split_inside_telegram_update_v264():
@@ -1510,7 +1598,86 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
                 _SPLIT_STATE['sync_reason'] = 'boot_coalesced'
     except Exception:
         pass
+    # Keep a delayed full all-chat sweep as a second line of defence for handlers
+    # that mutate another chat indirectly; the touched/root state is already durable.
+    try:
+        ready_fn = globals().get('runtime_is_ready')
+        if (not full) and callable(ready_fn) and ready_fn():
+            _first = None
+            if chat_ids is not None:
+                try:
+                    _src = list(chat_ids) if isinstance(chat_ids,(list,tuple,set)) else [chat_ids]
+                    _first = int(_src[0]) if _src else None
+                except Exception: _first = None
+            split_schedule_continuity_checkpoint_v270(_first, 'logical_save_sweep', delay=3.0)
+    except Exception:
+        pass
     return result
+
+
+def _split_save_current_chat_meta_v271(chat_id):
+    """Save settings/UI metadata without rewriting the finance cold ledger."""
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return False
+    with data_lock:
+        store = ((data or {}).get('chats') or {}).get(str(cid))
+        if not isinstance(store, dict):
+            return False
+        try:
+            if bool(globals().get('LOWRAM_ENABLED')) and callable(globals().get('_lowram_store_meta_payload')):
+                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
+            else:
+                SQLITE.save_chat(cid, store)
+            return True
+        except Exception:
+            return False
+
+
+def _split_commit_user_state_now_v271(chat_id=None, reason='update', full=False, finance=False, schedule=True):
+    """Immediate local deploy barrier for every successful Telegram update.
+
+    The old code waited 2.5-4 seconds.  Render can SIGTERM/redeploy inside that
+    window, so settings changed by the last click disappeared.  This barrier commits
+    root + user chat metadata + RAM continuity synchronously, then only remote
+    mirroring remains asynchronous.
+    """
+    cid = None
+    try:
+        if chat_id is not None:
+            cid = int(chat_id)
+    except Exception:
+        cid = None
+    try:
+        if full:
+            _V263_BASE_SAVE_DATA(data, full=True)
+        elif finance and cid is not None and bool(globals().get('LOWRAM_ENABLED')):
+            # Finance data itself is committed by persist_finance_chat_local_fast.
+            # Save root and lightweight chat metadata so UI/settings survive too.
+            _V263_BASE_SAVE_DATA(data, root_only=True)
+            _split_save_current_chat_meta_v271(cid)
+        elif cid is not None:
+            _V263_BASE_SAVE_DATA(data, chat_ids=[cid])
+        else:
+            _V263_BASE_SAVE_DATA(data, root_only=True)
+        user_state_shadow_capture_v265('immediate:' + str(reason or 'update'), chat_id=cid, full=(bool(full) or not finance))
+        continuity_capture_v263('immediate:' + str(reason or 'update'))
+        _split_mark_state_changed_v264('deploy_state:' + str(reason or 'update'))
+        _SPLIT_STATE['continuity_immediate_ok'] = int(_SPLIT_STATE.get('continuity_immediate_ok') or 0) + 1
+        _SPLIT_STATE['continuity_immediate_at'] = _split_time.time()
+        if schedule:
+            split_schedule_worker_sync_v262(
+                reason='deploy_state:' + str(reason or 'update'),
+                delay=0.8 if finance else 0.18,
+            )
+        return True
+    except Exception as exc:
+        _SPLIT_STATE['continuity_immediate_error'] = str(exc)[:220]
+        _SPLIT_STATE['continuity_immediate_error_at'] = _split_time.time()
+        try: log_error(f'R16.3 immediate deploy-state commit: {exc}')
+        except Exception: pass
+        return False
 
 
 # Persist RAM-only sessions after every successfully executed Telegram update.
@@ -1532,10 +1699,13 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
             cid = _extract_update_chat_id(payload)
         prefix = 'finance' if finance_dirty else 'tg'
         _reason = f'{prefix}:{str(update_type or "other")}'
-        # Fast hot path: the business handler already committed its own SQLite rows.
-        # Persist RAM/UI continuity once after the burst, not inline for every update.
-        split_schedule_continuity_checkpoint_v270(cid, _reason, delay=float(_split_os.getenv('SPLIT_CONTINUITY_FINANCE_DELAY_SEC','4.0') or '4.0') if finance_dirty else float(_split_os.getenv('SPLIT_CONTINUITY_OTHER_DELAY_SEC','2.5') or '2.5'))
-        split_schedule_worker_sync_v262(reason=f'continuity:{_reason}', delay=float(_split_os.getenv('SPLIT_FINANCE_SYNC_DELAY_SEC','0.8') or '0.8') if finance_dirty else float(_split_os.getenv('SPLIT_STATE_SYNC_DELAY_SEC','1.2') or '1.2'))
+        # R16.3: local durability is immediate.  The delayed job is now only an
+        # all-chat sweep for indirect/cross-chat mutations; it is not the first save.
+        _split_commit_user_state_now_v271(cid, _reason, full=False, finance=finance_dirty, schedule=True)
+        split_schedule_continuity_checkpoint_v270(
+            cid, 'sweep:' + _reason,
+            delay=float(_split_os.getenv('SPLIT_CONTINUITY_FULL_SWEEP_DELAY_SEC','3.0') or '3.0'),
+        )
     except Exception as exc:
         try: log_error(f'CONTINUITY post-update R11: {exc}')
         except Exception: pass
@@ -1646,12 +1816,25 @@ except Exception:
 _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN = runtime_graceful_shutdown
 
 def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
+    # R16.3: freeze/capture continuity before the base shutdown starts draining and
+    # taking its own snapshots, then capture once more after drain before direct push.
+    global _SPLIT_CONTINUITY_TIMER
+    try:
+        with _SPLIT_CONTINUITY_LOCK:
+            if _SPLIT_CONTINUITY_TIMER is not None:
+                try: _SPLIT_CONTINUITY_TIMER.cancel()
+                except Exception: pass
+                _SPLIT_CONTINUITY_TIMER = None
+        continuity_checkpoint_v263(None, reason=f'pre_shutdown:{signal_name}', full=True, schedule=False)
+    except Exception as exc:
+        try: log_error(f'CONTINUITY pre-shutdown R16.3: {exc}')
+        except Exception: pass
     result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
     try:
         continuity_checkpoint_v263(None, reason=f'shutdown:{signal_name}', full=True, schedule=False)
         _split_push_snapshot_now_v263(f'shutdown:{signal_name}')
     except Exception as exc:
-        try: log_error(f'CONTINUITY shutdown R4: {exc}')
+        try: log_error(f'CONTINUITY shutdown R16.3: {exc}')
         except Exception: pass
     return result
 
@@ -1659,8 +1842,8 @@ def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
 # R6 loader-order safety: 99_web_runtime loads data before this final module.
 # The base load_data now restores the shadow early, and this second idempotent overlay
 # protects already-loaded data if a future module order changes again.
-try:
-    data = user_state_shadow_apply_v265(data)
+def _split_rehydrate_persisted_runtime_settings_v271():
+    """Apply persisted settings that also have mutable RAM mirrors."""
     try:
         _fac = (data or {}).get('finance_active_chats') or {}
         finance_active_chats.clear()
@@ -1676,8 +1859,32 @@ try:
         backup_flags['channel'] = bool(_bf.get('channel', backup_flags.get('channel', True)))
     except Exception:
         pass
+    try:
+        _ka_key = str(globals().get('KEEPALIVE_CONFIG_KEY') or 'keepalive_v205')
+        _ka = (((data or {}).get('_global_settings') or {}).get(_ka_key) or {})
+        if isinstance(_ka, dict):
+            if 'self_enabled' in _ka:
+                globals()['KEEP_ALIVE_ENABLED'] = bool(_ka.get('self_enabled'))
+            if 'self_interval_seconds' in _ka:
+                try: globals()['KEEP_ALIVE_INTERVAL_SECONDS'] = int(_ka.get('self_interval_seconds'))
+                except Exception: pass
+    except Exception:
+        pass
+    # Process controls have persisted flags and a derived runtime map.  Reapply them
+    # if the subsystem is already defined; it also runs again during READY startup.
+    try:
+        _apply = globals().get('_v176_apply_runtime_flags')
+        if callable(_apply):
+            _apply()
+    except Exception:
+        pass
+    return True
+
+try:
+    data = user_state_shadow_apply_v265(data)
+    _split_rehydrate_persisted_runtime_settings_v271()
 except Exception as _r6_live_apply_exc:
-    try: log_error(f'R6 live user-state apply: {_r6_live_apply_exc}')
+    try: log_error(f'R16.3 live user-state apply: {_r6_live_apply_exc}')
     except Exception: pass
 
 # The DB was restored by start_front.py before bot.py was loaded, so RAM continuity

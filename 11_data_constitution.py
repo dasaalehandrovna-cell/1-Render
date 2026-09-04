@@ -1701,7 +1701,7 @@ def constitution_verify_protected_symbols() -> tuple[bool, str]:
         constitution_set_quarantine('storage-core symbol redefined: ' + ', '.join(changed))
         return (False, ', '.join(changed))
     return (True, 'ok')
-CONFIG_GUARD_SCHEMA_V234 = 1
+CONFIG_GUARD_SCHEMA_V234 = 2
 CONFIG_GUARD_REMOTE_KEEP_V234 = 5
 CONFIG_GUARD_REMOTE_DIRNAME_V234 = 'config_checkpoints'
 CONFIG_GUARD_META_KIND_V234 = 'config_guard_v234'
@@ -1709,9 +1709,13 @@ CONFIG_GUARD_GENERATION_KEY_V234 = 'config_generation_v234'
 CONFIG_GUARD_BOOT_VERIFIED_V234 = False
 CONFIG_GUARD_LAST_REPORT_V234 = {}
 CONFIG_GUARD_LOCK_V234 = threading.RLock()
-_V234_ROOT_CONFIG_KEYS = ('forward_rules', 'forward_finance', 'finance_active_chats', 'backup_flags')
-_V234_GLOBAL_SETTINGS_EXCLUDE = {CONFIG_GUARD_GENERATION_KEY_V234, 'finance_integrity_v141', 'operation_ledger_v141', '_window_tz_v160', '_window_marker_catalog_v160', 'version_mode_snapshots', 'mega_root_migration_v153', 'buttons_current_window', 'data_constitution_ledger_highwater', 'usd_rate_cache', 'last_chat_probe_summary_v197', 'expense_inbox_v141', 'protected_branches_registry', 'journal_v208_applied_at', 'version_mode_v87_migrated', 'version_mode_v88_migrated', 'version_mode_v90_migrated', 'version_mode_v91_migrated', 'version_mode_v92_migrated', 'version_mode_v93_migrated', 'version_mode_v94_migrated'}
-_V234_CHAT_SETTINGS_EXCLUDE = {'pending_input', 'input_wait', 'last_callback_at', 'last_ui_touch_at', 'buttons_current_window', '_active_currency_ledger', 'usd_transactions_migrated_v93', 'gomonk_rebalance_history_v151'}
+_V234_ROOT_CONFIG_KEYS = ('forward_rules', 'forward_finance', 'finance_active_chats', 'backup_flags', 'forward_pair_order', 'global_settings', '_task_settings_v172', '_restore_mode_chat_v150')
+_V234_GLOBAL_SETTINGS_EXCLUDE = {CONFIG_GUARD_GENERATION_KEY_V234, 'finance_integrity_v141', 'operation_ledger_v141', '_window_tz_v160', '_window_marker_catalog_v160', 'mega_root_migration_v153', 'data_constitution_ledger_highwater', 'usd_rate_cache', 'last_chat_probe_summary_v197', 'expense_inbox_v141', 'journal_v208_applied_at', 'version_mode_v87_migrated', 'version_mode_v88_migrated', 'version_mode_v90_migrated', 'version_mode_v91_migrated', 'version_mode_v92_migrated', 'version_mode_v93_migrated', 'version_mode_v94_migrated'}
+_V234_CHAT_SETTINGS_EXCLUDE = {'pending_input', 'input_wait', 'last_callback_at', 'last_ui_touch_at', '_active_currency_ledger', 'usd_transactions_migrated_v93', 'gomonk_rebalance_history_v151'}
+# Missing in schema-1 checkpoints, but real user settings. Preserve the current value
+# only when an older checkpoint does not contain the key; schema-2 checkpoints restore it.
+_V234_STICKY_GLOBAL_USER_KEYS = {'buttons_current_window', 'protected_branches_registry', 'version_mode_snapshots'}
+_V234_STICKY_CHAT_USER_KEYS = {'buttons_current_window'}
 _V234_GOMONK_KEYS = ('gomonk_enabled', 'gomonk_entries', 'remaining_with_gomonk', 'gomonk_target_total_v209', 'gomonk_target_migrated_v209', 'usd_gomonk_enabled', 'usd_gomonk_entries', 'usd_remaining_with_gomonk', 'usd_gomonk_target_total_v209', 'usd_gomonk_target_migrated_v209')
 
 def config_guard_remote_dir_v234() -> str:
@@ -1813,7 +1817,7 @@ def _v234_config_metrics(proj: dict) -> dict:
                 gomonk_entries += len(ent)
             if bool(st.get(prefix + 'gomonk_enabled', False)):
                 gomonk_enabled_count += 1
-    return {'forward_edges': forward_edges, 'reminder_items': reminder_items, 'gomonk_entries': gomonk_entries, 'gomonk_enabled': gomonk_enabled_count, 'settings_keys': settings_keys}
+    return {'forward_edges': forward_edges, 'reminder_items': reminder_items, 'gomonk_entries': gomonk_entries, 'gomonk_enabled': gomonk_enabled_count, 'settings_keys': settings_keys, 'root_config_keys': len(root), 'global_setting_keys': len(root.get('_global_settings') or {}) if isinstance(root.get('_global_settings'), dict) else 0, 'chat_count': len(chats)}
 
 def _v234_checkpoint_from_projection(proj: dict, generation: int, reason: str) -> dict:
     return {'kind': 'telegram_bot_config_checkpoint_v234', 'schema_version': CONFIG_GUARD_SCHEMA_V234, 'bot_version': VERSION, 'created_at': now_local().isoformat(timespec='microseconds'), 'generation': int(generation), 'reason': str(reason or 'config'), 'storage_lineage_v239': _v239_storage_lineage(create=True), 'config_hash': _v234_config_hash(proj), 'metrics': _v234_config_metrics(proj), 'config': proj}
@@ -2028,6 +2032,10 @@ def _v234_apply_config_projection(proj: dict, *, merge_missing_only: bool=False)
                         changed['root'] += 1
             else:
                 for k in list(live_gs):
+                    if k in _V234_STICKY_GLOBAL_USER_KEYS and k not in remote_gs:
+                        # Backward compatibility: schema-1 checkpoints intentionally
+                        # omitted these user settings, so absence must not mean reset.
+                        continue
                     if k not in _V234_GLOBAL_SETTINGS_EXCLUDE and k not in remote_gs:
                         live_gs.pop(k, None)
                 for k, v in remote_gs.items():
@@ -2046,6 +2054,10 @@ def _v234_apply_config_projection(proj: dict, *, merge_missing_only: bool=False)
                         live[k] = _v234_json_clone(v)
             else:
                 preserve = {k: v for k, v in live.items() if k in _V234_CHAT_SETTINGS_EXCLUDE}
+                # Same compatibility rule for per-chat current-window preference.
+                for k in _V234_STICKY_CHAT_USER_KEYS:
+                    if k in live and k not in rst:
+                        preserve[k] = live[k]
                 live.clear()
                 live.update(_v234_json_clone(rst))
                 live.update(preserve)
