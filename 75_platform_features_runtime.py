@@ -3107,14 +3107,26 @@ def _v167_persist_schedule(target_chat_id: int):
     cid = int(target_chat_id)
     started = _v167_time.monotonic()
     try:
-        save_data(data, chat_ids=[cid])
+        trace = globals().get('r25_trace_stage')
+        if callable(trace): trace('SQLITE_GOOGLE_SETTINGS_START', emit=False)
+        store = get_chat_store(cid)
+        if bool(globals().get('LOWRAM_ENABLED', False)):
+            payload = _lowram_store_meta_payload(store)
+        else:
+            payload = dict(store)
+        # R26: google_thuwed_v167 lives in the hot chat meta row. Do not call
+        # save_data() here: that serializes root state and flushes every loaded
+        # cold finance field although this callback changed only one setting.
+        SQLITE.save_chat(cid, payload)
+        elapsed = _v167_time.monotonic() - started
+        if callable(trace): trace('SQLITE_GOOGLE_SETTINGS_DONE', elapsed, emit=elapsed >= 0.020)
     except Exception as exc:
         try:
-            log_error(f'v177 google schedule SQLite persist {cid}: {exc}')
+            log_error(f'R26 google schedule SQLite meta persist {cid}: {exc}')
         except Exception:
             pass
     try:
-        schedule_config_backup_for_chats(cid, delay=0.8)
+        schedule_config_backup_for_chats(cid, delay=2.0)
     except Exception:
         pass
     try:

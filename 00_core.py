@@ -785,6 +785,7 @@ FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 4, 2, 8
 WINDOW_RENDER_TASK_POOL = KeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 6, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING', 900, 100, 4000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 1, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
 UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
+UI_DELETE_TASK_POOL = KeyedTaskPool('ui-delete', _env_int('UI_DELETE_WORKERS', 2, 1, 4), _env_int('UI_DELETE_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
 REMINDER_TASK_POOL = KeyedTaskPool('reminder', _env_int('REMINDER_WORKERS', 1, 1, 3), _env_int('REMINDER_MAX_PENDING', 250, 20, 1000))
 FINANCE_TASK_POOL = KeyedTaskPool('finance', _env_int('FINANCE_WORKERS', 2, 2, 8), _env_int('FINANCE_MAX_PENDING', 400, 50, 2000))
@@ -967,7 +968,9 @@ class DurableUpdateDispatcher:
                             stack = ''.join(traceback.format_stack(frame, limit=24))
                             if len(stack) > 14000:
                                 stack = stack[-14000:]
-                            log_error(f'STUCK_STACK update={key} chat={chat_id} type={typ} age={age:.1f}s stage={stage or "?"} action={str(action or "")[:160]} thread={thread_name or thread_ident}\n{stack}')
+                            _r26_stack_line = f'STUCK_STACK update={key} chat={chat_id} type={typ} age={age:.1f}s stage={stage or "?"} action={str(action or "")[:160]} thread={thread_name or thread_ident}\n{stack}'
+                            log_error(_r26_stack_line)
+                            r26_diag_trace_line(_r26_stack_line)
                         else:
                             log_error(f'STUCK_STACK update={key}: frame unavailable thread={thread_name or thread_ident}')
                     except Exception as stack_exc:
@@ -982,6 +985,26 @@ UPDATE_DISPATCHER = DurableUpdateDispatcher()
 _R25_TRACE_LOCAL = threading.local()
 _R25_TRACE_SLOW_LOCK_SEC = max(0.005, float(os.getenv('R25_TRACE_SLOW_LOCK_SEC', '0.020') or '0.020'))
 
+# R26: zero-I/O forensic ring included in the downloadable current-version journal.
+# Appending here never touches SQLite/Redis/files, so diagnostics cannot slow buttons.
+_R26_TRACE_RING = deque(maxlen=max(500, min(10000, int(os.getenv('R26_TRACE_RING_ROWS','4000') or '4000'))))
+_R26_TRACE_RING_LOCK = threading.RLock()
+def r26_diag_trace_line(line: str):
+    try:
+        text = str(line or '')
+        if not text: return
+        stamp = now_local().isoformat(timespec='milliseconds') if 'now_local' in globals() else datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+        with _R26_TRACE_RING_LOCK:
+            _R26_TRACE_RING.append(f'{stamp} | {text[:12000]}')
+    except Exception:
+        pass
+def r26_diag_trace_snapshot(limit: int=4000):
+    try:
+        with _R26_TRACE_RING_LOCK:
+            return list(_R26_TRACE_RING)[-max(1,int(limit)): ]
+    except Exception:
+        return []
+
 def r25_trace_begin(update_id, chat_id=None, update_type='other', action=''):
     _R25_TRACE_LOCAL.update_id = str(update_id or '')
     _R25_TRACE_LOCAL.chat_id = chat_id
@@ -990,7 +1013,9 @@ def r25_trace_begin(update_id, chat_id=None, update_type='other', action=''):
     _R25_TRACE_LOCAL.started_mono = time.monotonic()
     try: UPDATE_DISPATCHER.mark_stage(update_id, 'WORKER_START', action)
     except Exception: pass
-    try: log_info(f'BTNTRACE update={update_id} chat={chat_id} type={update_type} action={str(action or "")[:180]} stage=WORKER_START')
+    try:
+        _line=f'BTNTRACE update={update_id} chat={chat_id} type={update_type} action={str(action or "")[:180]} stage=WORKER_START'
+        log_info(_line); r26_diag_trace_line(_line)
     except Exception: pass
 
 def r25_trace_set_action(action: str):
@@ -999,7 +1024,7 @@ def r25_trace_set_action(action: str):
         ctx = r25_trace_current()
         if ctx.get('update_id'):
             UPDATE_DISPATCHER.mark_stage(ctx.get('update_id'), 'CALLBACK_ROUTER', str(action or ''))
-            log_info(f'BTNTRACE update={ctx.get("update_id")} chat={ctx.get("chat_id")} action={str(action or "")[:180]} stage=CALLBACK_ROUTER')
+            _line=f'BTNTRACE update={ctx.get("update_id")} chat={ctx.get("chat_id")} action={str(action or "")[:180]} stage=CALLBACK_ROUTER'; log_info(_line); r26_diag_trace_line(_line)
     except Exception:
         pass
 
@@ -1022,7 +1047,7 @@ def r25_trace_stage(stage: str, elapsed=None, detail: str='', emit: bool=True):
         try:
             e = '' if elapsed is None else f' elapsed={max(0.0,float(elapsed)):.3f}s'
             d = f' detail={str(detail or "")[:260]}' if detail else ''
-            log_info(f'BTNTRACE update={update_id or "-"} chat={ctx.get("chat_id")} action={str(ctx.get("action") or "")[:180]} stage={str(stage or "")[:120]}{e}{d}')
+            _line=f'BTNTRACE update={update_id or "-"} chat={ctx.get("chat_id")} action={str(ctx.get("action") or "")[:180]} stage={str(stage or "")[:120]}{e}{d}'; log_info(_line); r26_diag_trace_line(_line)
         except Exception: pass
 
 def r25_trace_end():
@@ -1050,7 +1075,8 @@ class R25TracedRLock:
         if traced:
             r25_trace_stage(f'{self.name.upper()}_LOCK_ACQUIRED', waited, emit=waited >= _R25_TRACE_SLOW_LOCK_SEC)
         elif waited >= max(0.25, _R25_TRACE_SLOW_LOCK_SEC * 5):
-            try: log_info(f'LOCKTRACE name={self.name} wait={waited:.3f}s thread={threading.current_thread().name}')
+            try:
+                _line=f'LOCKTRACE name={self.name} wait={waited:.3f}s thread={threading.current_thread().name}'; log_info(_line); r26_diag_trace_line(_line)
             except Exception: pass
         return ok
     def release(self): return self._lock.release()
@@ -1684,7 +1710,8 @@ class SQLiteState:
             except Exception: pass
         elapsed = max(0.0, time.monotonic() - started)
         try:
-            if elapsed >= 0.25: log_info(f'R25 SQLITE ONLINE BACKUP path={os.path.basename(target_path)} elapsed={elapsed:.3f}s shared_lock=0')
+            if elapsed >= 0.25:
+                _line=f'R26 SQLITE ONLINE BACKUP path={os.path.basename(target_path)} elapsed={elapsed:.3f}s shared_lock=0'; log_info(_line); r26_diag_trace_line(_line)
             r25_trace_stage('SQLITE_BACKUP_DONE', elapsed, emit=elapsed >= _R25_TRACE_SLOW_LOCK_SEC)
         except Exception: pass
         return target_path
@@ -3780,6 +3807,9 @@ def _send_current_version_journal_to_owner_sync(chat_id: int, limit: int=5000):
             for ev in list(globals().get('_RUNTIME_EVENTS') or []):
                 if isinstance(ev, dict):
                     fh.write(f"{ev.get('ts', '')} | {ev.get('level', '')} | {ev.get('event', '')} | {ev.get('detail', '')}\n")
+            fh.write('\nR26 FAST TRACE CURRENT PROCESS\n')
+            for _trace_line in r26_diag_trace_snapshot(int(os.getenv('R26_TRACE_EXPORT_ROWS','4000') or '4000')):
+                fh.write(str(_trace_line) + '\n')
         _file_job_progress('отправляю журнал текущей версии', force=True)
         with open(tmp_path, 'rb') as fh:
             _tg_call_retry(bot.send_document, int(chat_id), fh, caption=f'📓 Журнал текущей версии: {VERSION}', timeout=120, purpose='current_version_journal_send')

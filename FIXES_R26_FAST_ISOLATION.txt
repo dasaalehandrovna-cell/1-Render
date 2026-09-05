@@ -1,0 +1,9 @@
+Пер-R26 — FAST ISOLATION / NO BACKUP STORM
+
+1. HEAVY no longer chains full /internal/split/state downloads while state changes during a full fetch.
+2. Full rebase requests are rate-limited (default 45s) except explicit boot/shutdown/manual force.
+3. Front idle full reconcile waits 45s of UI quiet. Normal durability continues through compact deltas/events.
+4. Google schedule settings persist only the hot chat-meta SQLite row; no full root + cold-ledger flush for a simple toggle.
+5. Telegram delete has a dedicated UI_DELETE_TASK_POOL and cannot occupy shared GENERAL background workers.
+6. BTNTRACE/LOCKTRACE/STUCK_STACK/SPLITTRACE lines are mirrored into an in-memory R26 ring and appended to the current-version downloadable journal with zero SQLite/Redis I/O on the button path.
+7. R24/R25 FIFO button/render ordering and finance exact-once rules are preserved.

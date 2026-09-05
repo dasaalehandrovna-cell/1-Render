@@ -113,3 +113,7 @@ Every Telegram callback has an immediate FAST stage on Render #1. The callback i
 See `FIXES_R25_TRACE_FAST_PRIORITY.txt`.
 
 R25 keeps the R24 FIFO/hot-RAM interaction model and adds full BTNTRACE + automatic STUCK_STACK diagnostics. Ordinary callbacks return HTTP 200 immediately after FAST enqueue; callback SQLite inbox/remote witness run after admission. Full split reconciliation is deferred until UI quiet, and SQLite snapshots use a separate online-backup connection so HEAVY cannot monopolize FAST's shared SQLite lock. Large config capsules are trailing-debounced. Owner READY notice shows `Пер-R25`.
+
+
+## Пер-R26 — FAST ISOLATION / NO BACKUP STORM
+See `FIXES_R26_FAST_ISOLATION.txt`. FAST/HEAVY keep R25 diagnostics while removing repeated full-state pulls from active UI, isolating Telegram delete, and making Google schedule settings a targeted SQLite write. Owner READY notice shows `Пер-R26`.

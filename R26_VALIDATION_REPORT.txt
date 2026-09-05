@@ -1,0 +1,31 @@
+Пер-R26 — FAST ISOLATION / NO BACKUP STORM
+
+Основа: Пер-R25.
+
+Исправления:
+1. HEAVY больше не запускает немедленный следующий full /internal/split/state fetch, если состояние изменилось во время текущего full fetch.
+2. Full rebase rate-limit: 45 секунд по умолчанию, кроме boot/shutdown/manual-force.
+3. FAST idle full reconcile: только после 45 секунд пользовательской тишины; обычная durability продолжает работать через delta/event/capsule.
+4. Google schedule/settings callback сохраняет только chat-meta SQLite row через SQLITE.save_chat; общий save_data/root/cold-ledger flush убран из этой кнопки.
+5. Telegram delete вынесен в отдельный UI_DELETE_TASK_POOL; GENERAL/BACKGROUND pool больше не используется для delete окна.
+6. BTNTRACE/LOCKTRACE/STUCK_STACK/SPLITTRACE/R26 backup trace зеркалируются в RAM ring и добавляются в скачиваемый «Журнал текущей версии» без SQLite/Redis/file I/O на горячем пути.
+7. FIFO-порядок callback/render R24/R25 и exact-once финансов сохранены.
+
+Проверки:
+- Python compile FAST: PASS
+- Python compile HEAVY: PASS
+- modules_manifest SHA-256: PASS (34 files)
+- R26 fast isolation smoke: PASS
+- R20 durable capsule fastlane: PASS
+- R20 HEAVY capsule contract: PASS
+- v262 exact-once regression: PASS
+- v262 FAST UI smoke: PASS
+- startup smoke v262: PASS
+- R19 runtime lane regression: PASS
+
+Deploy:
+1. HEAVY R26
+2. FAST R26
+
+После deploy при проверке кнопок скачиваемый журнал текущей версии должен содержать раздел:
+R26 FAST TRACE CURRENT PROCESS

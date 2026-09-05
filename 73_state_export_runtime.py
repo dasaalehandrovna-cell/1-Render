@@ -2798,8 +2798,16 @@ def _canon_log_error__001(message):
         return _V153_ORIG_LOG_ERROR(v153_redact_text(message))
 
 def _canon_log_info__001(message):
+    safe = v153_redact_text(message)
+    try:
+        text = str(safe or '')
+        if text.startswith(('BTNTRACE ', 'LOCKTRACE ', 'SPLITTRACE ', 'R26 SQLITE ONLINE BACKUP')):
+            fn = globals().get('r26_diag_trace_line')
+            if callable(fn): fn(text)
+    except Exception:
+        pass
     if callable(_V153_ORIG_LOG_INFO):
-        return _V153_ORIG_LOG_INFO(v153_redact_text(message))
+        return _V153_ORIG_LOG_INFO(safe)
 
 def _v177_legacy_0007_bot_journal(action, chat_id=None, detail='', level='INFO'):
     if callable(_V153_ORIG_BOT_JOURNAL):

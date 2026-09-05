@@ -173,12 +173,18 @@ def v177_delete_message_async(chat_id: int, message_id: int, purpose: str='ui_cl
             except Exception:
                 pass
     try:
-        pool = globals().get('GENERAL_TASK_POOL')
+        pool = globals().get('UI_DELETE_TASK_POOL')
         if pool is not None:
-            return bool(pool.submit_unique(f'v177-ui-delete:{cid}:{mid}', _job))
+            return bool(pool.submit_unique(f'r26-ui-delete:{cid}:{mid}', _job))
     except Exception:
         pass
-    return False
+    # R26: never fall back to a shared GENERAL worker from a callback. If the
+    # dedicated pool is unavailable, a tiny daemon owns this best-effort delete.
+    try:
+        threading.Thread(target=_job, name=f'r26-ui-delete-{cid}-{mid}', daemon=True).start()
+        return True
+    except Exception:
+        return False
 
 def cancel_fast_ui_edit(chat_id: int, message_id: int):
     key = _ui_edit_key(chat_id, message_id)
