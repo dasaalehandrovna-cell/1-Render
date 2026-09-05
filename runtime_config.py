@@ -1,4 +1,4 @@
-"""vys-262 R26 internal runtime configuration.
+"""vys-262 R27 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r26-fast-isolation"
+CONFIG_VERSION = "vys-262-r27-fast-priority-back-history"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -36,6 +36,10 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "UI_DELETE_MAX_PENDING": "1200",
     "R26_TRACE_RING_ROWS": "4000",
     "R26_TRACE_EXPORT_ROWS": "4000",
+    "R27_FAST_USER_PRIORITY_SEC": "1.6",
+    "R27_SNAPSHOT_USER_QUIET_SEC": "15",
+    "R27_STATE_MIRROR_DELAY_SEC": "20",
+    "R27_FULL_SNAPSHOT_MIN_INTERVAL_SEC": "120",
     "R24_LOWRAM_EVICT_RSS_MB": "340",
     "UI_CLEANUP_MAX_PENDING": "1200",
     "WEBHOOK_WORKERS": "3",
@@ -57,17 +61,17 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "PEER_PING_ENABLED": "1",
     "PEER_PING_INTERVAL_SEC": "120",
     "SPLIT_WORKER_SYNC_ENABLED": "1",
-    "SPLIT_STATE_SYNC_DELAY_SEC": "1.2",
-    "SPLIT_STATE_SYNC_MIN_INTERVAL_SEC": "1.5",
-    "SPLIT_FINANCE_SYNC_DELAY_SEC": "0.8",
+    "SPLIT_STATE_SYNC_DELAY_SEC": "8",
+    "SPLIT_STATE_SYNC_MIN_INTERVAL_SEC": "30",
+    "SPLIT_FINANCE_SYNC_DELAY_SEC": "8",
     "SPLIT_CONTINUITY_FINANCE_DELAY_SEC": "4.0",
     "SPLIT_CONTINUITY_OTHER_DELAY_SEC": "2.5",
     "SPLIT_CONTINUITY_MAX_LATENCY_SEC": "5.0",
-    "SPLIT_SYNC_MAX_LATENCY_SEC": "3.0",
+    "SPLIT_SYNC_MAX_LATENCY_SEC": "60",
     "SPLIT_CAPSULE_DELAY_SEC": "2.0",
     "SPLIT_CAPSULE_MAX_LATENCY_SEC": "6.0",
     "WORKER_REDIS_CAPSULE_KEY": "vys262:durable_capsule:r20",
-    "SPLIT_FULL_RECONCILE_QUIET_SEC": "45",
+    "SPLIT_FULL_RECONCILE_QUIET_SEC": "20",
     "SPLIT_DELTA_MAX_PAGES": "256",
     "SPLIT_DELTA_MAX_BYTES": "524288",
     "SPLIT_EVENT_RECEIPT_TIMEOUT_SEC": "1.2",

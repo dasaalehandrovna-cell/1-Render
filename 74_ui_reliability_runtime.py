@@ -4459,7 +4459,11 @@ def _canon_restore_previous_window__001(call) -> bool:
     except Exception:
         pass
     result = _v161_edit_retry(chat_id, message_id, str(snap.get('text') or ''), reply_markup=markup, parse_mode=snap.get('parse_mode'), purpose='nav_prev_restore')
-    if result != 'ok':
+    # R27: the canonical FAST renderer is intentionally asynchronous and returns
+    # 'scheduled' after a successful enqueue. Treat that as a committed navigation
+    # decision; otherwise the same click falls through into a second legacy Back
+    # handler and users observe 'first click did nothing / second click works'.
+    if result not in {'ok', 'scheduled'}:
         try:
             bot_journal('nav_prev_not_committed', chat_id, f'msg={message_id}; result={result}; history_kept=1', 'WARN')
         except Exception:

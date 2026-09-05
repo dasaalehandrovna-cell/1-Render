@@ -320,6 +320,60 @@ def _nav_history_clear_v248(chat_id: int, message_id: int) -> None:
         except Exception:
             pass
 
+def r27_callback_is_back_navigation(call, data_str: str) -> bool:
+    """True for a user-visible Back button (not backup operations).
+
+    We inspect both callback token and the text of the clicked button. This lets old
+    windows keep their historical callback names while R27 gives all Back buttons the
+    same navigation semantics: previous window first, legacy fallback second.
+    """
+    raw = str(data_str or '').strip()
+    low = raw.casefold()
+    if 'backup' in low:
+        return False
+    if low == 'nav_prev' or low.endswith(':back_main'):
+        return True
+    normalized = low.replace(':', '_').replace('-', '_')
+    parts = [x for x in normalized.split('_') if x]
+    if 'back' in parts or low.startswith('back_') or low.endswith('_back'):
+        return True
+    try:
+        markup = getattr(getattr(call, 'message', None), 'reply_markup', None)
+        for row in list(getattr(markup, 'keyboard', None) or []):
+            for btn in row or []:
+                if str(getattr(btn, 'callback_data', '') or '') != raw:
+                    continue
+                label = str(getattr(btn, 'text', '') or '').casefold()
+                if 'назад' in label:
+                    return True
+    except Exception:
+        pass
+    return False
+
+def r27_cleanup_after_history_back(call):
+    try:
+        cid = int(call.message.chat.id)
+    except Exception:
+        return False
+    def _job():
+        try:
+            fn = globals().get('cancel_pending_window_commands')
+            if callable(fn): fn(cid, delete_prompt=False)
+        except Exception:
+            pass
+        try:
+            fn = globals().get('_v214_cancel_pending_before_navigation')
+            if callable(fn): fn(call, 'nav_prev')
+        except Exception:
+            pass
+    try:
+        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None and pool.submit_unique(f'r27-back-clean:{cid}', _job):
+            return True
+    except Exception:
+        pass
+    return False
+
 def remember_previous_window(call):
     try:
         msg = call.message

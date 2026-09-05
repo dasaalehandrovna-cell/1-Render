@@ -1,0 +1,9 @@
+Пер-R27 — FAST PRIORITY / PREVIOUS WINDOW BACK
+
+1. Служебный split state revision больше не читает/пишет SQLite внутри callback.
+2. Page-delta snapshot storm отключён: canonical SQLite mirror выполняется только после периода пользовательской тишины.
+3. Full snapshot не обслуживается через /internal/split/state, пока пользователь активно нажимает кнопки.
+4. ui-cleanup/scheduler/background/reminder уступают data/sqlite lock недавно пришедшей пользовательской кнопке.
+5. Любая пользовательская кнопка «Назад» сначала пытается восстановить фактическое предыдущее окно из RAM history; старый callback остаётся fallback при отсутствии истории.
+6. BTNTRACE/STUCK_STACK R25/R26 сохранены.
+7. Идея будущей CLEAN-компоновки FAST+HEAVY в один общий репозиторий сохранена отдельно; в R27 структура модулей намеренно не менялась.

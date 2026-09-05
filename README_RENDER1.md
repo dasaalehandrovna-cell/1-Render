@@ -117,3 +117,7 @@ R25 keeps the R24 FIFO/hot-RAM interaction model and adds full BTNTRACE + automa
 
 ## Пер-R26 — FAST ISOLATION / NO BACKUP STORM
 See `FIXES_R26_FAST_ISOLATION.txt`. FAST/HEAVY keep R25 diagnostics while removing repeated full-state pulls from active UI, isolating Telegram delete, and making Google schedule settings a targeted SQLite write. Owner READY notice shows `Пер-R26`.
+
+
+## Пер-R27 — FAST PRIORITY / PREVIOUS WINDOW BACK
+See `FIXES_R27_FAST_PRIORITY_BACK_HISTORY.txt`.

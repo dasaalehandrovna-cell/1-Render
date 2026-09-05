@@ -1056,15 +1056,58 @@ def r25_trace_end():
             if hasattr(_R25_TRACE_LOCAL, name): delattr(_R25_TRACE_LOCAL, name)
     except Exception: pass
 
+# R27: human input has priority over housekeeping on FAST.
+_R27_LAST_USER_ACTIVITY_MONO = 0.0
+_R27_USER_ACTIVITY_LOCK = threading.RLock()
+_R27_BG_LOCK_PREFIXES = ('ui-cleanup-', 'scheduler-', 'background-', 'reminder-')
+
+def r27_note_user_activity(kind='telegram'):
+    global _R27_LAST_USER_ACTIVITY_MONO
+    try:
+        with _R27_USER_ACTIVITY_LOCK:
+            _R27_LAST_USER_ACTIVITY_MONO = time.monotonic()
+    except Exception:
+        pass
+    return True
+
+def r27_user_quiet_for() -> float:
+    try:
+        with _R27_USER_ACTIVITY_LOCK:
+            last = float(_R27_LAST_USER_ACTIVITY_MONO or 0.0)
+        if last <= 0.0:
+            return 10**9
+        return max(0.0, time.monotonic() - last)
+    except Exception:
+        return 10**9
+
+def _r27_background_yield_before_lock(lock_name: str) -> None:
+    """Keep cleanup/scheduler/reminder work behind a just-arrived user button.
+
+    This never delays a traced Telegram handler and never delays the window-render
+    lane. It only prevents low-priority housekeeping from winning the next lock race.
+    """
+    try:
+        name = threading.current_thread().name
+        if not name.startswith(_R27_BG_LOCK_PREFIXES):
+            return
+        grace = max(0.2, min(3.0, float(os.getenv('R27_FAST_USER_PRIORITY_SEC', '1.6') or '1.6')))
+        deadline = time.monotonic() + grace
+        while r27_user_quiet_for() < grace and time.monotonic() < deadline:
+            time.sleep(0.025)
+    except Exception:
+        pass
+
 class R25TracedRLock:
     """RLock-compatible wrapper that exposes lock waits in BTNTRACE/STUCK_STACK."""
     def __init__(self, name):
         self._lock = threading.RLock()
         self.name = str(name or 'lock')
     def acquire(self, blocking=True, timeout=-1):
-        t0 = time.monotonic()
         ctx = r25_trace_current()
         traced = bool(ctx.get('update_id'))
+        if not traced:
+            _r27_background_yield_before_lock(self.name)
+        t0 = time.monotonic()
         if traced:
             r25_trace_stage(f'{self.name.upper()}_LOCK_WAIT', emit=False)
         if timeout is None or float(timeout) < 0:

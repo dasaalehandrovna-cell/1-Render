@@ -61,6 +61,20 @@ def on_callback(call):
             except Exception:
                 pass
             return
+        # R27 must run before feature-specific extension routers (Google/tenant/etc.),
+        # otherwise their historical Back callbacks can consume the click first.
+        try:
+            _r27_back_fn = globals().get('r27_callback_is_back_navigation')
+            if callable(_r27_back_fn) and data_str != 'nav_prev' and _r27_back_fn(call, data_str):
+                if restore_previous_window(call):
+                    try:
+                        _r27_clean = globals().get('r27_cleanup_after_history_back')
+                        if callable(_r27_clean): _r27_clean(call)
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
         try:
             _v149_callback = globals().get('v149_extension_callback')
             if callable(_v149_callback) and _v149_callback(call, data_str):
@@ -112,6 +126,21 @@ def on_callback(call):
             pass
         if _callback_should_debounce(call, data_str):
             return
+        # R27 universal Back: every visible Back action first restores the actual
+        # previous snapshot. If history is unavailable (e.g. after an old deploy),
+        # the legacy callback continues below as a safe fallback.
+        try:
+            _r27_back_fn = globals().get('r27_callback_is_back_navigation')
+            if callable(_r27_back_fn) and data_str != 'nav_prev' and _r27_back_fn(call, data_str):
+                if restore_previous_window(call):
+                    try:
+                        _r27_clean = globals().get('r27_cleanup_after_history_back')
+                        if callable(_r27_clean): _r27_clean(call)
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
         try:
             update_chat_info_from_message(call.message)
         except Exception:
@@ -123,6 +152,11 @@ def on_callback(call):
                 pass
         if data_str == 'nav_prev':
             if restore_previous_window(call):
+                try:
+                    _r27_clean = globals().get('r27_cleanup_after_history_back')
+                    if callable(_r27_clean): _r27_clean(call)
+                except Exception:
+                    pass
                 return
             return
         if data_str.startswith('chat_desc_menu:'):

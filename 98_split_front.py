@@ -458,24 +458,58 @@ def _split_authorized_request():
 _SPLIT_STATE_REV_KIND_R18 = 'split_state_revision_r18'
 _SPLIT_STATE_REV_KEY_R18 = 'latest'
 _SPLIT_STATE_REV_LOCK_R18 = _split_threading.RLock()
+try:
+    _SPLIT_STATE_REV_MEM_R27 = dict(SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {})
+except Exception:
+    _SPLIT_STATE_REV_MEM_R27 = {}
+_SPLIT_STATE_REV_DIRTY_R27 = False
 
-def _split_touch_state_revision_r18(reason='update', update_id=None):
-    """Tiny monotonic durability marker written after successful Telegram work.
-
-    Unlike the heavier continuity shadow this write is O(1), so restore freshness
-    cannot remain hours old just because a trailing-edge serializer is coalescing.
-    """
+def _r27_flush_state_revision():
+    global _SPLIT_STATE_REV_DIRTY_R27
     try:
         with _SPLIT_STATE_REV_LOCK_R18:
-            prev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
-            seq = int((prev or {}).get('seq') or 0) + 1
+            if not _SPLIT_STATE_REV_DIRTY_R27:
+                return True
+            payload = dict(_SPLIT_STATE_REV_MEM_R27 or {})
+        SQLITE.set_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, payload)
+        with _SPLIT_STATE_REV_LOCK_R18:
+            if int((_SPLIT_STATE_REV_MEM_R27 or {}).get('seq') or 0) <= int(payload.get('seq') or 0):
+                _SPLIT_STATE_REV_DIRTY_R27 = False
+        return True
+    except Exception as exc:
+        try: log_error(f'R27 state revision flush: {exc}')
+        except Exception: pass
+        return False
+
+def _r27_schedule_state_revision_flush(delay=4.0):
+    try:
+        scheduler = globals().get('DELAYED_SCHEDULER')
+        if scheduler is not None:
+            scheduler.schedule('r27-state-revision-flush', max(1.0, float(delay)), _r27_flush_state_revision)
+            return True
+    except Exception:
+        pass
+    return False
+
+def _split_touch_state_revision_r18(reason='update', update_id=None):
+    """R27: monotonic revision is RAM-only on the Telegram hot path.
+
+    The durable meta row is flushed later by the scheduler / before an idle snapshot.
+    A UI callback therefore never waits on SQLITE just to update this bookkeeping row.
+    """
+    global _SPLIT_STATE_REV_DIRTY_R27
+    try:
+        with _SPLIT_STATE_REV_LOCK_R18:
+            seq = int((_SPLIT_STATE_REV_MEM_R27 or {}).get('seq') or 0) + 1
             payload = {'schema':1, 'seq':seq, 'saved_at':_split_time.time(), 'reason':str(reason or '')[:140],
                        'update_id':str(update_id)[:80] if update_id is not None else '',
                        'state_token':_split_current_state_token_v264() if '_split_current_state_token_v264' in globals() else ''}
-            SQLITE.set_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, payload)
-            return payload
+            _SPLIT_STATE_REV_MEM_R27.clear(); _SPLIT_STATE_REV_MEM_R27.update(payload)
+            _SPLIT_STATE_REV_DIRTY_R27 = True
+        _r27_schedule_state_revision_flush(4.0)
+        return payload
     except Exception as exc:
-        try: log_error(f'R18 state revision touch: {exc}')
+        try: log_error(f'R27 state revision touch: {exc}')
         except Exception: pass
         return {}
 
@@ -546,6 +580,16 @@ def split_front_state_download_v262():
     raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
     gz = raw + '.gz'
     try:
+        try:
+            _quiet_fn = globals().get('r27_user_quiet_for')
+            _quiet_for = float(_quiet_fn()) if callable(_quiet_fn) else 999999.0
+            _guard = max(2.0, min(60.0, float(_split_os.getenv('R27_SNAPSHOT_USER_QUIET_SEC','15') or '15')))
+            if bool(globals().get('runtime_is_ready', lambda: False)()) and _quiet_for < _guard:
+                return ({'ok': False, 'busy': 'user_active', 'retry_after': max(1, int(_guard - _quiet_for) + 1)}, 423)
+        except Exception:
+            pass
+        try: _r27_flush_state_revision()
+        except Exception: pass
         _r25_state_started = _split_time.monotonic()
         snapshot_token = _split_current_state_token_v264()
         try: log_info(f'SPLITTRACE full_state_start token={snapshot_token[:48]}')
@@ -776,7 +820,10 @@ def _split_sync_timer_fire():
     global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
     try:
         reason = str(_SPLIT_STATE.get('sync_reason') or 'change')
-        _split_request_sync_now(reason)
+        # R27: page-delta generation itself required a full local SQLite backup, so
+        # "tiny delta" still hammered FAST every few seconds. Raw Telegram events are
+        # already durable remotely; mirror the canonical SQLite only after UI quiet.
+        _split_schedule_idle_full_reconcile_v270('r27-idle:' + reason[:100], delay=float(_split_os.getenv('R27_STATE_MIRROR_DELAY_SEC','20') or '20'))
     finally:
         with _SPLIT_SYNC_LOCK:
             _SPLIT_SYNC_TIMER = None
@@ -802,11 +849,11 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
         _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
         return True
     try:
-        wait = float(delay if delay is not None else _split_os.getenv('SPLIT_STATE_SYNC_DELAY_SEC', '1.5') or '1.5')
+        wait = float(delay if delay is not None else _split_os.getenv('SPLIT_STATE_SYNC_DELAY_SEC', '8') or '8')
     except Exception:
         wait = 1.5
     try:
-        min_interval = float(_split_os.getenv('SPLIT_STATE_SYNC_MIN_INTERVAL_SEC', '5') or '5')
+        min_interval = float(_split_os.getenv('SPLIT_STATE_SYNC_MIN_INTERVAL_SEC', '30') or '30')
     except Exception:
         min_interval = 12.0
     wait = max(0.08, min(30.0, wait))
@@ -824,7 +871,7 @@ def split_schedule_worker_sync_v262(reason='change', delay=None):
             _SPLIT_SYNC_FIRST_DIRTY_AT = now
         first_dirty = _SPLIT_SYNC_FIRST_DIRTY_AT
     try:
-        max_latency = max(1.0, min(12.0, float(_split_os.getenv('SPLIT_SYNC_MAX_LATENCY_SEC','3.0') or '3.0')))
+        max_latency = max(1.0, min(12.0, float(_split_os.getenv('SPLIT_SYNC_MAX_LATENCY_SEC','60') or '60')))
     except Exception:
         max_latency = 3.0
     due = max(now + wait, last + min_interval if last else now + wait)
@@ -1607,7 +1654,10 @@ def _r20_capsule_build(reason='state_change'):
     user_state = user_state_shadow_capture_v265('r25-capsule:' + str(reason or '')[:120], persist=False) or {}
     config_cp = _r20_latest_config_checkpoint()
     try:
-        rev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
+        with _SPLIT_STATE_REV_LOCK_R18:
+            rev = dict(_SPLIT_STATE_REV_MEM_R27 or {})
+        if not rev:
+            rev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
     except Exception:
         rev = {}
     return {
@@ -1944,12 +1994,22 @@ def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
     global _SPLIT_FULL_TIMER
     with _SPLIT_FULL_LOCK:
         _SPLIT_FULL_TIMER = None
-    quiet_for = max(0.0, _split_time.time() - float(globals().get('_SPLIT_LAST_CHANGE_AT') or 0.0))
-    quiet_need = float(_split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','90') or '90')
+    try:
+        _quiet_fn = globals().get('r27_user_quiet_for')
+        quiet_for = float(_quiet_fn()) if callable(_quiet_fn) else max(0.0, _split_time.time() - float(globals().get('_SPLIT_LAST_CHANGE_AT') or 0.0))
+    except Exception:
+        quiet_for = 999999.0
+    quiet_need = float(_split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','20') or '20')
     if quiet_for < quiet_need:
-        return _split_schedule_idle_full_reconcile_v270(reason, delay=max(5.0, quiet_need - quiet_for))
+        return _split_schedule_idle_full_reconcile_v270(reason, delay=max(3.0, quiet_need - quiet_for))
+    min_gap = max(20.0, min(1800.0, float(_split_os.getenv('R27_FULL_SNAPSHOT_MIN_INTERVAL_SEC','120') or '120')))
+    last_ok = float(_SPLIT_STATE.get('full_reconcile_last_ok') or 0.0)
+    if last_ok > 0.0 and _split_time.time() - last_ok < min_gap:
+        return _split_schedule_idle_full_reconcile_v270(reason, delay=max(3.0, min_gap - (_split_time.time() - last_ok)))
     ok = False
     try:
+        try: _r27_flush_state_revision()
+        except Exception: pass
         ok = bool(_split_push_snapshot_now_v263('idle:' + str(reason or '')[:100]))
     except Exception as exc:
         _SPLIT_STATE['full_reconcile_last_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
@@ -1963,7 +2023,7 @@ def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
 
 def _split_schedule_idle_full_reconcile_v270(reason='need_full', delay=None):
     global _SPLIT_FULL_TIMER
-    wait = float(delay if delay is not None else _split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','90') or '90')
+    wait = float(delay if delay is not None else _split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','20') or '20')
     with _SPLIT_FULL_LOCK:
         if _SPLIT_FULL_TIMER is not None:
             try: _SPLIT_FULL_TIMER.cancel()
