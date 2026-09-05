@@ -2995,6 +2995,8 @@ def _r22_render_stage(payload: dict, stage: str, elapsed: float=0.0, result: str
         pass
     if stage == 'telegram_render_done':
         try:
+            _msg = f"FASTBTN render chat={int(payload.get('chat_id') or 0)} msg={int(payload.get('message_id') or 0)} action={str(payload.get('_r22_action') or '')[:120]} purpose={str(payload.get('purpose') or '')[:80]} queue={float(payload.get('_r22_queue_wait') or 0.0):.3f}s telegram={float(elapsed or 0.0):.3f}s result={result}"
+            log_info(_msg)
             bot_journal('button_chain_render', int(payload.get('chat_id') or 0),
                         f"action={str(payload.get('_r22_action') or '')[:120]}; purpose={str(payload.get('purpose') or '')[:80]}; queue_wait={float(payload.get('_r22_queue_wait') or 0.0):.3f}s; telegram={float(elapsed or 0.0):.3f}s; result={result}")
         except Exception:
@@ -3002,7 +3004,13 @@ def _r22_render_stage(payload: dict, stage: str, elapsed: float=0.0, result: str
 
 
 def _r22_execute_window_render(payload: dict) -> None:
-    """Actual Telegram network stage for R22; runs only on WINDOW_RENDER_TASK_POOL."""
+    """Actual Telegram network stage; R25 emits per-update render/TG timings."""
+    _r25_uid = str(payload.get('_r25_update_id') or '')
+    _r25_action = str(payload.get('_r22_action') or payload.get('_r25_action') or '')[:180]
+    try:
+        log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=RENDER_WORKER_START')
+    except Exception:
+        pass
     try:
         payload['_r22_queue_wait'] = max(0.0, _v160_time.monotonic() - float(payload.get('_r22_enqueued_mono') or _v160_time.monotonic()))
         _r22_render_stage(payload, 'render_queue_wait', payload['_r22_queue_wait'])
@@ -3017,6 +3025,8 @@ def _r22_execute_window_render(payload: dict) -> None:
     started = _v160_time.monotonic()
     result = 'failed'
     try:
+        try: log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_START')
+        except Exception: pass
         result = str(_perform_fast_ui_edit(payload) or 'failed')
     except Exception as exc:
         result = 'failed'
@@ -3025,6 +3035,8 @@ def _r22_execute_window_render(payload: dict) -> None:
         except Exception:
             pass
     elapsed = max(0.0, _v160_time.monotonic() - started)
+    try: log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_DONE elapsed={elapsed:.3f}s detail={result}')
+    except Exception: pass
     _r22_render_stage(payload, 'telegram_render_done', elapsed, result)
     # Preserve the old safe_edit recovery semantics, but recovery is also outside
     # the callback worker. It is intentionally only for unusable Telegram messages.
@@ -3039,7 +3051,7 @@ def _r22_execute_window_render(payload: dict) -> None:
 
 
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
-    """R22: prepare locally, enqueue latest render, never wait for Telegram RTT."""
+    """R24: prepare locally, enqueue ordered FIFO render, never drop a user click."""
     chat_id = int(chat_id)
     message_id = int(message_id)
     try:
@@ -3070,6 +3082,15 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         '_r22_enqueued_mono': _v160_time.monotonic(),
     }
     try:
+        _r25_ctx_fn = globals().get('r25_trace_current')
+        _r25_ctx = _r25_ctx_fn() if callable(_r25_ctx_fn) else {}
+        payload['_r25_update_id'] = str((_r25_ctx or {}).get('update_id') or '')
+        payload['_r25_action'] = str((_r25_ctx or {}).get('action') or '')[:180]
+        _r25_stage_fn = globals().get('r25_trace_stage')
+        if callable(_r25_stage_fn): _r25_stage_fn('RENDER_ENQUEUE_PREPARED')
+    except Exception:
+        pass
+    try:
         local = globals().get('_V177_PERF_LOCAL')
         payload['_r22_action'] = str(getattr(local, 'action', '') or '')[:120] if local is not None else ''
     except Exception:
@@ -3092,29 +3113,17 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         try:
             pool = globals().get('FAST_UI_TASK_POOL')
             if pool is not None and pool.submit(f'r22-render:{chat_id}:{message_id}', _r22_execute_window_render, payload):
-                try:
-                    mark_fn = globals().get('r23_fast_callback_mark_render_enqueued')
-                    if callable(mark_fn): mark_fn(str(purpose or ''))
-                except Exception:
-                    pass
                 return 'scheduled'
         except Exception:
             pass
         return 'failed'
     try:
-        seq = pool.submit_latest(f'{chat_id}:{message_id}', _r22_execute_window_render, payload)
-        if seq:
-            payload['_r22_render_seq'] = int(seq)
-            try:
-                mark_fn = globals().get('r23_fast_callback_mark_render_enqueued')
-                if callable(mark_fn): mark_fn(str(purpose or ''))
-            except Exception:
-                pass
+        if pool.submit(f'{chat_id}:{message_id}', _r22_execute_window_render, payload):
             _r22_render_stage(payload, 'render_enqueued', 0.0)
             return 'scheduled'
     except Exception as exc:
         try:
-            log_error(f'R22 RENDER QUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
+            log_error(f'R25 RENDER QUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
         except Exception:
             pass
     return 'failed'

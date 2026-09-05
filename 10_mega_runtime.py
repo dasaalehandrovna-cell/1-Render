@@ -1816,7 +1816,7 @@ def enqueue_durable_finalize_background(update_id, chat_id, update_type: str, pa
             schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.0, payload=payload_copy, expected_effects=expected_copy)
         finally:
             try:
-                DELAYED_SCHEDULER.schedule(f'lowram-after-durable:{key}', 15.0, _lowram_release_chat, chat_id)
+                DELAYED_SCHEDULER.schedule(f'lowram-after-durable:{key}', 30.0, _r24_lowram_release_if_pressure, chat_id)
             except Exception:
                 pass
     return RECOVERY_TASK_POOL.submit(f'durable-finalize:{key}', _job)
@@ -4807,7 +4807,7 @@ def _runtime_watcher_should_yield_to_critical_mega() -> bool:
 
 def _lowram_business_busy() -> bool:
     try:
-        for pool_name in ('WEBHOOK_TASK_POOL', 'UI_TASK_POOL', 'RECOVERY_TASK_POOL', 'REMINDER_TASK_POOL', 'FINANCE_TASK_POOL', 'FIN_FORWARD_TASK_POOL', 'FORWARD_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL'):
+        for pool_name in ('WEBHOOK_TASK_POOL', 'FAST_UI_TASK_POOL', 'WINDOW_RENDER_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'V166_FINANCE_UI_TASK_POOL', 'START_UI_TASK_POOL', 'UI_TASK_POOL', 'RECOVERY_TASK_POOL', 'REMINDER_TASK_POOL', 'FINANCE_TASK_POOL', 'FIN_FORWARD_TASK_POOL', 'FORWARD_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL'):
             pool = globals().get(pool_name)
             if pool is None:
                 continue
@@ -4819,12 +4819,25 @@ def _lowram_business_busy() -> bool:
     except Exception:
         return True
 
+R24_LOWRAM_EVICT_RSS_MB = max(260.0, min(450.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '340') or '340')))
+
+def _r24_lowram_release_if_pressure(chat_id):
+    try:
+        rss = float((_runtime_memory_stats() or {}).get('rss_mb', 0) or 0)
+    except Exception:
+        rss = 0.0
+    if rss >= R24_LOWRAM_EVICT_RSS_MB and not _lowram_business_busy():
+        return _lowram_release_chat(chat_id)
+    return False
+
 def _lowram_idle_sweep_job():
     """Return forgotten cold chat histories to SQLite only while the bot is idle."""
     try:
         if runtime_is_shutting_down():
             return
-        if LOWRAM_ENABLED and (not _lowram_business_busy()):
+        _mem_now = _runtime_memory_stats() if LOWRAM_ENABLED else {}
+        _rss_now = float((_mem_now or {}).get('rss_mb', 0) or 0)
+        if LOWRAM_ENABLED and _rss_now >= R24_LOWRAM_EVICT_RSS_MB and (not _lowram_business_busy()):
 
             def _loaded_fields_count():
                 total = 0
@@ -4853,7 +4866,7 @@ def _lowram_idle_sweep_job():
         runtime_event('lowram_idle_evict_error', str(e), 'WARN')
     finally:
         try:
-            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 45.0, _lowram_idle_sweep_job)
+            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 120.0, _lowram_idle_sweep_job)
         except Exception:
             pass
 

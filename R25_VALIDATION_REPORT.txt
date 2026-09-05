@@ -1,0 +1,58 @@
+Пер-R25 VALIDATION REPORT
+=========================
+Release: Пер-R25 — TRACE FAST PRIORITY
+Base: user-provided Пер-R24 FAST/HEAVY packages.
+
+Evidence that motivated R25
+---------------------------
+- User callback telemetry showed median ~2.3 s, P90 ~13.2 s, max ~42.6 s.
+- Render queue wait was small (~0.1 s average), while Telegram render and hidden handler stages were much larger.
+- Render logs showed DISPATCHER STUCK updates for ~20-85 s.
+- Traffic audit showed repeated /internal/split/state traffic (~60 MB) and /capsule traffic (~32 MB) during the same activity window.
+
+R25 changes
+-----------
+1. BTNTRACE normal Render logging for each callback/update:
+   RECEIVE -> ACK_START/ACK_DONE -> admission (when applicable) -> FAST enqueue -> worker start -> resolved callback router -> handler -> render enqueue -> Telegram edit start/done -> handler done.
+2. DISPATCHER STUCK threshold defaults to 5 s and prints STUCK_STACK with concrete Python worker stack, action, stage, thread and stage age.
+3. data_lock and SQLITE.lock are RLock-compatible traced locks. A stuck callback can report DATA_LOCK_WAIT / SQLITE_LOCK_WAIT; slow waits are logged.
+4. Ordinary non-critical callbacks return HTTP 200 immediately after successful FAST enqueue. Local SQLite inbox + remote callback witness are background side-jobs and cannot delay the first UI stage.
+5. SQLiteState.backup_to() now performs SQLite online backup through a separate source connection and does NOT hold the shared primary SQLITE.lock for the backup duration.
+6. Delta base mismatch no longer immediately requests repeated HEAVY GET /internal/split/state while the user is active. Full reconcile is trailing/idle (default 12 s quiet) and uses Front->HEAVY snapshot push.
+7. Large R20 config/user-state capsule remains compatible, but is generation-aware/trailing-debounced (~2 s, max ~6 s) so UI bursts finish before JSON/gzip/Redis/HEAVY work.
+8. Remote capsule capture no longer writes the same multi-megabyte user-state shadow to local SQLite before sending it; normal continuity still persists the local shadow separately.
+9. R24 FIFO callback/render semantics remain. No R23 latest-wins persistence, no global Redis/HTTP blockers.
+10. Finance exact-once/durable mutation lanes are unchanged.
+
+Validation PASS
+---------------
+- python -m py_compile: every top-level FAST .py
+- python -m py_compile: every top-level HEAVY .py
+- INFO/tests/r25_trace_fast_priority_smoke.py
+- INFO/tests/r20_durable_capsule_fastlane_smoke.py
+- INFO/tests/r20_heavy_capsule_contract_smoke.py against R25 HEAVY
+- INFO/tests/r19_runtime_lane_regression.py
+- INFO/tests/v262_exact_once_regression.py
+- INFO/tests/v262_linked_finance_smoke.py
+- INFO/tests/v262_fast_ui_smoke.py
+- INFO/tests/startup_smoke_v262.py
+- Custom concurrency regression: SQLiteState.backup_to completed while primary SQLITE.lock was deliberately held by another thread (proves split snapshot no longer waits on that Python lock).
+- modules_manifest.json SHA-256 verification after final source changes.
+
+Expected diagnostic lines after deploy
+--------------------------------------
+BTNTRACE update=... action=... stage=RECEIVE
+BTNTRACE update=... action=... stage=ACK_DONE elapsed=...
+BTNTRACE update=... action=... stage=FAST_ENQUEUED_HTTP200
+BTNTRACE update=... action=... stage=CALLBACK_ROUTER
+BTNTRACE update=... action=... stage=DATA_LOCK_WAIT / SQLITE_LOCK_WAIT (only when applicable)
+BTNTRACE update=... action=... stage=TELEGRAM_EDIT_START
+BTNTRACE update=... action=... stage=TELEGRAM_EDIT_DONE elapsed=...
+DISPATCHER STUCK: ... stage=... action=... thread=...
+STUCK_STACK update=...\n<exact Python stack>
+SPLITTRACE full_state_start / full_state_done (full fetch should now be rare)
+R25 SQLITE ONLINE BACKUP ... shared_lock=0
+
+Important
+---------
+R25 removes two proven sources of contention and makes any remaining >5 s stall self-identifying. It does not claim that external Telegram API latency itself can be eliminated; TELEGRAM_EDIT_START/DONE now measures that separately.

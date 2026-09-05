@@ -1,0 +1,63 @@
+Пер-R24 VALIDATION REPORT
+=========================
+Release: Пер-R24 — ORDERED HOT-RAM FAST
+Base: user-provided FAST/HEAVY Пер-R22 packages. R23 was intentionally NOT used as the code base.
+
+Why R23 regressed
+-----------------
+1. R23 globally blocked non-Telegram HTTP and Redis/KV during callbacks. Existing handlers that legitimately called worker/KV helpers received R23_FAST_HOTPATH_* failures, so some buttons stopped working.
+2. R23 replaced normal save_data() persistence with a latest-wins async queue for non-finance UI. That changed semantics and could collapse intermediate state changes.
+3. R22/R23 latest-wins render semantics intentionally dropped queued stale renders. That is incompatible with the requirement that every user click must be honored.
+4. R22 allowed "safe" callbacks of the same visible message to run under unique keys concurrently, allowing state/render races.
+5. The older LOWRAM cleanup evicted the active chat after ordinary callbacks and the idle sweep could evict while FAST UI was active. The supplied R23 journal proves a 175->0 field eviction at only 165.4 MB RSS.
+6. usd_rate_cached() treated only threads named "webhook*" as UI-safe; actual callbacks run on fast-ui/ui workers, so finance windows could synchronously hit Redis and DolarAPI (timeout up to 8 s).
+7. Render #2 status and Google service-email/test buttons had synchronous front->worker calls (timeouts up to 12/35 s) before useful UI response.
+8. make_short_callback() mirrored every long callback token to Redis synchronously while building a keyboard.
+9. LOWRAM cold-field persistence committed each loaded cold field separately; a save could perform many SQLite commits.
+
+R24 architecture
+----------------
+- One ordered FIFO callback actor per visible Telegram window (chat_id + message_id).
+- One ordered FIFO Telegram render queue per visible window. No latest-wins dropping.
+- Immediate receipt ACK remains separate.
+- Active chat data stays hot in RAM. There is no post-update _lowram_release_chat().
+- LOWRAM eviction runs only under real memory pressure (default RSS >= 340 MB) and not while FAST/UI/render pools are busy.
+- Long callback tokens are immediately usable from RAM and mirrored to Redis later as one background pipeline.
+- Normal save_data() semantics are preserved; no async/latest-wins persistence monkey-patch.
+- Loaded cold fields for one chat are written with one SQLite executemany/commit instead of one commit per field.
+- USD first render is cache-only on FAST/UI threads; remote rate refresh is background.
+- Render #2 status first renders cached state, then background peer ping updates the same window.
+- Google service-account email/test first responds locally, then Render #2 work updates the status message.
+- Existing R21 split file/export paths continue to dispatch heavy work to Render #2.
+- FASTBTN handler/render timings are emitted to normal Render logs even when the bot journal contains zero rows.
+
+Validation PASS
+---------------
+- python -m py_compile: every top-level FAST .py
+- python -m py_compile: every top-level HEAVY .py
+- INFO/tests/r24_ordered_hot_ram_fast_smoke.py
+  * actual KeyedTaskPool FIFO micro-test: submitted 1,2,3 for same window => executed 1,2,3
+  * confirms render uses FIFO submit(), not submit_latest()
+  * confirms same-window callbacks share one ordered key
+  * confirms R23 global HTTP/Redis blockers and UI_PERSIST/KV_MIRROR pools are absent
+  * confirms callback-token creation performs no synchronous Redis call
+  * confirms LOWRAM has no per-callback eviction and uses 340 MB pressure threshold
+  * confirms USD UI cache guard precedes Redis/HTTP
+  * confirms worker health formatter is cache-only and refresh is background
+  * confirms Google email/test are background second-stage operations
+  * confirms cold fields use set_cold_many() batching
+- INFO/tests/r20_heavy_capsule_contract_smoke.py against R24 HEAVY
+- INFO/tests/r20_durable_capsule_fastlane_smoke.py
+- INFO/tests/r19_runtime_lane_regression.py
+- INFO/tests/v262_exact_once_regression.py
+- INFO/tests/v262_linked_finance_smoke.py
+- INFO/tests/v262_fast_ui_smoke.py
+- INFO/tests/startup_smoke_v262.py
+- modules_manifest.json SHA-256 verification after final source changes
+
+Operational diagnostic after deploy
+-----------------------------------
+Render logs now contain lines like:
+FASTBTN handler update=... wait=... process=... success=...
+FASTBTN render chat=... msg=... queue=... telegram=... result=...
+These two lines separate handler/queue latency from Telegram API RTT without relying on the optional bot journal.

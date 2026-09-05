@@ -22,7 +22,7 @@ try:
 except Exception:
     _split_redis = None
 
-_SPLIT_FRONT_VERSION = "vys-262-front-per-r23-fast-ram-first-remote-guard"
+_SPLIT_FRONT_VERSION = "vys-262-front-per-r24-ordered-hot-ram-fast"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
 _SPLIT_SYNC_TIMER = None
 _SPLIT_SYNC_DUE_AT = 0.0
@@ -546,7 +546,10 @@ def split_front_state_download_v262():
     raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
     gz = raw + '.gz'
     try:
+        _r25_state_started = _split_time.monotonic()
         snapshot_token = _split_current_state_token_v264()
+        try: log_info(f'SPLITTRACE full_state_start token={snapshot_token[:48]}')
+        except Exception: pass
         SQLITE.backup_to(raw)
         with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
             _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
@@ -567,6 +570,8 @@ def split_front_state_download_v262():
         response.headers['X-Split-Version'] = _SPLIT_FRONT_VERSION
         response.headers['X-Split-Size'] = str(len(payload))
         response.headers['X-Split-State-Token'] = snapshot_token
+        try: log_info(f'SPLITTRACE full_state_done token={snapshot_token[:48]} bytes={len(payload)} elapsed={_split_time.monotonic()-_r25_state_started:.3f}s')
+        except Exception: pass
         return response
     except Exception as exc:
         return ({'ok': False, 'error': str(exc)[:240]}, 500)
@@ -752,16 +757,17 @@ def _split_request_sync_now(reason='change'):
         return True
     _SPLIT_STATE['delta_last_error'] = str(detail or '')[:220]
     if need_full:
-        # R18: a hash/base mismatch must not leave HEAVY stale for minutes/hours.
-        # Queue the full rebase on HEAVY immediately.  This function already runs in
-        # a background timer, so the Telegram callback/message handler never waits.
+        # R25 FAST-priority rule: never make HEAVY repeatedly pull full SQLite while
+        # the user is clicking. A mismatch is reconciled after a short quiet period by
+        # a Front->HEAVY snapshot push. The snapshot itself uses the R25 online SQLite
+        # backup connection and therefore never owns FAST's shared SQLITE.lock.
         _SPLIT_STATE['delta_full_fallbacks'] = int(_SPLIT_STATE.get('delta_full_fallbacks') or 0) + 1
         _SPLIT_STATE['full_reconcile_pending'] = True
-        queued, qdetail = _split_request_worker_full_sync_r18('delta_resync:' + str(reason or 'change')[:90])
-        if not queued:
-            _SPLIT_STATE['full_reconcile_last_error'] = str(qdetail or '')[:220]
-            try: _split_schedule_idle_full_reconcile_v270('delta_resync_fallback:' + str(reason or 'change')[:80], delay=8.0)
-            except Exception: pass
+        try:
+            _split_schedule_idle_full_reconcile_v270('delta_resync_r25:' + str(reason or 'change')[:80])
+            _SPLIT_STATE['full_reconcile_last_error'] = 'R25 deferred full reconcile until UI quiet'
+        except Exception as _r25_reconcile_exc:
+            _SPLIT_STATE['full_reconcile_last_error'] = str(_r25_reconcile_exc)[:220]
     _SPLIT_STATE['sync_last_error'] = str(detail or 'delta sync failed')[:220]
     return False
 
@@ -868,7 +874,10 @@ def _v262_split_schedule_config_backup_for_chats(*chat_ids, delay=3.0):
     # user-visible setting changed.  Capture a small independent durable capsule
     # immediately in a background timer; do not wait for full SQLite/delta sync.
     try:
-        r20_schedule_durable_capsule('config_hook:' + ','.join(map(str, chat_ids[:8])), delay=0.12)
+        _r25_cp = _r20_latest_config_checkpoint() if '_r20_latest_config_checkpoint' in globals() else {}
+        _r25_gen = int((_r25_cp or {}).get('generation') or 0)
+        if _r25_gen > int(globals().get('_R20_CAPSULE_LAST_GEN_SENT', 0) or 0):
+            r20_schedule_durable_capsule('config_hook:' + ','.join(map(str, chat_ids[:8])), delay=2.0)
     except Exception:
         pass
     split_schedule_worker_sync_v262(reason='config:' + ','.join(map(str, chat_ids[:8])), delay=min(float(delay or 1.0), 5.0))
@@ -1240,7 +1249,7 @@ def _user_state_json_copy_v265(value):
     except Exception:
         return None
 
-def user_state_shadow_capture_v265(reason='checkpoint'):
+def user_state_shadow_capture_v265(reason='checkpoint', persist=True):
     try:
         root_src = _sqlite_pack_root(data) if callable(globals().get('_sqlite_pack_root')) else {k:v for k,v in (data or {}).items() if k != 'chats'}
         root = {}
@@ -1279,7 +1288,8 @@ def user_state_shadow_capture_v265(reason='checkpoint'):
                        'tenants': len((((root.get('_global_settings') or {}).get('tenants_v148') or {}).get('tenants') or {})) if isinstance(((root.get('_global_settings') or {}).get('tenants_v148') or {}), dict) else 0,
                        'additional_owners': len(root.get('additional_owners') or root.get('additional_owner_ids') or []) if isinstance((root.get('additional_owners') or root.get('additional_owner_ids') or []), (list, tuple, set, dict)) else 0},
         }
-        SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
+        if persist:
+            SQLITE.set_meta(_USER_STATE_META_KIND_V265, _USER_STATE_META_KEY_V265, payload)
         return payload
     except Exception as exc:
         try: log_error(f'USER_STATE shadow capture R6: {exc}')
@@ -1594,7 +1604,7 @@ def _r20_latest_config_checkpoint():
 def _r20_capsule_build(reason='state_change'):
     # Capture the logical shadow in this background lane. Financial cold ledgers are
     # excluded by user_state_shadow_capture_v265 by design.
-    user_state = user_state_shadow_capture_v265('r20:' + str(reason or '')[:120]) or {}
+    user_state = user_state_shadow_capture_v265('r25-capsule:' + str(reason or '')[:120], persist=False) or {}
     config_cp = _r20_latest_config_checkpoint()
     try:
         rev = SQLITE.get_meta(_SPLIT_STATE_REV_KIND_R18, _SPLIT_STATE_REV_KEY_R18, {}) or {}
@@ -1737,7 +1747,7 @@ def r20_schedule_durable_capsule(reason='state_change', delay=None):
 _R20_BASE_CONFIG_GUARD_SYNC_REMOTE = globals().get('config_guard_sync_remote_v234')
 def _r20_config_guard_sync_remote(*, recovery_write=False):
     try:
-        r20_schedule_durable_capsule('config_guard_remote_sync', delay=0.05)
+        r20_schedule_durable_capsule('config_guard_remote_sync', delay=2.0)
         split_schedule_worker_sync_v262(reason='config_guard_remote_sync', delay=0.7)
         return True
     except Exception as exc:
@@ -1799,40 +1809,6 @@ def split_schedule_continuity_checkpoint_v270(chat_id=None, reason='update', del
 _V263_BASE_SAVE_DATA = save_data
 
 def save_data(d, chat_ids=None, full=False, root_only=False):
-    # R23: ordinary UI/settings callbacks are RAM-authoritative until their first
-    # response is queued. SQLite persistence is coalesced on a separate lane and
-    # therefore cannot hold the FAST callback key. Correctness-critical finance
-    # mutations retain synchronous persistence.
-    hot_fn = globals().get('r23_fast_callback_hotpath_active')
-    sync_fn = globals().get('r23_fast_callback_sync_persistence_required')
-    try:
-        if callable(hot_fn) and hot_fn() and not (callable(sync_fn) and sync_fn()):
-            ids_copy = None
-            if chat_ids is not None:
-                ids_copy = list(chat_ids) if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
-            elif not full and not root_only:
-                # current_state_chat_id() is thread-local, so capture it before leaving FAST.
-                try:
-                    _hot_cid = current_state_chat_id()
-                    if _hot_cid is None:
-                        _hot_cid = getattr(globals().get('_R23_FAST_HOTPATH_LOCAL'), 'chat_id', None)
-                    if _hot_cid is not None:
-                        ids_copy = [int(_hot_cid)]
-                except Exception:
-                    ids_copy = None
-            key_part = 'root'
-            if ids_copy:
-                try: key_part = str(int(ids_copy[0]))
-                except Exception: key_part = str(ids_copy[0])[:80]
-            pool = globals().get('UI_PERSIST_TASK_POOL')
-            if pool is not None:
-                seq = pool.submit_latest(f'ui-save:{key_part}', save_data, d, ids_copy, bool(full), bool(root_only))
-                if seq:
-                    note_fn = globals().get('r23_fast_callback_note_deferred_persist')
-                    if callable(note_fn): note_fn()
-                    return True
-    except Exception:
-        pass
     result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
     # Non-Telegram/background mutations need their own freshness marker.  Telegram
     # updates receive exactly one marker after the handler, avoiding extra hot-path IO.
@@ -1863,7 +1839,7 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
         _r20_cp = _r20_latest_config_checkpoint() if '_r20_latest_config_checkpoint' in globals() else {}
         _r20_gen = int((_r20_cp or {}).get('generation') or 0)
         if _r20_gen > int(globals().get('_R20_CAPSULE_LAST_GEN_SENT', 0) or 0):
-            r20_schedule_durable_capsule('config_generation:' + str(_r20_gen), delay=0.20)
+            r20_schedule_durable_capsule('config_generation:' + str(_r20_gen), delay=2.0)
     except Exception:
         pass
     try:
@@ -2142,7 +2118,7 @@ def runtime_mark_ready(detail: str=''):
         # Establish an exact binary base on HEAVY immediately after every boot.
         # The POST is tiny; HEAVY performs the job asynchronously and pulls the snapshot.
         _split_request_worker_full_sync_r18('boot_ready_exact_rebase')
-        r20_schedule_durable_capsule('boot_ready', delay=0.15)
+        r20_schedule_durable_capsule('boot_ready', delay=1.0)
         split_schedule_worker_sync_v262(reason='boot_ready', delay=0.8)
     except Exception as exc:
         try: log_error(f'R6 boot-ready sync: {exc}')
@@ -2422,10 +2398,38 @@ def _r7_v149_extension_callback(call, data_str: str) -> bool:
             except Exception: pass
             return True
         if action in {'service_email', 'connect'}:
-            info = _r7_google_worker_info()
+            info = _r7_google_worker_info(fetch=False)
             email = str(info.get('service_email') or '')
-            text = ('📧 Email service account:\n\n<code>' + email + '</code>\n\nОткройте свою Google Таблицу → «Поделиться» → добавьте этот email → права «Редактор».') if email else '❌ Render #2 не отдал email service account. Проверьте GOOGLE_SERVICE_ACCOUNT_JSON.'
-            bot.send_message(cid, text, parse_mode='HTML')
+            if email:
+                bot.send_message(cid, '📧 Email service account:\n\n<code>' + email + '</code>\n\nОткройте свою Google Таблицу → «Поделиться» → добавьте этот email → права «Редактор».', parse_mode='HTML')
+            else:
+                _status = bot.send_message(cid, '⏳ Получаю email service account с Render #2…')
+                _status_mid = int(getattr(_status, 'message_id', 0) or 0)
+                def _r24_google_email_fetch(_cid=cid, _mid=_status_mid):
+                    info2 = _r7_google_worker_info(fetch=True)
+                    email2 = str(info2.get('service_email') or '')
+                    text2 = ('📧 Email service account:\n\n<code>' + email2 + '</code>\n\nОткройте свою Google Таблицу → «Поделиться» → добавьте этот email → права «Редактор».') if email2 else '❌ Render #2 не отдал email service account. Проверьте GOOGLE_SERVICE_ACCOUNT_JSON.'
+                    try: bot.edit_message_text(text2, chat_id=_cid, message_id=_mid, parse_mode='HTML')
+                    except Exception: pass
+                try: GENERAL_TASK_POOL.submit_unique(f'r24-google-email:{cid}', _r24_google_email_fetch)
+                except Exception: pass
+            try: bot.answer_callback_query(call.id)
+            except Exception: pass
+            return True
+        if action == 'test':
+            _status = bot.send_message(cid, '⏳ Проверяю доступ к Google на Render #2…')
+            _status_mid = int(getattr(_status, 'message_id', 0) or 0)
+            def _r24_google_test_fetch(_tid=str(tid), _cid=cid, _mid=_status_mid):
+                try:
+                    _ok, _text = _r7_google_test(_tid)
+                    prefix = '✅ ' if _ok else '🟡 '
+                    out = prefix + str(_text or '')
+                except Exception as exc:
+                    out = '❌ Google: ' + str(exc)[:600]
+                try: bot.edit_message_text(out, chat_id=_cid, message_id=_mid)
+                except Exception: pass
+            try: GENERAL_TASK_POOL.submit_unique(f'r24-google-test:{tid}', _r24_google_test_fetch)
+            except Exception: pass
             try: bot.answer_callback_query(call.id)
             except Exception: pass
             return True
@@ -2775,8 +2779,8 @@ def _r10_age_text(ts):
 
 
 def _r10_worker_health_text(force=False):
-    if force or (_split_time.time()-float(_SPLIT_STATE.get('peer_last_attempt') or 0) > 25):
-        _split_ping_once()
+    # R24: this formatter is cache-only. Network health refresh is always a second
+    # stage so opening the status window can never wait up to 12 seconds.
     h=dict(_SPLIT_STATE.get('worker_health') or {})
     st=dict(h.get('state') or {})
     interval=max(30,min(1800,int(_split_os.getenv('PEER_PING_INTERVAL_SEC','120') or '120')))
@@ -2870,7 +2874,24 @@ def _r10_contour_callback_guard(call, resolved: str) -> bool:
         except Exception: pass
         if raw == 'r10:worker:back':
             safe_edit(bot,call,build_info_text(cid),reply_markup=build_info_keyboard(cid)); return True
-        safe_edit(bot,call,_r10_worker_health_text(force=(raw=='r10:worker:refresh')),reply_markup=_r10_worker_health_keyboard())
+        # First render is always local/cache-only. Then Render #2 health is refreshed
+        # in background and the same window is updated when the result arrives.
+        safe_edit(bot,call,_r10_worker_health_text(force=False),reply_markup=_r10_worker_health_keyboard())
+        try:
+            _mid = int(call.message.message_id)
+            _need_refresh = (raw == 'r10:worker:refresh') or (_split_time.time()-float(_SPLIT_STATE.get('peer_last_attempt') or 0) > 25)
+            if _need_refresh:
+                def _r24_refresh_worker_card(_cid=cid, _mid=_mid):
+                    try: _split_ping_once()
+                    except Exception: pass
+                    try:
+                        fast_ui_edit_message_text(_cid, _mid, _r10_worker_health_text(False), reply_markup=_r10_worker_health_keyboard(), purpose='r24_worker_health_refresh')
+                    except Exception: pass
+                _pool = globals().get('GENERAL_TASK_POOL')
+                if _pool is not None:
+                    _pool.submit_unique(f'r24-worker-health:{cid}', _r24_refresh_worker_card)
+        except Exception:
+            pass
         return True
     return bool(_R10_BASE_CONTOUR_GUARD(call,raw)) if callable(_R10_BASE_CONTOUR_GUARD) else False
 
@@ -2909,41 +2930,10 @@ except Exception: pass
 # R21: every button has an immediate FAST stage. Heavy execution is a second stage.
 # This override intentionally runs after 89_callback_final.py so it replaces the canonical
 # monolith submitter without changing the v262 business handlers themselves.
-
-# R23 FAST network constitution ------------------------------------------------
-# All modules share the same requests package.  Guard Session.request once, using
-# thread-local callback state. Telegram API is the only network allowed on FAST;
-# Redis has its own RESP guard in 05_key_value_runtime.py.
-_R23_REQUESTS_SESSION_REQUEST = requests.sessions.Session.request
-
-def _r23_guarded_requests_session_request(self, method, url, *args, **kwargs):
-    hot_fn = globals().get('r23_fast_callback_hotpath_active')
-    try:
-        hot = bool(callable(hot_fn) and hot_fn())
-    except Exception:
-        hot = False
-    if hot:
-        target = str(url or '')
-        try:
-            host = str(urllib.parse.urlparse(target).hostname or '').casefold()
-        except Exception:
-            host = ''
-        if host not in {'api.telegram.org', 'telegram.org'} and not host.endswith('.telegram.org'):
-            note_fn = globals().get('r23_fast_callback_note_remote_block')
-            try:
-                if callable(note_fn): note_fn('http', target[:180])
-            except Exception:
-                pass
-            raise RuntimeError('R23_FAST_HOTPATH_REMOTE_HTTP_BLOCKED')
-    return _R23_REQUESTS_SESSION_REQUEST(self, method, url, *args, **kwargs)
-
-if not bool(getattr(requests.sessions.Session.request, '_r23_fast_guard', False)):
-    _r23_guarded_requests_session_request._r23_fast_guard = True
-    requests.sessions.Session.request = _r23_guarded_requests_session_request
-
-R23_FAST_RAM_FIRST_STAGE = 'per-r23-fast-ram-first-remote-guard'
-R22_ZERO_BLOCKING_BUTTON_STAGE = R23_FAST_RAM_FIRST_STAGE  # compatibility alias
-R21_EVERY_BUTTON_FAST_STAGE = R23_FAST_RAM_FIRST_STAGE  # compatibility alias
+R25_TRACE_FAST_PRIORITY_STAGE = 'per-r25-trace-fast-priority'
+R24_ORDERED_HOT_RAM_STAGE = R25_TRACE_FAST_PRIORITY_STAGE
+R22_ZERO_BLOCKING_BUTTON_STAGE = R24_ORDERED_HOT_RAM_STAGE
+R21_EVERY_BUTTON_FAST_STAGE = R22_ZERO_BLOCKING_BUTTON_STAGE  # compatibility alias
 try:
     R21_HEAVY_DISPATCH_TASK_POOL = KeyedTaskPool(
         'heavy-dispatch',

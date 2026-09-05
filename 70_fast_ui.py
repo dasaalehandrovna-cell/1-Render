@@ -763,7 +763,7 @@ def build_owner_instruction_keyboard(chat_id: int):
     return kb
 
 def all_task_pool_stats() -> list[dict]:
-    return [WEBHOOK_TASK_POOL.stats(), FAST_UI_TASK_POOL.stats(), UI_TASK_POOL.stats(), WINDOW_RENDER_TASK_POOL.stats(), UI_PERSIST_TASK_POOL.stats(), KV_MIRROR_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
+    return [WEBHOOK_TASK_POOL.stats(), FAST_UI_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
 
 def build_queue_status_text() -> str:
     lines = ['🚦 Очереди и нагрузка', '']
@@ -2237,6 +2237,23 @@ try:
 except Exception:
     CALLBACK_RECEIPT_ACK_DELAY_SECONDS = 0.06
 _ORIGINAL_BOT_ANSWER_CALLBACK_QUERY = bot.answer_callback_query
+_R25_CALLBACK_TRACE_LOCK = threading.RLock()
+_R25_CALLBACK_TRACE_MAP = {}
+
+def r25_register_callback_update(callback_id: str, update_id=None, chat_id=None, action=''):
+    callback_id = str(callback_id or '')
+    if not callback_id:
+        return
+    with _R25_CALLBACK_TRACE_LOCK:
+        _R25_CALLBACK_TRACE_MAP[callback_id] = {'update_id': str(update_id or ''), 'chat_id': chat_id, 'action': str(action or '')[:180], 'ts': time.time()}
+        now = time.time()
+        for key, row in list(_R25_CALLBACK_TRACE_MAP.items()):
+            if now - float((row or {}).get('ts') or now) > 300:
+                _R25_CALLBACK_TRACE_MAP.pop(key, None)
+
+def _r25_callback_trace_row(callback_id: str):
+    with _R25_CALLBACK_TRACE_LOCK:
+        return dict(_R25_CALLBACK_TRACE_MAP.get(str(callback_id or '')) or {})
 
 def _callback_ack_prune_locked(now_ts=None):
     now_ts = float(now_ts or time.time())
@@ -2284,7 +2301,13 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
             return True
         row['inflight'] = True
     try:
+        _r25_ack_row = _r25_callback_trace_row(callback_id)
+        _r25_ack_started = time.monotonic()
+        try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_START')
+        except Exception: pass
         result = _ORIGINAL_BOT_ANSWER_CALLBACK_QUERY(callback_query_id, *args, **kwargs)
+        try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_DONE elapsed={time.monotonic()-_r25_ack_started:.3f}s')
+        except Exception: pass
         with _CALLBACK_ACK_LOCK:
             row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
             row.update({'answered': True, 'inflight': False, 'ts': time.time()})

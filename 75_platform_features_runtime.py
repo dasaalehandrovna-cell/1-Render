@@ -1804,7 +1804,7 @@ def _v166_is_safe_window_callback(raw: str) -> bool:
     return any((token in low for token in ('menu', 'page', 'list', 'view', 'status', 'open'))) and not any(token in low for token in heavy_tokens)
 
 def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update_key):
-    """R22 every-button FAST stage routing.
+    """R24 ordered every-button FAST stage routing.
 
     A Telegram button is *always* a FAST/front event.  We no longer classify a button as
     "heavy" and send that callback itself to a slow UI lane.  The callback handler must
@@ -1829,16 +1829,11 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
             # callback shares this state lane in R22.
             return (V166_FINANCE_UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
         if chat_id and message_id:
-            # R22: pure navigation does not wait behind a previous render/network RTT.
-            # State-changing callbacks remain window-serial; the distinction is only
-            # about short local handler concurrency, never about sending heavy work to FAST.
-            if _v166_is_safe_window_callback(raw):
-                try:
-                    cq_id = str(((payload or {}).get('callback_query') or {}).get('id') or update_key)[:96]
-                except Exception:
-                    cq_id = str(update_key)[:96]
-                return (V166_WINDOW_UI_TASK_POOL, f'fast-nav:{chat_id}:{message_id}:{cq_id}')
-            return (V166_WINDOW_UI_TASK_POOL, f'fast-window-state:{chat_id}:{message_id}')
+            # R24: one small FIFO actor per visible Telegram window. Every click is
+            # processed exactly in arrival order; no parallel state races and no click
+            # is sacrificed as "stale". Heavy work is dispatched only after this
+            # short FAST stage by the existing R21 split helpers.
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
         return (V166_WINDOW_UI_TASK_POOL, f'fast-callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)
 

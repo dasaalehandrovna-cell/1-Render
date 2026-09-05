@@ -1,0 +1,15 @@
+Пер-R25 — TRACE FAST PRIORITY
+=============================
+
+Цель: перестать угадывать место зависания и одновременно убрать доказанные блокировки FAST.
+
+1. BTNTRACE для каждого callback: RECEIVE -> FAST_ENQUEUED_HTTP200 -> WORKER_START -> EXECUTE -> RENDER -> TELEGRAM_EDIT.
+2. DISPATCHER STUCK с 5 секунд печатает STUCK_STACK: Python stack конкретного worker, stage, action, thread.
+3. data_lock и SQLITE.lock трассируются; медленное ожидание видно как DATA_LOCK_WAIT / SQLITE_LOCK_WAIT.
+4. Обычный callback возвращает HTTP 200 сразу после успешного FAST enqueue. SQLite inbox/remote witness выполняются фоном.
+5. SQLITE.backup_to больше не держит общий SQLITE.lock: online backup идёт через отдельное SQLite connection.
+6. Delta base mismatch больше не запускает немедленный HEAVY GET /internal/split/state во время активности. Full reconcile откладывается до 12 секунд UI-тишины и идёт Front->HEAVY push.
+7. R24 FIFO/hot-RAM семантика сохранена. Никаких R23 global blockers/latest-wins persistence.
+8. Финансовые мутации и exact-once lanes не распараллеливались и не упрощались.
+
+9. Large R20 capsule is trailing-debounced ~2 s (max 6 s) and generation-aware; remote capsule capture no longer writes the same multi-MB shadow into SQLite first.

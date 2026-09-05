@@ -385,11 +385,8 @@ def _r19_post_update_cleanup(update_id, update_chat_id, update_type, wait, start
         bot_journal('update_process_done', update_chat_id, f'update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time() - started:.3f}s total={time.time() - (started - wait):.3f}s success={success} durable={durable_cloud}')
     except Exception:
         pass
-    if not durable_cloud:
-        try:
-            _lowram_release_chat(update_chat_id)
-        except Exception as _lr_exc:
-            log_error(f'LOWRAM post-update release: {_lr_exc}')
+    # R24: do not throw an active chat out of RAM after every button. Memory-pressure
+    # eviction is handled centrally by the idle sweep / durable cleanup only.
 
 
 def _r19_schedule_post_update_cleanup(update_id, update_chat_id, update_type, wait, started, success, durable_cloud):
@@ -431,9 +428,9 @@ def _r22_callback_sidejobs(payload: dict, update_id, update_chat_id) -> None:
         fn = globals().get('split_witness_event_v268')
         if callable(fn):
             if not fn(update_id, payload, update_chat_id, 'callback_query'):
-                log_error(f'R23 CALLBACK REMOTE WITNESS FAILED update={update_id}')
+                log_error(f'R22 CALLBACK REMOTE WITNESS FAILED update={update_id}')
     except Exception as exc:
-        try: log_error(f'R23 CALLBACK REMOTE WITNESS ERROR update={update_id}: {exc}')
+        try: log_error(f'R22 CALLBACK REMOTE WITNESS ERROR update={update_id}: {exc}')
         except Exception: pass
     try:
         _protect_pending_ui_timers_on_receipt(payload)
@@ -441,8 +438,21 @@ def _r22_callback_sidejobs(payload: dict, update_id, update_chat_id) -> None:
         pass
 
 
+def _r25_callback_durable_admission(payload: dict, update_id, update_chat_id) -> None:
+    """Persist/mirror a callback after FAST admission; never delays HTTP 200 or UI."""
+    try:
+        if not _v260_webhook_inbox_put(update_id, payload, update_chat_id, 'callback_query'):
+            log_error(f'R25 CALLBACK LOCAL INBOX BACKGROUND FAILED update={update_id}')
+    except Exception as exc:
+        try: log_error(f'R25 CALLBACK LOCAL INBOX ERROR update={update_id}: {exc}')
+        except Exception: pass
+    try:
+        _r22_callback_sidejobs(payload, update_id, update_chat_id)
+    except Exception:
+        pass
+
 def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_key):
-    """R23 callback admission.
+    """R22 callback admission.
 
     Ordering guarantee: claim + FAST enqueue happen before any SQLite/Redis/network
     durability work.  HTTP 200 is still withheld until the local SQLite inbox is
@@ -457,38 +467,35 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             wait = started - update_enqueued_at
             UPDATE_DISPATCHER.mark_started(update_id)
             try:
-                _cq = (payload or {}).get('callback_query') or {}
-                _raw = str(_cq.get('data') or '')
-            except Exception:
-                _raw = ''
-            try:
-                _sync_persist = bool(globals().get('_v166_is_finance_business_callback', lambda _x: False)(_raw))
-            except Exception:
-                _sync_persist = False
-            try:
-                r23_fast_callback_hotpath_begin(update_id, update_chat_id, _raw, _sync_persist)
+                _cq = payload.get('callback_query') or {}
+                r25_trace_begin(update_id, update_chat_id, 'callback_query', str(_cq.get('data') or ''))
+                r25_trace_stage('HANDLER_ENTER')
             except Exception:
                 pass
             try:
-                UI_CLEANUP_TASK_POOL.submit(f'r23-inbox-running:{update_id}', _r22_callback_inbox_mark_background, update_id, 'running', '')
-                UI_CLEANUP_TASK_POOL.submit(f'r23-journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, 'callback_query', wait, False)
+                UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-running:{update_id}', _r22_callback_inbox_mark_background, update_id, 'running', '')
+                UI_CLEANUP_TASK_POOL.submit(f'r22-journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, 'callback_query', wait, False)
             except Exception:
                 pass
             success = False
             error_text = ''
             try:
+                try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_START')
+                except Exception: pass
                 _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
+                try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_DONE')
+                except Exception: pass
                 success = True
                 try:
-                    UI_CLEANUP_TASK_POOL.submit(f'r23-inbox-done:{update_id}', _r22_callback_inbox_mark_background, update_id, 'done', '')
-                    UI_CLEANUP_TASK_POOL.submit(f'r23-event-commit:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, True, '')
+                    UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-done:{update_id}', _r22_callback_inbox_mark_background, update_id, 'done', '')
+                    UI_CLEANUP_TASK_POOL.submit(f'r22-event-commit:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, True, '')
                 except Exception:
                     pass
             except Exception as exc:
                 error_text = str(exc)
                 try:
-                    UI_CLEANUP_TASK_POOL.submit(f'r23-inbox-failed:{update_id}', _r22_callback_inbox_mark_background, update_id, 'failed', error_text)
-                    UI_CLEANUP_TASK_POOL.submit(f'r23-event-failed:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, False, error_text)
+                    UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-failed:{update_id}', _r22_callback_inbox_mark_background, update_id, 'failed', error_text)
+                    UI_CLEANUP_TASK_POOL.submit(f'r22-event-failed:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, False, error_text)
                 except Exception:
                     pass
                 try:
@@ -496,16 +503,19 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                 except Exception:
                     pass
                 try:
-                    log_error(f'R23 CALLBACK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
+                    log_error(f'R22 CALLBACK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
                 except Exception:
                     pass
                 raise
             finally:
                 try:
-                    r23_fast_callback_hotpath_end()
+                    r25_trace_stage('HANDLER_DONE', time.time()-started, str(error_text or '')[:160])
+                    log_info(f'FASTBTN handler update={update_id} chat={update_chat_id} wait={wait:.3f}s process={time.time()-started:.3f}s success={int(bool(success))} error={str(error_text or "")[:120]}')
                 except Exception:
                     pass
                 UPDATE_DISPATCHER.finish(update_id, success, error_text)
+                try: r25_trace_end()
+                except Exception: pass
                 _r19_schedule_post_update_cleanup(update_id, update_chat_id, 'callback_query', wait, started, success, False)
 
         selector = globals().get('v163_webhook_select_lane')
@@ -525,14 +535,20 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             return ('LOCAL DURABLE INBOX FAILED', 503)
         return ('OK', 200)
 
-    # The visible callback is already executing at this point. Durability may wait
-    # for SQLite without delaying window construction/render enqueue.
-    if not _v260_webhook_inbox_put(update_id, payload, update_chat_id, 'callback_query'):
-        return ('LOCAL DURABLE INBOX FAILED', 503)
+    # R25: FAST enqueue is the webhook admission point. SQLite inbox + remote witness
+    # happen after admission on a background lane. This removes the 4-5 second POST /tg
+    # tail seen when the shared SQLite connection was busy, while exact business ordering
+    # remains inside the keyed callback actor.
     try:
-        pool = globals().get('DELTA_TASK_POOL') or globals().get('UI_CLEANUP_TASK_POOL')
-        if pool is not None:
-            pool.submit_unique(f'r23-callback-sidejobs:{update_id}', _r22_callback_sidejobs, payload, update_id, update_chat_id)
+        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        queued = bool(pool and pool.submit_unique(f'r25-callback-durable:{update_id}', _r25_callback_durable_admission, payload, update_id, update_chat_id))
+        if not queued:
+            threading.Thread(target=_r25_callback_durable_admission, args=(payload, update_id, update_chat_id), name=f'r25-cb-durable-{update_id}', daemon=True).start()
+    except Exception:
+        pass
+    try:
+        _cq = payload.get('callback_query') or {}
+        log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={str(_cq.get("data") or "")[:180]} stage=FAST_ENQUEUED_HTTP200')
     except Exception:
         pass
     return ('OK', 200)
@@ -559,6 +575,14 @@ def telegram_webhook():
         runtime_mark_webhook(payload if isinstance(payload, dict) else None, blocked='boot')
         return ('BOOTING', 503)
     runtime_mark_webhook(payload if isinstance(payload, dict) else None)
+    # R25 forensic receipt marker (normal Render log only; no DB/network dependency).
+    if isinstance(payload, dict) and 'callback_query' in payload:
+        try:
+            _r25_cq = payload.get('callback_query') or {}
+            _r25_msg = _r25_cq.get('message') or {}; _r25_chat = _r25_msg.get('chat') or {}
+            log_info(f'BTNTRACE update={payload.get("update_id")} chat={_r25_chat.get("id")} action={str(_r25_cq.get("data") or "")[:180]} stage=RECEIVE')
+        except Exception:
+            pass
     # R18 absolute UI hot path: start Telegram callback ACK immediately after the
     # READY/shutdown gate, before logging, Update.de_json, SQLite inbox, Redis/Worker
     # witness, locks or routing.  The ACK uses a dedicated pool, so Telegram network
@@ -569,6 +593,11 @@ def telegram_webhook():
             _r18_msg = _r18_cq.get('message') or {}
             _r18_chat = _r18_msg.get('chat') or {}
             _r18_cid = _r18_chat.get('id')
+            try:
+                _r25_reg = globals().get('r25_register_callback_update')
+                if callable(_r25_reg): _r25_reg(str(_r18_cq.get('id') or ''), payload.get('update_id'), _r18_cid, str(_r18_cq.get('data') or ''))
+            except Exception:
+                pass
             schedule_callback_receipt_ack(str(_r18_cq.get('id') or ''), _r18_cid, delay=0.0)
         except Exception as ack_exc:
             log_error(f'CALLBACK IMMEDIATE ACK: {ack_exc}')
@@ -584,7 +613,7 @@ def telegram_webhook():
                 upd_type = 'edited_message' if 'edited_message' in payload else 'message' if 'message' in payload else 'callback_query' if 'callback_query' in payload else 'other'
                 if upd_type == 'callback_query':
                     cid_j = _extract_update_chat_id(payload)
-                    UI_CLEANUP_TASK_POOL.submit(f'r23-webhook-journal:{payload.get("update_id", time.time_ns())}', bot_journal, 'webhook_update', cid_j, upd_type)
+                    UI_CLEANUP_TASK_POOL.submit(f'r22-webhook-journal:{payload.get("update_id", time.time_ns())}', bot_journal, 'webhook_update', cid_j, upd_type)
                 else:
                     bot_journal('webhook_update', _extract_update_chat_id(payload), upd_type)
             except Exception:
@@ -598,15 +627,24 @@ def telegram_webhook():
         update_type = 'edited_message' if isinstance(payload, dict) and 'edited_message' in payload else 'callback_query' if isinstance(payload, dict) and 'callback_query' in payload else 'message' if isinstance(payload, dict) and 'message' in payload else 'other'
         if update_type == 'callback_query':
             # Rare finance toggles keep the pre-execution cloud witness because replaying
-            # a toggle twice can reverse state. All normal/navigation callbacks take R23.
+            # a toggle twice can reverse state. All normal/navigation callbacks take R22.
             _r22_cloud_critical, _r22_cloud_reason = durable_task_required(payload)
             if not _r22_cloud_critical:
                 return _r22_accept_callback_fast(payload, update_id, update_chat_id, update_key)
+        _r25_adm_action = ''
+        try:
+            if update_type == 'callback_query': _r25_adm_action = str((payload.get('callback_query') or {}).get('data') or '')[:180]
+            elif update_type in {'message','edited_message'}: _r25_adm_action = str(((payload.get(update_type) or payload.get('message') or {}).get('text') or update_type))[:180]
+            log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=ADMISSION_SQLITE_START')
+        except Exception: pass
+        _r25_adm_started = time.monotonic()
         _inbox_state_v260 = _v260_webhook_inbox_state(update_id)
         if _inbox_state_v260 == 'done':
             return ('OK', 200)
         if not _v260_webhook_inbox_put(update_id, payload, update_chat_id, update_type):
             return ('LOCAL DURABLE INBOX FAILED', 503)
+        try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=ADMISSION_SQLITE_DONE elapsed={time.monotonic()-_r25_adm_started:.3f}s')
+        except Exception: pass
         # R13: before Telegram gets HTTP 200 and before business execution starts,
         # make the raw update durable on Worker/Redis.  If both remote witnesses are
         # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
@@ -627,9 +665,16 @@ def telegram_webhook():
                         threading.Thread(target=_r18_callback_witness, name=f'r18-cb-witness-{update_id}', daemon=True).start()
                     except Exception:
                         pass
-            elif not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
-                log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
-                return ('REMOTE DURABLE WITNESS FAILED', 503)
+            else:
+                _r25_witness_started = time.monotonic()
+                try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_START')
+                except Exception: pass
+                _r25_witness_ok = _r13_witness_fn(update_id, payload, update_chat_id, update_type)
+                try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_DONE elapsed={time.monotonic()-_r25_witness_started:.3f}s detail={int(bool(_r25_witness_ok))}')
+                except Exception: pass
+                if not _r25_witness_ok:
+                    log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
+                    return ('REMOTE DURABLE WITNESS FAILED', 503)
         _protect_pending_ui_timers_on_receipt(payload)
         if durable_update_processed(update_id):
             _v260_webhook_inbox_mark(update_id, 'done')
@@ -667,6 +712,13 @@ def telegram_webhook():
                 started = time.time()
                 wait = started - update_enqueued_at
                 UPDATE_DISPATCHER.mark_started(update_id)
+                try:
+                    _r25_worker_action = ''
+                    if update_type == 'callback_query': _r25_worker_action = str((payload.get('callback_query') or {}).get('data') or '')
+                    elif update_type in {'message','edited_message'}: _r25_worker_action = str(((payload.get(update_type) or payload.get('message') or {}).get('text') or update_type))
+                    r25_trace_begin(update_id, update_chat_id, update_type, _r25_worker_action)
+                    r25_trace_stage('GENERAL_HANDLER_ENTER')
+                except Exception: pass
                 _v260_webhook_inbox_mark(update_id, 'external_running' if durable_cloud else 'running')
                 if update_type == 'callback_query':
                     try:
@@ -683,7 +735,11 @@ def telegram_webhook():
                         durable_started = mega_task_begin(update_id, allow_existing_running=False)
                         if not durable_started:
                             raise RuntimeError('MEGA durable task could not enter running state')
+                    try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_START')
+                    except Exception: pass
                     execution_ctx = _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
+                    try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_DONE')
+                    except Exception: pass
                     success = True
                     _v260_webhook_inbox_mark(update_id, 'done')
                     _r13_commit_fn = globals().get('split_event_committed_v268')
@@ -708,7 +764,11 @@ def telegram_webhook():
                     log_error(f'WEBHOOK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
                     raise
                 finally:
+                    try: r25_trace_stage('HANDLER_DONE', time.time()-started, str(error_text or '')[:160])
+                    except Exception: pass
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
+                    try: r25_trace_end()
+                    except Exception: pass
                     # R19: release the callback/content worker immediately. Cleanup is
                     # serialized on a separate pool and can never keep a UI key active.
                     _r19_schedule_post_update_cleanup(update_id, update_chat_id, update_type, wait, started, success, durable_cloud)
@@ -813,11 +873,11 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
-    '• ⚡ Пер-R23: FAST callback — RAM-first; до первого render нет Redis/KV, HEAVY HTTP, Google/MEGA и других удалённых ожиданий.\n'
-    '• 🧩 Длинные callback-токены больше не пишутся в Redis по одному при построении клавиатуры: зеркало идёт фоновыми batch-командами.\n'
-    '• 💾 Обычные UI/settings save_data коалесцируются в отдельной latest-wins SQLite-очереди; финансовые мутации сохраняются синхронно.\n'
-    '• 🚀 Telegram render остаётся отдельной latest-wins очередью: callback-worker не ждёт editMessageText RTT, устаревшие render отбрасываются.\n'
-    '• 🛰 Render #2 остаётся HEAVY: shared durability, Google, MEGA, snapshot/export и тяжёлые задачи выполняются вторым этапом.'
+    '• 🔬 Пер-R25: BTNTRACE+STUCK_STACK; одна FIFO-команда на окно; callback ставится в FAST до SQLite, а Telegram render идёт отдельной FIFO-очередью без потери нажатий.\n'
+    '• 🛰 Активный чат остаётся горячим в RAM; LOWRAM выгружает данные только при реальном давлении памяти, а HEAVY/split остаётся на Render #2.\n'
+    '• 💾 Сохраняется надёжная R20/v262 схема durable capsule: максимум config generation + максимум user-state seq без отката.\n'
+    '• 🔒 Полный SQLite + delta/event journal остаются вторым уровнем защиты финансов и остальных данных; capsule не содержит финансовые cold-ledger записи.\n'
+    '• 🚀 Redis callback-токены зеркалируются пакетно в фоне; UI и render сохраняют строгий порядок FIFO.'
 )
 
 
@@ -885,7 +945,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R23 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R25 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -972,7 +1032,7 @@ def main():
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
     restored = bool(_split_preboot_authoritative_r19)
     db_restored = bool(_split_preboot_authoritative_r19)
-    db_detail = (f'Пер-R23 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    db_detail = (f'Пер-R25 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
     if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:

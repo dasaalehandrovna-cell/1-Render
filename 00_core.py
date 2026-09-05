@@ -23,6 +23,7 @@ import heapq
 import signal
 import socket
 import sys
+import traceback
 import platform
 import ctypes as _core_ctypes
 from datetime import datetime, timedelta, timezone
@@ -781,86 +782,7 @@ UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI
 # can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.
 FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 4, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
 # R22: Telegram editMessageText/caption runs here, never inside callback workers.
-WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 6, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 2000))
-# R23: non-critical callback persistence never holds a FAST callback worker.
-# The latest pending save per logical key wins, just like the window render queue.
-UI_PERSIST_TASK_POOL = LatestKeyedTaskPool('ui-persist', _env_int('UI_PERSIST_WORKERS', 2, 1, 4), _env_int('UI_PERSIST_MAX_PENDING_KEYS', 256, 32, 2000))
-KV_MIRROR_TASK_POOL = LatestKeyedTaskPool('kv-mirror', _env_int('KV_MIRROR_WORKERS', 2, 1, 4), _env_int('KV_MIRROR_MAX_PENDING_KEYS', 512, 64, 4000))
-
-# R23 FAST hot-path constitution.  This thread-local flag is set only while a
-# Telegram callback handler is running on FAST.  Redis/KV and non-Telegram HTTP
-# are forbidden there; local RAM work is authoritative for the immediate UI.
-_R23_FAST_HOTPATH_LOCAL = threading.local()
-
-def r23_fast_callback_hotpath_begin(update_id=None, chat_id=None, raw_callback: str='', sync_persistence: bool=False):
-    local = _R23_FAST_HOTPATH_LOCAL
-    local.active = True
-    local.update_id = update_id
-    local.chat_id = chat_id
-    local.raw_callback = str(raw_callback or '')[:180]
-    local.sync_persistence = bool(sync_persistence)
-    local.started_mono = time.monotonic()
-    local.first_render_mono = 0.0
-    local.first_render_purpose = ''
-    local.blocked_remote = 0
-    local.deferred_persist = 0
-
-def r23_fast_callback_hotpath_active() -> bool:
-    return bool(getattr(_R23_FAST_HOTPATH_LOCAL, 'active', False))
-
-def r23_fast_callback_sync_persistence_required() -> bool:
-    return bool(getattr(_R23_FAST_HOTPATH_LOCAL, 'sync_persistence', False))
-
-def r23_fast_callback_mark_render_enqueued(purpose: str='') -> None:
-    if not r23_fast_callback_hotpath_active():
-        return
-    local = _R23_FAST_HOTPATH_LOCAL
-    if not float(getattr(local, 'first_render_mono', 0.0) or 0.0):
-        local.first_render_mono = time.monotonic()
-        local.first_render_purpose = str(purpose or '')[:100]
-
-def r23_fast_callback_note_remote_block(kind: str='', target: str='') -> None:
-    if not r23_fast_callback_hotpath_active():
-        return
-    local = _R23_FAST_HOTPATH_LOCAL
-    local.blocked_remote = int(getattr(local, 'blocked_remote', 0) or 0) + 1
-
-def r23_fast_callback_note_deferred_persist() -> None:
-    if r23_fast_callback_hotpath_active():
-        local = _R23_FAST_HOTPATH_LOCAL
-        local.deferred_persist = int(getattr(local, 'deferred_persist', 0) or 0) + 1
-
-def _r23_hotpath_stats_background(row: dict) -> None:
-    try:
-        bot_journal('r23_fast_hotpath', row.get('chat_id'),
-                    f"action={row.get('raw','')}; handler={row.get('handler',0.0):.3f}s; first_render={row.get('first_render',-1.0):.3f}s; blocked_remote={row.get('blocked_remote',0)}; deferred_persist={row.get('deferred_persist',0)}")
-    except Exception:
-        pass
-
-def r23_fast_callback_hotpath_end() -> dict:
-    local = _R23_FAST_HOTPATH_LOCAL
-    if not bool(getattr(local, 'active', False)):
-        return {}
-    now = time.monotonic()
-    started = float(getattr(local, 'started_mono', now) or now)
-    first = float(getattr(local, 'first_render_mono', 0.0) or 0.0)
-    row = {
-        'chat_id': getattr(local, 'chat_id', None),
-        'update_id': getattr(local, 'update_id', None),
-        'raw': str(getattr(local, 'raw_callback', '') or '')[:180],
-        'handler': max(0.0, now - started),
-        'first_render': (max(0.0, first - started) if first else -1.0),
-        'blocked_remote': int(getattr(local, 'blocked_remote', 0) or 0),
-        'deferred_persist': int(getattr(local, 'deferred_persist', 0) or 0),
-    }
-    local.active = False
-    try:
-        pool = globals().get('BACKGROUND_TASK_POOL')
-        if pool is not None:
-            pool.submit(f"r23-hotpath-stats:{row.get('update_id')}:{time.time_ns()}", _r23_hotpath_stats_background, row)
-    except Exception:
-        pass
-    return row
+WINDOW_RENDER_TASK_POOL = KeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 6, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING', 900, 100, 4000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 1, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
 UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
@@ -884,9 +806,9 @@ try:
 except Exception:
     WEBHOOK_ACK_WAIT_SECONDS = 8.0
 try:
-    WEBHOOK_STUCK_WARN_SECONDS = max(5.0, min(300.0, float(os.getenv('WEBHOOK_STUCK_WARN_SECONDS', '20') or '20')))
+    WEBHOOK_STUCK_WARN_SECONDS = max(5.0, min(300.0, float(os.getenv('WEBHOOK_STUCK_WARN_SECONDS', '5') or '5')))
 except Exception:
-    WEBHOOK_STUCK_WARN_SECONDS = 20.0
+    WEBHOOK_STUCK_WARN_SECONDS = 5.0
 try:
     WEBHOOK_DONE_TTL_SECONDS = max(60.0, min(3600.0, float(os.getenv('WEBHOOK_DONE_TTL_SECONDS', '600') or '600')))
 except Exception:
@@ -935,7 +857,7 @@ class DurableUpdateDispatcher:
             else:
                 attempts = 1
             event = threading.Event()
-            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': ''}
+            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': '', 'thread_ident': None, 'thread_name': '', 'stage': 'CLAIMED', 'stage_at': now, 'action': ''}
             self._tickets[key] = item
             return ('new', item)
 
@@ -943,8 +865,26 @@ class DurableUpdateDispatcher:
         with self._lock:
             item = self._tickets.get(str(update_id))
             if item:
+                now = time.time()
                 item['state'] = 'running'
-                item['started_at'] = time.time()
+                item['started_at'] = now
+                item['thread_ident'] = threading.get_ident()
+                item['thread_name'] = threading.current_thread().name
+                item['stage'] = 'WORKER_START'
+                item['stage_at'] = now
+
+    def mark_stage(self, update_id, stage: str, action: str=''):
+        with self._lock:
+            item = self._tickets.get(str(update_id))
+            if not item:
+                return
+            item['stage'] = str(stage or '')[:120]
+            item['stage_at'] = time.time()
+            if action:
+                item['action'] = str(action or '')[:240]
+            if item.get('state') == 'running' and not item.get('thread_ident'):
+                item['thread_ident'] = threading.get_ident()
+                item['thread_name'] = threading.current_thread().name
 
     def finish(self, update_id, success=True, error=''):
         with self._lock:
@@ -1011,20 +951,115 @@ class DurableUpdateDispatcher:
                             last = float(self._last_warn.get(key, 0) or 0)
                             if now - last >= WEBHOOK_STUCK_WARN_SECONDS:
                                 self._last_warn[key] = now
-                                warnings.append((key, item.get('chat_id'), item.get('type'), age, state))
+                                warnings.append((key, item.get('chat_id'), item.get('type'), age, state, item.get('thread_ident'), item.get('thread_name'), item.get('stage'), item.get('stage_at'), item.get('action')))
                     for key in stale_keys:
                         self._tickets.pop(key, None)
                         self._last_warn.pop(key, None)
-                for key, chat_id, typ, age, state in warnings:
+                for key, chat_id, typ, age, state, thread_ident, thread_name, stage, stage_at, action in warnings:
                     try:
-                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s; Telegram will retry until 2xx')
+                        stage_age = max(0.0, now - float(stage_at or now))
+                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s stage={stage or "?"} stage_age={stage_age:.1f}s action={str(action or "")[:160]}; thread={thread_name or "?"}; Telegram will retry until 2xx')
                     except Exception:
                         pass
+                    try:
+                        frame = sys._current_frames().get(int(thread_ident)) if thread_ident else None
+                        if frame is not None:
+                            stack = ''.join(traceback.format_stack(frame, limit=24))
+                            if len(stack) > 14000:
+                                stack = stack[-14000:]
+                            log_error(f'STUCK_STACK update={key} chat={chat_id} type={typ} age={age:.1f}s stage={stage or "?"} action={str(action or "")[:160]} thread={thread_name or thread_ident}\n{stack}')
+                        else:
+                            log_error(f'STUCK_STACK update={key}: frame unavailable thread={thread_name or thread_ident}')
+                    except Exception as stack_exc:
+                        try: log_error(f'STUCK_STACK update={key}: capture failed {type(stack_exc).__name__}: {str(stack_exc)[:180]}')
+                        except Exception: pass
             except Exception:
                 time.sleep(2.0)
 UPDATE_DISPATCHER = DurableUpdateDispatcher()
+
+# R25: per-update forensic trace. It writes to normal Render logs only and never
+# touches SQLite/Redis, so diagnostics cannot become another user-path dependency.
+_R25_TRACE_LOCAL = threading.local()
+_R25_TRACE_SLOW_LOCK_SEC = max(0.005, float(os.getenv('R25_TRACE_SLOW_LOCK_SEC', '0.020') or '0.020'))
+
+def r25_trace_begin(update_id, chat_id=None, update_type='other', action=''):
+    _R25_TRACE_LOCAL.update_id = str(update_id or '')
+    _R25_TRACE_LOCAL.chat_id = chat_id
+    _R25_TRACE_LOCAL.update_type = str(update_type or 'other')
+    _R25_TRACE_LOCAL.action = str(action or '')[:240]
+    _R25_TRACE_LOCAL.started_mono = time.monotonic()
+    try: UPDATE_DISPATCHER.mark_stage(update_id, 'WORKER_START', action)
+    except Exception: pass
+    try: log_info(f'BTNTRACE update={update_id} chat={chat_id} type={update_type} action={str(action or "")[:180]} stage=WORKER_START')
+    except Exception: pass
+
+def r25_trace_set_action(action: str):
+    try:
+        _R25_TRACE_LOCAL.action = str(action or '')[:240]
+        ctx = r25_trace_current()
+        if ctx.get('update_id'):
+            UPDATE_DISPATCHER.mark_stage(ctx.get('update_id'), 'CALLBACK_ROUTER', str(action or ''))
+            log_info(f'BTNTRACE update={ctx.get("update_id")} chat={ctx.get("chat_id")} action={str(action or "")[:180]} stage=CALLBACK_ROUTER')
+    except Exception:
+        pass
+
+def r25_trace_current():
+    return {
+        'update_id': str(getattr(_R25_TRACE_LOCAL, 'update_id', '') or ''),
+        'chat_id': getattr(_R25_TRACE_LOCAL, 'chat_id', None),
+        'update_type': str(getattr(_R25_TRACE_LOCAL, 'update_type', '') or ''),
+        'action': str(getattr(_R25_TRACE_LOCAL, 'action', '') or ''),
+        'started_mono': float(getattr(_R25_TRACE_LOCAL, 'started_mono', 0.0) or 0.0),
+    }
+
+def r25_trace_stage(stage: str, elapsed=None, detail: str='', emit: bool=True):
+    ctx = r25_trace_current()
+    update_id = ctx.get('update_id') or ''
+    if update_id:
+        try: UPDATE_DISPATCHER.mark_stage(update_id, stage, ctx.get('action') or '')
+        except Exception: pass
+    if emit:
+        try:
+            e = '' if elapsed is None else f' elapsed={max(0.0,float(elapsed)):.3f}s'
+            d = f' detail={str(detail or "")[:260]}' if detail else ''
+            log_info(f'BTNTRACE update={update_id or "-"} chat={ctx.get("chat_id")} action={str(ctx.get("action") or "")[:180]} stage={str(stage or "")[:120]}{e}{d}')
+        except Exception: pass
+
+def r25_trace_end():
+    try:
+        for name in ('update_id','chat_id','update_type','action','started_mono'):
+            if hasattr(_R25_TRACE_LOCAL, name): delattr(_R25_TRACE_LOCAL, name)
+    except Exception: pass
+
+class R25TracedRLock:
+    """RLock-compatible wrapper that exposes lock waits in BTNTRACE/STUCK_STACK."""
+    def __init__(self, name):
+        self._lock = threading.RLock()
+        self.name = str(name or 'lock')
+    def acquire(self, blocking=True, timeout=-1):
+        t0 = time.monotonic()
+        ctx = r25_trace_current()
+        traced = bool(ctx.get('update_id'))
+        if traced:
+            r25_trace_stage(f'{self.name.upper()}_LOCK_WAIT', emit=False)
+        if timeout is None or float(timeout) < 0:
+            ok = self._lock.acquire(blocking)
+        else:
+            ok = self._lock.acquire(blocking, timeout)
+        waited = max(0.0, time.monotonic() - t0)
+        if traced:
+            r25_trace_stage(f'{self.name.upper()}_LOCK_ACQUIRED', waited, emit=waited >= _R25_TRACE_SLOW_LOCK_SEC)
+        elif waited >= max(0.25, _R25_TRACE_SLOW_LOCK_SEC * 5):
+            try: log_info(f'LOCKTRACE name={self.name} wait={waited:.3f}s thread={threading.current_thread().name}')
+            except Exception: pass
+        return ok
+    def release(self): return self._lock.release()
+    def __enter__(self): self.acquire(); return self
+    def __exit__(self, exc_type, exc, tb): self.release(); return False
+    def __getattr__(self, name): return getattr(self._lock, name)
+
 chat_locks = defaultdict(threading.RLock)
-data_lock = threading.RLock()
+data_lock = R25TracedRLock('data')
 forward_map_lock = threading.RLock()
 timer_lock = threading.RLock()
 _state_context = threading.local()
@@ -1458,7 +1493,7 @@ class SQLiteState:
 
     def __init__(self, path: str):
         self.path = path
-        self.lock = threading.RLock()
+        self.lock = R25TracedRLock('sqlite')
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_db()
@@ -1560,6 +1595,19 @@ class SQLiteState:
             self.conn.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', (str(chat_id), str(key), payload, stamp))
             self.conn.commit()
 
+    def set_cold_many(self, chat_id, items: dict):
+        """R24: persist all loaded cold fields of one chat in one SQLite commit."""
+        rows = []
+        stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        for key, obj in (items or {}).items():
+            rows.append((str(chat_id), str(key), self._dump(obj), stamp))
+        if not rows:
+            return 0
+        with self.lock:
+            self.conn.executemany('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', rows)
+            self.conn.commit()
+        return len(rows)
+
     def delete_cold(self, chat_id, key: str):
         with self.lock:
             self.conn.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?', (str(chat_id), str(key)))
@@ -1610,20 +1658,35 @@ class SQLiteState:
         return sorted(set(out))
 
     def backup_to(self, target_path: str):
-        """Consistent on-disk SQLite snapshot without materializing bot state in Python RAM."""
+        """R25 online snapshot using a separate SQLite connection.
+
+        The old implementation held the one shared SQLITE.lock for the entire backup.
+        HEAVY `/internal/split/state` fetches could therefore freeze callbacks that only
+        needed a tiny SQLite read/write. WAL + SQLite online backup allows a consistent
+        snapshot without monopolising FAST's primary connection/lock.
+        """
         target_path = str(target_path)
         os.makedirs(os.path.dirname(target_path) or '.', exist_ok=True)
-        with self.lock:
-            try:
-                self.conn.execute('PRAGMA wal_checkpoint(PASSIVE)')
-            except Exception:
-                pass
-            dest = sqlite3.connect(target_path)
-            try:
-                self.conn.backup(dest, pages=128, sleep=0.01)
-                dest.commit()
-            finally:
-                dest.close()
+        started = time.monotonic()
+        try: r25_trace_stage('SQLITE_BACKUP_START', emit=False)
+        except Exception: pass
+        source = sqlite3.connect(self.path, check_same_thread=False, timeout=0.25)
+        dest = sqlite3.connect(target_path, check_same_thread=False, timeout=0.25)
+        try:
+            try: source.execute('PRAGMA busy_timeout=250')
+            except Exception: pass
+            source.backup(dest, pages=64, sleep=0.005)
+            dest.commit()
+        finally:
+            try: dest.close()
+            except Exception: pass
+            try: source.close()
+            except Exception: pass
+        elapsed = max(0.0, time.monotonic() - started)
+        try:
+            if elapsed >= 0.25: log_info(f'R25 SQLITE ONLINE BACKUP path={os.path.basename(target_path)} elapsed={elapsed:.3f}s shared_lock=0')
+            r25_trace_stage('SQLITE_BACKUP_DONE', elapsed, emit=elapsed >= _R25_TRACE_SLOW_LOCK_SEC)
+        except Exception: pass
         return target_path
 
     def replace_database(self, source_path: str):
@@ -1761,11 +1824,11 @@ def _lowram_flush_chat(chat_id: int, store: dict | None=None, evict: bool=False)
             dict.__setitem__(store, daily_key, daily)
             if isinstance(store, ColdChatStore):
                 store._cold_loaded.add(daily_key)
-    for key in LOWRAM_COLD_KEYS:
-        if dict.__contains__(store, key):
-            SQLITE.set_cold(cid, key, dict.__getitem__(store, key))
-            with _LOWRAM_LOCK:
-                _LOWRAM_STATS['cold_saves'] += 1
+    _cold_batch = {key: dict.__getitem__(store, key) for key in LOWRAM_COLD_KEYS if dict.__contains__(store, key)}
+    if _cold_batch:
+        SQLITE.set_cold_many(cid, _cold_batch)
+        with _LOWRAM_LOCK:
+            _LOWRAM_STATS['cold_saves'] += len(_cold_batch)
     if evict:
         removed = 0
         for key in list(LOWRAM_COLD_KEYS):

@@ -1,0 +1,10 @@
+Пер-R24 — ORDERED HOT-RAM FAST
+
+- Built from R22, not R23. R23 global HTTP/Redis blockers and async latest-wins save_data are removed.
+- One FIFO callback actor per Telegram window: every click is processed in arrival order.
+- One FIFO render queue per Telegram window: no stale/latest-wins render drops.
+- Long callback tokens are created in RAM and mirrored to Redis later as one background pipeline.
+- Active chat cold fields are no longer evicted after every callback.
+- LOWRAM eviction runs only under real RSS pressure (default 340 MB) and never while FAST/UI/render pools are busy.
+- Heavy file/export/Google/MEGA work remains on the existing R21 split/Render #2 path.
+- FASTBTN handler/render timing is written to normal Render logs even when bot journal rows are disabled.

@@ -393,7 +393,7 @@ def _run_full_chat_backup(chat_id: int, expected_epoch: int | None=None):
                 _backup_dirty_chats.discard(chat_id)
                 _backup_timers.pop(chat_id, None)
             try:
-                _lowram_release_chat(chat_id)
+                _r24_lowram_release_if_pressure(chat_id)
             except Exception as _lr_exc:
                 log_error(f'LOWRAM full-backup release {chat_id}: {_lr_exc}')
 

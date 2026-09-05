@@ -716,18 +716,6 @@ def _clean_category_display_name(value: str) -> str:
 def usd_rate_cached(force: bool=False) -> dict | None:
     gs = data.setdefault('_global_settings', {})
     cache = gs.get('usd_rate_cache') if isinstance(gs.get('usd_rate_cache'), dict) else {}
-    # R23: a finance window may use a stale local rate for one render, but it may
-    # never wait for Redis/DolarAPI. Refresh is scheduled on background immediately.
-    hot_fn = globals().get('r23_fast_callback_hotpath_active')
-    try:
-        if callable(hot_fn) and hot_fn():
-            try:
-                GENERAL_TASK_POOL.submit_unique('r23-usd-rate-refresh', usd_rate_cached, True)
-            except Exception:
-                pass
-            return cache if cache.get('rate') else None
-    except Exception:
-        pass
     gate = globals().get('external_access_allowed_v233')
     if callable(gate) and (not gate('currency')):
         try:
@@ -740,6 +728,20 @@ def usd_rate_cached(force: bool=False) -> dict | None:
     age = time.time() - float(cache.get('fetched_ts', 0) or 0)
     if not force and cache.get('rate') and (age < USD_RATE_CACHE_SECONDS):
         return cache
+    # R24: FAST/UI window construction never waits for Redis or DolarAPI. A stale
+    # local rate is good enough for the first render; refresh happens after it.
+    _r24_thread_name = threading.current_thread().name.casefold()
+    _r24_ui_thread = _r24_thread_name.startswith(('fast-ui', 'ui-', 'start-ui', 'window-render'))
+    if not force and _r24_ui_thread:
+        try:
+            submit_unique = getattr(GENERAL_TASK_POOL, 'submit_unique', None)
+            if callable(submit_unique):
+                submit_unique('r24-usd-rate-refresh', usd_rate_cached, True)
+            else:
+                GENERAL_TASK_POOL.submit('r24-usd-rate-refresh', usd_rate_cached, True)
+        except Exception:
+            pass
+        return cache if cache.get('rate') else None
     if not force:
         kv_get = globals().get('kv_get_json_v248')
         if callable(kv_get):

@@ -49,6 +49,12 @@ def on_callback(call):
         raw_data_str = call.data or ''
         data_str = resolve_short_callback(raw_data_str)
         chat_id = call.message.chat.id
+        try:
+            _r25_action_fn = globals().get('r25_trace_set_action')
+            if callable(_r25_action_fn) and data_str is not None:
+                _r25_action_fn(str(data_str))
+        except Exception:
+            pass
         if data_str is None:
             try:
                 bot.answer_callback_query(call.id, 'Кнопка устарела. Открой меню заново.', show_alert=True)
