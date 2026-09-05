@@ -506,7 +506,8 @@ def _split_touch_state_revision_r18(reason='update', update_id=None):
                        'state_token':_split_current_state_token_v264() if '_split_current_state_token_v264' in globals() else ''}
             _SPLIT_STATE_REV_MEM_R27.clear(); _SPLIT_STATE_REV_MEM_R27.update(payload)
             _SPLIT_STATE_REV_DIRTY_R27 = True
-        _r27_schedule_state_revision_flush(4.0)
+        # R28: do not schedule any SQLite write from a Telegram/user update.
+        # The RAM revision is flushed only immediately before an idle/full durability snapshot.
         return payload
     except Exception as exc:
         try: log_error(f'R27 state revision touch: {exc}')
@@ -583,7 +584,7 @@ def split_front_state_download_v262():
         try:
             _quiet_fn = globals().get('r27_user_quiet_for')
             _quiet_for = float(_quiet_fn()) if callable(_quiet_fn) else 999999.0
-            _guard = max(2.0, min(60.0, float(_split_os.getenv('R27_SNAPSHOT_USER_QUIET_SEC','15') or '15')))
+            _guard = max(2.0, min(60.0, float(_split_os.getenv('R28_FULL_SNAPSHOT_USER_QUIET_SEC','30') or '15')))
             if bool(globals().get('runtime_is_ready', lambda: False)()) and _quiet_for < _guard:
                 return ({'ok': False, 'busy': 'user_active', 'retry_after': max(1, int(_guard - _quiet_for) + 1)}, 423)
         except Exception:
@@ -820,10 +821,10 @@ def _split_sync_timer_fire():
     global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
     try:
         reason = str(_SPLIT_STATE.get('sync_reason') or 'change')
-        # R27: page-delta generation itself required a full local SQLite backup, so
+        # R28: page-delta generation itself required a full local SQLite backup, so
         # "tiny delta" still hammered FAST every few seconds. Raw Telegram events are
         # already durable remotely; mirror the canonical SQLite only after UI quiet.
-        _split_schedule_idle_full_reconcile_v270('r27-idle:' + reason[:100], delay=float(_split_os.getenv('R27_STATE_MIRROR_DELAY_SEC','20') or '20'))
+        _split_schedule_idle_full_reconcile_v270('r28-idle:' + reason[:100], delay=float(_split_os.getenv('R28_STATE_MIRROR_DELAY_SEC','30') or '30'))
     finally:
         with _SPLIT_SYNC_LOCK:
             _SPLIT_SYNC_TIMER = None
@@ -1818,6 +1819,16 @@ def _split_continuity_checkpoint_fire_v270():
         _SPLIT_CONTINUITY_CHAT_ID = None
         _SPLIT_CONTINUITY_REASON = ''
         _SPLIT_CONTINUITY_FIRST_DIRTY_AT = 0.0
+    # R28: continuity is background durability, never a competitor of a fresh button.
+    try:
+        quiet_fn = globals().get('r27_user_quiet_for')
+        quiet_for = float(quiet_fn()) if callable(quiet_fn) else 10**9
+        quiet_need = max(3.0, min(60.0, float(_split_os.getenv('R28_CONTINUITY_USER_QUIET_SEC','12') or '12')))
+        if quiet_for < quiet_need:
+            split_schedule_continuity_checkpoint_v270(cid, reason, delay=max(1.0, quiet_need - quiet_for))
+            return
+    except Exception:
+        pass
     try:
         if cid is not None:
             _V263_BASE_SAVE_DATA(data, chat_ids=[int(cid)])
@@ -1999,10 +2010,10 @@ def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
         quiet_for = float(_quiet_fn()) if callable(_quiet_fn) else max(0.0, _split_time.time() - float(globals().get('_SPLIT_LAST_CHANGE_AT') or 0.0))
     except Exception:
         quiet_for = 999999.0
-    quiet_need = float(_split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','20') or '20')
+    quiet_need = float(_split_os.getenv('R28_FULL_SNAPSHOT_USER_QUIET_SEC','30') or '30')
     if quiet_for < quiet_need:
         return _split_schedule_idle_full_reconcile_v270(reason, delay=max(3.0, quiet_need - quiet_for))
-    min_gap = max(20.0, min(1800.0, float(_split_os.getenv('R27_FULL_SNAPSHOT_MIN_INTERVAL_SEC','120') or '120')))
+    min_gap = max(20.0, min(1800.0, float(_split_os.getenv('R28_FULL_SNAPSHOT_MIN_INTERVAL_SEC','300') or '300')))
     last_ok = float(_SPLIT_STATE.get('full_reconcile_last_ok') or 0.0)
     if last_ok > 0.0 and _split_time.time() - last_ok < min_gap:
         return _split_schedule_idle_full_reconcile_v270(reason, delay=max(3.0, min_gap - (_split_time.time() - last_ok)))
@@ -2023,7 +2034,7 @@ def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
 
 def _split_schedule_idle_full_reconcile_v270(reason='need_full', delay=None):
     global _SPLIT_FULL_TIMER
-    wait = float(delay if delay is not None else _split_os.getenv('SPLIT_FULL_RECONCILE_QUIET_SEC','20') or '20')
+    wait = float(delay if delay is not None else _split_os.getenv('R28_FULL_SNAPSHOT_USER_QUIET_SEC','30') or '20')
     with _SPLIT_FULL_LOCK:
         if _SPLIT_FULL_TIMER is not None:
             try: _SPLIT_FULL_TIMER.cancel()

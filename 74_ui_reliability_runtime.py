@@ -2979,7 +2979,7 @@ def _canon_delete_auto_finance_windows_for_chat__001(chat_id: int, *, persist_no
     return len(ids)
 _V160_FAST_EDIT_LOCKS = defaultdict(_v160_threading.RLock)
 _V160_FAST_EDIT_LAST = {}
-_V160_FAST_EDIT_MIN_GAP = 0.0  # R22: latest-wins render queue replaces callback-thread sleeps
+_V160_FAST_EDIT_MIN_GAP = max(0.03, min(0.2, float(_v160_os.getenv('V160_UI_MIN_GAP_SECONDS', '0.08') or '0.08')))
 
 def _canon_callback_should_debounce__001(call, data_str: str, min_interval: float=0.12) -> bool:
     return str(data_str or '') == 'none'
@@ -3051,7 +3051,7 @@ def _r22_execute_window_render(payload: dict) -> None:
 
 
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
-    """R24: prepare locally, enqueue ordered FIFO render, never drop a user click."""
+    """R28: direct v262 render path. No render queue between callback and Telegram."""
     chat_id = int(chat_id)
     message_id = int(message_id)
     try:
@@ -3076,57 +3076,55 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
             reply_markup = augment(reply_markup, text, chat_id)
     except Exception:
         pass
-    payload = {
-        'chat_id': chat_id, 'message_id': message_id, 'text': text,
-        'reply_markup': reply_markup, 'parse_mode': parse_mode, 'purpose': purpose,
-        '_r22_enqueued_mono': _v160_time.monotonic(),
-    }
-    try:
-        _r25_ctx_fn = globals().get('r25_trace_current')
-        _r25_ctx = _r25_ctx_fn() if callable(_r25_ctx_fn) else {}
-        payload['_r25_update_id'] = str((_r25_ctx or {}).get('update_id') or '')
-        payload['_r25_action'] = str((_r25_ctx or {}).get('action') or '')[:180]
-        _r25_stage_fn = globals().get('r25_trace_stage')
-        if callable(_r25_stage_fn): _r25_stage_fn('RENDER_ENQUEUE_PREPARED')
-    except Exception:
-        pass
-    try:
-        local = globals().get('_V177_PERF_LOCAL')
-        payload['_r22_action'] = str(getattr(local, 'action', '') or '')[:120] if local is not None else ''
-    except Exception:
-        payload['_r22_action'] = ''
+    payload = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'reply_markup': reply_markup, 'parse_mode': parse_mode, 'purpose': purpose}
     try:
         prepare = globals().get('window_diag_prepare_fast_ui_payload')
         if callable(prepare):
             payload = prepare(payload) or payload
-            payload.setdefault('_r22_enqueued_mono', _v160_time.monotonic())
     except Exception:
         pass
     try:
-        # Cancel only legacy delayed timers. This is local memory work, no network.
         cancel_fast_ui_edit(chat_id, message_id)
     except Exception:
         pass
-    pool = globals().get('WINDOW_RENDER_TASK_POOL')
-    if pool is None:
-        # Compatibility fallback for incomplete deployments; still avoid sleeping.
+    key = (chat_id, message_id)
+    with _V160_FAST_EDIT_LOCKS[key]:
+        now_m = _v160_time.monotonic()
+        last = float(_V160_FAST_EDIT_LAST.get(key, 0.0) or 0.0)
+        remain = _V160_FAST_EDIT_MIN_GAP - (now_m - last)
+        if remain > 0:
+            _v160_time.sleep(remain)
+        _V160_FAST_EDIT_LAST[key] = _v160_time.monotonic()
         try:
-            pool = globals().get('FAST_UI_TASK_POOL')
-            if pool is not None and pool.submit(f'r22-render:{chat_id}:{message_id}', _r22_execute_window_render, payload):
-                return 'scheduled'
+            apply_fn = globals().get('window_diag_fast_ui_apply')
+            if callable(apply_fn):
+                apply_fn(payload, delayed=False)
         except Exception:
             pass
-        return 'failed'
-    try:
-        if pool.submit(f'{chat_id}:{message_id}', _r22_execute_window_render, payload):
-            _r22_render_stage(payload, 'render_enqueued', 0.0)
-            return 'scheduled'
-    except Exception as exc:
+        _uid = ''
+        _action = ''
         try:
-            log_error(f'R25 RENDER QUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
+            ctx_fn = globals().get('r25_trace_current')
+            ctx = ctx_fn() if callable(ctx_fn) else {}
+            _uid = str((ctx or {}).get('update_id') or '')
+            _action = str((ctx or {}).get('action') or '')[:180]
+            st = globals().get('r25_trace_stage')
+            if callable(st): st('TELEGRAM_EDIT_START')
         except Exception:
             pass
-    return 'failed'
+        t0 = _v160_time.monotonic()
+        result = _perform_fast_ui_edit(payload)
+        elapsed = max(0.0, _v160_time.monotonic() - t0)
+        try:
+            st = globals().get('r25_trace_stage')
+            if callable(st): st('TELEGRAM_EDIT_DONE', elapsed, str(result or ''))
+            log_info(f'FASTBTN direct-render chat={chat_id} msg={message_id} action={_action} purpose={str(purpose or "")[:80]} telegram={elapsed:.3f}s result={result}')
+            rows = globals().get('_V177_PERF_STAGES')
+            if rows is not None:
+                rows.append({'ts': _v160_time.time(), 'action': _action, 'stage': 'telegram_render_done', 'elapsed': elapsed})
+        except Exception:
+            pass
+        return result
 
 _V160_CALLBACK_LOCK = _v160_threading.RLock()
 _V160_CALLBACK_IDS = {}
@@ -4459,10 +4457,8 @@ def _canon_restore_previous_window__001(call) -> bool:
     except Exception:
         pass
     result = _v161_edit_retry(chat_id, message_id, str(snap.get('text') or ''), reply_markup=markup, parse_mode=snap.get('parse_mode'), purpose='nav_prev_restore')
-    # R27: the canonical FAST renderer is intentionally asynchronous and returns
-    # 'scheduled' after a successful enqueue. Treat that as a committed navigation
-    # decision; otherwise the same click falls through into a second legacy Back
-    # handler and users observe 'first click did nothing / second click works'.
+    # R28 direct renderer normally returns 'ok'. Keep 'scheduled' accepted only for
+    # compatibility with any retained legacy delayed path; both mean navigation committed.
     if result not in {'ok', 'scheduled'}:
         try:
             bot_journal('nav_prev_not_committed', chat_id, f'msg={message_id}; result={result}; history_kept=1', 'WARN')
