@@ -879,7 +879,7 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
-    '• ⚡ Пер-R29: скорость R28 защищена — обычный handler напрямую вызывает Telegram edit без WINDOW_RENDER очереди; директивный режим блокирует смену бизнес-логики; Google работает в одном окне; Инфо сгруппировано; добавлены переключатели пересланных/других ботов.\n'
+    '• ⚡ Пер-R30: скорость R28/R29 защищена; Info-меню имеет сохраняемый переключатель Новое/Старое; директивный режим, однооконный Google и источники сообщений сохранены.\n'
     '• 🛰 Активный чат остаётся горячим в RAM; LOWRAM выгружает данные только при реальном давлении памяти, а HEAVY/split остаётся на Render #2.\n'
     '• 💾 Сохраняется надёжная R20/v262 схема durable capsule: максимум config generation + максимум user-state seq без отката.\n'
     '• 🔒 Полный SQLite + delta/event journal остаются вторым уровнем защиты финансов и остальных данных; capsule не содержит финансовые cold-ledger записи.\n'
@@ -951,7 +951,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R29 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R30 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -1038,7 +1038,7 @@ def main():
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
     restored = bool(_split_preboot_authoritative_r19)
     db_restored = bool(_split_preboot_authoritative_r19)
-    db_detail = (f'Пер-R29 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    db_detail = (f'Пер-R30 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
     if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:
