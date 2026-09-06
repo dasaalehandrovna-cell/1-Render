@@ -2,6 +2,17 @@
 @bot.message_handler(func=lambda m: not (m.text and m.text.startswith('/')), content_types=['text', 'photo', 'video', 'animation', 'audio', 'voice', 'video_note', 'document', 'sticker', 'location', 'venue', 'contact', 'dice', 'poll', 'game', 'story', 'paid_media', 'invoice'])
 def on_any_message(msg):
     chat_id = msg.chat.id
+    # R29: RAM-only input-source gate. Never wait for SQLite/Redis/network here.
+    try:
+        _r29_gate = globals().get('r29_inbound_message_allowed')
+        if callable(_r29_gate):
+            _r29_allowed, _r29_reason = _r29_gate(msg)
+            if not _r29_allowed:
+                try: bot_journal('r29_input_source_skip', chat_id, f'reason={_r29_reason}; message_id={int(getattr(msg, "message_id", 0) or 0)}')
+                except Exception: pass
+                return
+    except Exception:
+        pass
     if is_owner_chat(chat_id):
         finance_active_chats.add(chat_id)
     try:
