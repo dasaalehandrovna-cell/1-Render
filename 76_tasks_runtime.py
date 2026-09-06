@@ -2345,12 +2345,7 @@ def task_reconcile_source_message(chat_id: int, message_id: int, text: str, *, o
     if not body or body.startswith('/'):
         return None
     if sender_is_bot and (not trusted_forwarding_copy):
-        # R29: third-party bot messages are valid source data when enabled for this contour.
-        try:
-            if not bool(globals().get('r29_input_source_enabled', lambda _c, _k: True)(cid, 'other_bots')):
-                return None
-        except Exception:
-            return None
+        return None
     if _v212_task_service_text(body) and (not trusted_forwarding_copy):
         return None
     classification = _v212_match_classification(cid, body)
@@ -5622,12 +5617,7 @@ def _v219_task_ingest_message(msg, *, is_edit: bool=False, source_kind: str='mes
     if not is_edit and _v219_task_pending_for_sender(cid, sender_id):
         return None
     if sender_is_bot:
-        # R29: accept delivered third-party bot messages when the local source switch is ON.
-        try:
-            if not bool(globals().get('r29_input_source_enabled', lambda _c, _k: True)(cid, 'other_bots')):
-                return None
-        except Exception:
-            return None
+        return None
     if _v212_task_service_text(body):
         return None
     target = _v219_status_target_from_message(msg, body)
