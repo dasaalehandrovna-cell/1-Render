@@ -134,9 +134,13 @@ def _install_gzip_db(gz_path: Path, target: Path):
 
 
 def _peer_base():
-    raw = str(os.getenv('PEER_SERVICE_URL', '') or '').strip().rstrip('/')
+    raw = str(os.getenv('PEER_PRIVATE_URL', '') or '').strip().rstrip('/')
+    private = bool(raw)
+    if not raw:
+        raw = str(os.getenv('PEER_SERVICE_URL', '') or '').strip().rstrip('/')
     if raw and not raw.startswith(('http://','https://')):
-        raw = 'https://' + raw
+        looks_private = private or raw.endswith('.internal') or '.internal:' in raw or (raw.startswith('render-') and ':' in raw)
+        raw = ('http://' if looks_private else 'https://') + raw
     return raw
 
 
@@ -241,7 +245,7 @@ def _worker_cache_revision():
         return 0.0
 
 
-def _preboot_capture_old_front_r18():
+def _preboot_capture_old_front_r18_legacy():
     """Ask HEAVY to capture the still-live old FAST before Render cuts traffic over.
 
     During a rolling deploy the public FAST URL normally still points at the old
@@ -561,6 +565,43 @@ def _redis_seed_current_db(target: Path, reason='front_boot'):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+
+def _r32_seed_marker_client():
+    if _redis is None:
+        return None
+    url=str(os.getenv('REDIS_URL','') or '').strip()
+    if not url:
+        return None
+    return _redis.Redis.from_url(url,socket_connect_timeout=1.5,socket_timeout=3,health_check_interval=30)
+
+def _r32_migration_seeded():
+    try:
+        c=_r32_seed_marker_client();
+        if c is None: return False
+        return bool(c.get('vys262:state_events:r32:migration_seeded'))
+    except Exception:
+        return False
+
+def _r32_mark_migration_seeded():
+    try:
+        c=_r32_seed_marker_client();
+        if c is None: return False
+        c.set('vys262:state_events:r32:migration_seeded','1')
+        return True
+    except Exception:
+        return False
+
+def _preboot_capture_old_front_r18():
+    # R32 needs one exact migration seed from the old R31 instance. After that,
+    # HEAVY is rebuilt from immutable row events and no full preboot capture is sent.
+    if _bool('R32_EVENT_STREAM_ENABLED', True) and _r32_migration_seeded():
+        return True, 'R32 event stream already seeded; full preboot capture skipped'
+    ok,detail=_preboot_capture_old_front_r18_legacy()
+    if ok and _bool('R32_EVENT_STREAM_ENABLED', True):
+        _r32_mark_migration_seeded()
+        detail=str(detail)+'; R32 migration seed marked'
+    return ok,detail
+
 def main():
     server = _start_boot_port()
     target = _db_path()
@@ -591,13 +632,16 @@ def main():
                     print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
                     break
                 time.sleep(max(5, min(120, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '20') or '20'))))
-        # R18 freshness quorum: Worker /tmp can lag behind the shared Redis durable
+        # R32/R18 freshness quorum: Worker /tmp can lag behind the shared Redis durable
         # snapshot during a rolling deploy.  Prefer whichever has the newest revision.
         if _db_valid(target):
-            _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
-            print('[SPLIT FRONT] Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
-            # Old instance can publish an even newer final checkpoint after cut-over.
-            _settle_worker_handoff(target)
+            if _bool('R32_EVENT_STREAM_ENABLED', True):
+                print('[SPLIT FRONT] R32 restore authority: HEAVY assembled checkpoint + event journal; Redis full-snapshot arbitration skipped', flush=True)
+            else:
+                _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
+                print('[SPLIT FRONT] Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
+                # Old instance can publish an even newer final checkpoint after cut-over.
+                _settle_worker_handoff(target)
         # R20: restore the newest independent v262-style settings/user-state capsule
         # even when the full Worker SQLite image is slightly older.
         if _db_valid(target):
@@ -609,8 +653,11 @@ def main():
         os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)
         # R6 migration/deploy bridge: persist the exact restored/current DB in shared
         # Redis before the worker can be redeployed and lose its /tmp cache.
-        redis_ok, redis_detail = _redis_seed_current_db(target, reason='front_boot_after_restore')
-        print('[SPLIT FRONT] Redis durable seed:', redis_ok, redis_detail, flush=True)
+        if _bool('R32_EVENT_STREAM_ENABLED', True):
+            print('[SPLIT FRONT] R32: full FAST->Redis boot seed skipped; HEAVY owns assembled restore state', flush=True)
+        else:
+            redis_ok, redis_detail = _redis_seed_current_db(target, reason='front_boot_after_restore')
+            print('[SPLIT FRONT] Redis durable seed:', redis_ok, redis_detail, flush=True)
         # R19 single restore authority: start_front has already arbitrated Worker/Redis/
         # local freshness. The legacy bot.main restore path must never run a second,
         # potentially older Telegram/MEGA restore over this exact database.

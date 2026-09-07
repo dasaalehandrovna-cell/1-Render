@@ -5,7 +5,7 @@ from runtime_config import install_internal_runtime_config
 install_internal_runtime_config("front")
 MODULAR_VERSION = "vys_262"
 MODULE_FILE_VERSION = "v262"
-MODULAR_SOURCE_PARTS = ['00_core.py', '05_key_value_runtime.py', '10_mega_runtime.py', '11_data_constitution.py', '12_telegram_durable.py', '13_telegram_stable_slots.py', '14_mega_sharded_parallel.py', '15_operation_safety.py', '16_window_diagnostics.py', '17_memory_runtime.py', '20_callback_tokens.py', '30_secret.py', '35_reminders.py', '40_message_router.py', '50_forwarding.py', '60_finance_currency.py', '61_forwarding_ui.py', '62_finance_ui.py', '63_google_sheets.py', '70_fast_ui.py', '80_callback_router.py', '90_commands_exports.py', '91_finance_records_handlers.py', '72_multitenant_runtime.py', '99_web_runtime.py', '73_state_export_runtime.py', '74_ui_reliability_runtime.py', '75_platform_features_runtime.py', '76_tasks_runtime.py', '85_runtime_control.py', '88_ui_constructor.py', '89_callback_final.py', '92_v262_linked_finance_speed.py', '98_split_front.py', '97_r30_policy_ui.py']
+MODULAR_SOURCE_PARTS = ['00_core.py', '05_key_value_runtime.py', '10_mega_runtime.py', '11_data_constitution.py', '12_telegram_durable.py', '13_telegram_stable_slots.py', '14_mega_sharded_parallel.py', '15_operation_safety.py', '16_window_diagnostics.py', '17_memory_runtime.py', '20_callback_tokens.py', '30_secret.py', '35_reminders.py', '40_message_router.py', '50_forwarding.py', '60_finance_currency.py', '61_forwarding_ui.py', '62_finance_ui.py', '63_google_sheets.py', '70_fast_ui.py', '80_callback_router.py', '90_commands_exports.py', '91_finance_records_handlers.py', '72_multitenant_runtime.py', '99_web_runtime.py', '73_state_export_runtime.py', '74_ui_reliability_runtime.py', '75_platform_features_runtime.py', '76_tasks_runtime.py', '85_runtime_control.py', '88_ui_constructor.py', '89_callback_final.py', '92_v262_linked_finance_speed.py', '98_split_front.py', '97_r30_policy_ui.py', '96_r32_event_stream.py', '100_r33_heavy_offload.py']
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
 _MANIFEST_PATH = _MODULAR_ROOT / "modules_manifest.json"
@@ -56,7 +56,7 @@ def _runtime_contract_gate_v222() -> None:
         "resolve_forward_targets": ({"source_chat_id"}, "72_multitenant_runtime.py"),
         "send_and_auto_delete": ({"chat_id", "text", "delay"}, "74_ui_reliability_runtime.py"),
         "send_html_and_auto_delete": ({"chat_id", "html_text", "delay"}, "74_ui_reliability_runtime.py"),
-        "submit_interactive_file_job": ({"chat_id", "kind", "label", "func"}, "98_split_front.py"),
+        "submit_interactive_file_job": ({"chat_id", "kind", "label", "func"}, "100_r33_heavy_offload.py"),
     }
     problems=[]
     for name,(required,owner_file) in contracts.items():

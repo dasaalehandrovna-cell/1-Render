@@ -18,7 +18,7 @@ import time as _r32_time
 
 _R32_EVENT_STREAM_ENABLED = str(_r32_os.getenv('R32_EVENT_STREAM_ENABLED','1') or '1').strip().lower() in {'1','true','yes','on','да'}
 _R32_EVENT_Q = _r32_queue.Queue(maxsize=max(1000,min(50000,int(_r32_os.getenv('R32_EVENT_QUEUE_MAX','20000') or '20000'))))
-_R32_EVENT_STATE={'queued':0,'sent':0,'batches':0,'bytes':0,'last_ok':0.0,'last_error':'','dropped':0,'full_runtime_uploads_blocked':0,'private_peer':False}
+_R32_EVENT_STATE={'queued':0,'sent':0,'batches':0,'bytes':0,'last_ok':0.0,'last_error':'','dropped':0,'full_runtime_uploads_blocked':0,'private_peer':False,'inflight':0}
 _R32_SQLITE_PATCHED=False
 
 
@@ -117,38 +117,50 @@ def _r32_materialize(desc):
 
 
 def _r32_make_event(desc,payload,kind_override=None):
-    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R32')}
+    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R33')}
     raw=_r32_json.dumps(body,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'); body['sha256']=_r32_hashlib.sha256(raw).hexdigest(); return body
 
 
-def _r32_send_batch(rows):
-    events=[]
-    # Latest state of a shard wins within this tiny debounce window. Raw Telegram events
-    # remain the immutable action journal, while this stream is the restore-state journal.
-    latest={}
+def _r32_build_packet(rows):
+    """Materialize SQLite values exactly once per batch.
+
+    R32 rematerialized the same descriptors on every failed HTTP retry, which could
+    repeatedly read cold SQLite while HEAVY was unavailable.  R33 freezes one gzip
+    packet and retries only that immutable packet.
+    """
+    events=[]; latest={}
     for d in rows: latest[str(d.get('key') or d.get('event_id'))]=d
     for d in sorted(latest.values(),key=lambda x:int(x.get('revision') or 0)):
         ev=_r32_materialize(d)
         if ev: events.append(ev)
-    if not events: return True
-    base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
-    if not base or not secret: raise RuntimeError('R32 peer URL/secret not configured')
+    if not events: return {'rows':rows,'events':[],'wire':b''}
     obj={'schema':32,'sent_at':_r32_time.time(),'events':events}
     wire=_r32_gzip.compress(_r32_json.dumps(obj,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'),compresslevel=1)
-    r=requests.post(base+'/internal/state/events',data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r32-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(20.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','8') or '8'))))
-    if not (200 <= r.status_code < 300): raise RuntimeError(f'HEAVY state events HTTP {r.status_code}: {r.text[:180]}')
+    return {'rows':rows,'events':events,'wire':wire}
+
+
+def _r32_send_packet(packet):
+    events=list(packet.get('events') or []); wire=packet.get('wire') or b''
+    if not events: return True
+    base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
+    if not base or not secret: raise RuntimeError('R33 peer URL/secret not configured')
+    r=requests.post(base+'/internal/state/events',data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r33-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(30.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','8') or '8'))))
+    if not (200 <= r.status_code < 300): raise RuntimeError(f'HEAVY state events HTTP {r.status_code}: {r.text[:220]}')
     _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events); _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1; _R32_EVENT_STATE['bytes']=int(_R32_EVENT_STATE.get('bytes') or 0)+len(wire); _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
     st=globals().get('_SPLIT_STATE')
     if isinstance(st,dict): st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1; st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=_R32_EVENT_Q.qsize(); st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''
     return True
 
 
+def _r32_send_batch(rows):
+    return _r32_send_packet(_r32_build_packet(rows))
+
+
 def _r32_sender_loop():
-    retry=[]; backoff=0.5
+    packet=None; backoff=0.5
     while True:
-        rows=[]
-        if retry: rows,retry=retry,[]
-        else:
+        if packet is None:
+            rows=[]
             try: rows.append(_R32_EVENT_Q.get(timeout=1.0))
             except _r32_queue.Empty: continue
             delay=max(0.08,min(1.5,float(_r32_os.getenv('R32_EVENT_BATCH_DELAY_SEC','0.35') or '0.35'))); _r32_time.sleep(delay)
@@ -156,24 +168,38 @@ def _r32_sender_loop():
             while len(rows)<max_events:
                 try: rows.append(_R32_EVENT_Q.get_nowait())
                 except _r32_queue.Empty: break
+            try:
+                _R32_EVENT_STATE['inflight']=len(rows)
+                packet=_r32_build_packet(rows)
+            except Exception as exc:
+                _R32_EVENT_STATE['last_error']=f'build {type(exc).__name__}: {str(exc)[:220]}'
+                # Put descriptors back only when materialization itself failed.
+                for row in rows:
+                    try: _R32_EVENT_Q.put_nowait(row)
+                    except Exception: pass
+                    try: _R32_EVENT_Q.task_done()
+                    except Exception: pass
+                _R32_EVENT_STATE['inflight']=0; _r32_time.sleep(min(5.0,backoff)); backoff=min(60.0,backoff*1.8); continue
         try:
-            _r32_send_batch(rows); backoff=0.5
-            for _ in rows:
+            _r32_send_packet(packet); backoff=0.5
+            for _ in packet.get('rows') or []:
                 try: _R32_EVENT_Q.task_done()
                 except Exception: pass
+            packet=None; _R32_EVENT_STATE['inflight']=0
         except Exception as exc:
             _R32_EVENT_STATE['last_error']=f'{type(exc).__name__}: {str(exc)[:220]}'
             st=globals().get('_SPLIT_STATE')
             if isinstance(st,dict): st['r32_event_last_error']=_R32_EVENT_STATE['last_error']
-            retry=rows; _r32_time.sleep(backoff); backoff=min(15.0,backoff*1.8)
+            # R33 retry uses the already serialized packet: no repeated SQLite reads.
+            _r32_time.sleep(backoff); backoff=min(60.0,backoff*1.8)
 
 
 def r32_flush_state_events(timeout=8.0):
     deadline=_r32_time.time()+max(0.0,float(timeout or 0.0))
     while _r32_time.time()<deadline:
-        if _R32_EVENT_Q.empty(): return True
+        if _R32_EVENT_Q.empty() and int(_R32_EVENT_STATE.get('inflight') or 0)==0: return True
         _r32_time.sleep(0.05)
-    return _R32_EVENT_Q.empty()
+    return _R32_EVENT_Q.empty() and int(_R32_EVENT_STATE.get('inflight') or 0)==0
 
 
 def _r32_patch_sqlite():
@@ -215,11 +241,11 @@ def split_schedule_worker_sync_v262(reason='change',delay=None):
 def _split_schedule_idle_full_reconcile_v270(reason='need_full',delay=None):
     _R32_EVENT_STATE['full_runtime_uploads_blocked']=int(_R32_EVENT_STATE.get('full_runtime_uploads_blocked') or 0)+1
     st=globals().get('_SPLIT_STATE')
-    if isinstance(st,dict): st['full_reconcile_pending']=False; st['full_reconcile_last_error']='R32 event-stream: periodic full snapshot suppressed'
+    if isinstance(st,dict): st['full_reconcile_pending']=False; st['full_reconcile_last_error']='R33 event-stream: periodic full snapshot suppressed'
     return True
 
 def _split_request_worker_full_sync_r18(reason='need_full'):
-    return True,'R32 event-stream mode: full rebase not required'
+    return True,'R33 event-stream mode: full rebase not required'
 
 def _split_push_snapshot_now_v263(reason='shutdown'):
     r32_flush_state_events(timeout=float(_r32_os.getenv('R32_SHUTDOWN_EVENT_FLUSH_SEC','8') or '8'))

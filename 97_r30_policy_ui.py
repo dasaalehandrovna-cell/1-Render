@@ -1,16 +1,18 @@
 # v262
-"""Пер-R30 UX/policy layer.
+"""Пер-R31 UX/policy layer.
 
-R30 extends the stable R29 layer with a persistent owner Info-menu mode switch:
-NEW = compact grouped menu, OLD = the pre-R29 full legacy menu.
+R31 extends the stable R30 layer with a third owner Info-menu mode:
+NEW = compact grouped menu, OLD = pre-R29 legacy, THIRD = functional settings hub.
 The user-confirmed R28/R29 hot path stays intact: ordinary callback -> handler ->
 direct Telegram edit. No render queue, remote HTTP or heavy snapshot is inserted
 before a visual response.
 """
 
-R30_RELEASE_NAME = 'Пер-R30'
-R29_RELEASE_NAME = R30_RELEASE_NAME
-R29_RELEASE_STAGE = 'directive-google-info-input-sources-menu-mode'
+R31_RELEASE_NAME = 'Пер-R33'
+R30_RELEASE_NAME = R31_RELEASE_NAME
+R29_RELEASE_NAME = R31_RELEASE_NAME
+R29_RELEASE_STAGE = 'directive-google-info-input-sources-three-menu-modes'
+R31_MENU_MODE_THIRD = 'third'
 R30_MENU_MODE_KEY = 'r30_info_menu_mode'
 R30_MENU_MODE_DEFAULT = 'new'
 R29_INPUT_SETTINGS_KEY = 'r29_input_sources'
@@ -83,7 +85,7 @@ def r30_info_menu_mode(chat_id: int, create: bool=False) -> str:
     store = get_chat_store(cid)
     settings = store.setdefault('settings', {})
     mode = str(settings.get(R30_MENU_MODE_KEY, R30_MENU_MODE_DEFAULT) or R30_MENU_MODE_DEFAULT).strip().lower()
-    if mode not in {'new', 'old'}:
+    if mode not in {'new', 'old', R31_MENU_MODE_THIRD}:
         mode = R30_MENU_MODE_DEFAULT
     if create:
         settings[R30_MENU_MODE_KEY] = mode
@@ -93,7 +95,7 @@ def r30_info_menu_mode(chat_id: int, create: bool=False) -> str:
 def r30_set_info_menu_mode(chat_id: int, mode: str) -> str:
     cid = int(chat_id)
     value = str(mode or '').strip().lower()
-    if value not in {'new', 'old'}:
+    if value not in {'new', 'old', R31_MENU_MODE_THIRD}:
         value = R30_MENU_MODE_DEFAULT
     store = get_chat_store(cid)
     settings = store.setdefault('settings', {})
@@ -103,7 +105,11 @@ def r30_set_info_menu_mode(chat_id: int, mode: str) -> str:
 
 def _r30_menu_mode_button(chat_id: int):
     mode = r30_info_menu_mode(int(chat_id), False)
-    label = '🧭 Меню: Новое' if mode == 'new' else '🧭 Меню: Старое'
+    label = {
+        'new': '🧭 Меню: Новое',
+        'old': '🧭 Меню: Старое',
+        R31_MENU_MODE_THIRD: '🧭 Меню: Третий вариант',
+    }.get(mode, '🧭 Меню: Новое')
     return IB(label, callback_data='r30:menu:toggle')
 
 
@@ -331,6 +337,247 @@ def _r29_info_group_text(group: str) -> str:
     return window_mark(title + '\n\nВыберите нужный пункт. Тяжёлые проверки выполняются только после открытия локального окна.', 'Ф89')
 
 
+# ---------------------------------------------------------------------------
+# R31 THIRD INFO MODE: functional owner settings hub.
+# It reuses the exact legacy buttons/callbacks and only changes navigation.
+# ---------------------------------------------------------------------------
+
+def _r31_third_group_for_button(btn) -> str:
+    text = _r29_button_text(btn).casefold()
+    cb = _r29_button_callback(btn).casefold()
+    if not cb or cb == 'none':
+        return ''
+    if cb.startswith(('r29:', 'r30:', 'r31:')):
+        return ''
+    if cb in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in text or 'закры' in text:
+        return ''
+
+    # Business modes first.  Broad matching is deliberate: every historical
+    # finance/forward/reminder/task setting remains reachable without copying it.
+    if (any(k in text for k in ('фин', 'гомон', 'валют', 'usd', 'ars', 'остат', 'excel', 'google'))
+            or cb.startswith(('fin:', 'fin_', 'finance:', 'finance_'))
+            or any(k in cb for k in ('gomonk', 'usd', 'currency', 'remaining', 'google', 'gsync', 'gmenu'))):
+        return 'finance'
+    if (any(k in text for k in ('пересыл', 'форвард', 'forward'))
+            or cb.startswith(('fw_', 'fw:', 'forward')) or 'forward' in cb):
+        return 'forward'
+    if (any(k in text for k in ('напомин', 'reminder')) or 'remind' in cb):
+        return 'reminders'
+    if (any(k in text for k in ('задач', 'диспетчер задач', 'task')) or 'task' in cb):
+        return 'tasks'
+
+    if (any(k in text for k in ('контур', 'круг', 'пространств', 'директив', 'доступ к меню', 'владельц пространств'))
+            or any(k in cb for k in ('directive', 'contour', 'circle', 'tenant', 'space', 'owners'))):
+        return 'contours'
+    if (any(k in text for k in ('журнал', 'лог', 'ошибк', 'тз окон', 'маркиров'))
+            or any(k in cb for k in ('journal', 'log', 'error', 'export_tz', 'export_markers'))):
+        return 'journals'
+    if (any(k in text for k in ('render #2', 'mega', 'хранилищ', 'constitution', 'защит', 'процесс', 'скорост', 'исходник', 'депло', 'восстанов', 'ветк', 'telegram durable', 'самопеленг'))
+            or any(k in cb for k in ('r10:worker', 'storage', 'constitution', 'v176:', 'v234:config', 'v233:external', 'branch', 'source', 'keepalive'))):
+        return 'owner'
+    return 'general'
+
+
+def _r31_third_group_title(group: str) -> str:
+    return {
+        'finance': '💰 НАСТР. ФИН',
+        'forward': '📤 НАСТР. ПЕРЕСЫЛКИ',
+        'reminders': '⏰ НАСТР. НАПОМИНАНИЙ',
+        'tasks': '📋 НАСТР. ЗАДАЧ',
+        'contours': '🏢 НАСТРОЙКИ КОНТУРОВ',
+        'general': '⚙️ ОБЩИЕ НАСТРОЙКИ',
+        'journals': '📁 ЖУРНАЛЫ',
+        'owner': '🛠 ДЛЯ ВЛАДЕЛЬЦА',
+    }.get(str(group or ''), 'ℹ️ НАСТРОЙКИ')
+
+
+def _r31_third_group_text(group: str) -> str:
+    return window_mark(_r31_third_group_title(group) + '\n\nЗдесь собраны штатные настройки этого раздела. Сами обработчики не дублируются: используются существующие кнопки бота.', 'Ф89')
+
+
+def _r31_third_group_keyboard(chat_id: int, group: str):
+    cid = int(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    seen = set()
+    for row in _r29_legacy_info_rows(cid):
+        selected = []
+        for b in (row or []):
+            if _r31_third_group_for_button(b) != group:
+                continue
+            cb = _r29_button_callback(b)
+            if not cb or cb in seen:
+                continue
+            seen.add(cb)
+            selected.append(b)
+        if selected:
+            kb.row(*selected[:3])
+    if group == 'general':
+        kb.row(IB('📥 Источники сообщений', callback_data='r29:inputs:open'))
+    if group == 'owner' and not _r31_constructors_enabled():
+        kb.row(IB('🧩 Конструкторы', callback_data='r31:constructors:open'))
+    kb.row(IB('🔙 В меню', callback_data='r31:info:main'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+def _r31_tz_markers_state() -> str:
+    try:
+        tz = bool(circle_annotation_global_enabled_v219('tz'))
+        mr = bool(circle_annotation_global_enabled_v219('iz_mr'))
+    except Exception:
+        tz = mr = True
+    if tz and mr:
+        return 'on'
+    if not tz and not mr:
+        return 'off'
+    return 'mixed'
+
+
+def _r31_tz_markers_button():
+    state = _r31_tz_markers_state()
+    icon = '✅' if state == 'on' else '⬜' if state == 'off' else '🟨'
+    return IB(f'{icon} ТЗ окон + маркеры', callback_data='r31:toggle:tz_markers')
+
+
+def _r31_constructors_enabled() -> bool:
+    try:
+        return bool(_v196_flags().get('enabled', True))
+    except Exception:
+        return True
+
+
+def _r31_constructors_toggle_button():
+    return IB(('✅ ' if _r31_constructors_enabled() else '⬜ ') + 'Конструкторы в окнах', callback_data='r31:toggle:constructors')
+
+
+def _r31_constructors_text() -> str:
+    enabled = _r31_constructors_enabled()
+    try:
+        flags = dict(_v196_flags())
+    except Exception:
+        flags = {}
+    return window_mark(
+        '🧩 КОНСТРУКТОРЫ\n\n'
+        f"Мастер-переключатель: {'✅ ВКЛ' if enabled else '⬜ ВЫКЛ'}\n"
+        f"Конструктор 1 после включения: {'✅ показывать' if flags.get('show_c1', True) else '⬜ скрывать'}\n"
+        f"Конструктор 2 после включения: {'✅ показывать' if flags.get('show_c2', True) else '⬜ скрывать'}\n\n"
+        'Если мастер-переключатель выключен, кнопки Конструктор 1/2 не добавляются в рабочие окна. Этот центр управления остаётся доступным всегда.',
+        'Ф89')
+
+
+def _r31_constructors_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(_r31_constructors_toggle_button())
+    kb.row(IB('🛠 Открыть Конструктор 2', callback_data='r31:constructors:launch_c2'))
+    kb.row(IB('🔙 В меню', callback_data='r31:info:main'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+def _r31_persist_global_background(reason: str='r31_global') -> None:
+    def _job():
+        try:
+            save_data(data, root_only=True)
+        except TypeError:
+            try: save_data(data)
+            except Exception: pass
+        except Exception:
+            pass
+        try:
+            fn = globals().get('schedule_delta_backup')
+            if callable(fn):
+                fn(int(OWNER_ID or 0), delay=0.8, reason=str(reason)[:90])
+        except Exception:
+            pass
+        try: bot_journal('r31_global_setting_persist', int(OWNER_ID or 0), str(reason)[:120])
+        except Exception: pass
+    try:
+        pool = globals().get('GENERAL_TASK_POOL')
+        submit_unique = getattr(pool, 'submit_unique', None) if pool is not None else None
+        if callable(submit_unique):
+            submit_unique('r31-global:' + str(reason)[:70], _job)
+            return
+        if pool is not None:
+            pool.submit('r31-global:' + str(reason)[:70], _job)
+            return
+    except Exception:
+        pass
+    try: threading.Thread(target=_job, daemon=True, name='r31-global-persist').start()
+    except Exception: pass
+
+
+def _r31_schedule_constructor_markup_refresh() -> None:
+    """Refresh already-open owner keyboards after the visible toggle response.
+
+    New windows already honor _v196_flags()['enabled']; this only removes/restores
+    Constructor 1/2 buttons in owner windows that are currently still open.
+    """
+    def _job():
+        try:
+            lock = globals().get('_V221_LIVE_MARKUP_LOCK')
+            reg = globals().get('_V221_LIVE_MARKUP')
+            if lock is None or not isinstance(reg, dict):
+                return
+            with lock:
+                rows = [(k, dict(v or {})) for k, v in reg.items()]
+        except Exception:
+            return
+        changed = 0
+        for (cid, mid), row in rows:
+            try:
+                if int(cid) != int(OWNER_ID or 0):
+                    continue
+                source = row.get('source_markup') if row.get('source_markup') is not None else row.get('markup')
+                render = globals().get('v227_render_effective_contour_markup')
+                if not callable(render):
+                    continue
+                after = render(source, str(row.get('text') or ''), int(cid))
+                fp = globals().get('_v221_markup_fingerprint')
+                if callable(fp) and fp(row.get('markup')) == fp(after):
+                    continue
+                bot.edit_message_reply_markup(chat_id=int(cid), message_id=int(mid), reply_markup=after)
+                rec = globals().get('v221_record_live_markup')
+                if callable(rec):
+                    rec(int(cid), int(mid), after, str(row.get('text') or ''), source_markup=source)
+                changed += 1
+            except Exception:
+                continue
+        try: bot_journal('r31_constructor_markup_refresh', int(OWNER_ID or 0), f'changed={changed}')
+        except Exception: pass
+    try:
+        pool = globals().get('GENERAL_TASK_POOL')
+        submit_unique = getattr(pool, 'submit_unique', None) if pool is not None else None
+        if callable(submit_unique):
+            submit_unique('r31-constructor-markup-refresh', _job)
+            return
+    except Exception:
+        pass
+    try: threading.Thread(target=_job, daemon=True, name='r31-constructor-refresh').start()
+    except Exception: pass
+
+
+def _r31_third_info_text(chat_id: int) -> str:
+    return window_mark(
+        'ℹ️ ИНФО · Пер-R33 · ТРЕТИЙ ВАРИАНТ\n\n'
+        'Настройки собраны по рабочим режимам и административным разделам.\n'
+        'ТЗ/маркеры и Конструкторы имеют отдельные мастер-переключатели.\n\n'
+        '⚡ FAST UI R28: прямой render защищён.',
+        'Ф89')
+
+
+def _r31_third_info_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB('💰 Настр. фин', callback_data='r31:info:finance'), IB('📤 Настр. пересылки', callback_data='r31:info:forward'))
+    kb.row(IB('⏰ Настр. напоминаний', callback_data='r31:info:reminders'), IB('📋 Настр. задач', callback_data='r31:info:tasks'))
+    kb.row(IB('🏢 Настройки контуров', callback_data='r31:info:contours'))
+    kb.row(IB('⚙️ Общие настройки', callback_data='r31:info:general'))
+    kb.row(IB('📁 Журналы', callback_data='r31:info:journals'), IB('🛠 Для владельца', callback_data='r31:info:owner'))
+    kb.row(_r31_tz_markers_button())
+    kb.row(_r31_constructors_toggle_button())
+    # Always present even when constructors are globally hidden.
+    kb.row(IB('🧩 Конструкторы', callback_data='r31:constructors:open'))
+    kb.row(_r30_menu_mode_button(int(chat_id)))
+    kb.row(IB('🔙 Назад', callback_data='nav_prev'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
 def _r30_legacy_info_keyboard_with_controls(chat_id: int):
     """Legacy pre-R29 Info keyboard + only the two R29/R30 local controls."""
     cid = int(chat_id)
@@ -352,7 +599,11 @@ def _r30_legacy_info_keyboard_with_controls(chat_id: int):
                 insert_at = i
                 break
         rows.insert(insert_at, [IB('📥 Источники сообщений', callback_data='r29:inputs:open')])
-        rows.insert(insert_at + 1, [_r30_menu_mode_button(cid)])
+        cursor = insert_at + 1
+        if not _r31_constructors_enabled():
+            rows.insert(cursor, [IB('🧩 Конструкторы', callback_data='r31:constructors:open')])
+            cursor += 1
+        rows.insert(cursor, [_r30_menu_mode_button(cid)])
         if callable(set_fn):
             return set_fn(kb, rows)
         # Fallback if the historical row helpers are unavailable.
@@ -376,15 +627,18 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
             return str(_R29_LEGACY_INFO_TEXT(cid, *args, **kwargs)) if callable(_R29_LEGACY_INFO_TEXT) else 'ℹ️ Инфо'
         except Exception:
             return 'ℹ️ Инфо'
-    if r30_info_menu_mode(cid, False) == 'old':
+    mode = r30_info_menu_mode(cid, False)
+    if mode == 'old':
         try:
             return str(_R29_LEGACY_INFO_TEXT(cid, *args, **kwargs)) if callable(_R29_LEGACY_INFO_TEXT) else 'ℹ️ Инфо'
         except Exception:
             return 'ℹ️ Инфо'
+    if mode == R31_MENU_MODE_THIRD:
+        return _r31_third_info_text(cid)
     return window_mark(
-        'ℹ️ ИНФО · Пер-R30\n\n'
+        'ℹ️ ИНФО · Пер-R33\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
-        'Режим можно мгновенно переключить на старое полное меню и обратно.\n\n'
+        'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
         '⚡ FAST UI: прямой путь R28 защищён.\n'
         '🛰 HEAVY: тяжёлая работа после UI.\n'
         '🔒 Директивный режим: бизнес-логика владельца не переключается контуром.',
@@ -413,13 +667,18 @@ def _r29_build_info_keyboard(chat_id: int):
         except Exception:
             pass
         return kb
-    if r30_info_menu_mode(cid, False) == 'old':
+    mode = r30_info_menu_mode(cid, False)
+    if mode == 'old':
         return _r30_legacy_info_keyboard_with_controls(cid)
+    if mode == R31_MENU_MODE_THIRD:
+        return _r31_third_info_keyboard(cid)
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(IB('📊 Состояние', callback_data='r29:info:status'), IB('🔗 Интеграции', callback_data='r29:info:integrations'))
     kb.row(IB('⚙️ Настройки', callback_data='r29:info:settings'), IB('📁 Журналы', callback_data='r29:info:journals'))
     kb.row(IB('📥 Источники сообщений', callback_data='r29:inputs:open'))
     kb.row(IB('🛠 Владельцу', callback_data='r29:info:owner'))
+    if not _r31_constructors_enabled():
+        kb.row(IB('🧩 Конструкторы', callback_data='r31:constructors:open'))
     kb.row(_r30_menu_mode_button(cid))
     kb.row(IB('🔙 Назад', callback_data='nav_prev'), IB('❌ Закрыть', callback_data='info_close'))
     return kb
@@ -739,14 +998,88 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             except Exception: pass
             return True
         current = r30_info_menu_mode(cid, True)
-        next_mode = 'old' if current == 'new' else 'new'
+        next_mode = {'new': 'old', 'old': R31_MENU_MODE_THIRD, R31_MENU_MODE_THIRD: 'new'}.get(current, 'new')
         r30_set_info_menu_mode(cid, next_mode)
-        try: bot.answer_callback_query(call.id, 'Меню: ' + ('Старое' if next_mode == 'old' else 'Новое'))
+        mode_label = {'new': 'Новое', 'old': 'Старое', R31_MENU_MODE_THIRD: 'Третий вариант'}.get(next_mode, 'Новое')
+        try: bot.answer_callback_query(call.id, 'Меню: ' + mode_label)
         except Exception: pass
         # Direct R28/R29 render first. Persistence runs only after the window changed.
         safe_edit(bot, call, _r29_build_info_text(cid), reply_markup=_r29_build_info_keyboard(cid))
-        _r29_persist_chat_settings_background(cid, 'r30_info_menu_mode')
-        try: bot_journal('r30_info_menu_mode', cid, f'mode={next_mode}; user={uid}')
+        _r29_persist_chat_settings_background(cid, 'r31_info_menu_mode')
+        try: bot_journal('r31_info_menu_mode', cid, f'mode={next_mode}; user={uid}')
+        except Exception: pass
+        return True
+
+    if raw.startswith('r31:info:'):
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            return True
+        group = raw.split(':', 2)[2]
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        if group == 'main':
+            safe_edit(bot, call, _r31_third_info_text(cid), reply_markup=_r31_third_info_keyboard(cid))
+        elif group in {'finance', 'forward', 'reminders', 'tasks', 'contours', 'general', 'journals', 'owner'}:
+            safe_edit(bot, call, _r31_third_group_text(group), reply_markup=_r31_third_group_keyboard(cid, group))
+        return True
+
+    if raw == 'r31:toggle:tz_markers':
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            return True
+        state = _r31_tz_markers_state()
+        value = False if state == 'on' else True
+        try:
+            row = _v219_annotation_settings()
+            row['tz'] = bool(value)
+            row['iz_mr'] = bool(value)
+        except Exception:
+            pass
+        try: bot.answer_callback_query(call.id, 'ТЗ окон и маркеры: ' + ('ВКЛ' if value else 'ВЫКЛ'))
+        except Exception: pass
+        # Visual response first.  Persistence and mass markup refresh follow after it.
+        safe_edit(bot, call, _r31_third_info_text(cid), reply_markup=_r31_third_info_keyboard(cid))
+        _r31_persist_global_background('tz_markers_master')
+        try: v226_schedule_annotation_markup_refresh_all()
+        except Exception: pass
+        return True
+
+    if raw == 'r31:toggle:constructors':
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            return True
+        value = not _r31_constructors_enabled()
+        try: _v196_flags()['enabled'] = bool(value)
+        except Exception: pass
+        try: bot.answer_callback_query(call.id, 'Конструкторы: ' + ('ВКЛ' if value else 'ВЫКЛ'))
+        except Exception: pass
+        # Keep the dedicated Constructors entry visible regardless of this value.
+        if r30_info_menu_mode(cid, False) == R31_MENU_MODE_THIRD:
+            safe_edit(bot, call, _r31_third_info_text(cid), reply_markup=_r31_third_info_keyboard(cid))
+        else:
+            safe_edit(bot, call, _r31_constructors_text(), reply_markup=_r31_constructors_keyboard())
+        _r31_persist_global_background('constructors_master')
+        _r31_schedule_constructor_markup_refresh()
+        return True
+
+    if raw == 'r31:constructors:open':
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            return True
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        safe_edit(bot, call, _r31_constructors_text(), reply_markup=_r31_constructors_keyboard())
+        return True
+
+    if raw == 'r31:constructors:launch_c2':
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            return True
+        # Reuse the current panel message: no extra auxiliary Telegram window.
+        try:
+            fn = globals().get('_v196_open_c2')
+            if callable(fn):
+                fn(call, '', panel_message_id=mid)
+                return True
+        except Exception as exc:
+            try: bot_journal('r31_constructor_launch_error', cid, str(exc)[:300], 'WARN')
+            except Exception: pass
+        try: bot.answer_callback_query(call.id, 'Не удалось открыть Конструктор 2', show_alert=True)
         except Exception: pass
         return True
 
@@ -820,12 +1153,15 @@ try:
     WINDOW_MARKER_CONSTANTS.setdefault('r29:info:*', 'Ф89')
     WINDOW_MARKER_CONSTANTS.setdefault('r29:directive:*', 'Ф3237')
     WINDOW_MARKER_CONSTANTS.setdefault('r30:menu:*', 'Ф89')
+    WINDOW_MARKER_CONSTANTS.setdefault('r31:info:*', 'Ф89')
+    WINDOW_MARKER_CONSTANTS.setdefault('r31:toggle:*', 'Ф89')
+    WINDOW_MARKER_CONSTANTS.setdefault('r31:constructors:*', 'Ф89')
 except Exception:
     pass
 
 try:
-    bot_journal('r30_policy_ui_ready', int(OWNER_ID or 0),
-                'r28_direct_render_protected=1; directive_business_lock=1; google_single_window=1; info_menu_new_old=1; input_sources=forwarded+other_bots')
+    bot_journal('r31_policy_ui_ready', int(OWNER_ID or 0),
+                'r28_direct_render_protected=1; directive_business_lock=1; google_single_window=1; info_menu_new_old_third=1; third_groups=finance+forward+reminders+tasks+contours+general+journals+owner; master_tz_markers=1; master_constructors=1; input_sources=forwarded+other_bots')
 except Exception:
     pass
 # v262
