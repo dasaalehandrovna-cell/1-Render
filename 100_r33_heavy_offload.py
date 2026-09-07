@@ -1,5 +1,5 @@
 # v262
-"""Пер-R34: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R35: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R34',
+        'delivery':'chat','front_release':'Пер-R35',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -110,6 +110,18 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
             body['drive_folder_id']=str(cfg.get('drive_folder_id') or '')
         except Exception:
             pass
+    # R35 diagnostics: capture only tiny RAM dictionaries on FAST; HEAVY still does
+    # all serialization/archive construction. This keeps diagnostics about Render #1.
+    if str(body.get('operation') or '') in {'runtime_zip','journal','journal_current'}:
+        try:
+            body['front_runtime_snapshot']=_r33_safe_scalar({
+                'release':'Пер-R35',
+                'captured_at':_r33_time.time(),
+                'runtime':dict(globals().get('_RUNTIME_STATE') or {}),
+                'split':dict(globals().get('_SPLIT_STATE') or {}),
+                'state_events':dict(globals().get('_R32_EVENT_STATE') or {}),
+            })
+        except Exception: pass
     # R34 ordering fence: state-dependent jobs carry the newest queued revision.
     # FAST never waits for it; HEAVY waits/replays in its own queue.
     if str(body.get('operation') or '') in {'period_export_query','exact_export_query','tabl_lsx','chat_json','full_state','sqlite'}:
@@ -126,12 +138,12 @@ def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     try: _file_job_progress('передаю задание Render #2', force=True)
     except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
-    if not callable(submit): raise RuntimeError('R34 HEAVY export bridge unavailable')
+    if not callable(submit): raise RuntimeError('R35 HEAVY export bridge unavailable')
     jid=submit(body)
-    try: file_job_mark_external_delivery('Render #2 HEAVY',jid)
+    try: bot_journal('r35_heavy_file_accepted_legacy_guard',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}; required_revision={body.get('required_revision') or 0}")
     except Exception: pass
-    try: bot_journal('r34_heavy_file_delegated',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}; required_revision={body.get('required_revision') or 0}")
-    except Exception: pass
+    # R35 intentionally does NOT mark accepted/queued as delivered here. The final
+    # adapter defined below waits for the real FAST delivery callback.
     return True
 
 def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
@@ -181,4 +193,163 @@ try:
     bot_journal('r34_heavy_offload_loaded',int(OWNER_ID or 0),'unified-bot: files/tables/journals/json/full-state/sqlite/runtime/window-docs -> HEAVY; no FAST state barrier')
 except Exception:
     pass
+
+# ---------------------------------------------------------------------------
+# Пер-R35: end-to-end HEAVY delivery control.
+# 202/queued is only an acceptance ACK. The FAST file job remains open until
+# Render #2's callback has actually delivered the result to Telegram/Google.
+_R35_REMOTE_RESULT_LOCK = __import__('threading').RLock()
+_R35_REMOTE_RESULT = {}
+
+def _r35_delivery_redis_client():
+    try:
+        pkg=globals().get('_split_redis')
+        url=str(__import__('os').getenv('REDIS_URL','') or '').strip()
+        if pkg is None or not url: return None
+        return pkg.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=2.0,health_check_interval=30)
+    except Exception:
+        return None
+
+def _r35_delivery_key(jid):
+    return 'per:r35:front:delivery:'+str(jid or '')[:80]
+
+def _r35_delivery_set(jid,state,body=None,error=''):
+    row={'state':str(state or ''),'ts':_r33_time.time(),'body':_r33_safe_scalar(body or {}),'error':str(error or '')[:1000]}
+    with _R35_REMOTE_RESULT_LOCK:
+        _R35_REMOTE_RESULT[str(jid)]=row
+    try:
+        c=_r35_delivery_redis_client()
+        if c is not None:
+            c.set(_r35_delivery_key(jid),_r33_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str),ex=172800)
+    except Exception:
+        pass
+    return row
+
+def _r35_delivery_get(jid):
+    jid=str(jid or '')
+    with _R35_REMOTE_RESULT_LOCK:
+        row=dict(_R35_REMOTE_RESULT.get(jid) or {})
+    try:
+        c=_r35_delivery_redis_client()
+        raw=c.get(_r35_delivery_key(jid)) if c is not None else None
+        if raw:
+            remote=_r33_json.loads(raw.decode('utf-8') if isinstance(raw,(bytes,bytearray)) else raw)
+            if isinstance(remote,dict) and float(remote.get('ts') or 0)>=float(row.get('ts') or 0): row=remote
+    except Exception:
+        pass
+    return row
+
+def _r35_worker_file_submit(body:dict):
+    base=globals().get('_split_peer_base',lambda:'')()
+    headers_fn=globals().get('_split_headers')
+    if not base or not globals().get('_split_secret',lambda:'')(): raise RuntimeError('Render #2 не настроен для файлового экспорта')
+    jid=str(body.get('job_id') or '')
+    last=''
+    attempts=max(2,min(5,int(__import__('os').getenv('R35_FILE_SUBMIT_ATTEMPTS','3') or '3')))
+    for attempt in range(1,attempts+1):
+        try:
+            hdr=headers_fn('per-r35-front-export') if callable(headers_fn) else {'X-Peer-Secret':str(__import__('os').getenv('PEER_SHARED_SECRET','') or '')}
+            r=requests.post(base+'/internal/export/file',json=body,headers=hdr,timeout=max(5.0,min(30.0,float(__import__('os').getenv('R35_FILE_SUBMIT_TIMEOUT_SEC','12') or '12'))))
+            payload=r.json() if r.content else {}
+            status=str(payload.get('status') or '')
+            if 200<=r.status_code<300 and (payload.get('ok') is True or status in {'queued','running','ready','delivering','delivered','done'}):
+                return str(payload.get('job_id') or jid)
+            last=str(payload.get('error') or r.text[:500] or f'HTTP {r.status_code}')
+            if 400<=r.status_code<500 and r.status_code not in {408,409,425,429}: break
+        except Exception as exc:
+            last=f'{type(exc).__name__}: {str(exc)[:400]}'
+        if attempt<attempts: _r33_time.sleep(0.35*attempt)
+    raise RuntimeError(last or 'Render #2 не подтвердил приём задания')
+
+globals()['_r7_worker_file_submit']=_r35_worker_file_submit
+
+def _r35_export_delivery_task(body):
+    jid=str((body or {}).get('job_id') or '')
+    delivered=False
+    try:
+        delivered=bool(globals().get('_r7_deliver_worker_export')(dict(body)))
+    except Exception as exc:
+        _r35_delivery_set(jid,'failed',body,error=f'{type(exc).__name__}: {str(exc)[:700]}')
+        return
+    if delivered:
+        if bool((body or {}).get('ok')):
+            _r35_delivery_set(jid,'done',body)
+        else:
+            _r35_delivery_set(jid,'done_error',body,error=str((body or {}).get('error') or 'HEAVY job failed'))
+    else:
+        _r35_delivery_set(jid,'failed',body,error='FAST delivery attempt failed')
+
+def split_front_export_result_r35():
+    if not globals().get('_split_authorized_request',lambda:False)(): return ({'ok':False},404)
+    body=request.get_json(silent=True) or {}; jid=str(body.get('job_id') or '')
+    if not jid: return ({'ok':False,'error':'job_id required'},400)
+    row=_r35_delivery_get(jid); state=str(row.get('state') or ''); age=max(0.0,_r33_time.time()-float(row.get('ts') or 0))
+    if state in {'done','done_error'}:
+        return ({'ok':True,'delivered':True,'duplicate':True,'operation_ok':state=='done'},200)
+    # A stale 'running' marker can survive a FAST restart. Allow HEAVY to retrigger it.
+    if state=='running' and age<45:
+        return ({'ok':True,'accepted':True,'delivered':False},202)
+    _r35_delivery_set(jid,'running',body)
+    try:
+        pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL'); submitted=False
+        if pool is not None and hasattr(pool,'submit'):
+            submitted=bool(pool.submit('r35-export-delivery:'+jid,_r35_export_delivery_task,dict(body)))
+        if not submitted:
+            __import__('threading').Thread(target=_r35_export_delivery_task,args=(dict(body),),daemon=True,name='per-r35-front-delivery').start()
+    except Exception:
+        __import__('threading').Thread(target=_r35_export_delivery_task,args=(dict(body),),daemon=True,name='per-r35-front-delivery').start()
+    return ({'ok':True,'accepted':True,'delivered':False},202)
+
+try:
+    # Keep the existing Flask route, replace only its implementation.
+    app.view_functions['split_front_export_result_r7']=split_front_export_result_r35
+except Exception:
+    pass
+
+def _r35_wait_remote_delivery(jid,body):
+    timeout=max(60,min(7200,int(__import__('os').getenv('R35_FAST_JOB_WAIT_SEC','1800') or '1800')))
+    deadline=_r33_time.time()+timeout; last_progress=0.0
+    while _r33_time.time()<deadline:
+        row=_r35_delivery_get(jid); state=str(row.get('state') or '')
+        if state=='done': return True
+        if state=='done_error':
+            b=row.get('body') if isinstance(row.get('body'),dict) else {}
+            raise RuntimeError(str(row.get('error') or b.get('error') or 'Render #2 завершил задачу с ошибкой')[:900])
+        now=_r33_time.time()
+        if now-last_progress>5:
+            try:
+                phase='ожидаю доставку результата' if state in {'running','failed'} else 'Render #2 выполняет задачу'
+                _file_job_progress(phase,force=True)
+            except Exception: pass
+            last_progress=now
+        _r33_time.sleep(0.45)
+    raise RuntimeError(f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={jid}')
+
+def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
+    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
+    body['front_release']='Пер-R35'
+    try: _file_job_progress('передаю задание Render #2',force=True)
+    except Exception: pass
+    submit=globals().get('_r7_worker_file_submit')
+    if not callable(submit): raise RuntimeError('R35 HEAVY export bridge unavailable')
+    jid=submit(body)
+    existing=_r35_delivery_get(jid)
+    if str(existing.get('state') or '') not in {'running','done','done_error'}:
+        _r35_delivery_set(jid,'accepted',{'job_id':jid,'operation':body.get('operation'),'recipient_chat_id':body.get('recipient_chat_id')})
+    try: bot_journal('r35_heavy_file_accepted',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}; required_revision={body.get('required_revision') or 0}")
+    except Exception: pass
+    _r35_wait_remote_delivery(jid,body)
+    # This call runs inside the original FAST file-job context, so only now may the
+    # canonical runner close the status window and release its single-flight lock.
+    delivery=str(body.get('delivery') or 'chat').lower()
+    delivered_kind='Telegram через Render #2' if delivery=='chat' else ('Google Sheets' if delivery=='google' else 'Google Drive')
+    if not file_job_mark_external_delivery(delivered_kind,jid):
+        raise RuntimeError('R35 delivery was confirmed but FAST file-job context was lost')
+    return True
+
+try:
+    bot_journal('r35_transport_fix_loaded',int(OWNER_ID or 0),'accepted!=delivered; redis delivery ledger; idempotent submit retry; stale callback recovery')
+except Exception:
+    pass
+
 # v262

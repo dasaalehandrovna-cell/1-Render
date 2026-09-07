@@ -119,7 +119,7 @@ def _r32_materialize(desc):
 
 
 def _r32_make_event(desc,payload,kind_override=None):
-    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R34')}
+    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R35')}
     raw=_r32_json.dumps(body,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'); body['sha256']=_r32_hashlib.sha256(raw).hexdigest(); return body
 
 
@@ -172,9 +172,12 @@ def _r34_post_events(events, wire, large=False):
     if not (200 <= r.status_code < 300): raise RuntimeError(f'HEAVY state events HTTP {r.status_code}: {r.text[:220]}')
     try:
         payload=r.json() if r.content else {}
-        ack=int(payload.get('max_revision') or max([int(x.get('revision') or 0) for x in events] or [0]))
-    except Exception: ack=max([int(x.get('revision') or 0) for x in events] or [0])
+        ack=int(payload.get('durable_revision') or payload.get('max_revision') or max([int(x.get('revision') or 0) for x in events] or [0]))
+        applied_ack=int(payload.get('applied_revision') or (ack if bool(payload.get('apply_ok',True)) else 0))
+    except Exception:
+        ack=max([int(x.get('revision') or 0) for x in events] or [0]); applied_ack=0
     _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),ack)
+    _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),applied_ack)
     _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events)
     _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
     _R32_EVENT_STATE['bytes']=int(_R32_EVENT_STATE.get('bytes') or 0)+len(wire)
@@ -182,7 +185,7 @@ def _r34_post_events(events, wire, large=False):
     st=globals().get('_SPLIT_STATE')
     if isinstance(st,dict):
         st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1
-        st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=_R32_EVENT_Q.qsize(); st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''; st['r34_event_last_revision_acked']=ack
+        st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=_R32_EVENT_Q.qsize(); st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''; st['r34_event_last_revision_acked']=ack; st['r35_event_last_revision_applied_peer']=applied_ack
     return True
 
 
