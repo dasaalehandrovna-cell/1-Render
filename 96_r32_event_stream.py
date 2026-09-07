@@ -119,7 +119,7 @@ def _r32_materialize(desc):
 
 
 def _r32_make_event(desc,payload,kind_override=None):
-    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R36')}
+    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R37')}
     raw=_r32_json.dumps(body,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'); body['sha256']=_r32_hashlib.sha256(raw).hexdigest(); return body
 
 

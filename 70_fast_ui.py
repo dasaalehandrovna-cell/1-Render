@@ -4,6 +4,8 @@ _ui_edit_lock = threading.RLock()
 _ui_edit_last_ts = {}
 _ui_edit_pending = {}
 _ui_edit_timers = {}
+_ui_edit_last_fingerprint = {}
+_ui_edit_last_fingerprint_ts = {}
 
 def _ui_edit_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
@@ -95,6 +97,18 @@ def _v177_legacy_0211_fast_ui_edit_message_text(chat_id: int, message_id: int, t
         diag_prepare = globals().get('window_diag_prepare_fast_ui_payload')
         if callable(diag_prepare):
             payload = diag_prepare(payload) or payload
+    except Exception:
+        pass
+    # R37: suppress identical renders of the same Telegram message. Multiple background
+    # refreshers used to repaint the exact same window and consume bot-token quota.
+    try:
+        _fp = hashlib.sha1((str(text) + '\n' + repr(reply_markup) + '\n' + str(parse_mode or '')).encode('utf-8', 'replace')).hexdigest()
+        _now_fp = time.time()
+        with _ui_edit_lock:
+            if _ui_edit_last_fingerprint.get(key) == _fp and (_now_fp - float(_ui_edit_last_fingerprint_ts.get(key, 0) or 0)) < 2.0:
+                return 'deduped'
+            _ui_edit_last_fingerprint[key] = _fp
+            _ui_edit_last_fingerprint_ts[key] = _now_fp
     except Exception:
         pass
     force_immediate = str(purpose or '') == 'back_main_instant'

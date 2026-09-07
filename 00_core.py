@@ -2544,7 +2544,7 @@ def effective_ui_edit_interval() -> float:
 
 def effective_fast_telegram_gap() -> float:
     configured = float(active_bot_behavior_profile_info().get('fast_tg_gap', 0.02))
-    return max(0.005, min(0.03, configured))
+    return max(0.32, min(0.55, float(os.getenv('FAST_TELEGRAM_CHAT_GAP', '0.36') or '0.36')))
 
 def main_article_buttons_enabled(chat_id: int) -> bool:
     try:
@@ -7681,10 +7681,13 @@ _telegram_send_last_ts = {}
 _telegram_send_rate_lock = threading.RLock()
 _telegram_global_rate_lock = threading.RLock()
 _telegram_global_last_ts = 0.0
+_telegram_global_block_until = 0.0
+_telegram_guard_local = threading.local()
+
 try:
-    TELEGRAM_GLOBAL_MIN_GAP = max(0.01, float(os.getenv('TELEGRAM_GLOBAL_MIN_GAP', '0.04') or '0.04'))
+    TELEGRAM_GLOBAL_MIN_GAP = max(0.05, float(os.getenv('TELEGRAM_GLOBAL_MIN_GAP', '0.075') or '0.075'))
 except Exception:
-    TELEGRAM_GLOBAL_MIN_GAP = 0.04
+    TELEGRAM_GLOBAL_MIN_GAP = 0.075
 
 def _telegram_retry_after_seconds(err: Exception):
     """Достаёт retry_after из Telegram 429: Too Many Requests."""
@@ -7731,14 +7734,25 @@ def _telegram_rate_limit_chat(chat_id, min_gap: float=0.35):
         _telegram_send_last_ts[cid] = time.time()
 
 def _telegram_rate_limit_global():
-    """Общий лимитер Telegram API для всех чатов, чтобы не ловить шквал 429."""
+    """R37: single bot-token gate. Respects a shared 429 cooldown across every thread."""
     global _telegram_global_last_ts
     with _telegram_global_rate_lock:
         now_ts = time.time()
-        wait = TELEGRAM_GLOBAL_MIN_GAP - (now_ts - _telegram_global_last_ts)
+        block_wait = max(0.0, float(globals().get('_telegram_global_block_until', 0.0) or 0.0) - now_ts)
+        gap_wait = TELEGRAM_GLOBAL_MIN_GAP - (now_ts - _telegram_global_last_ts)
+        wait = max(block_wait, gap_wait, 0.0)
         if wait > 0:
             time.sleep(wait)
         _telegram_global_last_ts = time.time()
+
+def _telegram_register_429_cooldown(err: Exception, extra: float=0.35) -> float:
+    """R37: one 429 pauses all Telegram callers, not only the thread that was rejected."""
+    global _telegram_global_block_until
+    retry_after = _telegram_retry_after_seconds(err)
+    wait = max(1.0, float(retry_after or 1)) + max(0.1, float(extra))
+    with _telegram_global_rate_lock:
+        _telegram_global_block_until = max(float(_telegram_global_block_until or 0.0), time.time() + wait)
+    return wait
 
 def _tg_first_chat_id(args, kwargs):
     if 'chat_id' in kwargs:
@@ -7774,7 +7788,11 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                             pass
             except Exception:
                 pass
-            _res = func(*args, **kwargs)
+            try:
+                _telegram_guard_local.in_retry = True
+                _res = func(*args, **kwargs)
+            finally:
+                _telegram_guard_local.in_retry = False
             try:
                 if chat_id is not None and is_chat_bot_removed(int(chat_id)):
                     set_chat_bot_removed(int(chat_id), False, 'telegram api success')
@@ -7794,8 +7812,8 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                 except Exception:
                     pass
                 raise
-            wait = max(1, int(retry_after)) + 1
-            log_info(f'[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}')
+            wait = _telegram_register_429_cooldown(e, extra=0.35)
+            log_info(f'[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait:.2f}s, error={str(e)[:220]}')
             try:
                 bot_journal('telegram_429_retry', chat_id if 'chat_id' in locals() else None, f'{purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}', 'WARN')
             except Exception:
@@ -7806,6 +7824,67 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                 break
             time.sleep(wait)
     raise last_err
+
+
+# R37: Guard legacy direct bot.* calls too. Older modules contain direct Telegram calls
+# that used to bypass _tg_call_retry and could collectively trigger bot-wide 429s.
+_R37_TG_GUARDED_METHODS = (
+    'send_message', 'edit_message_text', 'edit_message_caption', 'edit_message_reply_markup',
+    'answer_callback_query', 'send_document', 'send_photo', 'send_video', 'send_audio',
+    'send_voice', 'send_media_group', 'delete_message', 'copy_message', 'forward_message',
+)
+_R37_TG_RAW_METHODS = {}
+
+def _r37_direct_chat_id(method_name, args, kwargs):
+    if method_name == 'answer_callback_query':
+        return None
+    if 'chat_id' in kwargs:
+        return kwargs.get('chat_id')
+    return args[0] if args else None
+
+def _r37_make_guarded_bot_method(method_name, raw):
+    def _guarded(*args, **kwargs):
+        # Calls originating from _tg_call_retry are already gated/retried there.
+        if bool(getattr(_telegram_guard_local, 'in_retry', False)):
+            return raw(*args, **kwargs)
+        cid = _r37_direct_chat_id(method_name, args, kwargs)
+        max_attempts = 2 if method_name not in {'answer_callback_query', 'delete_message'} else 1
+        last = None
+        for attempt in range(max_attempts):
+            _telegram_rate_limit_global()
+            if cid is not None:
+                _telegram_rate_limit_chat(cid, min_gap=0.36)
+            try:
+                return raw(*args, **kwargs)
+            except Exception as exc:
+                last = exc
+                if not is_telegram_429(exc):
+                    raise
+                wait = _telegram_register_429_cooldown(exc, extra=0.35)
+                try:
+                    log_info(f'[R37 TG GLOBAL 429] method={method_name} wait={wait:.2f}s cid={cid}')
+                except Exception:
+                    pass
+                if attempt + 1 >= max_attempts:
+                    raise
+                # Shared gate sleeps on the next loop; don't create independent retry storms.
+        if last is not None:
+            raise last
+    try:
+        _guarded.__name__ = getattr(raw, '__name__', method_name)
+    except Exception:
+        pass
+    return _guarded
+
+def _r37_install_botwide_telegram_guard():
+    for _name in _R37_TG_GUARDED_METHODS:
+        _raw = getattr(bot, _name, None)
+        if not callable(_raw) or _name in _R37_TG_RAW_METHODS:
+            continue
+        _R37_TG_RAW_METHODS[_name] = _raw
+        setattr(bot, _name, _r37_make_guarded_bot_method(_name, _raw))
+
+_r37_install_botwide_telegram_guard()
 
 def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwargs):
     if reply_to_message_id:

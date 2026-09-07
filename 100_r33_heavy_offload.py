@@ -1,5 +1,5 @@
 # v262
-"""Пер-R36: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R37: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R36',
+        'delivery':'chat','front_release':'Пер-R37',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -115,7 +115,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     if str(body.get('operation') or '') in {'runtime_zip','journal','journal_current'}:
         try:
             body['front_runtime_snapshot']=_r33_safe_scalar({
-                'release':'Пер-R36',
+                'release':'Пер-R37',
                 'captured_at':_r33_time.time(),
                 'runtime':dict(globals().get('_RUNTIME_STATE') or {}),
                 'split':dict(globals().get('_SPLIT_STATE') or {}),
@@ -195,7 +195,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Пер-R36: end-to-end HEAVY delivery control.
+# Пер-R37: end-to-end HEAVY delivery control.
 # 202/queued is only an acceptance ACK. The FAST file job remains open until
 # Render #2's callback has actually delivered the result to Telegram/Google.
 _R35_REMOTE_RESULT_LOCK = __import__('threading').RLock()
@@ -389,7 +389,7 @@ def _r35_wait_remote_delivery(jid,body):
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    body['front_release']='Пер-R36'
+    body['front_release']='Пер-R37'
     try: _file_job_progress('передаю задание Render #2',force=True)
     except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
