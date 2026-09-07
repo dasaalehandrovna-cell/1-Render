@@ -575,10 +575,19 @@ def _r32_seed_marker_client():
     return _redis.Redis.from_url(url,socket_connect_timeout=1.5,socket_timeout=3,health_check_interval=30)
 
 def _r32_migration_seeded():
+    # R34 primary marker lives on the running HEAVY process, so Redis is optional.
     try:
-        c=_r32_seed_marker_client();
+        base=_peer_base(); secret=_secret()
+        if base and secret:
+            r=requests.get(base+'/internal/r34/seed-status',headers={'X-Peer-Secret':secret,'User-Agent':'per-r34-seed-status'},timeout=4)
+            payload=r.json() if r.content else {}
+            if 200<=r.status_code<300 and payload.get('ok') and payload.get('seeded'): return True
+    except Exception:
+        pass
+    try:
+        c=_r32_seed_marker_client()
         if c is None: return False
-        return bool(c.get('vys262:state_events:r32:migration_seeded'))
+        return bool(c.get('vys262:state_events:r34:migration_seeded'))
     except Exception:
         return False
 
@@ -586,20 +595,20 @@ def _r32_mark_migration_seeded():
     try:
         c=_r32_seed_marker_client();
         if c is None: return False
-        c.set('vys262:state_events:r32:migration_seeded','1')
+        c.set('vys262:state_events:r34:migration_seeded','1')
         return True
     except Exception:
         return False
 
 def _preboot_capture_old_front_r18():
-    # R32 needs one exact migration seed from the old R31 instance. After that,
+    # R34 needs one exact migration seed from the old R33 instance to close any R33 413 gap. After that,
     # HEAVY is rebuilt from immutable row events and no full preboot capture is sent.
     if _bool('R32_EVENT_STREAM_ENABLED', True) and _r32_migration_seeded():
-        return True, 'R32 event stream already seeded; full preboot capture skipped'
+        return True, 'R34 event stream already seeded; full preboot capture skipped'
     ok,detail=_preboot_capture_old_front_r18_legacy()
     if ok and _bool('R32_EVENT_STREAM_ENABLED', True):
         _r32_mark_migration_seeded()
-        detail=str(detail)+'; R32 migration seed marked'
+        detail=str(detail)+'; R34 migration seed marked'
     return ok,detail
 
 def main():

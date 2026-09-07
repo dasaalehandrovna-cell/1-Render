@@ -2670,53 +2670,68 @@ def _r7_export_result_seen(job_id: str) -> bool:
         return False
 
 
-def _r7_deliver_worker_export(body: dict):
-    jid = str(body.get('job_id') or '')
-    cid = int(body.get('recipient_chat_id') or 0)
-    if not jid or not cid: return
-    if not body.get('ok'):
-        try: bot.send_message(cid, '❌ Экспорт Render #2: ' + str(body.get('error') or 'неизвестная ошибка')[:800])
-        except Exception: pass
-        return
-    if str(body.get('delivery') or '') == 'drive':
-        try: bot.send_message(cid, f"☁️ Google Drive · {body.get('label') or ''}: {body.get('chat_name') or ''}\n\n{body.get('url') or ''}", disable_web_page_preview=True)
-        except Exception: pass
-        return
-    base = _split_peer_base()
-    try:
-        r = requests.get(base + '/internal/export/file/' + jid, headers=_split_headers('vys-262-front-export-fetch-r7'), timeout=90)
-        if r.status_code != 200:
-            raise RuntimeError(f'worker file HTTP {r.status_code}: {r.text[:240]}')
-        import io as _r7_io
-        fobj = _r7_io.BytesIO(r.content)
-        fobj.name = str(body.get('filename') or ('export.' + str(body.get('file_type') or 'bin')))
-        caption = str(body.get('caption') or '') or f"📂 {('Excel' if str(body.get('file_type')) == 'xlsx' else 'CSV')} {body.get('label') or ''}: {body.get('chat_name') or ''}"
-        _tg_call_retry(bot.send_document, cid, fobj, caption=caption, timeout=120, purpose='r7_worker_export_send_document')
-    except Exception as exc:
-        try: bot.send_message(cid, '❌ Не удалось получить готовый файл с Render #2: ' + str(exc)[:600])
-        except Exception: pass
+_R34_EXPORT_DELIVERY_LOCK = _split_threading.RLock()
+_R34_EXPORT_DELIVERY = {}
 
+def _r7_deliver_worker_export(body: dict):
+    jid = str(body.get('job_id') or ''); cid = int(body.get('recipient_chat_id') or 0)
+    if not jid or not cid: return False
+    try:
+        if not body.get('ok'):
+            bot.send_message(cid, '❌ Экспорт Render #2: ' + str(body.get('error') or 'неизвестная ошибка')[:800]); return True
+        if str(body.get('delivery') or '') == 'drive':
+            bot.send_message(cid, f"☁️ Google Drive · {body.get('label') or ''}: {body.get('chat_name') or ''}\n\n{body.get('url') or ''}", disable_web_page_preview=True); return True
+        if str(body.get('delivery') or '') == 'google':
+            if body.get('url'): bot.send_message(cid, f"✅ Google Excel готов.\n{body.get('url')}", disable_web_page_preview=True)
+            return True
+        base = _split_peer_base()
+        r = requests.get(base + '/internal/export/file/' + jid, headers=_split_headers('vys-262-front-export-fetch-r34'), timeout=90, stream=True)
+        if r.status_code != 200: raise RuntimeError(f'worker file HTTP {r.status_code}: {r.text[:240]}')
+        import tempfile as _r34_tempfile, os as _r34_os
+        suffix=_r34_os.path.splitext(str(body.get('filename') or 'export.bin'))[1]
+        tmp=_r34_tempfile.NamedTemporaryFile(prefix='r34_export_',suffix=suffix,delete=False)
+        try:
+            for chunk in r.iter_content(chunk_size=256*1024):
+                if chunk: tmp.write(chunk)
+            tmp.close()
+            with open(tmp.name,'rb') as fobj:
+                caption = str(body.get('caption') or '') or f"📂 {body.get('label') or 'Файл'}: {body.get('chat_name') or ''}"
+                _tg_call_retry(bot.send_document, cid, fobj, caption=caption, timeout=120, purpose='r34_worker_export_send_document')
+        finally:
+            try: _r34_os.unlink(tmp.name)
+            except Exception: pass
+        return True
+    except Exception as exc:
+        try: log_error(f'R34 export delivery {jid}: {type(exc).__name__}: {str(exc)[:500]}')
+        except Exception: pass
+        return False
+
+def _r34_export_delivery_task(body):
+    jid=str(body.get('job_id') or '')
+    ok=_r7_deliver_worker_export(body)
+    with _R34_EXPORT_DELIVERY_LOCK:
+        _R34_EXPORT_DELIVERY[jid]={'state':'done' if ok else 'failed','ts':_split_time.time(),'body':dict(body)}
 
 @app.route('/internal/split/export-result', methods=['POST'])
 def split_front_export_result_r7():
-    if not _split_authorized_request():
-        return ({'ok': False}, 404)
-    body = request.get_json(silent=True) or {}
-    jid = str(body.get('job_id') or '')
-    if not jid:
-        return ({'ok': False, 'error': 'job_id required'}, 400)
-    if _r7_export_result_seen(jid):
-        return ({'ok': True, 'duplicate': True}, 200)
+    if not _split_authorized_request(): return ({'ok': False}, 404)
+    body=request.get_json(silent=True) or {}; jid=str(body.get('job_id') or '')
+    if not jid: return ({'ok':False,'error':'job_id required'},400)
+    now=_split_time.time()
+    with _R34_EXPORT_DELIVERY_LOCK:
+        for k,row in list(_R34_EXPORT_DELIVERY.items()):
+            if now-float((row or {}).get('ts') or now)>86400: _R34_EXPORT_DELIVERY.pop(k,None)
+        state=str((_R34_EXPORT_DELIVERY.get(jid) or {}).get('state') or '')
+        if state=='done': return ({'ok':True,'delivered':True,'duplicate':True},200)
+        if state=='running': return ({'ok':True,'accepted':True,'delivered':False},202)
+        _R34_EXPORT_DELIVERY[jid]={'state':'running','ts':now,'body':dict(body)}
     try:
-        pool = globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        submitted = False
-        if pool is not None and hasattr(pool, 'submit'):
-            submitted = bool(pool.submit('r7-export-delivery:' + jid, _r7_deliver_worker_export, dict(body)))
-        if not submitted:
-            _split_threading.Thread(target=_r7_deliver_worker_export, args=(dict(body),), daemon=True).start()
+        pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL'); submitted=False
+        if pool is not None and hasattr(pool,'submit'): submitted=bool(pool.submit('r34-export-delivery:'+jid,_r34_export_delivery_task,dict(body)))
+        if not submitted: _split_threading.Thread(target=_r34_export_delivery_task,args=(dict(body),),daemon=True).start()
     except Exception:
-        _split_threading.Thread(target=_r7_deliver_worker_export, args=(dict(body),), daemon=True).start()
-    return ({'ok': True, 'accepted': True}, 202)
+        _split_threading.Thread(target=_r34_export_delivery_task,args=(dict(body),),daemon=True).start()
+    return ({'ok':True,'accepted':True,'delivered':False},202)
 
 globals()['send_export_for_chat_to'] = _r7_send_export_for_chat_to
 

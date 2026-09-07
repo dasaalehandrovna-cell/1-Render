@@ -2718,30 +2718,23 @@ def _v198_route_helper_message(chat_id: int, text: str):
 def _v199_service_text(text: str) -> str:
     return _v159_force_marker(str(text or ''), 'Ф233', '⏳')
 _V211_SERVICE_RUNTIME_ID = str(os.getenv('RENDER_INSTANCE_ID', '') or f'local-{os.getpid()}-{int(time.time())}')
+_V199_SERVICE_FAST_CACHE = {}  # R34: transient service ids are process-local; never take data_lock before ordinary render.
 
 def _v199_service_message_id(chat_id: int) -> int:
-    """Return only a service message created by this running process.
+    """R34 hot-path: transient F233 ownership is RAM-only.
 
-    Ф233 is transient UI. Persisting its Telegram message_id is useful for same-process
-    refreshes, but after deploy the old id can already be deleted.  Never probe/edit a
-    previous-runtime id: clear it locally and create a fresh Ф233 instead.
+    Reading persistent chat state here used to put get_chat_store/data_lock in front
+    of Telegram editMessageText.  A service message never needs to survive a process
+    restart, so an absent RAM entry simply means "create a fresh service window".
     """
-    try:
-        store = get_chat_store(int(chat_id))
-        mid = int(store.get('_v199_service_status_msg_id') or 0)
-        owner = str(store.get('_v199_service_status_runtime_id') or '')
-        if mid and owner != _V211_SERVICE_RUNTIME_ID:
-            store.pop('_v199_service_status_msg_id', None)
-            store.pop('_v199_service_status_runtime_id', None)
-            if int(store.get('_v160_file_status_msg_id') or 0) == mid:
-                store.pop('_v160_file_status_msg_id', None)
-                store.pop('_v160_file_status_created_at', None)
-            return 0
-        return mid
-    except Exception:
-        return 0
+    try: return int(_V199_SERVICE_FAST_CACHE.get(int(chat_id)) or 0)
+    except Exception: return 0
 
 def _v199_clear_service_message(chat_id: int, message_id: int) -> None:
+    try:
+        if int(_V199_SERVICE_FAST_CACHE.get(int(chat_id)) or 0) == int(message_id): _V199_SERVICE_FAST_CACHE.pop(int(chat_id), None)
+    except Exception:
+        pass
     try:
         store = get_chat_store(int(chat_id))
         if int(store.get('_v199_service_status_msg_id') or 0) == int(message_id):
@@ -2779,6 +2772,7 @@ def _v199_upsert_service_window(chat_id: int, text: str, *, parse_mode=None) -> 
     msg = bot.send_message(chat_id, marked, **kwargs)
     mid = int(getattr(msg, 'message_id', 0) or 0)
     if mid:
+        _V199_SERVICE_FAST_CACHE[chat_id] = mid
         try:
             _store = get_chat_store(chat_id)
             _store['_v199_service_status_msg_id'] = mid

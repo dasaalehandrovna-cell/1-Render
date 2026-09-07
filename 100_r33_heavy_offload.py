@@ -1,5 +1,5 @@
 # v262
-"""Пер-R33: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R34: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R33',
+        'delivery':'chat','front_release':'Пер-R34',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -110,38 +110,29 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
             body['drive_folder_id']=str(cfg.get('drive_folder_id') or '')
         except Exception:
             pass
+    # R34 ordering fence: state-dependent jobs carry the newest queued revision.
+    # FAST never waits for it; HEAVY waits/replays in its own queue.
+    if str(body.get('operation') or '') in {'period_export_query','exact_export_query','tabl_lsx','chat_json','full_state','sqlite'}:
+        try: body['required_revision']=int((_R32_EVENT_STATE or {}).get('last_revision_queued') or 0)
+        except Exception: body['required_revision']=0
     # filename/caption are generated on HEAVY from the authoritative state.
     return body
 
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    # This runs only on R21_HEAVY_DISPATCH_TASK_POOL, never in the callback thread.
-    try:
-        _file_job_progress('синхронизирую изменения с Render #2', force=True)
-    except Exception:
-        pass
-    flush=globals().get('r32_flush_state_events')
-    if callable(flush):
-        # Wait in background so an export requested immediately after a finance entry
-        # sees that entry on HEAVY.  This cannot delay the visible button response.
-        if not flush(timeout=float(_r33_os.getenv('R33_EXPORT_STATE_BARRIER_SEC','25') or '25')):
-            raise RuntimeError('Render #2 ещё не подтвердил актуальное состояние; повторите файл через несколько секунд')
+    # R34: never wait for global state synchronization on FAST.  The job carries a
+    # revision fence and HEAVY waits for only the state it actually needs.
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    try:
-        _file_job_progress('передаю задание Render #2', force=True)
-    except Exception:
-        pass
+    try: _file_job_progress('передаю задание Render #2', force=True)
+    except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
-    if not callable(submit):
-        raise RuntimeError('R33 HEAVY export bridge unavailable')
+    if not callable(submit): raise RuntimeError('R34 HEAVY export bridge unavailable')
     jid=submit(body)
     try: file_job_mark_external_delivery('Render #2 HEAVY',jid)
     except Exception: pass
-    try:
-        bot_journal('r33_heavy_file_delegated',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}")
+    try: bot_journal('r34_heavy_file_delegated',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}; required_revision={body.get('required_revision') or 0}")
     except Exception: pass
     return True
-
 
 def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
     kind_s=str(kind or 'file')
@@ -154,16 +145,40 @@ def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwar
 # Replace the final global symbol used by all existing handlers without touching them.
 globals()['submit_interactive_file_job']=submit_interactive_file_job
 
-# Defensive R28 hot-path regression gate stays active. R33 itself contains no render queue.
+
+# R34 parity: legacy direct CSV/XLSX helpers are also query-only HEAVY jobs.
+# This catches commands/functions that historically bypassed submit_interactive_file_job.
+def _r34_export_marker(*args,**kwargs): return True
+
+def send_export_for_chat_to(recipient_chat_id:int,target_chat_id:int,mode:str,day_key:str,file_type:str='csv',excel_style_override=None,excel_options_override=None,delivery:str='chat'):
+    kind='period_export'
+    label=('Google Excel' if str(delivery or '').lower()=='google' else ('Excel' if str(file_type).lower().startswith('xlsx') else 'CSV'))+' экспорт'
+    ok,_info=submit_interactive_file_job(int(recipient_chat_id),kind,label,_r34_export_marker,int(recipient_chat_id),int(target_chat_id),str(mode),str(day_key),str(file_type),excel_style_override,excel_options_override,str(delivery or 'chat'))
+    return bool(ok)
+
+def send_exact_range_export(recipient_chat_id:int,target_chat_id:int,start_key:str,start_rid:int,end_key:str,end_rid:int,file_type:str,excel_style_override=None,excel_options_override=None,delivery:str='chat'):
+    label=('Google Excel' if str(delivery or '').lower()=='google' else ('Excel' if str(file_type).lower().startswith('xlsx') else 'CSV'))+' точный экспорт'
+    ok,_info=submit_interactive_file_job(int(recipient_chat_id),'exact_export',label,_r34_export_marker,int(recipient_chat_id),int(target_chat_id),str(start_key),int(start_rid),str(end_key),int(end_rid),str(file_type),excel_style_override,excel_options_override,str(delivery or 'chat'))
+    return bool(ok)
+
+def send_tabl_lsx_for_chat(recipient_chat_id:int,target_chat_id:int):
+    ok,_info=submit_interactive_file_job(int(recipient_chat_id),'tabl_lsx','Excel /tabl_lsx',_r34_export_marker,int(recipient_chat_id),int(target_chat_id))
+    return bool(ok)
+
+globals()['send_export_for_chat_to']=send_export_for_chat_to
+globals()['send_exact_range_export']=send_exact_range_export
+globals()['send_tabl_lsx_for_chat']=send_tabl_lsx_for_chat
+
+# Defensive R28 hot-path regression gate stays active. R34 itself contains no render queue.
 try:
     _src=__import__('inspect').getsource(globals().get('fast_ui_edit_message_text'))
     if 'WINDOW_RENDER_TASK_POOL' in _src or '_perform_fast_ui_edit' not in _src:
-        raise RuntimeError('R33 HOTPATH GUARD: R28 direct render contract changed')
+        raise RuntimeError('R34 HOTPATH GUARD: R28 direct render contract changed')
 except OSError:
     pass
 
 try:
-    bot_journal('r33_heavy_offload_loaded',int(OWNER_ID or 0),'files/tables/journals/json/full-state/sqlite/runtime/window-docs -> HEAVY')
+    bot_journal('r34_heavy_offload_loaded',int(OWNER_ID or 0),'unified-bot: files/tables/journals/json/full-state/sqlite/runtime/window-docs -> HEAVY; no FAST state barrier')
 except Exception:
     pass
 # v262

@@ -1,4 +1,4 @@
-"""vys-262 R33 internal runtime configuration.
+"""vys-262 R34 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r33-heavy-offload"
+CONFIG_VERSION = "vys-262-r34-unified-bot"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -48,9 +48,10 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R32_EVENT_QUEUE_MAX": "20000",
     "R32_EVENT_BATCH_DELAY_SEC": "0.20",
     "R32_EVENT_BATCH_MAX": "96",
+    "R34_EVENT_TARGET_WIRE_KB": "384",
+    "R34_EVENT_LARGE_WIRE_KB": "32768",
     "R32_EVENT_POST_TIMEOUT_SEC": "8",
     "R32_SHUTDOWN_EVENT_FLUSH_SEC": "8",
-    "R33_EXPORT_STATE_BARRIER_SEC": "25",
     "R24_LOWRAM_EVICT_RSS_MB": "340",
     "UI_CLEANUP_MAX_PENDING": "1200",
     "WEBHOOK_WORKERS": "3",
@@ -129,7 +130,7 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
     "WORKER_EVENT_REDIS_RETRY_MS": "250",
     "WORKER_EVENT_REDIS_RECONCILE_SEC": "5",
     "WORKER_R32_EVENT_RETENTION_SEC": "2592000",
-    "WORKER_R32_EVENT_MAX_WIRE_KB": "1024",
+    "WORKER_R32_EVENT_MAX_WIRE_KB": "8192",
     "WORKER_R32_MEGA_SEGMENT_EVENTS": "128",
     "WORKER_R32_MEGA_FLUSH_SEC": "30",
 
