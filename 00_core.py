@@ -959,7 +959,13 @@ class DurableUpdateDispatcher:
                 for key, chat_id, typ, age, state, thread_ident, thread_name, stage, stage_at, action in warnings:
                     try:
                         stage_age = max(0.0, now - float(stage_at or now))
-                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s stage={stage or "?"} stage_age={stage_age:.1f}s action={str(action or "")[:160]}; thread={thread_name or "?"}; Telegram will retry until 2xx')
+                        _locks = ''
+                        try:
+                            _snap_fn = globals().get('r36_lock_snapshot_text')
+                            _locks = str(_snap_fn() if callable(_snap_fn) else '')
+                        except Exception:
+                            _locks = ''
+                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s stage={stage or "?"} stage_age={stage_age:.1f}s action={str(action or "")[:160]}; thread={thread_name or "?"}; locks={_locks or "unknown"}; Telegram will retry until 2xx')
                     except Exception:
                         pass
                     try:
@@ -1098,37 +1104,90 @@ def _r27_background_yield_before_lock(lock_name: str) -> None:
         pass
 
 class R25TracedRLock:
-    """RLock-compatible wrapper that exposes lock waits in BTNTRACE/STUCK_STACK."""
+    """R36 RLock wrapper with holder attribution for real lock-stall diagnosis."""
     def __init__(self, name):
         self._lock = threading.RLock()
         self.name = str(name or 'lock')
+        self._owner_ident = None
+        self._owner_name = ''
+        self._owner_since = 0.0
+        self._owner_depth = 0
+    def owner_snapshot(self):
+        ident = self._owner_ident
+        return {
+            'name': self.name,
+            'owner_ident': ident,
+            'owner_thread': str(self._owner_name or ''),
+            'held_seconds': round(max(0.0, time.monotonic()-float(self._owner_since or 0.0)), 3) if ident else 0.0,
+            'depth': int(self._owner_depth or 0),
+        }
+    def held_by_current_thread(self):
+        return self._owner_ident == threading.get_ident() and int(self._owner_depth or 0) > 0
     def acquire(self, blocking=True, timeout=-1):
         ctx = r25_trace_current()
         traced = bool(ctx.get('update_id'))
-        if not traced:
+        if not traced and not self.held_by_current_thread():
             _r27_background_yield_before_lock(self.name)
+        before = self.owner_snapshot()
         t0 = time.monotonic()
         if traced:
-            r25_trace_stage(f'{self.name.upper()}_LOCK_WAIT', emit=False)
+            r25_trace_stage(f'{self.name.upper()}_LOCK_WAIT', detail=(f"holder={before.get('owner_thread') or '-'} held={before.get('held_seconds',0):.3f}s" if before.get('owner_ident') else ''), emit=False)
         if timeout is None or float(timeout) < 0:
             ok = self._lock.acquire(blocking)
         else:
             ok = self._lock.acquire(blocking, timeout)
         waited = max(0.0, time.monotonic() - t0)
+        if ok:
+            ident = threading.get_ident()
+            if self._owner_ident == ident:
+                self._owner_depth = int(self._owner_depth or 0) + 1
+            else:
+                self._owner_ident = ident
+                self._owner_name = threading.current_thread().name
+                self._owner_since = time.monotonic()
+                self._owner_depth = 1
+        detail = ''
+        if waited >= _R25_TRACE_SLOW_LOCK_SEC and before.get('owner_ident'):
+            detail = f"waited_for={before.get('owner_thread') or before.get('owner_ident')} held_before={before.get('held_seconds',0):.3f}s"
         if traced:
-            r25_trace_stage(f'{self.name.upper()}_LOCK_ACQUIRED', waited, emit=waited >= _R25_TRACE_SLOW_LOCK_SEC)
+            r25_trace_stage(f'{self.name.upper()}_LOCK_ACQUIRED', waited, detail=detail, emit=waited >= _R25_TRACE_SLOW_LOCK_SEC)
         elif waited >= max(0.25, _R25_TRACE_SLOW_LOCK_SEC * 5):
             try:
-                _line=f'LOCKTRACE name={self.name} wait={waited:.3f}s thread={threading.current_thread().name}'; log_info(_line); r26_diag_trace_line(_line)
+                _line=f'LOCKTRACE name={self.name} wait={waited:.3f}s thread={threading.current_thread().name} holder={before.get("owner_thread") or before.get("owner_ident") or "-"} holder_held={before.get("held_seconds",0):.3f}s'; log_info(_line); r26_diag_trace_line(_line)
             except Exception: pass
         return ok
-    def release(self): return self._lock.release()
+    def release(self):
+        ident = threading.get_ident()
+        try:
+            return self._lock.release()
+        finally:
+            if self._owner_ident == ident:
+                self._owner_depth = max(0, int(self._owner_depth or 0)-1)
+                if self._owner_depth <= 0:
+                    self._owner_ident = None; self._owner_name = ''; self._owner_since = 0.0; self._owner_depth = 0
     def __enter__(self): self.acquire(); return self
     def __exit__(self, exc_type, exc, tb): self.release(); return False
     def __getattr__(self, name): return getattr(self._lock, name)
 
 chat_locks = defaultdict(threading.RLock)
 data_lock = R25TracedRLock('data')
+
+def r36_lock_snapshot_text() -> str:
+    rows=[]
+    for obj_name in ('data_lock',):
+        obj=globals().get(obj_name)
+        try:
+            snap=obj.owner_snapshot() if obj is not None and hasattr(obj,'owner_snapshot') else {}
+            if snap.get('owner_ident'):
+                rows.append(f"{snap.get('name')}={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
+        except Exception: pass
+    try:
+        db=globals().get('SQLITE'); lock=getattr(db,'lock',None) if db is not None else None
+        snap=lock.owner_snapshot() if lock is not None and hasattr(lock,'owner_snapshot') else {}
+        if snap.get('owner_ident'):
+            rows.append(f"sqlite={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
+    except Exception: pass
+    return '; '.join(rows) or 'none'
 forward_map_lock = threading.RLock()
 timer_lock = threading.RLock()
 _state_context = threading.local()
@@ -1622,18 +1681,22 @@ class SQLiteState:
 
     def save_chats(self, chats: dict):
         chats = chats or {}
+        # R36: JSON encoding can be expensive for finance history; never spend that CPU
+        # while monopolising the shared SQLite connection lock.
+        encoded = {str(chat_id): self._dump(payload) for chat_id, payload in chats.items()}
         with self.lock:
             existing = {str(r[0]) for r in self.conn.execute('SELECT chat_id FROM chats').fetchall()}
-            for chat_id, payload in chats.items():
-                self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), self._dump(payload)))
-            for stale in existing - {str(k) for k in chats.keys()}:
-                self.conn.execute('DELETE FROM chats WHERE chat_id=?', (stale,))
+            self.conn.executemany('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', list(encoded.items()))
+            stale = existing - set(encoded)
+            if stale:
+                self.conn.executemany('DELETE FROM chats WHERE chat_id=?', [(k,) for k in stale])
             self.conn.commit()
 
     def save_chat(self, chat_id, payload: dict):
         """Точечно сохраняет только один изменившийся чат."""
+        encoded = self._dump(payload or {})
         with self.lock:
-            self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), self._dump(payload or {})))
+            self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), encoded))
             self.conn.commit()
 
     def delete_chat(self, chat_id):
@@ -1933,11 +1996,15 @@ def _lowram_release_chat(chat_id):
     if not LOWRAM_ENABLED or chat_id is None:
         return
     try:
-        with data_lock:
-            store = (data.get('chats', {}) or {}).get(str(int(chat_id)))
+        cid = int(chat_id)
+        # R36: never hold global data_lock while waiting on SQLite. Serialise this
+        # chat with its own lock, take the reference quickly, then persist outside.
+        with locked_chat(cid):
+            with data_lock:
+                store = (data.get('chats', {}) or {}).get(str(cid))
             if isinstance(store, dict):
-                _lowram_flush_chat(int(chat_id), store, evict=True)
-                SQLITE.save_chat(int(chat_id), _lowram_store_meta_payload(store))
+                _lowram_flush_chat(cid, store, evict=True)
+                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
         if _lowram_memory_snapshot().get('rss_mb', 0) >= 320:
             import gc
             gc.collect()
@@ -1981,20 +2048,26 @@ def _lowram_materialize_chat_snapshot(chat_id: int, store: dict | None=None) -> 
 def _lowram_flush_all_hot(evict: bool=False):
     if not LOWRAM_ENABLED or not isinstance(data, dict):
         return
-    chats = data.get('chats', {}) or {}
+    # R36: all-chat maintenance must never hold data_lock while cold fields or the
+    # root are written to SQLite. Otherwise one maintenance pass can freeze every UI.
+    import copy as _r36_copy
     with data_lock:
-        meta_chats = {}
-        for cid_s, store in list(chats.items()):
-            try:
-                cid = int(cid_s)
-            except Exception:
-                continue
+        chat_ids = list(((data.get('chats', {}) or {}).keys()))
+    meta_chats = {}
+    for cid_s in chat_ids:
+        try: cid = int(cid_s)
+        except Exception: continue
+        with locked_chat(cid):
+            with data_lock:
+                store = ((data.get('chats', {}) or {}).get(str(cid)))
             if isinstance(store, dict):
                 _lowram_flush_chat(cid, store, evict=evict)
                 meta_chats[str(cid)] = _lowram_store_meta_payload(store)
-        if meta_chats:
-            SQLITE.save_chats(meta_chats)
-        SQLITE.save_root(_sqlite_pack_root(data))
+    with data_lock:
+        root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+    if meta_chats:
+        SQLITE.save_chats(meta_chats)
+    SQLITE.save_root(root_snapshot)
 
 def lowram_status_text() -> str:
     mem = _lowram_memory_snapshot()

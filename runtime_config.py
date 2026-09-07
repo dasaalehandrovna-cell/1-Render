@@ -1,4 +1,4 @@
-"""vys-262 R35 internal runtime configuration.
+"""vys-262 R36 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r35-unified-bot"
+CONFIG_VERSION = "vys-262-r36-unified-bot"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -52,8 +52,12 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R34_EVENT_LARGE_WIRE_KB": "32768",
     "R32_EVENT_POST_TIMEOUT_SEC": "8",
     "R32_SHUTDOWN_EVENT_FLUSH_SEC": "8",
-    "R35_FILE_SUBMIT_ATTEMPTS": "3",
-    "R35_FILE_SUBMIT_TIMEOUT_SEC": "12",
+    "R36_FILE_SUBMIT_ATTEMPTS": "4",
+    "R36_FILE_SUBMIT_TIMEOUT_SEC": "45",
+    "R36_FAST_JOB_WAIT_SEC": "1800",
+    # R35 aliases remain only for rollback compatibility.
+    "R35_FILE_SUBMIT_ATTEMPTS": "4",
+    "R35_FILE_SUBMIT_TIMEOUT_SEC": "45",
     "R35_FAST_JOB_WAIT_SEC": "1800",
     "R24_LOWRAM_EVICT_RSS_MB": "340",
     "UI_CLEANUP_MAX_PENDING": "1200",

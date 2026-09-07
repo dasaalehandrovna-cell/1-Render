@@ -114,10 +114,12 @@ def task_dispatcher_enabled(chat_id: int) -> bool:
         return False
 
 def _v172_persist(chat_id: int, reason: str='task_change') -> None:
-    """Persist root state locally immediately and schedule compact MEGA delta."""
+    """Persist root state without holding data_lock during SQLite I/O (R36)."""
     try:
+        import copy as _r36_copy
         with data_lock:
-            SQLITE.save_root(_sqlite_pack_root(data))
+            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+        SQLITE.save_root(root_snapshot)
     except Exception as exc:
         try:
             log_error(f'v172 task SQLite root save: {exc}')

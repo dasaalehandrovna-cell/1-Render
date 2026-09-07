@@ -211,59 +211,134 @@ WEBHOOK_HEADER_SECRET_ENABLED = False
 _V260_WEBHOOK_INBOX_KIND = 'webhook_inbox_v260'
 _V260_WEBHOOK_MAX_ATTEMPTS = 5
 
+# R36: Telegram admission/replay bookkeeping has its own tiny SQLite file.
+# The old implementation shared SQLITE.lock with the full finance/history database,
+# so a long finance JSON commit could delay webhook admission and vice versa.
+_V260_INBOX_DB = Path(os.getenv('WEBHOOK_INBOX_DB_FILE', str(DB_FILE) + '.webhook_inbox.sqlite3') or (str(DB_FILE) + '.webhook_inbox.sqlite3')).resolve()
+_V260_INBOX_LOCK = threading.RLock()
+_V260_INBOX_READY = False
+
+def _v260_inbox_connect():
+    global _V260_INBOX_READY
+    _V260_INBOX_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_V260_INBOX_DB), timeout=1.5, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA synchronous=FULL')
+        conn.execute('PRAGMA busy_timeout=1500')
+        conn.execute('CREATE TABLE IF NOT EXISTS inbox(update_id TEXT PRIMARY KEY, v TEXT NOT NULL, updated_ts REAL NOT NULL DEFAULT 0)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_inbox_updated ON inbox(updated_ts)')
+        conn.commit()
+        _V260_INBOX_READY = True
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+def _v260_inbox_write(row: dict) -> bool:
+    if not isinstance(row, dict) or not row.get('update_id'):
+        return False
+    payload = json.dumps(row, ensure_ascii=False, separators=(',', ':'), default=str)
+    with _V260_INBOX_LOCK:
+        conn = _v260_inbox_connect()
+        try:
+            conn.execute('INSERT INTO inbox(update_id,v,updated_ts) VALUES(?,?,?) ON CONFLICT(update_id) DO UPDATE SET v=excluded.v,updated_ts=excluded.updated_ts', (str(row.get('update_id')), payload, float(row.get('updated_ts') or time.time())))
+            conn.commit(); return True
+        finally:
+            conn.close()
+
+def _v260_webhook_inbox_row(update_id) -> dict:
+    try:
+        with _V260_INBOX_LOCK:
+            conn = _v260_inbox_connect()
+            try:
+                row = conn.execute('SELECT v FROM inbox WHERE update_id=?', (str(update_id),)).fetchone()
+            finally:
+                conn.close()
+        if not row: return {}
+        obj = json.loads(row[0])
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
 
 def _v260_webhook_inbox_put(update_id, payload, chat_id=None, update_type='other') -> bool:
-    """Durably register a Telegram update before returning HTTP 200.
-
-    ``attempts`` counts business executions, not HTTP deliveries. Repeated Telegram
-    delivery of the same update therefore cannot burn the retry budget by itself.
-    """
+    """Durably register a Telegram update without touching the finance SQLite lock."""
     try:
-        old = SQLITE.get_meta(_V260_WEBHOOK_INBOX_KIND, str(update_id), {}) or {}
+        old = _v260_webhook_inbox_row(update_id) or {}
         state = str(old.get('state') or '')
-        SQLITE.set_meta(_V260_WEBHOOK_INBOX_KIND, str(update_id), {
+        row = {
             'update_id': str(update_id), 'chat_id': chat_id, 'type': str(update_type or 'other'),
             'payload': payload,
             'state': state if state in {'queued','running','done','failed','external_pending','external_running','external_failed_review','needs_review'} else 'queued',
             'attempts': max(0, int(old.get('attempts') or 0)),
             'error': str(old.get('error') or '')[:500],
             'updated_at': now_local().isoformat(timespec='milliseconds'), 'updated_ts': time.time()
-        })
-        return True
+        }
+        return _v260_inbox_write(row)
     except Exception as exc:
-        log_error(f'WEBHOOK INBOX V260 put update={update_id}: {exc}')
+        log_error(f'WEBHOOK INBOX R36 put update={update_id}: {exc}')
         return False
-
 
 def _v260_webhook_inbox_mark(update_id, state: str, error: str=''):
     try:
-        row = SQLITE.get_meta(_V260_WEBHOOK_INBOX_KIND, str(update_id), {}) or {}
+        row = _v260_webhook_inbox_row(update_id) or {'update_id': str(update_id), 'payload': {}, 'type': 'other'}
         new_state = str(state or '')
         attempts = max(0, int(row.get('attempts') or 0))
         if new_state in {'running', 'external_running'} and str(row.get('state') or '') not in {'running', 'external_running'}:
             attempts += 1
-        row.update({
-            'state': new_state, 'attempts': attempts,
-            'error': str(error or '')[:500],
-            'updated_at': now_local().isoformat(timespec='milliseconds'), 'updated_ts': time.time()
-        })
-        SQLITE.set_meta(_V260_WEBHOOK_INBOX_KIND, str(update_id), row)
+        row.update({'state': new_state, 'attempts': attempts, 'error': str(error or '')[:500], 'updated_at': now_local().isoformat(timespec='milliseconds'), 'updated_ts': time.time()})
+        _v260_inbox_write(row)
         return row
     except Exception as exc:
-        log_error(f'WEBHOOK INBOX V260 mark update={update_id}: {exc}')
+        log_error(f'WEBHOOK INBOX R36 mark update={update_id}: {exc}')
         return {}
-
-
-def _v260_webhook_inbox_row(update_id) -> dict:
-    try:
-        return SQLITE.get_meta(_V260_WEBHOOK_INBOX_KIND, str(update_id), {}) or {}
-    except Exception:
-        return {}
-
 
 def _v260_webhook_inbox_state(update_id) -> str:
     return str((_v260_webhook_inbox_row(update_id) or {}).get('state') or '')
 
+def _v260_inbox_scan_rows() -> list[dict]:
+    out=[]
+    with _V260_INBOX_LOCK:
+        conn=_v260_inbox_connect()
+        try: raw=conn.execute('SELECT update_id,v,updated_ts FROM inbox').fetchall()
+        finally: conn.close()
+    for r in raw:
+        try:
+            obj=json.loads(r[1]) if isinstance(r[1],str) else {}
+            if isinstance(obj,dict): out.append(obj)
+        except Exception: pass
+    return out
+
+def _v260_inbox_delete_keys(keys) -> None:
+    vals=[(str(k),) for k in keys if str(k)]
+    if not vals: return
+    with _V260_INBOX_LOCK:
+        conn=_v260_inbox_connect()
+        try:
+            conn.executemany('DELETE FROM inbox WHERE update_id=?', vals); conn.commit()
+        finally: conn.close()
+
+def _v260_inbox_migrate_legacy_once() -> int:
+    """Best-effort one-time read of R35 rows without taking SQLITE.lock."""
+    marker = _V260_INBOX_DB.with_suffix(_V260_INBOX_DB.suffix + '.migrated_r36')
+    if marker.exists(): return 0
+    moved=0
+    try:
+        conn=sqlite3.connect(str(DB_FILE),timeout=.5,check_same_thread=False)
+        try:
+            rows=conn.execute('SELECT k,v FROM meta WHERE kind=?', (_V260_WEBHOOK_INBOX_KIND,)).fetchall()
+        finally: conn.close()
+        for _k, raw in rows:
+            try:
+                obj=json.loads(raw) if isinstance(raw,str) else {}
+                if isinstance(obj,dict) and obj.get('update_id') and _v260_inbox_write(obj): moved+=1
+            except Exception: pass
+    except Exception:
+        pass
+    try: marker.write_text(str(time.time()),encoding='utf-8')
+    except Exception: pass
+    return moved
 
 def _v260_submit_webhook_inbox_row(row: dict) -> bool:
     """Replay on the SAME keyed lane as a live update so per-chat order is kept."""
@@ -338,14 +413,13 @@ def _v260_replay_webhook_inbox_row(row: dict):
 def recover_webhook_inbox_v260(limit: int=100) -> int:
     rows=[]
     try:
-        with SQLITE.lock:
-            raw=SQLITE.conn.execute("SELECT k,v FROM meta WHERE kind=?", (_V260_WEBHOOK_INBOX_KIND,)).fetchall()
+        _v260_inbox_migrate_legacy_once()
+        raw=_v260_inbox_scan_rows()
         stale_done=[]
         now_ts=time.time()
-        for key,value in raw:
-            try: row=json.loads(value) if isinstance(value,str) else value
-            except Exception: continue
+        for row in raw:
             if not isinstance(row,dict): continue
+            key=str(row.get('update_id') or '')
             state = str(row.get('state') or '')
             if state == 'done' and now_ts-float(row.get('updated_ts') or now_ts) > 172800:
                 stale_done.append(str(key)); continue
@@ -360,9 +434,7 @@ def recover_webhook_inbox_v260(limit: int=100) -> int:
                 continue
             rows.append(row)
         if stale_done:
-            with SQLITE.lock:
-                SQLITE.conn.executemany("DELETE FROM meta WHERE kind=? AND k=?", [(_V260_WEBHOOK_INBOX_KIND,k) for k in stale_done])
-                SQLITE.conn.commit()
+            _v260_inbox_delete_keys(stale_done)
     except Exception as exc:
         log_error(f'WEBHOOK INBOX V260 scan: {exc}'); return 0
     submitted=0
@@ -879,8 +951,8 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
-    '• ⚡ Пер-R35: скорость R28/R29 защищена; Info-меню имеет три режима — Новое / Старое / Третий вариант.\n'
-    '• 🧩 R35 HEAVY: регулярные full SQLite отключены; файлы, таблицы, журналы, документы, большие выборки, MEGA/Google и полное состояние выполняются на Render #2.\n'
+    '• ⚡ Пер-R36: FAST не ждёт SQLite I/O под глобальным data_lock; lock-диагностика показывает держателя.\n'
+    '• 🧩 R36 HEAVY: job принимается только после durable Redis/MEGA spool; после рестарта поднимается с тем же job_id.\n'
     '• 🧭 Третий вариант: настройки сгруппированы по Финансам / Пересылке / Напоминаниям / Задачам / Контурам / Общим / Журналам / Владельцу.\n'
     '• 🏷 Мастер ТЗ окон + маркеры и 🧩 мастер Конструкторов; центр Конструкторов доступен даже когда кнопки в рабочих окнах скрыты.\n'
     '• 🛰 Активный чат остаётся горячим в RAM; LOWRAM выгружает данные только при реальном давлении памяти, а HEAVY/split остаётся на Render #2.\n'
@@ -954,7 +1026,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R35 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R36 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -1041,7 +1113,7 @@ def main():
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
     restored = bool(_split_preboot_authoritative_r19)
     db_restored = bool(_split_preboot_authoritative_r19)
-    db_detail = (f'Пер-R35 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    db_detail = (f'Пер-R36 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
     if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:

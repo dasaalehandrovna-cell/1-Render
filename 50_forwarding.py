@@ -719,16 +719,19 @@ def find_finance_record_by_uid(chat_id: int, record_uid: str):
     return None
 
 def persist_finance_chat_local_fast(chat_id: int) -> bool:
-    """Persist one finance chat without rebuilding/saving the global root/forward index."""
+    """Persist one finance chat without nesting data_lock -> SQLite.lock (R36)."""
     try:
         cid = int(chat_id)
+        # The caller already serialises finance mutations with locked_chat(cid) on the
+        # hot edit paths. get_chat_store only needs data_lock briefly; SQLite I/O must
+        # happen after that global lock is released so another UI callback can render.
         store = get_chat_store(cid)
-        with data_lock:
-            if LOWRAM_ENABLED:
-                _lowram_flush_chat(cid, store, evict=False)
-                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
-            else:
-                SQLITE.save_chat(cid, store)
+        if LOWRAM_ENABLED:
+            _lowram_flush_chat(cid, store, evict=False)
+            payload = _lowram_store_meta_payload(store)
+        else:
+            payload = store
+        SQLITE.save_chat(cid, payload)
         return True
     except Exception as exc:
         try:

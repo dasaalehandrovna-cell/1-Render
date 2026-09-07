@@ -2404,12 +2404,14 @@ def _canon_refresh_registered_financial_windows__001(chat_id: int):
     return True
 
 def _finance_root_persist_job_v243(chat_id: int) -> None:
-    """Persist derived finance root state off the user path, without config projection."""
+    """Persist derived finance root state without nesting data_lock -> SQLite.lock (R36)."""
     try:
+        import copy as _r36_copy
         with data_lock:
             data.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
             data['_state_meta']['bot_version'] = VERSION
-            SQLITE.save_root(_sqlite_pack_root(data))
+            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+        SQLITE.save_root(root_snapshot)
         try:
             bot_journal('finance_root_persist_v243', int(chat_id), 'background root persisted')
         except Exception:

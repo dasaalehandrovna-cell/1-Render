@@ -6175,12 +6175,13 @@ except Exception:
     pass
 
 def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
-    """Потокобезопасное сохранение.
+    """R36 persistence: never hold global data_lock while waiting for SQLite.
 
-    В обработчике конкретного чата SQLite обновляет только этот чат. Полный
-    проход по всем чатам выполняется при старте, восстановлении и глобальном
-    бэкапе. Это убирает квадратичную нагрузку при 100 активных чатах.
+    The in-memory state is snapshotted quickly under data_lock. Potentially slow JSON
+    encoding/SQLite commits then happen outside it, so a finance write cannot freeze an
+    unrelated FAST callback that only needs to render a window.
     """
+    ids = set()
     with data_lock:
         d.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
         d['_state_meta']['bot_version'] = VERSION
@@ -6191,50 +6192,54 @@ def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
             _persist_forward_index_in_data(d)
         except Exception as e:
             log_error(f'save_data forward_index: {e}')
-        SQLITE.save_root(_sqlite_pack_root(d))
-        if root_only:
-            return
-        ids = set()
+        root_payload = copy.deepcopy(_sqlite_pack_root(d))
         if chat_ids is not None:
-            if isinstance(chat_ids, (list, tuple, set)):
-                source_ids = chat_ids
-            else:
-                source_ids = [chat_ids]
+            source_ids = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
             for cid in source_ids:
-                try:
-                    ids.add(int(cid))
-                except Exception:
-                    pass
+                try: ids.add(int(cid))
+                except Exception: pass
         elif not full:
             cid = current_state_chat_id()
             if cid is not None:
-                try:
-                    ids.add(int(cid))
-                except Exception:
-                    pass
-        chats = d.get('chats', {}) or {}
-        if ids and (not full):
-            for cid in ids:
-                payload = chats.get(str(cid))
-                if isinstance(payload, dict):
+                try: ids.add(int(cid))
+                except Exception: pass
+        all_chat_ids = []
+        if full or not ids:
+            for cid_s in list((d.get('chats', {}) or {}).keys()):
+                try: all_chat_ids.append(int(cid_s))
+                except Exception: pass
+    # SQLite waits start only after data_lock is released.
+    SQLITE.save_root(root_payload)
+    if root_only:
+        return
+    if ids and not full:
+        for cid in sorted(ids):
+            try:
+                with locked_chat(cid):
+                    store = get_chat_store(cid)
                     if LOWRAM_ENABLED:
-                        _lowram_flush_chat(cid, payload, evict=False)
-                        SQLITE.save_chat(cid, _lowram_store_meta_payload(payload))
+                        _lowram_flush_chat(cid, store, evict=False)
+                        payload = copy.deepcopy(_lowram_store_meta_payload(store))
                     else:
-                        SQLITE.save_chat(cid, payload)
-        elif LOWRAM_ENABLED:
-            meta_chats = {}
-            for cid_s, payload in list(chats.items()):
-                try:
-                    cid = int(cid_s)
-                except Exception:
-                    continue
-                if isinstance(payload, dict):
-                    _lowram_flush_chat(cid, payload, evict=False)
-                    meta_chats[str(cid)] = _lowram_store_meta_payload(payload)
-            SQLITE.save_chats(meta_chats)
-        else:
-            SQLITE.save_chats(chats)
+                        payload = copy.deepcopy(dict(store))
+                SQLITE.save_chat(cid, payload)
+            except Exception as exc:
+                log_error(f'save_data chat={cid}: {exc}')
+                raise
+    else:
+        snapshots = {}
+        for cid in sorted(set(all_chat_ids)):
+            try:
+                with locked_chat(cid):
+                    store = get_chat_store(cid)
+                    if LOWRAM_ENABLED:
+                        _lowram_flush_chat(cid, store, evict=False)
+                        snapshots[str(cid)] = copy.deepcopy(_lowram_store_meta_payload(store))
+                    else:
+                        snapshots[str(cid)] = copy.deepcopy(dict(store))
+            except Exception as exc:
+                log_error(f'save_data snapshot chat={cid}: {exc}')
+        SQLITE.save_chats(snapshots)
     try:
         fn = globals().get('config_guard_note_after_save_v234')
         if callable(fn):
