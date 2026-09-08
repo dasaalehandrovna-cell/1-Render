@@ -1,5 +1,5 @@
 # v262
-"""Пер-R40: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R41: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R40',
+        'delivery':'chat','front_release':'Пер-R41',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -115,7 +115,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     if str(body.get('operation') or '') in {'runtime_zip','journal','journal_current'}:
         try:
             body['front_runtime_snapshot']=_r33_safe_scalar({
-                'release':'Пер-R40',
+                'release':'Пер-R41',
                 'captured_at':_r33_time.time(),
                 'runtime':dict(globals().get('_RUNTIME_STATE') or {}),
                 'split':dict(globals().get('_SPLIT_STATE') or {}),
@@ -195,7 +195,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Пер-R40: end-to-end HEAVY delivery control.
+# Пер-R41: end-to-end HEAVY delivery control.
 # 202/queued is only an acceptance ACK. The FAST file job remains open until
 # Render #2's callback has actually delivered the result to Telegram/Google.
 _R35_REMOTE_RESULT_LOCK = __import__('threading').RLock()
@@ -389,7 +389,7 @@ def _r35_wait_remote_delivery(jid,body):
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    body['front_release']='Пер-R40'
+    body['front_release']='Пер-R41'
     try: _file_job_progress('передаю задание Render #2',force=True)
     except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
@@ -728,7 +728,7 @@ def _r38_wait_remote_delivery(jid,body):
 
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R40'
+    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R41'
     try: _file_job_progress('сохраняю задание для Render #2',force=True)
     except Exception: pass
     jid=_r38_worker_file_submit(body)
@@ -750,7 +750,7 @@ def _r38_google_submit_report(title,rows,layout='category',annotations_override=
     annotations=_split_annotations_for_google(rows,str(layout or 'category'),annotations_override,bool(include_annotations))
     encoded={f'{int(r)},{int(c)}':str(note) for (r,c),note in annotations.items() if str(note or '').strip()}
     jid=__import__('secrets').token_hex(12)
-    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R40'}
+    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R41'}
     _r38_outbox_enqueue('google','/internal/google/sheet',body)
     try:
         _SPLIT_STATE['google_last_attempt']=_r33_time.time(); _SPLIT_STATE['google_last_job']=jid; _SPLIT_STATE['google_last_error']=''
@@ -986,7 +986,7 @@ try:app.view_functions['split_front_export_result_r7']=_r38_export_result_handle
 except Exception:pass
 
 
-# ---------------- Пер-R40 semantic single-flight / duplicate collapse ----------------
+# ---------------- Пер-R41 semantic single-flight / duplicate collapse ----------------
 # R38 made transport durable, but a backlog could still contain several different job_id
 # values for the same user action.  After a HEAVY restart they were dispatched together.
 # Full-state exports are memory-heavy, so this could create three simultaneous snapshots.
@@ -1135,7 +1135,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Пер-R40: true asynchronous FAST<->HEAVY supervision.
+# Пер-R41: true asynchronous FAST<->HEAVY supervision.
 # Heavy file jobs no longer occupy EXPORT_TASK_POOL while waiting minutes for HEAVY.
 # FAST persists the peer job, returns the UI handler immediately, and a tiny supervisor
 # thread follows canonical/duplicate jobs until the real Telegram/Google delivery ACK.
@@ -1247,7 +1247,7 @@ def _r40_supervise_remote(jid,body,label,chat_id,msg_id):
 def _r40_submit_heavy_file(chat_id,kind,label,func,*args,**kwargs):
     chat_id=int(chat_id); kind_s=str(kind or 'file'); fname=str(getattr(func,'__name__','') or '')
     try:
-        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R40'
+        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R41'
         jid=_r38_worker_file_submit(body); body['job_id']=str(jid)
     except Exception as exc:
         detail=f'{type(exc).__name__}: {str(exc)[:500]}'
@@ -1293,7 +1293,7 @@ def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,
     jid=__import__('secrets').token_hex(12)
     try: required=int((_R32_EVENT_STATE or {}).get('last_revision_queued') or 0)
     except Exception: required=0
-    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R40'}
+    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R41'}
     jid2=_r38_outbox_enqueue('google','/internal/google/sheet',body)
     return str(jid2)
 
@@ -1310,5 +1310,177 @@ def _r40_google_wait(jid,timeout=900):
 
 globals()['_r40_google_query_submit']=_r40_google_query_submit
 globals()['_r40_google_wait']=_r40_google_wait
+
+
+# ---------------------------------------------------------------------------
+# Пер-R41: two-phase FAST-owned durable admission.
+# When HEAVY has no Redis, synchronous MEGA admission can take much longer than
+# the FAST HTTP timeout.  FAST already owns a Redis-backed durable outbox, so a
+# live HEAVY may start the same idempotent job immediately while FAST keeps the
+# request pending until the real result callback.  A HEAVY crash therefore never
+# loses the request: the same job_id is sent again by FAST.
+_R41_BASE_OUTBOX_ENQUEUE = _r38_outbox_enqueue
+_R41_BASE_OUTBOX_DISPATCH_ONE = _r38_outbox_dispatch_one
+_R41_BASE_EXPORT_DELIVERY_TASK = _r38_export_delivery_task
+
+
+def _r41_front_outbox_backend():
+    try:
+        c = _r38_outbox_redis_client()
+        if c is not None:
+            # A lightweight ping prevents advertising front durability when the
+            # client exists but the service is currently unreachable.
+            try:
+                if bool(c.ping()):
+                    return 'redis'
+            except Exception:
+                return ''
+    except Exception:
+        pass
+    return ''
+
+
+def _r41_outbox_enqueue(kind, endpoint, body):
+    obj = dict(body or {})
+    if str(kind or '') in {'file','google'}:
+        backend = _r41_front_outbox_backend()
+        obj['front_outbox_durable'] = bool(backend)
+        obj['front_outbox_backend'] = backend or 'local'
+        obj['front_release'] = 'Пер-R41'
+    return _R41_BASE_OUTBOX_ENQUEUE(kind, endpoint, obj)
+
+
+# All later file + Google submission helpers resolve this name dynamically.
+_r38_outbox_enqueue = _r41_outbox_enqueue
+
+
+def _r41_outbox_dispatch_one(row):
+    """Dispatch one peer job while treating HEAVY provisional admission as healthy.
+
+    A provisional response means HEAVY accepted/queued the idempotent job using
+    FAST's Redis outbox as the durable authority.  Keep the row pending so a HEAVY
+    restart causes automatic replay, but never tell the user that Render #2 is down.
+    """
+    jid = str((row or {}).get('job_id') or '')
+    if not jid:
+        return
+    try:
+        ok, transient, detail, wait, payload = _r38_peer_attempt(row)
+        provisional = bool(isinstance(payload, dict) and payload.get('provisional') and payload.get('ok') is True)
+        if provisional and str(row.get('kind') or '') in {'file','google'}:
+            attempts = int(row.get('attempts') or 0) + 1
+            canonical=str(payload.get('canonical_job_id') or payload.get('duplicate_of') or '')[:80]
+            row.update({
+                'state':'retry', 'provisional':True, 'peer_accepted':True,
+                'peer_status':str(payload.get('status') or 'queued'),
+                'durable_backend':str(payload.get('durable_backend') or 'front-redis'),
+                'attempts':attempts, 'last_error':'',
+                'next_try':_r33_time.time()+max(8.0, min(30.0, float(_r33_os.getenv('R41_PROVISIONAL_REPLAY_SEC','15') or '15'))),
+                'provisional_at':float(row.get('provisional_at') or _r33_time.time()),
+            })
+            if canonical and canonical!=jid: row['canonical_job_id']=canonical
+            _r38_outbox_put(row, pending=True)
+            _R38_PEER_STATE['accepted']=int(_R38_PEER_STATE.get('accepted') or 0)+1
+            _R38_PEER_STATE['last_ok']=_r33_time.time(); _R38_PEER_STATE['last_error']=''
+            if str(row.get('kind') or '')=='file':
+                cur=_r35_delivery_get(jid) or {}
+                if canonical and canonical!=jid:
+                    _r35_delivery_set(jid,'alias',{'job_id':jid,'canonical_job_id':canonical,'duplicate_of':canonical,'operation':(row.get('body') or {}).get('operation'),'recipient_chat_id':(row.get('body') or {}).get('recipient_chat_id'),'provisional':True})
+                elif str(cur.get('state') or '') not in {'running','done','done_error'}:
+                    _r35_delivery_set(jid,'accepted',{'job_id':jid,'operation':(row.get('body') or {}).get('operation'),'recipient_chat_id':(row.get('body') or {}).get('recipient_chat_id'),'provisional':True})
+            return
+        if ok:
+            canonical=str(payload.get('canonical_job_id') or payload.get('duplicate_of') or '')[:80]
+            row.update({'state':'accepted','accepted_at':_r33_time.time(),'last_error':'','provisional':False,'peer_accepted':True,'peer_status':str(payload.get('status') or ''),'durable_backend':str(payload.get('durable_backend') or '')})
+            if canonical and canonical!=jid: row['canonical_job_id']=canonical
+            _r38_outbox_put(row,pending=False); _R38_PEER_STATE['accepted']=int(_R38_PEER_STATE.get('accepted') or 0)+1; _R38_PEER_STATE['last_ok']=_r33_time.time(); _R38_PEER_STATE['last_error']=''
+            if str(row.get('kind') or '')=='file':
+                cur=_r35_delivery_get(jid) or {}
+                if canonical and canonical!=jid:
+                    _r35_delivery_set(jid,'alias',{'job_id':jid,'canonical_job_id':canonical,'duplicate_of':canonical,'operation':(row.get('body') or {}).get('operation'),'recipient_chat_id':(row.get('body') or {}).get('recipient_chat_id')})
+                elif str(cur.get('state') or '') not in {'running','done','done_error'}:
+                    _r35_delivery_set(jid,'accepted',{'job_id':jid,'operation':(row.get('body') or {}).get('operation'),'recipient_chat_id':(row.get('body') or {}).get('recipient_chat_id')})
+            return
+        attempts=int(row.get('attempts') or 0)+1; row['attempts']=attempts; row['last_error']=str(detail or '')[:500]; row['provisional']=False
+        _R38_PEER_STATE['last_error']=row['last_error']
+        if transient:
+            row['state']='retry'; row['next_try']=_r33_time.time()+max(0.8,float(wait or 1.0)); _R38_PEER_STATE['retries']=int(_R38_PEER_STATE.get('retries') or 0)+1; _r38_outbox_put(row,pending=True)
+        else:
+            row['state']='failed'; row['failed_at']=_r33_time.time(); _r38_outbox_put(row,pending=False)
+            if str(row.get('kind') or '')=='file': _r35_delivery_set(jid,'done_error',{'job_id':jid,'ok':False,'error':'Render #2 rejected job: '+row['last_error']},error=row['last_error'])
+    except Exception as exc:
+        attempts=int(row.get('attempts') or 0)+1; delay=min(60.0,max(1.0,1.25*(2**min(5,attempts-1))))+_r38_random.uniform(0,1.0)
+        row.update({'state':'retry','provisional':False,'attempts':attempts,'next_try':_r33_time.time()+delay,'last_error':f'{type(exc).__name__}: {str(exc)[:420]}'})
+        _R38_PEER_STATE['last_error']=row['last_error']; _R38_PEER_STATE['retries']=int(_R38_PEER_STATE.get('retries') or 0)+1; _r38_outbox_put(row,pending=True)
+
+
+_r38_outbox_dispatch_one = _r41_outbox_dispatch_one
+
+
+def _r41_export_delivery_task(body):
+    jid=str((body or {}).get('job_id') or '')
+    result = _R41_BASE_EXPORT_DELIVERY_TASK(body)
+    try:
+        if jid and _r39_delivery_terminal(jid):
+            out=_r38_outbox_get(jid) or {'job_id':jid,'kind':'file'}
+            out.update({'state':'completed','result_state':'done','provisional':False,'completed_at':_r33_time.time(),'last_error':''})
+            _r38_outbox_put(out,pending=False)
+    except Exception:
+        pass
+    return result
+
+
+_r38_export_delivery_task = _r41_export_delivery_task
+
+
+# R40's R39 latch wrapper was installed before this patch.  It resolves
+# _r38_export_delivery_task dynamically, so the R41 completion hook is canonical.
+
+
+def _r41_supervise_remote(jid,body,label,chat_id,msg_id):
+    original=str(jid or '')[:80]; started=_r33_time.time(); last_ui=0.0; timeout=max(300,min(21600,int(_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600') or '3600'))); deadline=started+timeout
+    err=''; ok=False
+    try:
+        while _r33_time.time()<deadline:
+            canonical=_r40_canonical_job_id(original)
+            row=_r35_delivery_get(canonical) or {}; state=str(row.get('state') or '')
+            if state=='done': ok=True; break
+            if state=='done_error':
+                b=row.get('body') if isinstance(row.get('body'),dict) else {}
+                err=str(row.get('error') or b.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]; break
+            out=_r38_outbox_get(original) or {}; ostate=str(out.get('state') or '')
+            if ostate=='failed': err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
+            now=_r33_time.time()
+            if now-last_ui>=12.0:
+                if canonical!=original: phase=f'Render #2 объединил дубль с заданием {canonical[:12]}…'
+                elif bool(out.get('provisional')) and bool(out.get('peer_accepted')): phase='Render #2 принял задачу и выполняет её · резервная копия запроса сохранена на FAST'
+                elif ostate in {'pending','retry'}: phase='восстанавливаю связь с Render #2 · запрос сохранён, повторяю автоматически'
+                elif ostate in {'accepted','completed'} and state in {'running','accepted','dispatching',''}: phase='Render #2 выполняет задачу'
+                elif state in {'running','failed'}: phase='получаю и отправляю готовый результат'
+                else: phase='ожидаю подтверждение Render #2'
+                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r41_file_progress')
+                last_ui=now
+            _r33_time.sleep(0.5)
+        else: err=f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={original}'
+    except Exception as exc:
+        err=f'{type(exc).__name__}: {str(exc)[:800]}'
+    elapsed=_r40_elapsed(started)
+    if ok:
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r41_file_done')
+    else:
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r41_file_error')
+        try: log_error(f'R41 async HEAVY job {original}: {err}')
+        except Exception: pass
+    _r40_status_delete_later(chat_id,msg_id,15)
+    with _R40_SUP_LOCK: _R40_SUPERVISORS.pop(original,None)
+
+
+# R40 submitter resolves this global at call time.
+_r40_supervise_remote = _r41_supervise_remote
+
+try:
+    bot_journal('r41_two_phase_peer_loaded',int(OWNER_ID or 0),'FAST Redis outbox remains pending during HEAVY provisional admission; no false unavailable state; file outbox completes on real delivery')
+except Exception:
+    pass
 
 # v262
