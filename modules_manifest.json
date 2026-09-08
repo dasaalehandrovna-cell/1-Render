@@ -41,7 +41,7 @@
     "100_r33_heavy_offload.py": "v262"
   },
   "files": {
-    "00_core.py": "9980022e99de66f1c2e15a8d8ff79104d072b1d044bdb8fb61a1cbce27f6176f",
+    "00_core.py": "babe928bc81084e1b37157190193626461cd0b5939e283d2c1ea49f9e9c2d7f3",
     "05_key_value_runtime.py": "1df54a6018dbe2f973854f8d6929672e785be38c5bdb285ec0d756906ab1d36d",
     "10_mega_runtime.py": "c47457ac20465d5d6170883f4628d0f9ef7863b578ad4cce2ce34fcb557151dd",
     "11_data_constitution.py": "810c95193895cfa6e2aa23b59801717b7d2c71fdedd539d076a63dd83b873bae",
@@ -65,10 +65,10 @@
     "90_commands_exports.py": "3ab3d4fe17e87cf87d2d27f60404b296c3e00d3de5c86303da1408716016dff4",
     "91_finance_records_handlers.py": "b172d861733f0f9e8fc46c0aa4a45574159e85736017958d0442e2db5076ca01",
     "72_multitenant_runtime.py": "8f9fc7359e8c36da2d890dc653e92630484240dd95c92a30ad64e3ed552d253c",
-    "99_web_runtime.py": "e17643195e7b97b3bb82c49fecaa45fa9b18fb9ff997715a650bdaa898a5c3cf",
+    "99_web_runtime.py": "8fa61142cde78fd1db77208e7f9a812e9a9dd3bb3fe0a8e08cc6d50e3dab8279",
     "73_state_export_runtime.py": "b4be89cd84017a1db4d8c5391a3707bc7659ee0379e43f0f5497e967d3c1594b",
     "74_ui_reliability_runtime.py": "4fd6bbae9874d81d25ff05c72394d95d0c3ad0e71e568da4dd3eae8cd44d8122",
-    "75_platform_features_runtime.py": "e7d5acc9dc00ad5e70b684a0b40b97900a3d4c092f34b37b41c3950840caaebc",
+    "75_platform_features_runtime.py": "0cfdbeb18db85690914ceedc3c99889421ad80595bd5f565818e3ddadfa1c80b",
     "76_tasks_runtime.py": "0357775dd5888c864c5609f5b8ed83537ab08121c66186e674e3541fa73d2d3c",
     "85_runtime_control.py": "d3d84b31eba1291fda7e41187dbb6a036089fa966645b5fe26b7d21db607e867",
     "88_ui_constructor.py": "3f684bfcaab2a0f41aed87e7e23bc5053dccfde88c603ea4c159b51a0dcc2b6a",
@@ -77,9 +77,9 @@
     "98_split_front.py": "90e2a5e6057381271e3451ec230eedb79746fccf992855c7ae0fb44a77d34b67",
     "97_r30_policy_ui.py": "21e327ad3778b38ec4d11bd47db605d580f899a2cf9ca0ee7dda1eecc221968e",
     "96_r32_event_stream.py": "51c26aca902039ff10aecd4b60d93e5fd99e4a6f90348d197b8370ee397efc59",
-    "100_r33_heavy_offload.py": "a27ea17560283e6d2d45c810fbec3d0a9bf2adf6d531622b31959b1570fa3959"
+    "100_r33_heavy_offload.py": "45ad228afcd9b285424f3fd3adb0c0e6705091bc16d56c38c16f44c055ad14e8"
   },
-  "release": "Пер-R44-DIAG",
+  "release": "Пер-R45-STABLE-STUCKFIX1",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -178,6 +178,21 @@
     "r44_heavy_mega_browser",
     "r44_heavy_mega_file_transfer",
     "r44_direct_snapshot_probe",
-    "r44_peer_job_dispatch_audit"
+    "r44_peer_job_dispatch_audit",
+    "r45_diag_network_detached_from_callback_actor",
+    "r45_dedicated_diagnostic_callback_lane",
+    "r45_async_diagnostic_journal_writer",
+    "r45_cached_secret_redaction",
+    "r45_conditional_snapshot_304_reuse",
+    "r45_heavy_streaming_snapshot_receive",
+    "r45_no_per_job_sqlite_quick_check",
+    "r45_no_eager_heavy_bootstrap_snapshot",
+    "r45_post_job_gc_cleanup",
+    "r45_stuck_log_pool_introspection",
+    "r45_stuckfix_bounded_inbound_chat_lock",
+    "r45_stuckfix_traced_chat_lock_holder",
+    "r45_stuckfix_delayed_latest_wins_singleflight",
+    "r45_stuckfix_delayed_exponential_backoff",
+    "r45_stuckfix_dispatcher_enqueued_stage"
   ]
 }

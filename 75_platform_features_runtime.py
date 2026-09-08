@@ -122,7 +122,7 @@ def _v177_legacy_0074_execute_telegram_payload(payload: dict, update_id=None, up
             elif str(update_type) == 'callback_query' and _v163_is_navigation_callback(callback_data) and source_message_id:
                 lock_ctx = _v163_lock_for(_V163_WINDOW_EXEC_LOCKS, _V163_WINDOW_EXEC_LOCK_GUARD, (int(update_chat_id), int(source_message_id)))
             else:
-                lock_ctx = chat_lock_for(int(update_chat_id))
+                lock_ctx = telegram_execution_chat_lock(int(update_chat_id))
             with lock_ctx:
                 bot.process_new_updates([update])
         execution_ctx = _durable_execution_context_snapshot()
@@ -1928,7 +1928,7 @@ def _canon_execute_telegram_payload__001(payload: dict, update_id=None, update_c
                 # actual UI/business handler and cannot be held by backup/journal work.
                 lock_ctx = _v163_lock_for(_V163_WINDOW_EXEC_LOCKS, _V163_WINDOW_EXEC_LOCK_GUARD, (int(update_chat_id), int(source_message_id)))
             else:
-                lock_ctx = chat_lock_for(int(update_chat_id))
+                lock_ctx = telegram_execution_chat_lock(int(update_chat_id))
             with lock_ctx:
                 bot.process_new_updates([update])
         execution_ctx = _durable_execution_context_snapshot()

@@ -598,6 +598,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
         if not selected_pool.submit(selected_key, _process_callback):
             UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
             return ('BUSY', 503)
+        UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
     elif claim_state == 'done':
         # Keep the local durable row healthy if Telegram redelivered after a network race.
         try:
@@ -860,6 +861,7 @@ def telegram_webhook():
                 log_error(f'{selected_pool.name.upper()} QUEUE FULL: chat={update_chat_id}')
                 UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
                 return ('BUSY', 503)
+            UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
             # v260: every non-cloud update is first committed to the local SQLite inbox.
             # Once accepted into its keyed worker queue Telegram can be acknowledged at once:
             # a restart will replay the local inbox, while source/forward operation keys make

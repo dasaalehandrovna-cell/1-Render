@@ -1912,4 +1912,288 @@ try: bot_journal('r44_diag_loaded',int(OWNER_ID or 0),'owner test menu + FAST jo
 except Exception:pass
 
 
+
+# ---------------------------------------------------------------------------
+# R45 STABLE DIAGNOSTIC HOT-PATH FIX
+# R44 diagnostic network calls were executed inside the same keyed callback actor
+# as the visible Telegram window.  A 15-120 second HTTP/MEGA probe therefore held
+# fast-window:<chat>:<message> and made every following button look "CLAIMED" with
+# thread=None.  R45 makes diagnostics two-stage: the callback only enqueues work,
+# while a completely separate network pool performs the slow probe and edits the
+# test window later.  Production callbacks never share this pool.
+import queue as _r45_queue, collections as _r45_collections
+
+_R45_RELEASE='Пер-R45-STABLE'
+_R45_DIAG_CALLBACK_POOL=KeyedTaskPool('r45-diag-callback',2,240)
+_R45_DIAG_NET_POOL=KeyedTaskPool('r45-diag-net',2,120)
+_R45_DIAG_SEQ_LOCK=_r44_threading.RLock()
+_R45_DIAG_SEQ={}
+_R45_DIAG_RING=_r45_collections.deque(maxlen=max(500,min(5000,int(_r44_os.getenv('R45_DIAG_RING_ROWS','1500') or '1500'))))
+_R45_DIAG_Q=_r45_queue.Queue(maxsize=max(500,min(20000,int(_r44_os.getenv('R45_DIAG_QUEUE_ROWS','5000') or '5000'))))
+_R45_DIAG_DROPPED=0
+
+# Cache secret strings once.  R44 re-scanned the full environment for every traced
+# line; that is unnecessary work on every button/traffic log.
+_R45_REDACT_VALUES=[]
+for _r45_key in ('PEER_SHARED_SECRET','BOT_TOKEN','TELEGRAM_BOT_TOKEN','REDIS_URL','MEGA_PASSWORD','MEGA_SESSION','GOOGLE_SERVICE_ACCOUNT_JSON'):
+    try:
+        _r45_val=str(_r44_os.getenv(_r45_key,'') or '')
+        if _r45_val and len(_r45_val)>=6:_R45_REDACT_VALUES.append((_r45_val,'<'+_r45_key.lower()+'>'))
+    except Exception:pass
+
+def _r44_redact(value):
+    s=str(value if value is not None else '')
+    for old,repl in _R45_REDACT_VALUES:
+        try:s=s.replace(old,repl)
+        except Exception:pass
+    return s[:2400]
+
+def _r45_diag_rotate_and_append(lines):
+    try:
+        _R44_DIAG_PATH.parent.mkdir(parents=True,exist_ok=True)
+        if _R44_DIAG_PATH.exists() and _R44_DIAG_PATH.stat().st_size>_R44_DIAG_MAX:
+            old=_R44_DIAG_PATH.with_suffix(_R44_DIAG_PATH.suffix+'.1')
+            try:old.unlink(missing_ok=True)
+            except Exception:pass
+            try:_R44_DIAG_PATH.replace(old)
+            except Exception:pass
+        with open(_R44_DIAG_PATH,'a',encoding='utf-8') as fh:
+            fh.writelines(lines)
+    except Exception:
+        pass
+
+def _r45_diag_writer_loop():
+    batch=[]
+    while True:
+        try:
+            try:line=_R45_DIAG_Q.get(timeout=.35)
+            except _r45_queue.Empty:line=None
+            if line:
+                batch.append(line)
+                _R45_DIAG_Q.task_done()
+            while len(batch)<128:
+                try:
+                    line=_R45_DIAG_Q.get_nowait();batch.append(line);_R45_DIAG_Q.task_done()
+                except _r45_queue.Empty:break
+            if batch:
+                _r45_diag_rotate_and_append(batch);batch=[]
+        except Exception:
+            batch=[];_r44_time.sleep(.25)
+
+_r44_threading.Thread(target=_r45_diag_writer_loop,name='r45-diag-writer',daemon=True).start()
+
+def _r44_diag(event, **fields):
+    """Zero-blocking hot-path trace: RAM ring + nonblocking writer queue."""
+    global _R45_DIAG_DROPPED
+    try:
+        row={'ts':round(_r44_time.time(),3),'event':str(event or '')[:120],'thread':_r44_threading.current_thread().name[:80]}
+        for k,v in fields.items():row[str(k)[:80]]=_r44_redact(v)
+        with _R45_DIAG_SEQ_LOCK:_R45_DIAG_RING.append(row)
+        raw=_r44_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n'
+        try:_R45_DIAG_Q.put_nowait(raw)
+        except _r45_queue.Full:_R45_DIAG_DROPPED+=1
+    except Exception:pass
+
+def _r44_diag_tail(limit=30):
+    try:
+        with _R45_DIAG_SEQ_LOCK:
+            rows=list(_R45_DIAG_RING)[-max(1,min(100,int(limit or 30))):]
+        if rows:return rows
+    except Exception:pass
+    try:
+        if not _R44_DIAG_PATH.exists():return []
+        with open(_R44_DIAG_PATH,'r',encoding='utf-8',errors='replace') as fh:raws=fh.readlines()[-max(1,min(100,int(limit or 30))):]
+        out=[]
+        for line in raws:
+            try:out.append(_r44_json.loads(line))
+            except Exception:pass
+        return out
+    except Exception:return []
+
+def _r45_call_key(call):
+    try:return (int(call.message.chat.id),int(call.message.message_id))
+    except Exception:return (0,0)
+
+def _r45_next_seq(call):
+    key=_r45_call_key(call)
+    with _R45_DIAG_SEQ_LOCK:
+        seq=int(_R45_DIAG_SEQ.get(key,0))+1;_R45_DIAG_SEQ[key]=seq
+    return key,seq
+
+def _r45_is_current(key,seq):
+    with _R45_DIAG_SEQ_LOCK:return int(_R45_DIAG_SEQ.get(key,0))==int(seq)
+
+def _r45_safe_edit_if_current(call,key,seq,text,kb=None,parse_mode='HTML'):
+    if not _r45_is_current(key,seq):return False
+    try:
+        safe_edit(bot,call,text,reply_markup=kb,parse_mode=parse_mode)
+        return True
+    except Exception as exc:
+        _r44_diag('diag_edit_error',chat=key[0],message=key[1],error=f'{type(exc).__name__}: {exc}')
+        return False
+
+def _r45_pending_text(label):
+    return window_mark('🧪 <b>ТЕСТ #1 ↔ #2</b>\n\n⏳ '+_r44_html.escape(str(label or 'Проверяю…'))+'\n\nОбычные кнопки бота в это время свободны.','Ф4053')
+
+def _r45_diag_job(call,key,seq,raw):
+    cid=key[0]
+    _r44_diag('diag_job_start',chat=cid,action=raw,seq=seq,mode=_r44_mode(cid))
+    started=_r44_time.monotonic()
+    try:
+        if raw=='r44:test:status':
+            _,m=_r44_request(cid,'GET','/internal/r44/test/status',timeout=8)
+            text=_r44_test_menu_text(cid,m);kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:echo':
+            nonce=_r44_secrets.token_hex(8);_,m=_r44_request(cid,'POST','/internal/r44/test/echo',json_body={'nonce':nonce,'sent_at':_r44_time.time()},timeout=8);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};ok=bool(m.get('ok') and p.get('nonce')==nonce)
+            text=window_mark(f'🔗 <b>#1 FAST → #2 HEAVY</b>\n\n{"✅ Успех" if ok else "⛔ Ошибка"}\nHTTP: {m.get("status","—")} · {m.get("elapsed",0)}с\nNonce: <code>{nonce}</code>\nОтвет: <code>{_r44_html.escape(str(p.get("nonce") or "—"))}</code>\nRedis handshake: {m.get("redis_verified") if _r44_mode(cid)=="redis" else "не используется"}','Ф4048');kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:reverse':
+            nonce=_r44_secrets.token_hex(8);_,m=_r44_request(cid,'POST','/internal/r44/test/reverse',json_body={'nonce':nonce},timeout=10);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};rr=p.get('front_reply') if isinstance(p.get('front_reply'),dict) else {};ok=bool(m.get('ok') and p.get('ok') and rr.get('nonce')==nonce)
+            text=window_mark(f'↩️ <b>#2 HEAVY → #1 FAST</b>\n\n{"✅ Успех" if ok else "⛔ Ошибка"}\nОбщее время: {m.get("elapsed",0)}с\nHEAVY увидел Front: {"✅" if p.get("front_http_ok") else "⛔"}\nNonce вернулся: {"✅" if rr.get("nonce")==nonce else "⛔"}\nRedis handshake: {m.get("redis_verified") if _r44_mode(cid)=="redis" else "не используется"}\n{_r44_html.escape(str(p.get("error") or m.get("error") or "")[:500])}','Ф4049');kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:snapshot':
+            _,m=_r44_request(cid,'POST','/internal/r44/test/snapshot',json_body={'nonce':_r44_secrets.token_hex(6)},timeout=45);p=m.get('payload') if isinstance(m.get('payload'),dict) else {}
+            text=window_mark(f'🗃 <b>Снимок данных #1 → #2</b>\n\n{"✅ HEAVY получил свежую SQLite" if m.get("ok") and p.get("ok") else "⛔ Ошибка"}\nВремя: {m.get("elapsed",0)}с\nBytes: {p.get("snapshot_bytes","—")}\nToken: <code>{_r44_html.escape(str(p.get("token") or "—")[:80])}</code>\n{_r44_html.escape(str(p.get("error") or m.get("error") or "")[:600])}','Ф4050');kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:mega:root':
+            text,kb=_r44_mega_screen(cid,'',0)
+        elif raw.startswith('r44:test:mega:d:'):
+            tok=raw.split(':')[-1];rec=_r44_token_get(tok);text,kb=_r44_mega_screen(cid,rec.get('path') or '',0)
+        elif raw.startswith('r44:test:mega:p:'):
+            parts=raw.split(':');tok=parts[-2];page=int(parts[-1]);rec=_r44_token_get(tok);text,kb=_r44_mega_screen(cid,rec.get('path') or '',page)
+        elif raw.startswith('r44:test:mega:f:'):
+            tok=raw.split(':')[-1];rec=_r44_token_get(tok);path=rec.get('path') or ''
+            ok,detail=_r44_send_mega_file(cid,path)
+            text=window_mark(('✅ Передано: ' if ok else '⛔ Ошибка: ')+_r44_html.escape(detail),'Ф4051');kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:full':
+            text=_r44_full_test(cid);kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:journal':
+            _r44_diag('journal_download',chat=cid)
+            # Give writer a short chance to flush queued lines without blocking callbacks.
+            _r44_time.sleep(.15)
+            if not _R44_DIAG_PATH.exists():
+                _r44_diag('journal_created',chat=cid)
+                try:_R44_DIAG_PATH.parent.mkdir(parents=True,exist_ok=True);_R44_DIAG_PATH.touch(exist_ok=True)
+                except Exception:pass
+            with open(_R44_DIAG_PATH,'rb') as fh:bot.send_document(cid,fh,caption='📜 R45 диагностический журнал FAST')
+            text=_r44_test_menu_text(cid);kb=_r44_test_menu_kb(cid)
+        else:
+            text=window_mark('⛔ Неизвестный диагностический тест: '+_r44_html.escape(raw),'Ф4052');kb=_r44_test_menu_kb(cid)
+        _r45_safe_edit_if_current(call,key,seq,text,kb,'HTML')
+        _r44_diag('diag_job_done',chat=cid,action=raw,seq=seq,elapsed=round(_r44_time.monotonic()-started,3))
+    except Exception as exc:
+        _r44_diag('diag_job_error',chat=cid,action=raw,seq=seq,elapsed=round(_r44_time.monotonic()-started,3),error=f'{type(exc).__name__}: {exc}')
+        _r45_safe_edit_if_current(call,key,seq,window_mark('⛔ <b>R45 TEST</b>\n\n'+_r44_html.escape(f'{type(exc).__name__}: {str(exc)[:1200]}'),'Ф4052'),_r44_test_menu_kb(cid),'HTML')
+
+def _r45_enqueue_diag(call,raw,label='Проверяю связь…'):
+    key,seq=_r45_next_seq(call);cid=key[0]
+    try:safe_edit(bot,call,_r45_pending_text(label),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML')
+    except Exception:pass
+    queued=_R45_DIAG_NET_POOL.submit(f'{cid}:{seq}',_r45_diag_job,call,key,seq,raw)
+    if not queued:
+        _r45_safe_edit_if_current(call,key,seq,window_mark('⛔ Диагностическая очередь занята. Повтори через несколько секунд.','Ф4052'),_r44_test_menu_kb(cid),'HTML')
+    return True
+
+# Diagnostic callbacks are admitted on their own tiny lane.  Even a future bug in a
+# diagnostic handler therefore cannot hold the production fast-window actor.
+_R45_PREV_SELECTOR=globals().get('v163_webhook_select_lane')
+def _r45_webhook_select_lane(payload,update_type,update_key):
+    if str(update_type)=='callback_query':
+        try:
+            raw=str(((payload or {}).get('callback_query') or {}).get('data') or '')
+            if raw.startswith('r44:test:') or raw.startswith('r45:test:'):
+                return (_R45_DIAG_CALLBACK_POOL,f'diag-admit:{update_key}:{(payload or {}).get("update_id","")}')
+        except Exception:pass
+    if callable(_R45_PREV_SELECTOR):return _R45_PREV_SELECTOR(payload,update_type,update_key)
+    return (UI_TASK_POOL if str(update_type)=='callback_query' else WEBHOOK_TASK_POOL,str(update_key))
+globals()['v163_webhook_select_lane']=_r45_webhook_select_lane
+
+# Replace the synchronous R44 guard.  Only open/toggle/tail are local and immediate;
+# every network/MEGA/file probe is detached before this callback worker returns.
+_R45_BASE_CONTOUR_GUARD=_R44_PREV_CONTOUR_GUARD
+def _r45_test_guard(call,resolved):
+    raw=str(resolved or '')
+    if not (raw.startswith('r44:test:') or raw.startswith('r45:test:')):
+        return bool(_R45_BASE_CONTOUR_GUARD(call,raw)) if callable(_R45_BASE_CONTOUR_GUARD) else False
+    try:cid=int(call.message.chat.id);uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
+    except Exception:return True
+    if cid!=int(OWNER_ID or 0) or uid!=int(OWNER_ID or 0):
+        try:bot.answer_callback_query(call.id,'Только владелец.',show_alert=True)
+        except Exception:pass
+        return True
+    _r44_diag('test_button',chat=cid,action=raw,mode=_r44_mode(cid))
+    try:
+        if raw in {'r44:test:open','r45:test:open'}:
+            safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw in {'r44:test:redis_toggle','r45:test:redis_toggle'}:
+            _r44_set_mode(cid,'direct' if _r44_mode(cid)=='redis' else 'redis');safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw in {'r44:test:tail','r45:test:tail'}:
+            safe_edit(bot,call,_r44_render_tail(),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        labels={
+            'r44:test:status':'Проверяю состояние Render #2…','r44:test:echo':'Проверяю #1 → #2…','r44:test:reverse':'Проверяю #2 → #1…',
+            'r44:test:snapshot':'Проверяю передачу SQLite…','r44:test:mega:root':'Читаю папки MEGA через Render #2…','r44:test:full':'Запускаю полный тест…',
+            'r44:test:journal':'Готовлю журнал…'
+        }
+        if raw.startswith('r44:test:mega:d:') or raw.startswith('r44:test:mega:p:'):label='Открываю папку MEGA через Render #2…'
+        elif raw.startswith('r44:test:mega:f:'):label='Render #2 передаёт файл из MEGA…'
+        else:label=labels.get(raw,'Проверяю…')
+        return _r45_enqueue_diag(call,raw,label)
+    except Exception as exc:
+        _r44_diag('test_handler_error',chat=cid,action=raw,error=f'{type(exc).__name__}: {exc}')
+        try:safe_edit(bot,call,window_mark('⛔ <b>R45 TEST</b>\n\n'+_r44_html.escape(f'{type(exc).__name__}: {str(exc)[:1200]}'),'Ф4052'),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML')
+        except Exception:pass
+        return True
+globals()['contour_callback_guard']=_r45_test_guard
+
+# Make stuck logs actionable and less noisy.  The original watchdog reads this global
+# on every pass, so changing it here affects the already-running watchdog thread.
+try:WEBHOOK_STUCK_WARN_SECONDS=max(12.0,float(_r44_os.getenv('WEBHOOK_STUCK_WARN_SECONDS','12') or '12'))
+except Exception:WEBHOOK_STUCK_WARN_SECONDS=12.0
+
+_R45_PREV_LOCK_SNAPSHOT=globals().get('r36_lock_snapshot_text')
+def _r45_lock_snapshot_text():
+    parts=[]
+    try:
+        if callable(_R45_PREV_LOCK_SNAPSHOT):
+            old=str(_R45_PREV_LOCK_SNAPSHOT() or '')
+            if old and old!='none':parts.append(old)
+    except Exception:pass
+    for nm in ('WEBHOOK_TASK_POOL','V166_WINDOW_UI_TASK_POOL','V166_FINANCE_UI_TASK_POOL','FAST_UI_TASK_POOL','_R45_DIAG_CALLBACK_POOL','_R45_DIAG_NET_POOL'):
+        try:
+            pool=globals().get(nm)
+            st=pool.stats() if pool is not None and hasattr(pool,'stats') else None
+            if st and (int(st.get('active') or 0)>0 or int(st.get('pending') or 0)>0):parts.append(f"{st.get('name')} a={st.get('active')} p={st.get('pending')} keys={st.get('keys')} maxwait={st.get('max_wait')}")
+        except Exception:pass
+    return '; '.join(parts) or 'none'
+globals()['r36_lock_snapshot_text']=_r45_lock_snapshot_text
+
+_r44_diag('r45_stable_loaded',release=_R45_RELEASE,diag_async=True,diag_workers=2,log_async=True)
+try:bot_journal('r45_stable_loaded',int(OWNER_ID or 0),'diagnostic HTTP/MEGA detached from callback actors; async diagnostic journal; independent diagnostic admission lane')
+except Exception:pass
+
+
+# R45 snapshot conditional GET: HEAVY can cheaply ask whether its local SQLite mirror
+# already matches FAST.  When the state token is unchanged, FAST returns 304 before
+# creating/gzipping another full SQLite backup.
+_R45_BASE_STATE_DOWNLOAD=(globals().get('app').view_functions.get('split_front_state_download_v262') if globals().get('app') is not None else None)
+def _r45_split_state_download_conditional():
+    try:
+        auth=globals().get('_split_authorized_request')
+        if callable(auth) and not auth():return ({'ok':False},404)
+        flush=globals().get('_r27_flush_state_revision')
+        if callable(flush):flush()
+        tokfn=globals().get('_split_current_state_token_v264')
+        token=str(tokfn() if callable(tokfn) else '')
+        prior=str(request.headers.get('X-R45-If-State-Token','') or '')
+        if prior and token and prior==token:
+            resp=app.response_class(b'',status=304,mimetype='application/octet-stream')
+            resp.headers['X-Split-State-Token']=token
+            resp.headers['X-R45-State-Reused']='1'
+            _r44_diag('snapshot_304',token=token[:80])
+            return resp
+    except Exception as exc:
+        _r44_diag('snapshot_304_check_error',error=f'{type(exc).__name__}: {exc}')
+    if callable(_R45_BASE_STATE_DOWNLOAD):return _R45_BASE_STATE_DOWNLOAD()
+    return ({'ok':False,'error':'state endpoint unavailable'},503)
+try:
+    if callable(_R45_BASE_STATE_DOWNLOAD):app.view_functions['split_front_state_download_v262']=_r45_split_state_download_conditional
+except Exception:pass
+
 # v262

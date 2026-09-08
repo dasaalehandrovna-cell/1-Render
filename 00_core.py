@@ -687,6 +687,11 @@ class DelayedTaskScheduler:
         self._executed = 0
         self._cancelled = 0
         self._failed_dispatch = 0
+        # R45 stuck-fix: retry bookkeeping is per logical timer key.  A saturated
+        # executor must not turn one pending timer into a 2 Hz error/log storm.
+        self._retry_counts = {}
+        self._last_retry_log = {}
+        self._busy_requeues = 0
         threading.Thread(target=self._worker, name=f'{self.executor_pool.name}-scheduler', daemon=True).start()
 
     def _compact_locked(self, force: bool=False):
@@ -732,7 +737,13 @@ class DelayedTaskScheduler:
 
     def stats(self):
         with self._cv:
-            return {'scheduled': len(self._deadlines), 'heap': len(self._heap), 'submitted': self._submitted, 'executed': self._executed, 'cancelled': self._cancelled, 'dispatch_failed': self._failed_dispatch}
+            return {
+                'scheduled': len(self._deadlines), 'heap': len(self._heap),
+                'submitted': self._submitted, 'executed': self._executed,
+                'cancelled': self._cancelled, 'dispatch_failed': self._failed_dispatch,
+                'busy_requeues': self._busy_requeues,
+                'retry_keys': len(self._retry_counts),
+            }
 
     def _worker(self):
         while True:
@@ -748,21 +759,57 @@ class DelayedTaskScheduler:
                 if int(self._versions.get(key, 0)) != int(version):
                     continue
                 self._deadlines.pop(key, None)
-            dispatch_key = f'delay:{key}:{seq}'
-            ok = self.executor_pool.submit(dispatch_key, self._execute, func, args, kwargs)
-            if not ok:
+
+            # One stable executor key per logical timer.  schedule() is already latest-wins
+            # for a key, so allowing multiple concurrent executor copies is both wasteful
+            # and a source of queue amplification.
+            dispatch_key = f'delay:{key}'
+            try:
+                status = self.executor_pool.key_status(dispatch_key)
+            except Exception:
+                status = {'active': False, 'queued': 0}
+            same_key_busy = bool(status.get('active') or status.get('queued'))
+            ok = False if same_key_busy else self.executor_pool.submit_unique(dispatch_key, self._execute, func, args, kwargs)
+            if ok:
                 with self._cv:
+                    self._retry_counts.pop(key, None)
+                    self._last_retry_log.pop(key, None)
+                continue
+
+            now = time.time()
+            with self._cv:
+                if same_key_busy:
+                    self._busy_requeues += 1
+                    retry_count = int(self._retry_counts.get(key, 0) or 0)
+                    retry_delay = 0.35
+                else:
                     self._failed_dispatch += 1
-                    if int(self._versions.get(key, 0)) == int(version):
-                        retry_at = time.time() + 0.5
-                        self._seq += 1
-                        self._deadlines[key] = retry_at
-                        heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
-                        self._cv.notify_all()
-                try:
-                    log_error(f'DELAYED QUEUE FULL, RETRY: {key}')
-                except Exception:
-                    pass
+                    retry_count = int(self._retry_counts.get(key, 0) or 0) + 1
+                    self._retry_counts[key] = retry_count
+                    # 0.5, 1, 2, 4, 8, 10s (+ tiny deterministic jitter).
+                    retry_delay = min(10.0, 0.5 * (2 ** min(max(0, retry_count - 1), 5)))
+                    retry_delay += 0.05 * ((self._seq + retry_count) % 5)
+                if int(self._versions.get(key, 0)) == int(version):
+                    retry_at = now + retry_delay
+                    self._seq += 1
+                    self._deadlines[key] = retry_at
+                    heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
+                    self._cv.notify_all()
+
+            # Same-key busy is normal coalescing, not an error.  Real capacity failures
+            # are throttled to at most one log line per key every 5 seconds.
+            if not same_key_busy:
+                should_log = False
+                with self._cv:
+                    last_log = float(self._last_retry_log.get(key, 0.0) or 0.0)
+                    if now - last_log >= 5.0:
+                        self._last_retry_log[key] = now
+                        should_log = True
+                if should_log:
+                    try:
+                        log_error(f'DELAYED QUEUE FULL, BACKOFF: {key} retry={retry_count} next={retry_delay:.2f}s')
+                    except Exception:
+                        pass
 
     def _execute(self, func, args, kwargs):
         try:
@@ -798,7 +845,7 @@ BACKGROUND_TASK_POOL = KeyedTaskPool('background', _env_int('BACKGROUND_WORKERS'
 MAINTENANCE_TASK_POOL = BACKGROUND_TASK_POOL
 JOURNAL_TASK_POOL = BACKGROUND_TASK_POOL
 GENERAL_TASK_POOL = BACKGROUND_TASK_POOL
-DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 1, 1, 2), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
+DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 4, 2, 8), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
 DOZVON_TASK_POOL = KeyedTaskPool('dozvon', _env_int('DOZVON_WORKERS', 1, 1, 2), _env_int('DOZVON_MAX_PENDING', 100, 10, 500))
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
 CALLBACK_ACK_SCHEDULER = DelayedTaskScheduler(CALLBACK_ACK_TASK_POOL)
@@ -858,9 +905,21 @@ class DurableUpdateDispatcher:
             else:
                 attempts = 1
             event = threading.Event()
-            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': '', 'thread_ident': None, 'thread_name': '', 'stage': 'CLAIMED', 'stage_at': now, 'action': ''}
+            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'enqueued_at': None, 'queue_name': '', 'queue_key': '', 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': '', 'thread_ident': None, 'thread_name': '', 'stage': 'CLAIMED', 'stage_at': now, 'action': ''}
             self._tickets[key] = item
             return ('new', item)
+
+    def mark_enqueued(self, update_id, queue_name: str='', queue_key=''):
+        with self._lock:
+            item = self._tickets.get(str(update_id))
+            if not item or item.get('state') != 'queued':
+                return
+            now = time.time()
+            item['enqueued_at'] = now
+            item['queue_name'] = str(queue_name or '')[:80]
+            item['queue_key'] = str(queue_key or '')[:180]
+            item['stage'] = f"ENQUEUED:{item['queue_name'] or '?'}"
+            item['stage_at'] = now
 
     def mark_started(self, update_id):
         with self._lock:
@@ -930,7 +989,9 @@ class DurableUpdateDispatcher:
         with self._lock:
             pending = [x for x in self._tickets.values() if x.get('state') in {'queued', 'running'}]
             oldest = max([now - float(x.get('created_at', now)) for x in pending] or [0.0])
-            return {'pending': len(pending), 'oldest': round(oldest, 2), 'received': self._received, 'duplicates': self._duplicates, 'completed': self._completed, 'failed': self._failed, 'timeouts': self._timeouts, 'timeout_details': list(self._timeout_details[-12:]), 'retries': self._retries, 'last_error': self._last_error, 'ack_wait': WEBHOOK_ACK_WAIT_SECONDS}
+            queued = sum(1 for x in pending if x.get('state') == 'queued')
+            running = sum(1 for x in pending if x.get('state') == 'running')
+            return {'pending': len(pending), 'queued': queued, 'running': running, 'oldest': round(oldest, 2), 'received': self._received, 'duplicates': self._duplicates, 'completed': self._completed, 'failed': self._failed, 'timeouts': self._timeouts, 'timeout_details': list(self._timeout_details[-12:]), 'retries': self._retries, 'last_error': self._last_error, 'ack_wait': WEBHOOK_ACK_WAIT_SECONDS}
 
     def _watchdog(self):
         while True:
@@ -1169,7 +1230,10 @@ class R25TracedRLock:
     def __exit__(self, exc_type, exc, tb): self.release(); return False
     def __getattr__(self, name): return getattr(self._lock, name)
 
-chat_locks = defaultdict(threading.RLock)
+# R45 stuck-fix: chat locks are traced too.  The old raw RLock made the real
+# blocker invisible (DISPATCHER showed locks=none while a worker waited on chat_lock).
+chat_locks = {}
+_CHAT_LOCKS_GUARD = threading.RLock()
 data_lock = R25TracedRLock('data')
 
 def r36_lock_snapshot_text() -> str:
@@ -1187,13 +1251,66 @@ def r36_lock_snapshot_text() -> str:
         if snap.get('owner_ident'):
             rows.append(f"sqlite={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
     except Exception: pass
+    # Include held chat locks.  Cap output so one diagnostic line stays bounded.
+    try:
+        with _CHAT_LOCKS_GUARD:
+            items = list(chat_locks.items())
+        for cid, lock in items:
+            try:
+                snap = lock.owner_snapshot() if hasattr(lock, 'owner_snapshot') else {}
+                if snap.get('owner_ident'):
+                    rows.append(f"chat:{cid}={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
+                    if len(rows) >= 8:
+                        break
+            except Exception:
+                pass
+    except Exception:
+        pass
     return '; '.join(rows) or 'none'
 forward_map_lock = threading.RLock()
 timer_lock = threading.RLock()
 _state_context = threading.local()
 
 def chat_lock_for(chat_id: int):
-    return chat_locks[int(chat_id)]
+    cid = int(chat_id)
+    with _CHAT_LOCKS_GUARD:
+        lock = chat_locks.get(cid)
+        if lock is None:
+            lock = R25TracedRLock(f'chat:{cid}')
+            chat_locks[cid] = lock
+        return lock
+
+try:
+    WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS = max(3.0, min(60.0, float(os.getenv('WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS', '12') or '12')))
+except Exception:
+    WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS = 12.0
+
+@contextmanager
+def telegram_execution_chat_lock(chat_id: int, timeout: float | None=None):
+    """Bounded chat lock used only by inbound Telegram execution.
+
+    Business ordering is preserved while a healthy holder owns the lock.  A broken or
+    wedged holder can no longer consume a webhook worker forever: the update fails and
+    is replayed from the durable inbox / Telegram retry path after the holder recovers.
+    """
+    cid = int(chat_id)
+    lock = chat_lock_for(cid)
+    limit = WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS if timeout is None else max(0.1, float(timeout))
+    acquired = lock.acquire(timeout=limit)
+    if not acquired:
+        try:
+            snap = lock.owner_snapshot() if hasattr(lock, 'owner_snapshot') else {}
+            holder = snap.get('owner_thread') or snap.get('owner_ident') or '?'
+            held = float(snap.get('held_seconds') or 0.0)
+            r25_trace_stage('CHAT_LOCK_TIMEOUT', limit, f'chat={cid} holder={holder} held={held:.3f}s')
+            log_error(f'CHAT LOCK TIMEOUT chat={cid} wait={limit:.2f}s holder={holder} held={held:.2f}s')
+        except Exception:
+            pass
+        raise TimeoutError(f'chat lock timeout chat={cid} after {limit:.2f}s')
+    try:
+        yield lock
+    finally:
+        lock.release()
 
 @contextmanager
 def locked_chat(chat_id: int):
