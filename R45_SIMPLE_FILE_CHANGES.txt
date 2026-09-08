@@ -1,0 +1,6 @@
+R45 SIMPLE FILE HOTFIX
+
+1. Final R40/R41 supervisor now polls HEAVY /internal/export/status/<job_id> every 2s.
+2. When HEAVY says ready, FAST downloads /internal/export/file/<job_id> itself and calls bot.send_document. Reverse callback is optional.
+3. Read-only file commands (/csv /xlsx /excel /tabl_lsx /json /runtime_export /journal /log /logs /sqlite /db) use a dedicated file-request pool keyed by message_id, so a stuck per-chat content task cannot block them.
+4. No business/finance/forwarding logic changed.

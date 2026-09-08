@@ -1453,39 +1453,137 @@ _r38_export_delivery_task = _r41_export_delivery_task
 # _r38_export_delivery_task dynamically, so the R41 completion hook is canonical.
 
 
+# R45 one-delivery gate shared by callback and pull paths.
+_R45_FILE_SEND_GUARD = _r38_threading.RLock()
+_R45_FILE_SEND_LOCKS = {}
+_R45_BASE_DELIVER_WORKER_EXPORT = _r38_deliver_worker_export
+
+
+def _r45_file_send_lock(jid):
+    key=str(jid or '')[:80]
+    with _R45_FILE_SEND_GUARD:
+        lock=_R45_FILE_SEND_LOCKS.get(key)
+        if lock is None:
+            lock=_r38_threading.Lock()
+            _R45_FILE_SEND_LOCKS[key]=lock
+        return lock
+
+
+def _r45_deliver_worker_export_once(body):
+    payload=dict(body or {})
+    jid=str(payload.get('job_id') or '')[:80]
+    if not jid:
+        return False
+    lock=_r45_file_send_lock(jid)
+    with lock:
+        row=_r35_delivery_get(jid) or {}
+        state=str(row.get('state') or '')
+        if state=='done':
+            return True
+        if state=='done_error' and not bool(payload.get('ok')):
+            return True
+        delivered=bool(_R45_BASE_DELIVER_WORKER_EXPORT(payload))
+        if delivered:
+            if bool(payload.get('ok')):
+                _r35_delivery_set(jid,'done',payload)
+            else:
+                _r35_delivery_set(jid,'done_error',payload,error=str(payload.get('error') or 'HEAVY job failed'))
+        return delivered
+
+
+# Existing callback delivery tasks resolve this symbol dynamically.
+_r38_deliver_worker_export = _r45_deliver_worker_export_once
+globals()['_r7_deliver_worker_export'] = _r45_deliver_worker_export_once
+
+
 def _r41_supervise_remote(jid,body,label,chat_id,msg_id):
-    original=str(jid or '')[:80]; started=_r33_time.time(); last_ui=0.0; timeout=max(300,min(21600,int(_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600') or '3600'))); deadline=started+timeout
+    """R45 final file supervisor: callback is optional, FAST pull is authoritative fallback.
+
+    The old final R41 supervisor only watched FAST's local delivery ledger.  The R43
+    status helper existed but was not used by this actual R40/R41 path, so a lost
+    HEAVY->FAST callback left the user waiting forever.  R45 polls HEAVY directly and,
+    once ready, downloads /internal/export/file/<job_id> and sends it to Telegram here.
+    """
+    original=str(jid or '')[:80]
+    started=_r33_time.time()
+    last_ui=0.0
+    last_poll=0.0
+    timeout=max(120,min(21600,int(_r33_os.getenv('R45_FAST_JOB_WAIT_SEC',_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600')) or '3600')))
+    deadline=started+timeout
     err=''; ok=False
     try:
         while _r33_time.time()<deadline:
             canonical=_r40_canonical_job_id(original)
-            row=_r35_delivery_get(canonical) or {}; state=str(row.get('state') or '')
-            if state=='done': ok=True; break
+            row=_r35_delivery_get(canonical) or {}
+            state=str(row.get('state') or '')
+            if state=='done':
+                ok=True; break
             if state=='done_error':
                 b=row.get('body') if isinstance(row.get('body'),dict) else {}
                 err=str(row.get('error') or b.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]; break
-            out=_r38_outbox_get(original) or {}; ostate=str(out.get('state') or '')
-            if ostate=='failed': err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
+            out=_r38_outbox_get(original) or {}
+            ostate=str(out.get('state') or '')
+            if ostate=='failed':
+                err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
+
             now=_r33_time.time()
+            # R45: do not rely on reverse callback. Poll the concrete job every 2 sec.
+            if now-last_poll>=2.0:
+                last_poll=now
+                poll_id=canonical or original
+                st=_r43_worker_export_status(poll_id)
+                alias=str(st.get('canonical_job_id') or st.get('duplicate_of') or '')[:80]
+                if alias and alias!=poll_id:
+                    canonical=alias
+                    st=_r43_worker_export_status(alias) or st
+                    if st: st['job_id']=alias
+                if bool(st.get('terminal_error')):
+                    err=str(st.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]
+                    _r35_delivery_set(original,'done_error',st,error=err)
+                    break
+                if bool(st.get('ready')):
+                    payload=dict(body or {})
+                    payload.update({k:v for k,v in st.items() if v not in (None,'')})
+                    payload['job_id']=str(st.get('job_id') or canonical or original)
+                    payload['recipient_chat_id']=int(payload.get('recipient_chat_id') or chat_id or 0)
+                    payload['ok']=True
+                    # Callback and pull share the same send-once gate keyed by job_id.
+                    # Whichever path gets here first sends; the other observes done.
+                    _r35_delivery_set(original,'running',payload)
+                    delivered=bool(_r38_deliver_worker_export(payload))
+                    if delivered:
+                        _r35_delivery_set(original,'done',payload)
+                        if payload['job_id']!=original:
+                            _r35_delivery_set(payload['job_id'],'done',payload)
+                        ok=True
+                        break
+                    # Network/Telegram turbulence is retryable; do not terminally fail.
+                    _r35_delivery_set(original,'accepted',payload,error='R45 direct pull/send retry')
+
             if now-last_ui>=12.0:
-                if canonical!=original: phase=f'Render #2 объединил дубль с заданием {canonical[:12]}…'
-                elif bool(out.get('provisional')) and bool(out.get('peer_accepted')): phase='Render #2 принял задачу и выполняет её · резервная копия запроса сохранена на FAST'
-                elif ostate in {'pending','retry'}: phase='восстанавливаю связь с Render #2 · запрос сохранён, повторяю автоматически'
-                elif ostate in {'accepted','completed'} and state in {'running','accepted','dispatching',''}: phase='Render #2 выполняет задачу'
-                elif state in {'running','failed'}: phase='получаю и отправляю готовый результат'
-                else: phase='ожидаю подтверждение Render #2'
-                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r41_file_progress')
+                if canonical!=original:
+                    phase=f'Render #2: забираю готовый файл {canonical[:12]}…'
+                elif ostate in {'pending','retry'}:
+                    phase='Render #2: запрос сохранён, проверяю готовность файла'
+                elif ostate in {'accepted','completed'}:
+                    phase='Render #2: выполняет задачу / FAST сам заберёт файл'
+                elif state=='running':
+                    phase='FAST получает файл и отправляет в Telegram'
+                else:
+                    phase='проверяю готовность файла Render #2'
+                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r45_file_progress')
                 last_ui=now
-            _r33_time.sleep(0.5)
-        else: err=f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={original}'
+            _r33_time.sleep(0.35)
+        else:
+            err=f'Render #2 не отдал файл за {timeout} сек.; job_id={original}'
     except Exception as exc:
         err=f'{type(exc).__name__}: {str(exc)[:800]}'
     elapsed=_r40_elapsed(started)
     if ok:
-        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r41_file_done')
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r45_file_done')
     else:
-        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r41_file_error')
-        try: log_error(f'R41 async HEAVY job {original}: {err}')
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r45_file_error')
+        try: log_error(f'R45 direct HEAVY file {original}: {err}')
         except Exception: pass
     _r40_status_delete_later(chat_id,msg_id,15)
     with _R40_SUP_LOCK: _R40_SUPERVISORS.pop(original,None)

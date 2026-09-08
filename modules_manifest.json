@@ -41,7 +41,7 @@
     "100_r33_heavy_offload.py": "v262"
   },
   "files": {
-    "00_core.py": "9980022e99de66f1c2e15a8d8ff79104d072b1d044bdb8fb61a1cbce27f6176f",
+    "00_core.py": "df491a8fced0bc081e074f8cf694590207332aabce8e078a1f7b3131734317ba",
     "05_key_value_runtime.py": "1df54a6018dbe2f973854f8d6929672e785be38c5bdb285ec0d756906ab1d36d",
     "10_mega_runtime.py": "c47457ac20465d5d6170883f4628d0f9ef7863b578ad4cce2ce34fcb557151dd",
     "11_data_constitution.py": "810c95193895cfa6e2aa23b59801717b7d2c71fdedd539d076a63dd83b873bae",
@@ -68,7 +68,7 @@
     "99_web_runtime.py": "c4d9c291e9e7bac9ba0165c93a3e770e0a5f1f4846a19f256df2b6793555bc91",
     "73_state_export_runtime.py": "b4be89cd84017a1db4d8c5391a3707bc7659ee0379e43f0f5497e967d3c1594b",
     "74_ui_reliability_runtime.py": "4fd6bbae9874d81d25ff05c72394d95d0c3ad0e71e568da4dd3eae8cd44d8122",
-    "75_platform_features_runtime.py": "e7d5acc9dc00ad5e70b684a0b40b97900a3d4c092f34b37b41c3950840caaebc",
+    "75_platform_features_runtime.py": "4aea956a81e7b3feeb3ba556b2fa54bbe7e1d4c17a30b9aefed46eaa11bf86ea",
     "76_tasks_runtime.py": "0357775dd5888c864c5609f5b8ed83537ab08121c66186e674e3541fa73d2d3c",
     "85_runtime_control.py": "d3d84b31eba1291fda7e41187dbb6a036089fa966645b5fe26b7d21db607e867",
     "88_ui_constructor.py": "3f684bfcaab2a0f41aed87e7e23bc5053dccfde88c603ea4c159b51a0dcc2b6a",
@@ -77,7 +77,7 @@
     "98_split_front.py": "a950b1c3f0e1bd2d0b567723753e1acad2161febcb6b8e17fd317d4886881c4d",
     "97_r30_policy_ui.py": "172f9b037dbd5fd3274b068e11c3cfb035eb82a6a590993b1ff5b30eaa17c9f9",
     "96_r32_event_stream.py": "eec08108d88e1d7a3b0b0bf7f0e0d5bd8c103296e2c5d6e3fde285da1036be6d",
-    "100_r33_heavy_offload.py": "aa27bf3534e5b06dc475722c8271f2807956be8b46217be2abf1558a7595ead2"
+    "100_r33_heavy_offload.py": "23129d4cae6dbca79930b9309c9a8fcf2b7b8ef1b2025b14b494a61c321e8a83"
   },
   "release": "Пер-R42",
   "release_features": [
