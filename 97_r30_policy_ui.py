@@ -8,7 +8,7 @@ direct Telegram edit. No render queue, remote HTTP or heavy snapshot is inserted
 before a visual response.
 """
 
-R31_RELEASE_NAME = 'Пер-R37'
+R31_RELEASE_NAME = 'Пер-R40'
 R30_RELEASE_NAME = R31_RELEASE_NAME
 R29_RELEASE_NAME = R31_RELEASE_NAME
 R29_RELEASE_STAGE = 'directive-google-info-input-sources-three-menu-modes'
@@ -556,7 +556,7 @@ def _r31_schedule_constructor_markup_refresh() -> None:
 
 def _r31_third_info_text(chat_id: int) -> str:
     return window_mark(
-        'ℹ️ ИНФО · Пер-R37 · ТРЕТИЙ ВАРИАНТ\n\n'
+        'ℹ️ ИНФО · Пер-R40 · ТРЕТИЙ ВАРИАНТ\n\n'
         'Настройки собраны по рабочим режимам и административным разделам.\n'
         'ТЗ/маркеры и Конструкторы имеют отдельные мастер-переключатели.\n\n'
         '⚡ FAST UI R28: прямой render защищён.',
@@ -636,7 +636,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     if mode == R31_MENU_MODE_THIRD:
         return _r31_third_info_text(cid)
     return window_mark(
-        'ℹ️ ИНФО · Пер-R37\n\n'
+        'ℹ️ ИНФО · Пер-R40\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
         '⚡ FAST UI: прямой путь R28 защищён.\n'

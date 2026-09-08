@@ -4852,8 +4852,16 @@ def _v167_google_update_target(target_chat_id: int, reason: str='schedule', run_
                 bot_journal('google_schedule_started_v228', target_chat_id, f'run={run_key}; day={day}; tab={tab}; reason={reason}')
             except Exception:
                 pass
-        rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
-        url = _v167_google_upsert_named_tab(tab, rows, target_chat_id, layout='category')
+        _r40_q = globals().get('_r40_google_query_submit')
+        _r40_w = globals().get('_r40_google_wait')
+        if callable(_r40_q) and callable(_r40_w):
+            _r40_jid = _r40_q(tab, target_chat_id, start_key, end_key, 0, 0, layout='category', include_annotations=True, notify_result=False, recipient_chat_id=target_chat_id)
+            _r40_ok, url, _r40_err = _r40_w(_r40_jid, timeout=900)
+            if not _r40_ok:
+                raise RuntimeError(_r40_err or f'Google HEAVY job {_r40_jid} failed')
+        else:
+            rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
+            url = _v167_google_upsert_named_tab(tab, rows, target_chat_id, layout='category')
         cfg['last_ok_at'] = now_local().isoformat(timespec='seconds')
         cfg['last_error'] = ''
         cfg['last_period'] = tab

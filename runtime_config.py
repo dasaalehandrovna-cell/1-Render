@@ -1,4 +1,4 @@
-"""vys-262 R36 internal runtime configuration.
+"""vys-262 R38 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r36-unified-bot"
+CONFIG_VERSION = "vys-262-r38-unified-bot"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -46,15 +46,21 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R28_FULL_SNAPSHOT_MIN_INTERVAL_SEC": "300",
     "R32_EVENT_STREAM_ENABLED": "1",
     "R32_EVENT_QUEUE_MAX": "20000",
-    "R32_EVENT_BATCH_DELAY_SEC": "0.20",
-    "R32_EVENT_BATCH_MAX": "96",
-    "R34_EVENT_TARGET_WIRE_KB": "384",
+    "R32_EVENT_BATCH_DELAY_SEC": "0.65",
+    "R32_EVENT_BATCH_MAX": "192",
+    "R34_EVENT_TARGET_WIRE_KB": "768",
     "R34_EVENT_LARGE_WIRE_KB": "32768",
     "R32_EVENT_POST_TIMEOUT_SEC": "8",
     "R32_SHUTDOWN_EVENT_FLUSH_SEC": "8",
     "R36_FILE_SUBMIT_ATTEMPTS": "4",
     "R36_FILE_SUBMIT_TIMEOUT_SEC": "45",
     "R36_FAST_JOB_WAIT_SEC": "1800",
+    # R38 durable FAST->HEAVY outbox / edge-restart tolerance
+    "R38_PEER_MIN_GAP_SEC": "0.25",
+    "R38_PEER_POST_TIMEOUT_SEC": "18",
+    "R38_PEER_JOB_MAX_AGE_SEC": "21600",
+    "R38_MEGA_EVENT_MIN_GAP_SEC": "1.0",
+    "R38_FAST_JOB_WAIT_SEC": "3600",
     # R35 aliases remain only for rollback compatibility.
     "R35_FILE_SUBMIT_ATTEMPTS": "4",
     "R35_FILE_SUBMIT_TIMEOUT_SEC": "45",
@@ -158,6 +164,12 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
     "WORKER_FULL_CHECKPOINT_MAX_DELTA_MB": "16",
     "WORKER_MEGA_CHECKPOINT_SEC": "86400",
     "WORKER_RECONCILE_SEC": "21600",
+
+    # R38 Google/Drive resilience and durable Google recovery
+    "R38_GOOGLE_RETRY_WINDOW_SEC": "600",
+    "R38_GOOGLE_CALLBACK_WINDOW_SEC": "60",
+    "R38_GOOGLE_MEGA_SCAN_SEC": "45",
+    "R38_GOOGLE_MEGA_TIMEOUT": "180",
 
     # MEGA command timeouts
     "MEGA_TIMEOUT": "180",
