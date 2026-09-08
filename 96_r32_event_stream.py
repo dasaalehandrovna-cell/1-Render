@@ -25,66 +25,104 @@ _R32_EVENT_Q = _r32_queue.Queue(maxsize=max(1000,min(50000,int(_r32_os.getenv('R
 _R32_EVENT_STATE={'queued':0,'sent':0,'batches':0,'bytes':0,'last_ok':0.0,'last_error':'','dropped':0,'full_runtime_uploads_blocked':0,'private_peer':False,'inflight':0}
 _R32_SQLITE_PATCHED=False
 
-# R40: durable FAST state-event outbox. The in-memory Queue is only a wake/execution
-# cache; every descriptor is first written to a tiny independent SQLite WAL. This DB
-# never takes the finance/data locks. After a FAST process restart, pending descriptors
-# are replayed with the original event_id/revision instead of disappearing with RAM.
+# R40/R45-FIX2: durable FAST state-event outbox.
+# IMPORTANT: the Telegram/finance hot path must never wait on this database.
+# Descriptors are queued in RAM first; the dedicated sender thread persists them
+# here before remote delivery.  The primary FAST SQLite remains authoritative.
 _R40_EVENT_DB = _r32_os.path.join(str(_r32_os.getenv('R40_EVENT_OUTBOX_DIR','/tmp') or '/tmp'), 'per_r40_state_event_outbox.sqlite3')
-_R40_EVENT_DB_LOCK = _r32_threading.RLock()
+_R40_EVENT_DB_READY=False
+_R40_EVENT_DB_INIT_LOCK=_r32_threading.Lock()
+try:
+    _R40_EVENT_DB_BUSY_MS=max(25,min(500,int(_r32_os.getenv('R40_EVENT_DB_BUSY_MS','120') or '120')))
+except Exception:
+    _R40_EVENT_DB_BUSY_MS=120
+
+
+def _r40_event_db_connect(timeout_ms=None):
+    ms=int(timeout_ms or _R40_EVENT_DB_BUSY_MS)
+    con=_r32_sqlite3.connect(_R40_EVENT_DB,timeout=max(0.025,ms/1000.0),check_same_thread=False)
+    con.execute(f'PRAGMA busy_timeout={max(1,ms)}')
+    return con
 
 
 def _r40_event_db_init():
+    global _R40_EVENT_DB_READY
+    if _R40_EVENT_DB_READY:
+        return True
+    acquired=False
     try:
+        # Never allow schema initialization to become another unbounded global lock.
+        acquired=_R40_EVENT_DB_INIT_LOCK.acquire(timeout=max(0.05,_R40_EVENT_DB_BUSY_MS/1000.0))
+        if not acquired:
+            _R32_EVENT_STATE['outbox_init_busy']=int(_R32_EVENT_STATE.get('outbox_init_busy') or 0)+1
+            return False
+        if _R40_EVENT_DB_READY:
+            return True
         _r32_os.makedirs(_r32_os.path.dirname(_R40_EVENT_DB) or '.', exist_ok=True)
-        with _R40_EVENT_DB_LOCK:
-            con=_r32_sqlite3.connect(_R40_EVENT_DB,timeout=3,check_same_thread=False)
-            try:
-                con.execute('PRAGMA journal_mode=WAL'); con.execute('PRAGMA synchronous=FULL'); con.execute('PRAGMA busy_timeout=3000')
-                con.execute('CREATE TABLE IF NOT EXISTS pending(event_id TEXT PRIMARY KEY,revision INTEGER NOT NULL,row_json TEXT NOT NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL)')
-                con.execute('CREATE INDEX IF NOT EXISTS idx_r40_event_revision ON pending(revision,event_id)')
-                con.commit()
-            finally: con.close()
+        con=_r40_event_db_connect(max(100,_R40_EVENT_DB_BUSY_MS))
+        try:
+            con.execute('PRAGMA journal_mode=WAL')
+            con.execute('PRAGMA synchronous=FULL')
+            con.execute('CREATE TABLE IF NOT EXISTS pending(event_id TEXT PRIMARY KEY,revision INTEGER NOT NULL,row_json TEXT NOT NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL)')
+            con.execute('CREATE INDEX IF NOT EXISTS idx_r40_event_revision ON pending(revision,event_id)')
+            con.commit()
+            _R40_EVENT_DB_READY=True
+        finally:
+            con.close()
         return True
     except Exception as exc:
-        _R32_EVENT_STATE['last_error']=f'R40 event outbox init {type(exc).__name__}: {str(exc)[:160]}'
+        _R32_EVENT_STATE['last_error']=f'R45 event outbox init {type(exc).__name__}: {str(exc)[:160]}'
         return False
+    finally:
+        if acquired:
+            try: _R40_EVENT_DB_INIT_LOCK.release()
+            except Exception: pass
 
 
 def _r40_event_db_put(desc):
-    if not isinstance(desc,dict) or not str(desc.get('event_id') or ''): return False
+    return _r40_event_db_put_many([desc])
+
+
+def _r40_event_db_put_many(rows):
+    good=[x for x in (rows or []) if isinstance(x,dict) and str(x.get('event_id') or '')]
+    if not good:
+        return True
     try:
-        if not _r40_event_db_init(): return False
-        raw=_r32_json.dumps(desc,ensure_ascii=False,separators=(',',':'),default=str)
-        now=_r32_time.time()
-        with _R40_EVENT_DB_LOCK:
-            con=_r32_sqlite3.connect(_R40_EVENT_DB,timeout=3,check_same_thread=False)
-            try:
-                con.execute('PRAGMA busy_timeout=3000')
-                con.execute('INSERT INTO pending(event_id,revision,row_json,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET revision=excluded.revision,row_json=excluded.row_json,updated_at=excluded.updated_at',
-                            (str(desc.get('event_id')),int(desc.get('revision') or 0),raw,float(desc.get('created_at') or now),now))
-                con.commit()
-            finally: con.close()
+        if not _r40_event_db_init():
+            return False
+        now=_r32_time.time(); payload=[]
+        for desc in good:
+            raw=_r32_json.dumps(desc,ensure_ascii=False,separators=(',',':'),default=str)
+            payload.append((str(desc.get('event_id')),int(desc.get('revision') or 0),raw,float(desc.get('created_at') or now),now))
+        con=_r40_event_db_connect()
+        try:
+            con.executemany('INSERT INTO pending(event_id,revision,row_json,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET revision=excluded.revision,row_json=excluded.row_json,updated_at=excluded.updated_at',payload)
+            con.commit()
+        finally:
+            con.close()
+        _R32_EVENT_STATE['outbox_persisted']=int(_R32_EVENT_STATE.get('outbox_persisted') or 0)+len(good)
         return True
     except Exception as exc:
-        _R32_EVENT_STATE['last_error']=f'R40 event outbox put {type(exc).__name__}: {str(exc)[:160]}'
+        _R32_EVENT_STATE['last_error']=f'R45 event outbox put {type(exc).__name__}: {str(exc)[:160]}'
+        _R32_EVENT_STATE['outbox_put_fail']=int(_R32_EVENT_STATE.get('outbox_put_fail') or 0)+len(good)
         return False
 
 
 def _r40_event_db_delete(rows):
-    ids=[]
-    for row in rows or []:
-        if isinstance(row,dict) and str(row.get('event_id') or ''): ids.append((str(row.get('event_id')),))
-    if not ids: return True
+    ids=[(str(row.get('event_id')), ) for row in (rows or []) if isinstance(row,dict) and str(row.get('event_id') or '')]
+    if not ids:
+        return True
     try:
-        if not _r40_event_db_init(): return False
-        with _R40_EVENT_DB_LOCK:
-            con=_r32_sqlite3.connect(_R40_EVENT_DB,timeout=3,check_same_thread=False)
-            try:
-                con.executemany('DELETE FROM pending WHERE event_id=?',ids); con.commit()
-            finally: con.close()
+        if not _r40_event_db_init():
+            return False
+        con=_r40_event_db_connect()
+        try:
+            con.executemany('DELETE FROM pending WHERE event_id=?',ids); con.commit()
+        finally:
+            con.close()
         return True
     except Exception as exc:
-        _R32_EVENT_STATE['last_error']=f'R40 event outbox delete {type(exc).__name__}: {str(exc)[:160]}'
+        _R32_EVENT_STATE['last_error']=f'R45 event outbox delete {type(exc).__name__}: {str(exc)[:160]}'
         return False
 
 
@@ -92,28 +130,34 @@ def _r40_event_db_pending(limit=128):
     out=[]
     try:
         if not _r40_event_db_init(): return out
-        with _R40_EVENT_DB_LOCK:
-            con=_r32_sqlite3.connect(_R40_EVENT_DB,timeout=2,check_same_thread=False)
-            try: rows=con.execute('SELECT row_json FROM pending ORDER BY revision,event_id LIMIT ?',(max(1,min(1000,int(limit or 128))),)).fetchall()
-            finally: con.close()
+        con=_r40_event_db_connect()
+        try:
+            rows=con.execute('SELECT row_json FROM pending ORDER BY revision,event_id LIMIT ?',(max(1,min(1000,int(limit or 128))),)).fetchall()
+        finally:
+            con.close()
         for row in rows:
             try:
                 obj=_r32_json.loads(row[0])
                 if isinstance(obj,dict): out.append(obj)
             except Exception: pass
-    except Exception: pass
+    except Exception as exc:
+        _R32_EVENT_STATE['last_error']=f'R45 event outbox pending {type(exc).__name__}: {str(exc)[:160]}'
     return out
 
 
 def _r40_event_db_count():
     try:
-        if not _r40_event_db_init(): return 0
-        with _R40_EVENT_DB_LOCK:
-            con=_r32_sqlite3.connect(_R40_EVENT_DB,timeout=1,check_same_thread=False)
-            try: return int(con.execute('SELECT COUNT(*) FROM pending').fetchone()[0] or 0)
-            finally: con.close()
-    except Exception: return 0
-
+        if not _r40_event_db_init(): return int(_R32_EVENT_STATE.get('durable_pending') or 0)
+        con=_r40_event_db_connect()
+        try:
+            value=int(con.execute('SELECT COUNT(*) FROM pending').fetchone()[0] or 0)
+        finally:
+            con.close()
+        _R32_EVENT_STATE['durable_pending']=value
+        return value
+    except Exception:
+        # Status/diagnostics must also remain non-blocking and may use the cached value.
+        return int(_R32_EVENT_STATE.get('durable_pending') or 0)
 
 def _r32_ready():
     try:
@@ -143,30 +187,28 @@ def _r32_descriptor(kind,key,ids=None):
 
 
 def _r32_enqueue_descriptor(kind,key,ids=None):
+    """Capture a tiny logical descriptor without any filesystem/SQLite wait.
+
+    R45-FIX2: this function is called from patched SQLite mutations inside Telegram
+    callbacks.  It must remain O(1) and network/disk/lock free.  The sender thread
+    persists descriptors to the durable outbox before sending them onward.
+    """
     if not _R32_EVENT_STREAM_ENABLED or not _r32_ready(): return False
     try:
-        _desc=_r32_descriptor(kind,key,ids)
-        durable=bool(_r40_event_db_put(_desc))
-        queued_ram=False
-        try:
-            _R32_EVENT_Q.put_nowait(_desc); queued_ram=True
-        except _r32_queue.Full:
-            # R40: RAM pressure is no longer data loss. The sender will hydrate this
-            # descriptor from the durable outbox once queue capacity returns.
-            if not durable: raise
+        desc=_r32_descriptor(kind,key,ids)
+        _R32_EVENT_Q.put_nowait(desc)
         _R32_EVENT_STATE['queued']=int(_R32_EVENT_STATE.get('queued') or 0)+1
-        _R32_EVENT_STATE['last_revision_queued']=max(int(_R32_EVENT_STATE.get('last_revision_queued') or 0),int(_desc.get('revision') or 0))
-        _R32_EVENT_STATE['durable_pending']=_r40_event_db_count()
-        _R32_EVENT_STATE['last_enqueue_durable']=bool(durable)
+        _R32_EVENT_STATE['last_revision_queued']=max(int(_R32_EVENT_STATE.get('last_revision_queued') or 0),int(desc.get('revision') or 0))
+        _R32_EVENT_STATE['last_enqueue_durable']=False
         st=globals().get('_SPLIT_STATE')
         if isinstance(st,dict):
             st['r32_event_queued']=int(st.get('r32_event_queued') or 0)+1
-            st['r32_event_pending']=max(_R32_EVENT_Q.qsize(),_r40_event_db_count())
-            st['r40_event_durable_pending']=_r40_event_db_count()
-        return bool(durable or queued_ram)
+            st['r32_event_pending']=max(_R32_EVENT_Q.qsize(),int(_R32_EVENT_STATE.get('durable_pending') or 0))
+            st['r40_event_durable_pending']=int(_R32_EVENT_STATE.get('durable_pending') or 0)
+        return True
     except _r32_queue.Full:
         _R32_EVENT_STATE['dropped']=int(_R32_EVENT_STATE.get('dropped') or 0)+1
-        try: log_error('R40 state-event RAM queue full and durable outbox unavailable; raw Telegram witness remains authoritative')
+        try: log_error('R45 state-event RAM queue full; primary FAST SQLite remains authoritative')
         except Exception: pass
         return False
     except Exception as exc:
@@ -373,7 +415,13 @@ def _r32_sender_loop():
                     try: rows.append(_R32_EVENT_Q.get_nowait()); queue_count+=1
                     except _r32_queue.Empty: break
             try:
-                _R32_EVENT_STATE['inflight']=len(rows); packet=_r32_build_packet(rows); packet['_r40_queue_count']=queue_count
+                _R32_EVENT_STATE['inflight']=len(rows)
+                # R45-FIX2: only the background sender touches the durable event outbox.
+                # RAM-origin rows must become durable before materialization/remote send.
+                if queue_count and not _r40_event_db_put_many(rows):
+                    raise RuntimeError('R45 durable event outbox temporarily unavailable')
+                _R32_EVENT_STATE['last_enqueue_durable']=True
+                packet=_r32_build_packet(rows); packet['_r40_queue_count']=queue_count
             except Exception as exc:
                 _R32_EVENT_STATE['last_error']=f'build {type(exc).__name__}: {str(exc)[:220]}'
                 if queue_count:
@@ -470,7 +518,8 @@ def _split_push_snapshot_now_v263(reason='shutdown'):
     return True
 
 def r32_event_stream_status():
-    row=dict(_R32_EVENT_STATE); row['durable_pending']=_r40_event_db_count(); row['pending']=max(_R32_EVENT_Q.qsize(),int(row.get('durable_pending') or 0)); row['enabled']=bool(_R32_EVENT_STREAM_ENABLED); row['peer_base']=_r32_peer_base_impl(); return row
+    # R45-FIX2: diagnostics/UI reads cached counters only; never touch outbox SQLite.
+    row=dict(_R32_EVENT_STATE); row['durable_pending']=int(row.get('durable_pending') or 0); row['pending']=max(_R32_EVENT_Q.qsize(),int(row.get('durable_pending') or 0)); row['enabled']=bool(_R32_EVENT_STREAM_ENABLED); row['peer_base']=_r32_peer_base_impl(); return row
 
 _r32_threading.Thread(target=_r32_sender_loop,name='per-r32-state-events',daemon=True).start()
 # v262

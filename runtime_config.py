@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r45-stable-direct"
+CONFIG_VERSION = "vys-262-r45-stable-stuckfix2"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -47,6 +47,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R28_FULL_SNAPSHOT_MIN_INTERVAL_SEC": "300",
     "R32_EVENT_STREAM_ENABLED": "1",
     "R32_EVENT_QUEUE_MAX": "20000",
+    "R40_EVENT_DB_BUSY_MS": "120",
     "R32_EVENT_BATCH_DELAY_SEC": "0.65",
     "R32_EVENT_BATCH_MAX": "192",
     "R34_EVENT_TARGET_WIRE_KB": "768",

@@ -76,10 +76,10 @@
     "92_v262_linked_finance_speed.py": "d2f21cb54b6a2637cffd3f052de26d0e72f5c8c7b1b45d0e48660b0d04ebb703",
     "98_split_front.py": "90e2a5e6057381271e3451ec230eedb79746fccf992855c7ae0fb44a77d34b67",
     "97_r30_policy_ui.py": "21e327ad3778b38ec4d11bd47db605d580f899a2cf9ca0ee7dda1eecc221968e",
-    "96_r32_event_stream.py": "51c26aca902039ff10aecd4b60d93e5fd99e4a6f90348d197b8370ee397efc59",
+    "96_r32_event_stream.py": "c74725d2cd4d41755bc63782d9acced08077e4f9f387eb3f83e730c2bfa4cb4b",
     "100_r33_heavy_offload.py": "45ad228afcd9b285424f3fd3adb0c0e6705091bc16d56c38c16f44c055ad14e8"
   },
-  "release": "Пер-R45-STABLE-STUCKFIX1",
+  "release": "Пер-R45-STABLE-STUCKFIX2",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -193,6 +193,10 @@
     "r45_stuckfix_traced_chat_lock_holder",
     "r45_stuckfix_delayed_latest_wins_singleflight",
     "r45_stuckfix_delayed_exponential_backoff",
-    "r45_stuckfix_dispatcher_enqueued_stage"
+    "r45_stuckfix_dispatcher_enqueued_stage",
+    "r45_stuckfix2_event_outbox_off_callback_hotpath",
+    "r45_stuckfix2_outbox_schema_init_once",
+    "r45_stuckfix2_outbox_sqlite_short_busy_timeout",
+    "r45_stuckfix2_event_status_cached_no_sqlite"
   ]
 }
