@@ -131,7 +131,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     return body
 
 
-def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
+def _r33_remote_file_adapter_legacy_r33(kind,label,func_name,args,kwargs):
     # R34: never wait for global state synchronization on FAST.  The job carries a
     # revision fence and HEAVY waits for only the state it actually needs.
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
@@ -146,7 +146,7 @@ def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     # adapter defined below waits for the real FAST delivery callback.
     return True
 
-def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
+def submit_interactive_file_job_legacy_r33(chat_id:int,kind:str,label:str,func,*args,**kwargs):
     kind_s=str(kind or 'file')
     heavy=(kind_s in _R33_HEAVY_FILE_KINDS or kind_s.startswith('window_'))
     if not heavy or not callable(_R33_PREV_SUBMIT_FILE_JOB):
@@ -387,7 +387,7 @@ def _r35_wait_remote_delivery(jid,body):
         _r33_time.sleep(0.45)
     raise RuntimeError(f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={jid}')
 
-def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
+def _r33_remote_file_adapter_legacy_r38(kind,label,func_name,args,kwargs):
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
     body['front_release']='Пер-R42'
     try: _file_job_progress('передаю задание Render #2',force=True)
@@ -1584,3 +1584,4 @@ try:
     bot_journal('r43_file_bridge_loaded',int(OWNER_ID or 0),'callback + FAST pull-status fallback; same job_id; no file loss on callback failure')
 except Exception:
     pass
+# v262

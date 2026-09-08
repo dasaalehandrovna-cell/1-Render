@@ -221,12 +221,19 @@ def _restore_from_worker(target: Path):
                 if _install_gzip_db(gz, target):
                     return True, f'worker restore OK attempt={attempt}'
             detail = f'worker HTTP {r.status_code}: {r.text[:180] if not r.ok else "invalid DB"}'
+            retry_after=0.0
+            if r.status_code in {408,425,429,500,502,503,504}:
+                try: retry_after=float(r.headers.get('Retry-After') or 0.0)
+                except Exception: retry_after=0.0
+            elif r.status_code != 200:
+                return False,detail
         except Exception as exc:
             detail = f'worker {type(exc).__name__}: {str(exc)[:180]}'
+            retry_after=0.0
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
         if attempt < attempts:
-            time.sleep(min(2.0 * attempt, 5.0))
+            time.sleep(min(8.0,max(retry_after,1.5*(2**(attempt-1)))))
     return False, detail
 
 
@@ -492,16 +499,30 @@ def _r20_load_capsule_from_redis():
 def _r20_load_capsule_from_worker():
     base,secret=_peer_base(),_secret()
     if not base or not secret: return {}, 'worker URL/secret not configured'
-    try:
-        r=requests.get(base+'/internal/capsule/latest?deep=1',headers={'X-Peer-Secret':secret,'User-Agent':'vys-262-front-capsule-restore-r20'},timeout=max(5.0,min(30.0,float(os.getenv('SPLIT_CAPSULE_BOOT_TIMEOUT','15') or '15'))))
-        if r.status_code!=200: return {}, f'worker HTTP {r.status_code}'
-        raw=r.content
-        if str(r.headers.get('Content-Encoding') or '').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
-            raw=gzip.decompress(raw)
-        payload=json.loads(raw.decode('utf-8'))
-        return (payload if isinstance(payload,dict) else {}), 'Worker capsule OK'
-    except Exception as exc:
-        return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
+    timeout=max(5.0,min(30.0,float(os.getenv('SPLIT_CAPSULE_BOOT_TIMEOUT','15') or '15')))
+    attempts=max(1,min(5,int(os.getenv('SPLIT_CAPSULE_BOOT_ATTEMPTS','3') or '3')))
+    detail='worker unavailable'
+    for attempt in range(1,attempts+1):
+        try:
+            r=requests.get(base+'/internal/capsule/latest?deep=1',headers={'X-Peer-Secret':secret,'User-Agent':'vys-262-front-capsule-restore-r20'},timeout=timeout)
+            if r.status_code==200:
+                raw=r.content
+                if str(r.headers.get('Content-Encoding') or '').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
+                    raw=gzip.decompress(raw)
+                payload=json.loads(raw.decode('utf-8'))
+                return (payload if isinstance(payload,dict) else {}), f'Worker capsule OK attempt={attempt}'
+            detail=f'worker HTTP {r.status_code}'
+            if r.status_code not in {408,425,429,500,502,503,504}:
+                return {},detail
+            retry_after=0.0
+            try: retry_after=float(r.headers.get('Retry-After') or 0.0)
+            except Exception: retry_after=0.0
+        except Exception as exc:
+            detail=f'{type(exc).__name__}: {str(exc)[:180]}'
+            retry_after=0.0
+        if attempt<attempts:
+            time.sleep(min(8.0,max(retry_after,1.5*(2**(attempt-1)))))
+    return {},detail
 
 def _r20_restore_capsule(target: Path):
     # Boot-only quorum: query both small capsule sources and merge the independently

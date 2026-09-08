@@ -1,0 +1,7 @@
+FAST R44 FIXED
+- Fixed fatal MODULAR PACKAGE CHECK for 100_r33_heavy_offload.py.
+- Restored required # v262 end marker.
+- Recalculated modules_manifest.json SHA-256 for the modified module.
+- Renamed shadowed legacy heavy-offload adapters/submission function so only one active top-level definition remains.
+- Added transient retry/backoff for HEAVY boot restore/capsule HTTP 429/5xx while preserving Redis/MEGA fallback authority.
+- Compatible with HEAVY R44 FIXED.

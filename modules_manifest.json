@@ -77,7 +77,7 @@
     "98_split_front.py": "a950b1c3f0e1bd2d0b567723753e1acad2161febcb6b8e17fd317d4886881c4d",
     "97_r30_policy_ui.py": "172f9b037dbd5fd3274b068e11c3cfb035eb82a6a590993b1ff5b30eaa17c9f9",
     "96_r32_event_stream.py": "eec08108d88e1d7a3b0b0bf7f0e0d5bd8c103296e2c5d6e3fde285da1036be6d",
-    "100_r33_heavy_offload.py": "72498aa7cc51355db0e71dec801974f72a57d733801afefe8674cf9db35856ec"
+    "100_r33_heavy_offload.py": "aa27bf3534e5b06dc475722c8271f2807956be8b46217be2abf1558a7595ead2"
   },
   "release": "Пер-R42",
   "release_features": [
