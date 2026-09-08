@@ -1507,3 +1507,80 @@ try:
     bot_journal('r42_recovery_barrier_loaded', int(OWNER_ID or 0), 'drop stale R39-R41 peer outbox; 4 content workers; current jobs use Пер-R42')
 except Exception:
     pass
+
+# ---------------- Пер-R43 resilient HEAVY file pull fallback ----------------
+# R42 primarily depended on HEAVY -> FAST callbacks.  A lost callback could leave
+# the canonical FAST file-job waiting even though the artifact already existed on
+# HEAVY.  R43 keeps callbacks as the fast path and adds an independent FAST ->
+# HEAVY status/pull path keyed by the same job_id.
+def _r43_worker_export_status(jid):
+    try:
+        base=globals().get('_split_peer_base',lambda:'')()
+        if not base:
+            return {}
+        headers_fn=globals().get('_split_headers')
+        hdr=headers_fn('per-r43-front-export-status') if callable(headers_fn) else {'X-Peer-Secret':str(_r33_os.getenv('PEER_SHARED_SECRET','') or '')}
+        try: _r38_peer_gate()
+        except Exception: pass
+        r=requests.get(base+'/internal/export/status/'+str(jid),headers=hdr,timeout=12)
+        if int(getattr(r,'status_code',0) or 0)!=200:
+            return {}
+        x=r.json() if r.content else {}
+        return x if isinstance(x,dict) else {}
+    except Exception:
+        return {}
+
+
+def _r43_wait_remote_delivery(jid,body):
+    timeout=max(300,min(21600,int(_r33_os.getenv('R38_FAST_JOB_WAIT_SEC','3600') or '3600')))
+    deadline=_r33_time.time()+timeout; last_progress=0.0; last_poll=0.0; pull_started=False
+    while _r33_time.time()<deadline:
+        row=_r35_delivery_get(jid); state=str(row.get('state') or '')
+        if state=='done': return True
+        if state=='done_error':
+            b=row.get('body') if isinstance(row.get('body'),dict) else {}
+            raise RuntimeError(str(row.get('error') or b.get('error') or 'Render #2 completed with an error')[:900])
+        out=_r38_outbox_get(jid); ostate=str(out.get('state') or '')
+        if ostate=='failed': raise RuntimeError(str(out.get('last_error') or 'Render #2 rejected the job')[:900])
+        now=_r33_time.time()
+        # Independent pull fallback.  Do not wait for the reverse callback forever.
+        if now-last_poll>=2.0 and ostate in {'accepted','retry'}:
+            last_poll=now
+            st=_r43_worker_export_status(jid)
+            canonical=str(st.get('canonical_job_id') or st.get('duplicate_of') or '')[:80]
+            if canonical and canonical!=jid:
+                # Follow the canonical job result for semantic duplicates.
+                cst=_r43_worker_export_status(canonical)
+                if cst: st=cst; st['job_id']=canonical
+            if bool(st.get('terminal_error')):
+                raise RuntimeError(str(st.get('error') or 'Render #2 completed with an error')[:900])
+            if bool(st.get('ready')) and not pull_started:
+                payload=dict(body or {})
+                payload.update({k:v for k,v in st.items() if v not in (None,'')})
+                payload['job_id']=str(st.get('job_id') or jid)
+                payload['ok']=True
+                # Deliver synchronously inside the canonical FAST file-job runner.
+                # This guarantees the result before its single-flight context closes.
+                pull_started=True
+                if bool(_r38_deliver_worker_export(payload)):
+                    _r35_delivery_set(jid,'done',payload)
+                    return True
+                pull_started=False
+        if now-last_progress>12:
+            try:
+                if ostate in {'pending','retry'}: phase='Render #2: задание сохранено, проверяю связь'
+                elif ostate=='accepted': phase='Render #2 выполняет задачу / проверяю готовый файл'
+                elif state in {'running','failed'}: phase='получаю файл Render #2'
+                else: phase='ожидаю Render #2'
+                _file_job_progress(phase,force=True)
+            except Exception: pass
+            last_progress=now
+        _r33_time.sleep(0.45)
+    raise RuntimeError(f'Render #2 did not deliver the result within {timeout} sec; job_id={jid}')
+
+# The final remote adapter resolves this symbol at call time.
+_r38_wait_remote_delivery=_r43_wait_remote_delivery
+try:
+    bot_journal('r43_file_bridge_loaded',int(OWNER_ID or 0),'callback + FAST pull-status fallback; same job_id; no file loss on callback failure')
+except Exception:
+    pass
