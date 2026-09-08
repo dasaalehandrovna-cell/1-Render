@@ -625,6 +625,80 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
         pass
     return ('OK', 200)
 
+# R46 DIRECT FILE HOTPATH -------------------------------------------------------
+# Read-only export commands bypass DurableUpdateDispatcher entirely.  A stale
+# ticket in CLAIMED must never prevent /xlsx, /csv, /json, /journal, /sqlite, etc.
+_R46_DIRECT_FILE_CMDS = {'/csv','/xlsx','/excel','/tabl_lsx','/json','/runtime_export','/journal','/log','/logs','/sqlite','/db'}
+_R46_DIRECT_FILE_LOCK = threading.RLock()
+_R46_DIRECT_FILE_ACTIVE = set()
+
+
+def _r46_direct_file_command(payload):
+    try:
+        if not isinstance(payload, dict) or 'message' not in payload:
+            return ''
+        msg = payload.get('message') or {}
+        text = str(msg.get('text') or '').strip()
+        if not text.startswith('/'):
+            return ''
+        cmd = text.split()[0].split('@')[0].casefold()
+        return cmd if cmd in _R46_DIRECT_FILE_CMDS else ''
+    except Exception:
+        return ''
+
+
+def _r46_direct_file_worker(payload, update_id, chat_id, update_type='message'):
+    key = str(update_id)
+    try:
+        _v260_webhook_inbox_mark(update_id, 'running')
+        log_info(f'R46 FILE DIRECT START update={update_id} chat={chat_id} cmd={_r46_direct_file_command(payload)}')
+        _execute_telegram_payload(payload, update_id, chat_id, update_type)
+        _v260_webhook_inbox_mark(update_id, 'done')
+        try:
+            commit_fn = globals().get('split_event_committed_v268')
+            if callable(commit_fn): commit_fn(update_id, chat_id, update_type, True, '')
+        except Exception:
+            pass
+        log_info(f'R46 FILE DIRECT DONE update={update_id} chat={chat_id}')
+    except Exception as exc:
+        detail = f'{type(exc).__name__}: {str(exc)[:700]}'
+        _v260_webhook_inbox_mark(update_id, 'failed', detail)
+        try:
+            commit_fn = globals().get('split_event_committed_v268')
+            if callable(commit_fn): commit_fn(update_id, chat_id, update_type, False, detail)
+        except Exception:
+            pass
+        log_error(f'R46 FILE DIRECT FAILED update={update_id} chat={chat_id}: {detail}')
+    finally:
+        with _R46_DIRECT_FILE_LOCK:
+            _R46_DIRECT_FILE_ACTIVE.discard(key)
+
+
+def _r46_launch_direct_file(payload, update_id, chat_id, update_type='message'):
+    key = str(update_id)
+    state = _v260_webhook_inbox_state(update_id)
+    if state == 'done':
+        return True
+    with _R46_DIRECT_FILE_LOCK:
+        if key in _R46_DIRECT_FILE_ACTIVE:
+            return True
+        # A previous R45 deploy may have left this update marked running even though
+        # no worker thread existed.  On a fresh process there is no active key, so
+        # reclaim it and execute once now.
+        _R46_DIRECT_FILE_ACTIVE.add(key)
+    try:
+        t = threading.Thread(target=_r46_direct_file_worker,
+            args=(dict(payload or {}), update_id, chat_id, update_type),
+            name=f'r46-file-{str(update_id)[:18]}', daemon=True)
+        t.start()
+        return True
+    except Exception as exc:
+        with _R46_DIRECT_FILE_LOCK:
+            _R46_DIRECT_FILE_ACTIVE.discard(key)
+        _v260_webhook_inbox_mark(update_id, 'failed', f'thread start: {exc}')
+        log_error(f'R46 FILE DIRECT THREAD START FAILED update={update_id}: {exc}')
+        return False
+
 @app.route(WEBHOOK_ROUTE_PATH, methods=['POST'])
 def telegram_webhook():
     if WEBHOOK_HEADER_SECRET_ENABLED:
@@ -723,6 +797,15 @@ def telegram_webhook():
             return ('LOCAL DURABLE INBOX FAILED', 503)
         try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=ADMISSION_SQLITE_DONE elapsed={time.monotonic()-_r25_adm_started:.3f}s')
         except Exception: pass
+        # R46: read-only file commands are ACKed immediately after the local durable
+        # inbox write and execute outside UPDATE_DISPATCHER / per-chat queues / remote
+        # witness.  This is intentionally the simplest reliable path for file delivery.
+        _r46_file_cmd = _r46_direct_file_command(payload)
+        if update_type == 'message' and _r46_file_cmd:
+            if _r46_launch_direct_file(payload, update_id, update_chat_id, update_type):
+                log_info(f'R46 FILE DIRECT HTTP200 update={update_id} chat={update_chat_id} cmd={_r46_file_cmd}')
+                return ('OK', 200)
+            return ('FILE WORKER START FAILED', 503)
         # R13: before Telegram gets HTTP 200 and before business execution starts,
         # make the raw update durable on Worker/Redis.  If both remote witnesses are
         # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
@@ -951,8 +1034,8 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
-    '• 🛰 Пер-R43: тяжёлые file jobs запускаются асинхронно — FAST не держит единственный export-worker, а лёгкий supervisor ждёт реальную доставку.\n'
-    '• ⚡ R43 direct transport: если на HEAVY нет Redis, FAST хранит job в своём Redis-outbox, HEAVY сразу начинает работу без синхронного MEGA admission; тот же job_id переигрывается после рестарта до реальной доставки.\n'
+    '• 🛰 Пер-R42: тяжёлые file jobs запускаются асинхронно — FAST не держит единственный export-worker, а лёгкий supervisor ждёт реальную доставку.\n'
+    '• ⚡ R42 stable transport: если на HEAVY нет Redis, FAST хранит job в своём Redis-outbox, HEAVY сразу начинает работу без синхронного MEGA admission; тот же job_id переигрывается после рестарта до реальной доставки.\n'
     '• 🔗 R40 canonical alias: повторные/восстановленные задания схлопываются в один canonical job_id, FAST следует его результату вместо ожидания закрытого дубля.\n'
     '• 💾 R40 state outbox: изменения kv/chats/meta/cold сначала фиксируются в durable SQLite-outbox и удаляются только после durable ACK HEAVY.\n'
     '• 🧩 HEAVY R39/R40: file и Google jobs имеют Redis/MEGA spool, single-flight тяжёлых snapshot и восстановление после рестарта.\n'
@@ -1030,7 +1113,7 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R43 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R42 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
         return True
     except Exception as exc:
         try:
@@ -1117,7 +1200,7 @@ def main():
     runtime_set_phase('boot_local_load', f'восстанавливаю рабочую SQLite из {_backend_name} / локального диска')
     restored = bool(_split_preboot_authoritative_r19)
     db_restored = bool(_split_preboot_authoritative_r19)
-    db_detail = (f'Пер-R43 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
+    db_detail = (f'Пер-R42 split authoritative revision={_split_preboot_revision_r19 or "unknown"}' if _split_preboot_authoritative_r19 else '')
     if LOWRAM_ENABLED and (not _split_preboot_authoritative_r19):
         try:
             if _tg_primary:

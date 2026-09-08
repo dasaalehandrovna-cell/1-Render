@@ -585,8 +585,7 @@ def split_front_state_download_v262():
             _quiet_fn = globals().get('r27_user_quiet_for')
             _quiet_for = float(_quiet_fn()) if callable(_quiet_fn) else 999999.0
             _guard = max(2.0, min(60.0, float(_split_os.getenv('R28_FULL_SNAPSHOT_USER_QUIET_SEC','30') or '15')))
-            _r43_direct_job = str(request.headers.get('X-R43-Job-Snapshot','') or '').strip() == '1'
-            if (not _r43_direct_job) and bool(globals().get('runtime_is_ready', lambda: False)()) and _quiet_for < _guard:
+            if bool(globals().get('runtime_is_ready', lambda: False)()) and _quiet_for < _guard:
                 return ({'ok': False, 'busy': 'user_active', 'retry_after': max(1, int(_guard - _quiet_for) + 1)}, 423)
         except Exception:
             pass

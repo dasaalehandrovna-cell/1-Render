@@ -41,7 +41,7 @@
     "100_r33_heavy_offload.py": "v262"
   },
   "files": {
-    "00_core.py": "9980022e99de66f1c2e15a8d8ff79104d072b1d044bdb8fb61a1cbce27f6176f",
+    "00_core.py": "df491a8fced0bc081e074f8cf694590207332aabce8e078a1f7b3131734317ba",
     "05_key_value_runtime.py": "1df54a6018dbe2f973854f8d6929672e785be38c5bdb285ec0d756906ab1d36d",
     "10_mega_runtime.py": "c47457ac20465d5d6170883f4628d0f9ef7863b578ad4cce2ce34fcb557151dd",
     "11_data_constitution.py": "810c95193895cfa6e2aa23b59801717b7d2c71fdedd539d076a63dd83b873bae",
@@ -65,21 +65,21 @@
     "90_commands_exports.py": "3ab3d4fe17e87cf87d2d27f60404b296c3e00d3de5c86303da1408716016dff4",
     "91_finance_records_handlers.py": "b172d861733f0f9e8fc46c0aa4a45574159e85736017958d0442e2db5076ca01",
     "72_multitenant_runtime.py": "8f9fc7359e8c36da2d890dc653e92630484240dd95c92a30ad64e3ed552d253c",
-    "99_web_runtime.py": "e17643195e7b97b3bb82c49fecaa45fa9b18fb9ff997715a650bdaa898a5c3cf",
+    "99_web_runtime.py": "577256a647b9f7be9660757653f820a26bb4e1782ac7a46e9aa2741b8efe4610",
     "73_state_export_runtime.py": "b4be89cd84017a1db4d8c5391a3707bc7659ee0379e43f0f5497e967d3c1594b",
     "74_ui_reliability_runtime.py": "4fd6bbae9874d81d25ff05c72394d95d0c3ad0e71e568da4dd3eae8cd44d8122",
-    "75_platform_features_runtime.py": "e7d5acc9dc00ad5e70b684a0b40b97900a3d4c092f34b37b41c3950840caaebc",
+    "75_platform_features_runtime.py": "4aea956a81e7b3feeb3ba556b2fa54bbe7e1d4c17a30b9aefed46eaa11bf86ea",
     "76_tasks_runtime.py": "0357775dd5888c864c5609f5b8ed83537ab08121c66186e674e3541fa73d2d3c",
     "85_runtime_control.py": "d3d84b31eba1291fda7e41187dbb6a036089fa966645b5fe26b7d21db607e867",
     "88_ui_constructor.py": "3f684bfcaab2a0f41aed87e7e23bc5053dccfde88c603ea4c159b51a0dcc2b6a",
     "89_callback_final.py": "077fa57a67ad4c436e9d3f7f5f915e2c34d79ea470879fa1d34a2570fe1408c1",
     "92_v262_linked_finance_speed.py": "d2f21cb54b6a2637cffd3f052de26d0e72f5c8c7b1b45d0e48660b0d04ebb703",
-    "98_split_front.py": "90e2a5e6057381271e3451ec230eedb79746fccf992855c7ae0fb44a77d34b67",
-    "97_r30_policy_ui.py": "21e327ad3778b38ec4d11bd47db605d580f899a2cf9ca0ee7dda1eecc221968e",
-    "96_r32_event_stream.py": "51c26aca902039ff10aecd4b60d93e5fd99e4a6f90348d197b8370ee397efc59",
-    "100_r33_heavy_offload.py": "a74596e33e48d220e76646a055c8fef28470f6e1be144581b1157ac9ca14fb7e"
+    "98_split_front.py": "a950b1c3f0e1bd2d0b567723753e1acad2161febcb6b8e17fd317d4886881c4d",
+    "97_r30_policy_ui.py": "172f9b037dbd5fd3274b068e11c3cfb035eb82a6a590993b1ff5b30eaa17c9f9",
+    "96_r32_event_stream.py": "eec08108d88e1d7a3b0b0bf7f0e0d5bd8c103296e2c5d6e3fde285da1036be6d",
+    "100_r33_heavy_offload.py": "23129d4cae6dbca79930b9309c9a8fcf2b7b8ef1b2025b14b494a61c321e8a83"
   },
-  "release": "Пер-R43",
+  "release": "Пер-R42",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -155,20 +155,6 @@
     "r42_full_state_exclusive_against_excel_google",
     "r42_ready_job_redelivery_after_restart",
     "r42_google_recovery_release_barrier",
-    "r42_content_workers_four",
-    "r43_fast_manifest_marker_fixed",
-    "r43_direct_fast_snapshot_per_heavy_job",
-    "r43_heavy_stateless_compute_path",
-    "r43_no_sync_mega_on_state_events",
-    "r43_no_heavy_redis_required",
-    "r43_lean_heavy_background_threads",
-    "r43_bot_source_local_on_fast",
-    "r43_bootstrap_snapshot_from_fast",
-    "r43_redis_first_fast_boot",
-    "r43_one_compute_job_at_a_time",
-    "r43_redis_event_stream_fast_authority",
-    "r43_heavy_state_event_local_mirror_only",
-    "r43_no_sync_mega_state_event",
-    "r43_fast_redis_event_boot_replay"
+    "r42_content_workers_four"
   ]
 }

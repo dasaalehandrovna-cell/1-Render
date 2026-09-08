@@ -1,0 +1,6 @@
+R46 DIRECT FILE HOTFIX
+1. File commands bypass UPDATE_DISPATCHER completely after local durable inbox write.
+2. Telegram gets HTTP 200 immediately; a dedicated daemon worker executes the command.
+3. Old R45 CLAIMED/thread=None tickets cannot block file commands after redeploy.
+4. Duplicate retries are coalesced by update_id in an in-memory active set plus local inbox state.
+5. Existing HEAVY job generation + FAST direct pull/send_document remain unchanged.

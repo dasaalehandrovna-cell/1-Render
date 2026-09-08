@@ -1,4 +1,4 @@
-"""vys-262 R43 internal runtime configuration.
+"""vys-262 R38 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,11 +13,10 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r43-direct-heavy"
+CONFIG_VERSION = "vys-262-r38-unified-bot"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
-    "R43_FAST_AUTHORITY": "1",
     # Process / role
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
@@ -68,7 +67,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R35_FAST_JOB_WAIT_SEC": "1800",
     "R24_LOWRAM_EVICT_RSS_MB": "340",
     "UI_CLEANUP_MAX_PENDING": "1200",
-    "WEBHOOK_WORKERS": "4",
+    "WEBHOOK_WORKERS": "3",
     "WEBHOOK_STUCK_WARN_SECONDS": "5",
     "R25_TRACE_SLOW_LOCK_SEC": "0.020",
     "DELTA_WORKERS": "2",
@@ -105,7 +104,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "SPLIT_REDIS_FALLBACK_SOCKET_TIMEOUT_SEC": "0.65",
 
     # Boot / rolling deploy recovery
-    "SPLIT_BOOT_ALWAYS_RESTORE": "0",
+    "SPLIT_BOOT_ALWAYS_RESTORE": "1",
     "SPLIT_BOOT_HANDOFF_GRACE_SEC": "16",
     "SPLIT_PREBOOT_CAPTURE_WAIT_SEC": "4.0",
     "SPLIT_BOOT_WORKER_ATTEMPTS": "3",

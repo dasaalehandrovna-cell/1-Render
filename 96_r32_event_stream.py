@@ -14,10 +14,6 @@ import queue as _r32_queue
 import secrets as _r32_secrets
 import sqlite3 as _r32_sqlite3
 import threading as _r32_threading
-try:
-    import redis as _r43_redis
-except Exception:
-    _r43_redis = None
 import time as _r32_time
 
 _R32_EVENT_STREAM_ENABLED = str(_r32_os.getenv('R32_EVENT_STREAM_ENABLED','1') or '1').strip().lower() in {'1','true','yes','on','да'}
@@ -224,7 +220,7 @@ def _r32_materialize(desc):
 
 
 def _r32_make_event(desc,payload,kind_override=None):
-    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R43')}
+    body={'schema':32,'event_id':str(desc.get('event_id') or ''),'revision':int(desc.get('revision') or 0),'created_at':float(desc.get('created_at') or _r32_time.time()),'kind':str(kind_override or desc.get('kind') or '')[:60],'key':str(desc.get('key') or '')[:220],'payload':payload,'front_version':str(globals().get('VERSION') or 'Пер-R42')}
     raw=_r32_json.dumps(body,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'); body['sha256']=_r32_hashlib.sha256(raw).hexdigest(); return body
 
 
@@ -262,56 +258,7 @@ def _r32_build_packet(rows):
     return {'rows':rows,'events':events,'packets':_r34_partition_events(events)}
 
 
-_R43_EVENT_STREAM_KEY='per:r43:front:state_events'
-
-def _r43_event_redis_client():
-    if _r43_redis is None: return None
-    url=str(_r32_os.getenv('REDIS_URL','') or '').strip()
-    if not url: return None
-    try:
-        return _r43_redis.Redis.from_url(url,socket_connect_timeout=0.6,socket_timeout=1.5,health_check_interval=30)
-    except Exception:
-        return None
-
-def _r43_store_events_redis(events):
-    c=_r43_event_redis_client()
-    if c is None: return False,'Redis unavailable'
-    try:
-        pipe=c.pipeline(transaction=False)
-        for ev in events or []:
-            raw=_r32_json.dumps(ev,ensure_ascii=False,separators=(',',':'),default=str)
-            pipe.xadd(_R43_EVENT_STREAM_KEY,{'e':raw},maxlen=50000,approximate=True)
-        pipe.expire(_R43_EVENT_STREAM_KEY,7*24*3600)
-        pipe.execute()
-        return True,f'redis-stream events={len(events or [])}'
-    except Exception as exc:
-        return False,f'{type(exc).__name__}: {str(exc)[:180]}'
-
 def _r34_post_events(events, wire, large=False):
-    # R43: Redis on FAST is the durable event authority. HEAVY is only a best-effort
-    # warm mirror and must never stall finance/user mutations.
-    if str(_r32_os.getenv('R43_FAST_AUTHORITY','1') or '1').strip().lower() in {'1','true','yes','on'}:
-        rok,rdetail=_r43_store_events_redis(events)
-        if not rok:
-            raise RuntimeError('R43 durable event stream unavailable: '+str(rdetail)[:180])
-        max_rev=max([int(x.get('revision') or 0) for x in events] or [0])
-        base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
-        if base and secret:
-            try:
-                endpoint='/internal/state/event-large' if large else '/internal/state/events'
-                requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r43-state-mirror','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=1.5)
-            except Exception:
-                pass
-        _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),max_rev)
-        _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),max_rev)
-        _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events)
-        _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
-        _R32_EVENT_STATE['bytes']=int(_R32_EVENT_STATE.get('bytes') or 0)+len(wire)
-        _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
-        st=globals().get('_SPLIT_STATE')
-        if isinstance(st,dict):
-            st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1; st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''; st['r34_event_last_revision_acked']=max_rev; st['r35_event_last_revision_applied_peer']=max_rev
-        return True
     base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
     if not base or not secret: raise RuntimeError('R34 peer URL/secret not configured')
     endpoint='/internal/state/event-large' if large else '/internal/state/events'
@@ -456,17 +403,8 @@ def _split_request_worker_full_sync_r18(reason='need_full'):
 
 def _split_push_snapshot_now_v263(reason='shutdown'):
     r32_flush_state_events(timeout=float(_r32_os.getenv('R32_SHUTDOWN_EVENT_FLUSH_SEC','8') or '8'))
-    try: r20_schedule_durable_capsule('r43-shutdown:'+str(reason or '')[:80],delay=0.05)
+    try: r20_schedule_durable_capsule('r32-shutdown:'+str(reason or '')[:80],delay=0.05)
     except Exception: pass
-    # R43: HEAVY is no longer the full-state authority. Publish one exact full
-    # SQLite image to shared Redis on graceful deploy/shutdown so the next FAST
-    # container can restore without waiting for Render #2.
-    if str(_r32_os.getenv('R43_FAST_AUTHORITY','1') or '1').strip().lower() in {'1','true','yes','on'}:
-        try:
-            fn=globals().get('_split_cache_snapshot_to_redis_v266')
-            if callable(fn): fn(reason='r43-shutdown:'+str(reason or '')[:100])
-        except Exception as exc:
-            _R32_EVENT_STATE['last_error']=f'R43 shutdown Redis snapshot {type(exc).__name__}: {str(exc)[:160]}'
     return True
 
 def r32_event_stream_status():
