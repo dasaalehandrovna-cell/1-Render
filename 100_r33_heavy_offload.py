@@ -1,5 +1,5 @@
 # v262
-"""Пер-R42: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R43: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -14,7 +14,7 @@ import time as _r33_time
 _R33_PREV_SUBMIT_FILE_JOB = globals().get('submit_interactive_file_job')
 _R33_HEAVY_FILE_KINDS = {
     'period_export','exact_export','xlsx','csv','tabl_lsx','json','json_full','sqlite',
-    'runtime','journal','journal_current','bot_source','window_markers','window_tz',
+    'runtime','journal','journal_current','window_markers','window_tz',
     'window_tz_archive'
 }
 # Future annotation/document buttons with the same prefix are heavy by contract.
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R42',
+        'delivery':'chat','front_release':'Пер-R43',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -115,7 +115,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     if str(body.get('operation') or '') in {'runtime_zip','journal','journal_current'}:
         try:
             body['front_runtime_snapshot']=_r33_safe_scalar({
-                'release':'Пер-R42',
+                'release':'Пер-R43',
                 'captured_at':_r33_time.time(),
                 'runtime':dict(globals().get('_RUNTIME_STATE') or {}),
                 'split':dict(globals().get('_SPLIT_STATE') or {}),
@@ -131,7 +131,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     return body
 
 
-def _r33_remote_file_adapter_legacy_r33(kind,label,func_name,args,kwargs):
+def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     # R34: never wait for global state synchronization on FAST.  The job carries a
     # revision fence and HEAVY waits for only the state it actually needs.
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
@@ -146,7 +146,7 @@ def _r33_remote_file_adapter_legacy_r33(kind,label,func_name,args,kwargs):
     # adapter defined below waits for the real FAST delivery callback.
     return True
 
-def submit_interactive_file_job_legacy_r33(chat_id:int,kind:str,label:str,func,*args,**kwargs):
+def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
     kind_s=str(kind or 'file')
     heavy=(kind_s in _R33_HEAVY_FILE_KINDS or kind_s.startswith('window_'))
     if not heavy or not callable(_R33_PREV_SUBMIT_FILE_JOB):
@@ -195,7 +195,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Пер-R42: end-to-end HEAVY delivery control.
+# Пер-R43: end-to-end HEAVY delivery control.
 # 202/queued is only an acceptance ACK. The FAST file job remains open until
 # Render #2's callback has actually delivered the result to Telegram/Google.
 _R35_REMOTE_RESULT_LOCK = __import__('threading').RLock()
@@ -387,9 +387,9 @@ def _r35_wait_remote_delivery(jid,body):
         _r33_time.sleep(0.45)
     raise RuntimeError(f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={jid}')
 
-def _r33_remote_file_adapter_legacy_r38(kind,label,func_name,args,kwargs):
+def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    body['front_release']='Пер-R42'
+    body['front_release']='Пер-R43'
     try: _file_job_progress('передаю задание Render #2',force=True)
     except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
@@ -728,7 +728,7 @@ def _r38_wait_remote_delivery(jid,body):
 
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R42'
+    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R43'
     try: _file_job_progress('сохраняю задание для Render #2',force=True)
     except Exception: pass
     jid=_r38_worker_file_submit(body)
@@ -750,7 +750,7 @@ def _r38_google_submit_report(title,rows,layout='category',annotations_override=
     annotations=_split_annotations_for_google(rows,str(layout or 'category'),annotations_override,bool(include_annotations))
     encoded={f'{int(r)},{int(c)}':str(note) for (r,c),note in annotations.items() if str(note or '').strip()}
     jid=__import__('secrets').token_hex(12)
-    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R42'}
+    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R43'}
     _r38_outbox_enqueue('google','/internal/google/sheet',body)
     try:
         _SPLIT_STATE['google_last_attempt']=_r33_time.time(); _SPLIT_STATE['google_last_job']=jid; _SPLIT_STATE['google_last_error']=''
@@ -986,7 +986,7 @@ try:app.view_functions['split_front_export_result_r7']=_r38_export_result_handle
 except Exception:pass
 
 
-# ---------------- Пер-R42 semantic single-flight / duplicate collapse ----------------
+# ---------------- Пер-R43 semantic single-flight / duplicate collapse ----------------
 # R38 made transport durable, but a backlog could still contain several different job_id
 # values for the same user action.  After a HEAVY restart they were dispatched together.
 # Full-state exports are memory-heavy, so this could create three simultaneous snapshots.
@@ -1049,7 +1049,7 @@ def _r39_outbox_enqueue(kind, endpoint, body):
             # R42 release barrier: never reuse a canonical job_id from R39-R41.
             # Those rows may represent already-delivered work whose HEAVY MEGA witness
             # survived a container replacement. New R42 actions always get an R42 job.
-            if str(rb.get('front_release') or '') != 'Пер-R42':
+            if str(rb.get('front_release') or '') != 'Пер-R43':
                 continue
             if now - float(r.get('created_at') or now) > 900:
                 continue
@@ -1085,7 +1085,7 @@ def _r39_pending_rows(limit=250):
         if not isinstance(row, dict):
             continue
         rb=row.get('body') if isinstance(row.get('body'),dict) else {}
-        if str(rb.get('front_release') or '') != 'Пер-R42':
+        if str(rb.get('front_release') or '') != 'Пер-R43':
             # One-time deploy barrier. Old pending peer jobs are superseded instead of
             # being replayed forever after every HEAVY restart.
             try:
@@ -1151,7 +1151,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Пер-R42: true asynchronous FAST<->HEAVY supervision.
+# Пер-R43: true asynchronous FAST<->HEAVY supervision.
 # Heavy file jobs no longer occupy EXPORT_TASK_POOL while waiting minutes for HEAVY.
 # FAST persists the peer job, returns the UI handler immediately, and a tiny supervisor
 # thread follows canonical/duplicate jobs until the real Telegram/Google delivery ACK.
@@ -1263,7 +1263,7 @@ def _r40_supervise_remote(jid,body,label,chat_id,msg_id):
 def _r40_submit_heavy_file(chat_id,kind,label,func,*args,**kwargs):
     chat_id=int(chat_id); kind_s=str(kind or 'file'); fname=str(getattr(func,'__name__','') or '')
     try:
-        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R42'
+        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R43'
         jid=_r38_worker_file_submit(body); body['job_id']=str(jid)
     except Exception as exc:
         detail=f'{type(exc).__name__}: {str(exc)[:500]}'
@@ -1309,7 +1309,7 @@ def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,
     jid=__import__('secrets').token_hex(12)
     try: required=int((_R32_EVENT_STATE or {}).get('last_revision_queued') or 0)
     except Exception: required=0
-    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R42'}
+    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R43'}
     jid2=_r38_outbox_enqueue('google','/internal/google/sheet',body)
     return str(jid2)
 
@@ -1329,7 +1329,7 @@ globals()['_r40_google_wait']=_r40_google_wait
 
 
 # ---------------------------------------------------------------------------
-# Пер-R42: two-phase FAST-owned durable admission.
+# Пер-R43: two-phase FAST-owned durable admission.
 # When HEAVY has no Redis, synchronous MEGA admission can take much longer than
 # the FAST HTTP timeout.  FAST already owns a Redis-backed durable outbox, so a
 # live HEAVY may start the same idempotent job immediately while FAST keeps the
@@ -1362,7 +1362,7 @@ def _r41_outbox_enqueue(kind, endpoint, body):
         backend = _r41_front_outbox_backend()
         obj['front_outbox_durable'] = bool(backend)
         obj['front_outbox_backend'] = backend or 'local'
-        obj['front_release'] = 'Пер-R42'
+        obj['front_release'] = 'Пер-R43'
     return _R41_BASE_OUTBOX_ENQUEUE(kind, endpoint, obj)
 
 
@@ -1453,137 +1453,39 @@ _r38_export_delivery_task = _r41_export_delivery_task
 # _r38_export_delivery_task dynamically, so the R41 completion hook is canonical.
 
 
-# R45 one-delivery gate shared by callback and pull paths.
-_R45_FILE_SEND_GUARD = _r38_threading.RLock()
-_R45_FILE_SEND_LOCKS = {}
-_R45_BASE_DELIVER_WORKER_EXPORT = _r38_deliver_worker_export
-
-
-def _r45_file_send_lock(jid):
-    key=str(jid or '')[:80]
-    with _R45_FILE_SEND_GUARD:
-        lock=_R45_FILE_SEND_LOCKS.get(key)
-        if lock is None:
-            lock=_r38_threading.Lock()
-            _R45_FILE_SEND_LOCKS[key]=lock
-        return lock
-
-
-def _r45_deliver_worker_export_once(body):
-    payload=dict(body or {})
-    jid=str(payload.get('job_id') or '')[:80]
-    if not jid:
-        return False
-    lock=_r45_file_send_lock(jid)
-    with lock:
-        row=_r35_delivery_get(jid) or {}
-        state=str(row.get('state') or '')
-        if state=='done':
-            return True
-        if state=='done_error' and not bool(payload.get('ok')):
-            return True
-        delivered=bool(_R45_BASE_DELIVER_WORKER_EXPORT(payload))
-        if delivered:
-            if bool(payload.get('ok')):
-                _r35_delivery_set(jid,'done',payload)
-            else:
-                _r35_delivery_set(jid,'done_error',payload,error=str(payload.get('error') or 'HEAVY job failed'))
-        return delivered
-
-
-# Existing callback delivery tasks resolve this symbol dynamically.
-_r38_deliver_worker_export = _r45_deliver_worker_export_once
-globals()['_r7_deliver_worker_export'] = _r45_deliver_worker_export_once
-
-
 def _r41_supervise_remote(jid,body,label,chat_id,msg_id):
-    """R45 final file supervisor: callback is optional, FAST pull is authoritative fallback.
-
-    The old final R41 supervisor only watched FAST's local delivery ledger.  The R43
-    status helper existed but was not used by this actual R40/R41 path, so a lost
-    HEAVY->FAST callback left the user waiting forever.  R45 polls HEAVY directly and,
-    once ready, downloads /internal/export/file/<job_id> and sends it to Telegram here.
-    """
-    original=str(jid or '')[:80]
-    started=_r33_time.time()
-    last_ui=0.0
-    last_poll=0.0
-    timeout=max(120,min(21600,int(_r33_os.getenv('R45_FAST_JOB_WAIT_SEC',_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600')) or '3600')))
-    deadline=started+timeout
+    original=str(jid or '')[:80]; started=_r33_time.time(); last_ui=0.0; timeout=max(300,min(21600,int(_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600') or '3600'))); deadline=started+timeout
     err=''; ok=False
     try:
         while _r33_time.time()<deadline:
             canonical=_r40_canonical_job_id(original)
-            row=_r35_delivery_get(canonical) or {}
-            state=str(row.get('state') or '')
-            if state=='done':
-                ok=True; break
+            row=_r35_delivery_get(canonical) or {}; state=str(row.get('state') or '')
+            if state=='done': ok=True; break
             if state=='done_error':
                 b=row.get('body') if isinstance(row.get('body'),dict) else {}
                 err=str(row.get('error') or b.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]; break
-            out=_r38_outbox_get(original) or {}
-            ostate=str(out.get('state') or '')
-            if ostate=='failed':
-                err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
-
+            out=_r38_outbox_get(original) or {}; ostate=str(out.get('state') or '')
+            if ostate=='failed': err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
             now=_r33_time.time()
-            # R45: do not rely on reverse callback. Poll the concrete job every 2 sec.
-            if now-last_poll>=2.0:
-                last_poll=now
-                poll_id=canonical or original
-                st=_r43_worker_export_status(poll_id)
-                alias=str(st.get('canonical_job_id') or st.get('duplicate_of') or '')[:80]
-                if alias and alias!=poll_id:
-                    canonical=alias
-                    st=_r43_worker_export_status(alias) or st
-                    if st: st['job_id']=alias
-                if bool(st.get('terminal_error')):
-                    err=str(st.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]
-                    _r35_delivery_set(original,'done_error',st,error=err)
-                    break
-                if bool(st.get('ready')):
-                    payload=dict(body or {})
-                    payload.update({k:v for k,v in st.items() if v not in (None,'')})
-                    payload['job_id']=str(st.get('job_id') or canonical or original)
-                    payload['recipient_chat_id']=int(payload.get('recipient_chat_id') or chat_id or 0)
-                    payload['ok']=True
-                    # Callback and pull share the same send-once gate keyed by job_id.
-                    # Whichever path gets here first sends; the other observes done.
-                    _r35_delivery_set(original,'running',payload)
-                    delivered=bool(_r38_deliver_worker_export(payload))
-                    if delivered:
-                        _r35_delivery_set(original,'done',payload)
-                        if payload['job_id']!=original:
-                            _r35_delivery_set(payload['job_id'],'done',payload)
-                        ok=True
-                        break
-                    # Network/Telegram turbulence is retryable; do not terminally fail.
-                    _r35_delivery_set(original,'accepted',payload,error='R45 direct pull/send retry')
-
             if now-last_ui>=12.0:
-                if canonical!=original:
-                    phase=f'Render #2: забираю готовый файл {canonical[:12]}…'
-                elif ostate in {'pending','retry'}:
-                    phase='Render #2: запрос сохранён, проверяю готовность файла'
-                elif ostate in {'accepted','completed'}:
-                    phase='Render #2: выполняет задачу / FAST сам заберёт файл'
-                elif state=='running':
-                    phase='FAST получает файл и отправляет в Telegram'
-                else:
-                    phase='проверяю готовность файла Render #2'
-                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r45_file_progress')
+                if canonical!=original: phase=f'Render #2 объединил дубль с заданием {canonical[:12]}…'
+                elif bool(out.get('provisional')) and bool(out.get('peer_accepted')): phase='Render #2 принял задачу и выполняет её · резервная копия запроса сохранена на FAST'
+                elif ostate in {'pending','retry'}: phase='восстанавливаю связь с Render #2 · запрос сохранён, повторяю автоматически'
+                elif ostate in {'accepted','completed'} and state in {'running','accepted','dispatching',''}: phase='Render #2 выполняет задачу'
+                elif state in {'running','failed'}: phase='получаю и отправляю готовый результат'
+                else: phase='ожидаю подтверждение Render #2'
+                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r41_file_progress')
                 last_ui=now
-            _r33_time.sleep(0.35)
-        else:
-            err=f'Render #2 не отдал файл за {timeout} сек.; job_id={original}'
+            _r33_time.sleep(0.5)
+        else: err=f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={original}'
     except Exception as exc:
         err=f'{type(exc).__name__}: {str(exc)[:800]}'
     elapsed=_r40_elapsed(started)
     if ok:
-        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r45_file_done')
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r41_file_done')
     else:
-        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r45_file_error')
-        try: log_error(f'R45 direct HEAVY file {original}: {err}')
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r41_file_error')
+        try: log_error(f'R41 async HEAVY job {original}: {err}')
         except Exception: pass
     _r40_status_delete_later(chat_id,msg_id,15)
     with _R40_SUP_LOCK: _R40_SUPERVISORS.pop(original,None)
@@ -1602,84 +1504,7 @@ except Exception:
 
 # R42 reliability barrier: previous-release peer jobs are not replayed; content pool has 4 workers.
 try:
-    bot_journal('r42_recovery_barrier_loaded', int(OWNER_ID or 0), 'drop stale R39-R41 peer outbox; 4 content workers; current jobs use Пер-R42')
-except Exception:
-    pass
-
-# ---------------- Пер-R43 resilient HEAVY file pull fallback ----------------
-# R42 primarily depended on HEAVY -> FAST callbacks.  A lost callback could leave
-# the canonical FAST file-job waiting even though the artifact already existed on
-# HEAVY.  R43 keeps callbacks as the fast path and adds an independent FAST ->
-# HEAVY status/pull path keyed by the same job_id.
-def _r43_worker_export_status(jid):
-    try:
-        base=globals().get('_split_peer_base',lambda:'')()
-        if not base:
-            return {}
-        headers_fn=globals().get('_split_headers')
-        hdr=headers_fn('per-r43-front-export-status') if callable(headers_fn) else {'X-Peer-Secret':str(_r33_os.getenv('PEER_SHARED_SECRET','') or '')}
-        try: _r38_peer_gate()
-        except Exception: pass
-        r=requests.get(base+'/internal/export/status/'+str(jid),headers=hdr,timeout=12)
-        if int(getattr(r,'status_code',0) or 0)!=200:
-            return {}
-        x=r.json() if r.content else {}
-        return x if isinstance(x,dict) else {}
-    except Exception:
-        return {}
-
-
-def _r43_wait_remote_delivery(jid,body):
-    timeout=max(300,min(21600,int(_r33_os.getenv('R38_FAST_JOB_WAIT_SEC','3600') or '3600')))
-    deadline=_r33_time.time()+timeout; last_progress=0.0; last_poll=0.0; pull_started=False
-    while _r33_time.time()<deadline:
-        row=_r35_delivery_get(jid); state=str(row.get('state') or '')
-        if state=='done': return True
-        if state=='done_error':
-            b=row.get('body') if isinstance(row.get('body'),dict) else {}
-            raise RuntimeError(str(row.get('error') or b.get('error') or 'Render #2 completed with an error')[:900])
-        out=_r38_outbox_get(jid); ostate=str(out.get('state') or '')
-        if ostate=='failed': raise RuntimeError(str(out.get('last_error') or 'Render #2 rejected the job')[:900])
-        now=_r33_time.time()
-        # Independent pull fallback.  Do not wait for the reverse callback forever.
-        if now-last_poll>=2.0 and ostate in {'accepted','retry'}:
-            last_poll=now
-            st=_r43_worker_export_status(jid)
-            canonical=str(st.get('canonical_job_id') or st.get('duplicate_of') or '')[:80]
-            if canonical and canonical!=jid:
-                # Follow the canonical job result for semantic duplicates.
-                cst=_r43_worker_export_status(canonical)
-                if cst: st=cst; st['job_id']=canonical
-            if bool(st.get('terminal_error')):
-                raise RuntimeError(str(st.get('error') or 'Render #2 completed with an error')[:900])
-            if bool(st.get('ready')) and not pull_started:
-                payload=dict(body or {})
-                payload.update({k:v for k,v in st.items() if v not in (None,'')})
-                payload['job_id']=str(st.get('job_id') or jid)
-                payload['ok']=True
-                # Deliver synchronously inside the canonical FAST file-job runner.
-                # This guarantees the result before its single-flight context closes.
-                pull_started=True
-                if bool(_r38_deliver_worker_export(payload)):
-                    _r35_delivery_set(jid,'done',payload)
-                    return True
-                pull_started=False
-        if now-last_progress>12:
-            try:
-                if ostate in {'pending','retry'}: phase='Render #2: задание сохранено, проверяю связь'
-                elif ostate=='accepted': phase='Render #2 выполняет задачу / проверяю готовый файл'
-                elif state in {'running','failed'}: phase='получаю файл Render #2'
-                else: phase='ожидаю Render #2'
-                _file_job_progress(phase,force=True)
-            except Exception: pass
-            last_progress=now
-        _r33_time.sleep(0.45)
-    raise RuntimeError(f'Render #2 did not deliver the result within {timeout} sec; job_id={jid}')
-
-# The final remote adapter resolves this symbol at call time.
-_r38_wait_remote_delivery=_r43_wait_remote_delivery
-try:
-    bot_journal('r43_file_bridge_loaded',int(OWNER_ID or 0),'callback + FAST pull-status fallback; same job_id; no file loss on callback failure')
+    bot_journal('r42_recovery_barrier_loaded', int(OWNER_ID or 0), 'drop stale R39-R41 peer outbox; 4 content workers; current jobs use Пер-R43')
 except Exception:
     pass
 # v262
