@@ -776,7 +776,7 @@ def _env_int(name: str, default: int, minimum: int=1, maximum: int=128) -> int:
         return max(minimum, min(maximum, int(os.getenv(name, str(default)) or default)))
     except Exception:
         return int(default)
-WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 2, 2, 8), _env_int('WEBHOOK_MAX_PENDING', 400, 50, 2000))
+WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 4, 2, 8), _env_int('WEBHOOK_MAX_PENDING', 400, 50, 2000))
 UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI_MAX_PENDING', 400, 50, 2000))
 # R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
 # can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.

@@ -41,7 +41,7 @@
     "100_r33_heavy_offload.py": "v262"
   },
   "files": {
-    "00_core.py": "94d3455e1f9ee5746b4a06f371b475ac807282c6819cc76d3648140deeb37bf0",
+    "00_core.py": "9980022e99de66f1c2e15a8d8ff79104d072b1d044bdb8fb61a1cbce27f6176f",
     "05_key_value_runtime.py": "1df54a6018dbe2f973854f8d6929672e785be38c5bdb285ec0d756906ab1d36d",
     "10_mega_runtime.py": "c47457ac20465d5d6170883f4628d0f9ef7863b578ad4cce2ce34fcb557151dd",
     "11_data_constitution.py": "810c95193895cfa6e2aa23b59801717b7d2c71fdedd539d076a63dd83b873bae",
@@ -65,7 +65,7 @@
     "90_commands_exports.py": "3ab3d4fe17e87cf87d2d27f60404b296c3e00d3de5c86303da1408716016dff4",
     "91_finance_records_handlers.py": "b172d861733f0f9e8fc46c0aa4a45574159e85736017958d0442e2db5076ca01",
     "72_multitenant_runtime.py": "8f9fc7359e8c36da2d890dc653e92630484240dd95c92a30ad64e3ed552d253c",
-    "99_web_runtime.py": "fa987f6c6fc117bc4a4aa07ff73f1abae63b0210a49c69e6839ea4c2eb3c5d58",
+    "99_web_runtime.py": "c4d9c291e9e7bac9ba0165c93a3e770e0a5f1f4846a19f256df2b6793555bc91",
     "73_state_export_runtime.py": "b4be89cd84017a1db4d8c5391a3707bc7659ee0379e43f0f5497e967d3c1594b",
     "74_ui_reliability_runtime.py": "4fd6bbae9874d81d25ff05c72394d95d0c3ad0e71e568da4dd3eae8cd44d8122",
     "75_platform_features_runtime.py": "e7d5acc9dc00ad5e70b684a0b40b97900a3d4c092f34b37b41c3950840caaebc",
@@ -75,11 +75,11 @@
     "89_callback_final.py": "077fa57a67ad4c436e9d3f7f5f915e2c34d79ea470879fa1d34a2570fe1408c1",
     "92_v262_linked_finance_speed.py": "d2f21cb54b6a2637cffd3f052de26d0e72f5c8c7b1b45d0e48660b0d04ebb703",
     "98_split_front.py": "a950b1c3f0e1bd2d0b567723753e1acad2161febcb6b8e17fd317d4886881c4d",
-    "97_r30_policy_ui.py": "b65fff184d98d5ab87e9ab40bf58f12f2fe687c0cd2ee123487059b259f9dc6b",
-    "96_r32_event_stream.py": "c9653ee542a0b4167d0c656bfd1aefc8a240905c3d10ce90083de516d3283f69",
-    "100_r33_heavy_offload.py": "152a822d82ba5f7f762dd785f807134b5bfa993a0e6fcf3b4b936435810825d7"
+    "97_r30_policy_ui.py": "172f9b037dbd5fd3274b068e11c3cfb035eb82a6a590993b1ff5b30eaa17c9f9",
+    "96_r32_event_stream.py": "eec08108d88e1d7a3b0b0bf7f0e0d5bd8c103296e2c5d6e3fde285da1036be6d",
+    "100_r33_heavy_offload.py": "72498aa7cc51355db0e71dec801974f72a57d733801afefe8674cf9db35856ec"
   },
-  "release": "Пер-R41",
+  "release": "Пер-R42",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -148,6 +148,13 @@
     "r41_no_sync_mega_on_heavy_without_redis",
     "r41_provisional_ack_same_job_replay",
     "r41_outbox_completed_on_real_delivery",
-    "r41_google_two_phase_admission"
+    "r41_google_two_phase_admission",
+    "r42_release_barrier_drops_stale_r39_r41_peer_jobs",
+    "r42_front_owned_jobs_replayed_only_by_fast",
+    "r42_heavy_compute_capacity_two_or_exclusive",
+    "r42_full_state_exclusive_against_excel_google",
+    "r42_ready_job_redelivery_after_restart",
+    "r42_google_recovery_release_barrier",
+    "r42_content_workers_four"
   ]
 }

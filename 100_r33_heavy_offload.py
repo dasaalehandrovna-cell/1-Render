@@ -1,5 +1,5 @@
 # v262
-"""Пер-R41: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R42: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R41',
+        'delivery':'chat','front_release':'Пер-R42',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -115,7 +115,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     if str(body.get('operation') or '') in {'runtime_zip','journal','journal_current'}:
         try:
             body['front_runtime_snapshot']=_r33_safe_scalar({
-                'release':'Пер-R41',
+                'release':'Пер-R42',
                 'captured_at':_r33_time.time(),
                 'runtime':dict(globals().get('_RUNTIME_STATE') or {}),
                 'split':dict(globals().get('_SPLIT_STATE') or {}),
@@ -195,7 +195,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Пер-R41: end-to-end HEAVY delivery control.
+# Пер-R42: end-to-end HEAVY delivery control.
 # 202/queued is only an acceptance ACK. The FAST file job remains open until
 # Render #2's callback has actually delivered the result to Telegram/Google.
 _R35_REMOTE_RESULT_LOCK = __import__('threading').RLock()
@@ -389,7 +389,7 @@ def _r35_wait_remote_delivery(jid,body):
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    body['front_release']='Пер-R41'
+    body['front_release']='Пер-R42'
     try: _file_job_progress('передаю задание Render #2',force=True)
     except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
@@ -728,7 +728,7 @@ def _r38_wait_remote_delivery(jid,body):
 
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R41'
+    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R42'
     try: _file_job_progress('сохраняю задание для Render #2',force=True)
     except Exception: pass
     jid=_r38_worker_file_submit(body)
@@ -750,7 +750,7 @@ def _r38_google_submit_report(title,rows,layout='category',annotations_override=
     annotations=_split_annotations_for_google(rows,str(layout or 'category'),annotations_override,bool(include_annotations))
     encoded={f'{int(r)},{int(c)}':str(note) for (r,c),note in annotations.items() if str(note or '').strip()}
     jid=__import__('secrets').token_hex(12)
-    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R41'}
+    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R42'}
     _r38_outbox_enqueue('google','/internal/google/sheet',body)
     try:
         _SPLIT_STATE['google_last_attempt']=_r33_time.time(); _SPLIT_STATE['google_last_job']=jid; _SPLIT_STATE['google_last_error']=''
@@ -986,7 +986,7 @@ try:app.view_functions['split_front_export_result_r7']=_r38_export_result_handle
 except Exception:pass
 
 
-# ---------------- Пер-R41 semantic single-flight / duplicate collapse ----------------
+# ---------------- Пер-R42 semantic single-flight / duplicate collapse ----------------
 # R38 made transport durable, but a backlog could still contain several different job_id
 # values for the same user action.  After a HEAVY restart they were dispatched together.
 # Full-state exports are memory-heavy, so this could create three simultaneous snapshots.
@@ -1045,9 +1045,15 @@ def _r39_outbox_enqueue(kind, endpoint, body):
         for r in _R39_BASE_PENDING_ROWS(500):
             if not isinstance(r, dict):
                 continue
+            rb=r.get('body') if isinstance(r.get('body'),dict) else {}
+            # R42 release barrier: never reuse a canonical job_id from R39-R41.
+            # Those rows may represent already-delivered work whose HEAVY MEGA witness
+            # survived a container replacement. New R42 actions always get an R42 job.
+            if str(rb.get('front_release') or '') != 'Пер-R42':
+                continue
             if now - float(r.get('created_at') or now) > 900:
                 continue
-            if _r39_job_signature(r.get('kind'), r.get('endpoint'), r.get('body') or {}) == sig:
+            if _r39_job_signature(r.get('kind'), r.get('endpoint'), rb) == sig:
                 candidates.append(r)
     except Exception:
         candidates = []
@@ -1078,8 +1084,18 @@ def _r39_pending_rows(limit=250):
     for row in rows:
         if not isinstance(row, dict):
             continue
+        rb=row.get('body') if isinstance(row.get('body'),dict) else {}
+        if str(rb.get('front_release') or '') != 'Пер-R42':
+            # One-time deploy barrier. Old pending peer jobs are superseded instead of
+            # being replayed forever after every HEAVY restart.
+            try:
+                oldrow=dict(row); oldrow.update({'state':'superseded','superseded_by':'R42-release-barrier','updated_at':_r33_time.time(),'last_error':'R42 dropped stale pending job from '+str(rb.get('front_release') or 'legacy')})
+                _r38_outbox_put(oldrow,pending=False)
+            except Exception:
+                pass
+            continue
         try:
-            sig = _r39_job_signature(row.get('kind'), row.get('endpoint'), row.get('body') or {})
+            sig = _r39_job_signature(row.get('kind'), row.get('endpoint'), rb)
         except Exception:
             passthrough.append(row); continue
         cur = grouped.get(sig)
@@ -1135,7 +1151,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Пер-R41: true asynchronous FAST<->HEAVY supervision.
+# Пер-R42: true asynchronous FAST<->HEAVY supervision.
 # Heavy file jobs no longer occupy EXPORT_TASK_POOL while waiting minutes for HEAVY.
 # FAST persists the peer job, returns the UI handler immediately, and a tiny supervisor
 # thread follows canonical/duplicate jobs until the real Telegram/Google delivery ACK.
@@ -1247,7 +1263,7 @@ def _r40_supervise_remote(jid,body,label,chat_id,msg_id):
 def _r40_submit_heavy_file(chat_id,kind,label,func,*args,**kwargs):
     chat_id=int(chat_id); kind_s=str(kind or 'file'); fname=str(getattr(func,'__name__','') or '')
     try:
-        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R41'
+        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R42'
         jid=_r38_worker_file_submit(body); body['job_id']=str(jid)
     except Exception as exc:
         detail=f'{type(exc).__name__}: {str(exc)[:500]}'
@@ -1293,7 +1309,7 @@ def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,
     jid=__import__('secrets').token_hex(12)
     try: required=int((_R32_EVENT_STATE or {}).get('last_revision_queued') or 0)
     except Exception: required=0
-    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R41'}
+    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R42'}
     jid2=_r38_outbox_enqueue('google','/internal/google/sheet',body)
     return str(jid2)
 
@@ -1313,7 +1329,7 @@ globals()['_r40_google_wait']=_r40_google_wait
 
 
 # ---------------------------------------------------------------------------
-# Пер-R41: two-phase FAST-owned durable admission.
+# Пер-R42: two-phase FAST-owned durable admission.
 # When HEAVY has no Redis, synchronous MEGA admission can take much longer than
 # the FAST HTTP timeout.  FAST already owns a Redis-backed durable outbox, so a
 # live HEAVY may start the same idempotent job immediately while FAST keeps the
@@ -1346,7 +1362,7 @@ def _r41_outbox_enqueue(kind, endpoint, body):
         backend = _r41_front_outbox_backend()
         obj['front_outbox_durable'] = bool(backend)
         obj['front_outbox_backend'] = backend or 'local'
-        obj['front_release'] = 'Пер-R41'
+        obj['front_release'] = 'Пер-R42'
     return _R41_BASE_OUTBOX_ENQUEUE(kind, endpoint, obj)
 
 
@@ -1484,3 +1500,10 @@ except Exception:
     pass
 
 # v262
+
+
+# R42 reliability barrier: previous-release peer jobs are not replayed; content pool has 4 workers.
+try:
+    bot_journal('r42_recovery_barrier_loaded', int(OWNER_ID or 0), 'drop stale R39-R41 peer outbox; 4 content workers; current jobs use Пер-R42')
+except Exception:
+    pass
