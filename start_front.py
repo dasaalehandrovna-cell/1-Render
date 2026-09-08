@@ -221,19 +221,12 @@ def _restore_from_worker(target: Path):
                 if _install_gzip_db(gz, target):
                     return True, f'worker restore OK attempt={attempt}'
             detail = f'worker HTTP {r.status_code}: {r.text[:180] if not r.ok else "invalid DB"}'
-            retry_after=0.0
-            if r.status_code in {408,425,429,500,502,503,504}:
-                try: retry_after=float(r.headers.get('Retry-After') or 0.0)
-                except Exception: retry_after=0.0
-            elif r.status_code != 200:
-                return False,detail
         except Exception as exc:
             detail = f'worker {type(exc).__name__}: {str(exc)[:180]}'
-            retry_after=0.0
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
         if attempt < attempts:
-            time.sleep(min(8.0,max(retry_after,1.5*(2**(attempt-1)))))
+            time.sleep(min(2.0 * attempt, 5.0))
     return False, detail
 
 
@@ -499,36 +492,27 @@ def _r20_load_capsule_from_redis():
 def _r20_load_capsule_from_worker():
     base,secret=_peer_base(),_secret()
     if not base or not secret: return {}, 'worker URL/secret not configured'
-    timeout=max(5.0,min(30.0,float(os.getenv('SPLIT_CAPSULE_BOOT_TIMEOUT','15') or '15')))
-    attempts=max(1,min(5,int(os.getenv('SPLIT_CAPSULE_BOOT_ATTEMPTS','3') or '3')))
-    detail='worker unavailable'
-    for attempt in range(1,attempts+1):
-        try:
-            r=requests.get(base+'/internal/capsule/latest?deep=1',headers={'X-Peer-Secret':secret,'User-Agent':'vys-262-front-capsule-restore-r20'},timeout=timeout)
-            if r.status_code==200:
-                raw=r.content
-                if str(r.headers.get('Content-Encoding') or '').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
-                    raw=gzip.decompress(raw)
-                payload=json.loads(raw.decode('utf-8'))
-                return (payload if isinstance(payload,dict) else {}), f'Worker capsule OK attempt={attempt}'
-            detail=f'worker HTTP {r.status_code}'
-            if r.status_code not in {408,425,429,500,502,503,504}:
-                return {},detail
-            retry_after=0.0
-            try: retry_after=float(r.headers.get('Retry-After') or 0.0)
-            except Exception: retry_after=0.0
-        except Exception as exc:
-            detail=f'{type(exc).__name__}: {str(exc)[:180]}'
-            retry_after=0.0
-        if attempt<attempts:
-            time.sleep(min(8.0,max(retry_after,1.5*(2**(attempt-1)))))
-    return {},detail
+    try:
+        r=requests.get(base+'/internal/capsule/latest?deep=1',headers={'X-Peer-Secret':secret,'User-Agent':'vys-262-front-capsule-restore-r20'},timeout=max(5.0,min(30.0,float(os.getenv('SPLIT_CAPSULE_BOOT_TIMEOUT','15') or '15'))))
+        if r.status_code!=200: return {}, f'worker HTTP {r.status_code}'
+        raw=r.content
+        if str(r.headers.get('Content-Encoding') or '').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
+            raw=gzip.decompress(raw)
+        payload=json.loads(raw.decode('utf-8'))
+        return (payload if isinstance(payload,dict) else {}), 'Worker capsule OK'
+    except Exception as exc:
+        return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
 
 def _r20_restore_capsule(target: Path):
-    # Boot-only quorum: query both small capsule sources and merge the independently
-    # monotonic components. This prevents a newer user-state in one source from
-    # hiding a newer config generation in the other source.
+    # R43: FAST owns durability. Redis is queried first and, when available, HEAVY
+    # is not contacted during boot at all. HEAVY remains emergency fallback only.
     redis_payload,redis_detail=_r20_load_capsule_from_redis()
+    if str(os.getenv('R43_FAST_AUTHORITY','1') or '1').strip().lower() in {'1','true','yes','on'} and redis_payload:
+        try:
+            ok,apply_detail=_r20_apply_capsule_to_db(target,redis_payload)
+            return True, 'redis='+redis_detail+'; '+apply_detail
+        except Exception as exc:
+            return False, f'capsule apply {type(exc).__name__}: {str(exc)[:180]}'
     worker_payload,worker_detail=_r20_load_capsule_from_worker()
     payload=_r20_merge_capsules(redis_payload,worker_payload)
     if not payload:
@@ -538,6 +522,68 @@ def _r20_restore_capsule(target: Path):
         return True, 'redis='+redis_detail+'; worker='+worker_detail+'; '+apply_detail
     except Exception as exc:
         return False, f'capsule apply {type(exc).__name__}: {str(exc)[:180]}'
+
+_R43_EVENT_STREAM_KEY='per:r43:front:state_events'
+
+def _r43_replay_redis_events(target: Path):
+    """Replay the append-only FAST Redis event stream over the restored SQLite image.
+
+    Every operation is idempotent (set/delete/prune), so replaying events already
+    included in the base snapshot is safe and yields the newest known state.
+    """
+    if _redis is None or not _db_valid(target):
+        return False,'redis unavailable or DB invalid'
+    url=str(os.getenv('REDIS_URL','') or '').strip()
+    if not url: return False,'REDIS_URL empty'
+    try:
+        client=_redis.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=4.0,health_check_interval=30)
+        rows=client.xrange(_R43_EVENT_STREAM_KEY,min='-',max='+',count=50000) or []
+        events=[]
+        for _sid, fields in rows:
+            try:
+                raw=fields.get(b'e') if isinstance(fields,dict) else None
+                if raw is None and isinstance(fields,dict): raw=fields.get('e')
+                if isinstance(raw,(bytes,bytearray)): raw=raw.decode('utf-8')
+                ev=json.loads(str(raw or ''))
+                if isinstance(ev,dict) and ev.get('kind'): events.append(ev)
+            except Exception: pass
+        if not events: return True,'no R43 Redis events'
+        events.sort(key=lambda x:(int(x.get('revision') or 0),str(x.get('event_id') or '')))
+        con=sqlite3.connect(str(target),timeout=20)
+        applied=0
+        try:
+            for ev in events:
+                kind=str(ev.get('kind') or ''); pld=ev.get('payload') if isinstance(ev.get('payload'),dict) else {}
+                if kind=='set_kv':
+                    con.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",(str(pld.get('k') or ''),json.dumps(pld.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
+                elif kind=='save_chat':
+                    con.execute("INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v",(str(pld.get('chat_id') or ''),json.dumps(pld.get('v') or {},ensure_ascii=False,separators=(',',':'),default=str)))
+                elif kind=='prune_chats':
+                    keep=[str(x) for x in (pld.get('keep') or [])]
+                    if keep:
+                        qs=','.join('?' for _ in keep); con.execute(f'DELETE FROM chats WHERE chat_id NOT IN ({qs})',tuple(keep))
+                    else: con.execute('DELETE FROM chats')
+                elif kind=='delete_chat':
+                    con.execute('DELETE FROM chats WHERE chat_id=?',(str(pld.get('chat_id') or ''),))
+                elif kind=='set_meta':
+                    con.execute("INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v",(str(pld.get('kind') or ''),str(pld.get('k') or ''),json.dumps(pld.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
+                elif kind=='set_cold':
+                    con.execute("INSERT INTO cold_fields(chat_id,k,v) VALUES(?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v",(str(pld.get('chat_id') or ''),str(pld.get('k') or ''),json.dumps(pld.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
+                elif kind=='set_cold_many':
+                    cid=str(pld.get('chat_id') or ''); items=pld.get('items') if isinstance(pld.get('items'),dict) else {}
+                    for kk,vv in items.items():
+                        con.execute("INSERT INTO cold_fields(chat_id,k,v) VALUES(?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v",(cid,str(kk),json.dumps(vv,ensure_ascii=False,separators=(',',':'),default=str)))
+                elif kind=='delete_cold':
+                    con.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?',(str(pld.get('chat_id') or ''),str(pld.get('k') or '')))
+                else:
+                    continue
+                applied+=1
+            con.commit()
+        finally:
+            con.close()
+        return True,f'R43 Redis events replayed={applied} stream_rows={len(rows)}'
+    except Exception as exc:
+        return False,f'{type(exc).__name__}: {str(exc)[:180]}'
 
 def _redis_seed_current_db(target: Path, reason='front_boot'):
     """Best-effort seed of shared durable snapshot before worker can be redeployed."""
@@ -622,6 +668,10 @@ def _r32_mark_migration_seeded():
         return False
 
 def _preboot_capture_old_front_r18():
+    # R43 compute mode does not use HEAVY as the primary state authority. Avoid a
+    # boot-time dependency on HEAVY just to check an old migration marker.
+    if _bool('R43_FAST_AUTHORITY', True):
+        return True, 'R43 FAST-authority mode; old-front/HEAVY migration seed probe skipped'
     # R34 needs one exact migration seed from the old R33 instance to close any R33 413 gap. After that,
     # HEAVY is rebuilt from immutable row events and no full preboot capture is sent.
     if _bool('R32_EVENT_STREAM_ENABLED', True) and _r32_migration_seeded():
@@ -641,8 +691,18 @@ def main():
         _cap_ok, _cap_detail = _preboot_capture_old_front_r18()
         print('[SPLIT FRONT] preboot old-front capture:', _cap_ok, _cap_detail, flush=True)
         force = _bool('SPLIT_FORCE_BOOT_RESTORE', False)
-        always_remote = _bool('SPLIT_BOOT_ALWAYS_RESTORE', True)
+        always_remote = _bool('SPLIT_BOOT_ALWAYS_RESTORE', False)
         local_valid = _db_valid(target)
+        # R43: FAST is the data authority. On a fresh Render container, try the
+        # shared Redis snapshot before contacting HEAVY. HEAVY is a compute worker,
+        # not the primary boot/backup authority. Worker/MEGA remain emergency fallback.
+        if (not local_valid) and (not force):
+            try:
+                _r43_ok, _r43_detail = _restore_from_redis_direct_r18(target)
+                print('[SPLIT FRONT] R43 Redis-first restore:', _r43_ok, _r43_detail, flush=True)
+                local_valid = bool(_r43_ok and _db_valid(target))
+            except Exception as _r43_exc:
+                print('[SPLIT FRONT] R43 Redis-first restore: False', type(_r43_exc).__name__, str(_r43_exc)[:180], flush=True)
         if force or always_remote or not local_valid:
             while True:
                 ok, detail = _restore_from_worker(target)
@@ -665,13 +725,18 @@ def main():
         # R32/R18 freshness quorum: Worker /tmp can lag behind the shared Redis durable
         # snapshot during a rolling deploy.  Prefer whichever has the newest revision.
         if _db_valid(target):
-            if _bool('R32_EVENT_STREAM_ENABLED', True):
+            if _bool('R43_FAST_AUTHORITY', True):
+                _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
+                print('[SPLIT FRONT] R43 Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
+            elif _bool('R32_EVENT_STREAM_ENABLED', True):
                 print('[SPLIT FRONT] R32 restore authority: HEAVY assembled checkpoint + event journal; Redis full-snapshot arbitration skipped', flush=True)
             else:
                 _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
                 print('[SPLIT FRONT] Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
-                # Old instance can publish an even newer final checkpoint after cut-over.
                 _settle_worker_handoff(target)
+        if _db_valid(target) and _bool('R43_FAST_AUTHORITY', True):
+            _r43_ev_ok, _r43_ev_detail = _r43_replay_redis_events(target)
+            print('[SPLIT FRONT] R43 Redis event replay:', _r43_ev_ok, _r43_ev_detail, flush=True)
         # R20: restore the newest independent v262-style settings/user-state capsule
         # even when the full Worker SQLite image is slightly older.
         if _db_valid(target):
@@ -683,7 +748,10 @@ def main():
         os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)
         # R6 migration/deploy bridge: persist the exact restored/current DB in shared
         # Redis before the worker can be redeployed and lose its /tmp cache.
-        if _bool('R32_EVENT_STREAM_ENABLED', True):
+        if _bool('R43_FAST_AUTHORITY', True):
+            redis_ok, redis_detail = _redis_seed_current_db(target, reason='r43_front_boot_authority')
+            print('[SPLIT FRONT] R43 Redis durable seed:', redis_ok, redis_detail, flush=True)
+        elif _bool('R32_EVENT_STREAM_ENABLED', True):
             print('[SPLIT FRONT] R32: full FAST->Redis boot seed skipped; HEAVY owns assembled restore state', flush=True)
         else:
             redis_ok, redis_detail = _redis_seed_current_db(target, reason='front_boot_after_restore')

@@ -72,19 +72,6 @@ def _v163_is_navigation_callback(raw: str) -> bool:
 
 def _v177_legacy_0325_v163_webhook_select_lane(payload: dict, update_type: str, update_key):
     """Called by 99_web_runtime at request time after every module is loaded."""
-    if str(update_type) == 'message':
-        _m = (payload.get('message') or {}) if isinstance(payload, dict) else {}
-        _text = str(_m.get('text') or '').strip()
-        _cmd = (_text.split()[0].split('@')[0].casefold() if _text.startswith('/') else '')
-        # R45: these commands are read-only file requests.  They must not queue behind
-        # an unrelated long-running message from the same chat.  Use message_id as the
-        # ordering key so /xlsx /json /journal etc. can always reach HEAVY immediately.
-        _file_cmds = {'/csv','/xlsx','/excel','/tabl_lsx','/json','/runtime_export','/journal','/log','/logs','/sqlite','/db'}
-        if _cmd in _file_cmds:
-            _chat_id = _extract_update_chat_id(payload)
-            _mid = int(_m.get('message_id') or 0)
-            _pool = globals().get('FILE_REQUEST_TASK_POOL') or WEBHOOK_TASK_POOL
-            return (_pool, f'file-request:{_chat_id if _chat_id is not None else update_key}:{_mid or id(payload)}')
     if str(update_type) == 'message' and _v163_start_payload(payload):
         chat_id = _extract_update_chat_id(payload)
         return (START_UI_TASK_POOL, f'start:{(chat_id if chat_id is not None else update_key)}')
@@ -1829,16 +1816,6 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
     in front of them.  Forward-pair configuration is also kept on FAST_UI and serialized
     only by the concrete pair key.
     """
-    if str(update_type) == 'message':
-        _m = (payload.get('message') or {}) if isinstance(payload, dict) else {}
-        _text = str(_m.get('text') or '').strip()
-        _cmd = (_text.split()[0].split('@')[0].casefold() if _text.startswith('/') else '')
-        _file_cmds = {'/csv','/xlsx','/excel','/tabl_lsx','/json','/runtime_export','/journal','/log','/logs','/sqlite','/db'}
-        if _cmd in _file_cmds:
-            _chat_id = _extract_update_chat_id(payload)
-            _mid = int(_m.get('message_id') or 0)
-            _pool = globals().get('FILE_REQUEST_TASK_POOL') or WEBHOOK_TASK_POOL
-            return (_pool, f'file-request:{_chat_id if _chat_id is not None else update_key}:{_mid or id(payload)}')
     if str(update_type) == 'message' and _v163_start_payload(payload):
         chat_id = _extract_update_chat_id(payload)
         return (START_UI_TASK_POOL, f'start:{(chat_id if chat_id is not None else update_key)}')

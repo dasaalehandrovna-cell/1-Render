@@ -777,9 +777,6 @@ def _env_int(name: str, default: int, minimum: int=1, maximum: int=128) -> int:
     except Exception:
         return int(default)
 WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 4, 2, 8), _env_int('WEBHOOK_MAX_PENDING', 400, 50, 2000))
-# R45 SIMPLE FILE PATH: read-only file/export commands never wait behind a stuck
-# per-chat content actor.  Each Telegram message gets its own key in this pool.
-FILE_REQUEST_TASK_POOL = KeyedTaskPool('file-request', _env_int('FILE_REQUEST_WORKERS', 2, 1, 4), _env_int('FILE_REQUEST_MAX_PENDING', 80, 20, 400))
 UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI_MAX_PENDING', 400, 50, 2000))
 # R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
 # can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.

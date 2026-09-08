@@ -1,5 +1,5 @@
 # v262
-"""Пер-R42: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
+"""Пер-R43: all user-requested heavy file/table/journal jobs are delegated to HEAVY.
 
 This module is intentionally loaded last.  It does not touch the R28 direct-render
 function.  The Telegram callback only creates the existing small status message and
@@ -14,7 +14,7 @@ import time as _r33_time
 _R33_PREV_SUBMIT_FILE_JOB = globals().get('submit_interactive_file_job')
 _R33_HEAVY_FILE_KINDS = {
     'period_export','exact_export','xlsx','csv','tabl_lsx','json','json_full','sqlite',
-    'runtime','journal','journal_current','bot_source','window_markers','window_tz',
+    'runtime','journal','journal_current','window_markers','window_tz',
     'window_tz_archive'
 }
 # Future annotation/document buttons with the same prefix are heavy by contract.
@@ -51,7 +51,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
         'job_id': _split_secrets.token_hex(12) if '_split_secrets' in globals() else __import__('secrets').token_hex(12),
         'recipient_chat_id':cid,'target_chat_id':cid,'operation':str(kind),
         'label':str(label or kind),'chat_name':str(globals().get('get_chat_display_name',lambda x:str(x))(cid)),
-        'delivery':'chat','front_release':'Пер-R42',
+        'delivery':'chat','front_release':'Пер-R43',
     }
     fn=str(func_name or '')
     if kind in {'period_export','xlsx'} or fn.endswith('send_export_for_chat_to'):
@@ -115,7 +115,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     if str(body.get('operation') or '') in {'runtime_zip','journal','journal_current'}:
         try:
             body['front_runtime_snapshot']=_r33_safe_scalar({
-                'release':'Пер-R42',
+                'release':'Пер-R43',
                 'captured_at':_r33_time.time(),
                 'runtime':dict(globals().get('_RUNTIME_STATE') or {}),
                 'split':dict(globals().get('_SPLIT_STATE') or {}),
@@ -131,7 +131,7 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     return body
 
 
-def _r33_remote_file_adapter_legacy_r33(kind,label,func_name,args,kwargs):
+def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     # R34: never wait for global state synchronization on FAST.  The job carries a
     # revision fence and HEAVY waits for only the state it actually needs.
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
@@ -146,7 +146,7 @@ def _r33_remote_file_adapter_legacy_r33(kind,label,func_name,args,kwargs):
     # adapter defined below waits for the real FAST delivery callback.
     return True
 
-def submit_interactive_file_job_legacy_r33(chat_id:int,kind:str,label:str,func,*args,**kwargs):
+def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
     kind_s=str(kind or 'file')
     heavy=(kind_s in _R33_HEAVY_FILE_KINDS or kind_s.startswith('window_'))
     if not heavy or not callable(_R33_PREV_SUBMIT_FILE_JOB):
@@ -195,7 +195,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Пер-R42: end-to-end HEAVY delivery control.
+# Пер-R43: end-to-end HEAVY delivery control.
 # 202/queued is only an acceptance ACK. The FAST file job remains open until
 # Render #2's callback has actually delivered the result to Telegram/Google.
 _R35_REMOTE_RESULT_LOCK = __import__('threading').RLock()
@@ -387,9 +387,9 @@ def _r35_wait_remote_delivery(jid,body):
         _r33_time.sleep(0.45)
     raise RuntimeError(f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={jid}')
 
-def _r33_remote_file_adapter_legacy_r38(kind,label,func_name,args,kwargs):
+def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    body['front_release']='Пер-R42'
+    body['front_release']='Пер-R43'
     try: _file_job_progress('передаю задание Render #2',force=True)
     except Exception: pass
     submit=globals().get('_r7_worker_file_submit')
@@ -728,7 +728,7 @@ def _r38_wait_remote_delivery(jid,body):
 
 
 def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R42'
+    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs); body['front_release']='Пер-R43'
     try: _file_job_progress('сохраняю задание для Render #2',force=True)
     except Exception: pass
     jid=_r38_worker_file_submit(body)
@@ -750,7 +750,7 @@ def _r38_google_submit_report(title,rows,layout='category',annotations_override=
     annotations=_split_annotations_for_google(rows,str(layout or 'category'),annotations_override,bool(include_annotations))
     encoded={f'{int(r)},{int(c)}':str(note) for (r,c),note in annotations.items() if str(note or '').strip()}
     jid=__import__('secrets').token_hex(12)
-    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R42'}
+    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R43'}
     _r38_outbox_enqueue('google','/internal/google/sheet',body)
     try:
         _SPLIT_STATE['google_last_attempt']=_r33_time.time(); _SPLIT_STATE['google_last_job']=jid; _SPLIT_STATE['google_last_error']=''
@@ -986,7 +986,7 @@ try:app.view_functions['split_front_export_result_r7']=_r38_export_result_handle
 except Exception:pass
 
 
-# ---------------- Пер-R42 semantic single-flight / duplicate collapse ----------------
+# ---------------- Пер-R43 semantic single-flight / duplicate collapse ----------------
 # R38 made transport durable, but a backlog could still contain several different job_id
 # values for the same user action.  After a HEAVY restart they were dispatched together.
 # Full-state exports are memory-heavy, so this could create three simultaneous snapshots.
@@ -1049,7 +1049,7 @@ def _r39_outbox_enqueue(kind, endpoint, body):
             # R42 release barrier: never reuse a canonical job_id from R39-R41.
             # Those rows may represent already-delivered work whose HEAVY MEGA witness
             # survived a container replacement. New R42 actions always get an R42 job.
-            if str(rb.get('front_release') or '') != 'Пер-R42':
+            if str(rb.get('front_release') or '') != 'Пер-R43':
                 continue
             if now - float(r.get('created_at') or now) > 900:
                 continue
@@ -1085,7 +1085,7 @@ def _r39_pending_rows(limit=250):
         if not isinstance(row, dict):
             continue
         rb=row.get('body') if isinstance(row.get('body'),dict) else {}
-        if str(rb.get('front_release') or '') != 'Пер-R42':
+        if str(rb.get('front_release') or '') != 'Пер-R43':
             # One-time deploy barrier. Old pending peer jobs are superseded instead of
             # being replayed forever after every HEAVY restart.
             try:
@@ -1151,7 +1151,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Пер-R42: true asynchronous FAST<->HEAVY supervision.
+# Пер-R43: true asynchronous FAST<->HEAVY supervision.
 # Heavy file jobs no longer occupy EXPORT_TASK_POOL while waiting minutes for HEAVY.
 # FAST persists the peer job, returns the UI handler immediately, and a tiny supervisor
 # thread follows canonical/duplicate jobs until the real Telegram/Google delivery ACK.
@@ -1263,7 +1263,7 @@ def _r40_supervise_remote(jid,body,label,chat_id,msg_id):
 def _r40_submit_heavy_file(chat_id,kind,label,func,*args,**kwargs):
     chat_id=int(chat_id); kind_s=str(kind or 'file'); fname=str(getattr(func,'__name__','') or '')
     try:
-        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R42'
+        body=_r33_export_body(kind_s,str(label),fname,args,kwargs); body['front_release']='Пер-R43'
         jid=_r38_worker_file_submit(body); body['job_id']=str(jid)
     except Exception as exc:
         detail=f'{type(exc).__name__}: {str(exc)[:500]}'
@@ -1309,7 +1309,7 @@ def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,
     jid=__import__('secrets').token_hex(12)
     try: required=int((_R32_EVENT_STATE or {}).get('last_revision_queued') or 0)
     except Exception: required=0
-    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R42'}
+    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R43'}
     jid2=_r38_outbox_enqueue('google','/internal/google/sheet',body)
     return str(jid2)
 
@@ -1329,7 +1329,7 @@ globals()['_r40_google_wait']=_r40_google_wait
 
 
 # ---------------------------------------------------------------------------
-# Пер-R42: two-phase FAST-owned durable admission.
+# Пер-R43: two-phase FAST-owned durable admission.
 # When HEAVY has no Redis, synchronous MEGA admission can take much longer than
 # the FAST HTTP timeout.  FAST already owns a Redis-backed durable outbox, so a
 # live HEAVY may start the same idempotent job immediately while FAST keeps the
@@ -1362,7 +1362,7 @@ def _r41_outbox_enqueue(kind, endpoint, body):
         backend = _r41_front_outbox_backend()
         obj['front_outbox_durable'] = bool(backend)
         obj['front_outbox_backend'] = backend or 'local'
-        obj['front_release'] = 'Пер-R42'
+        obj['front_release'] = 'Пер-R43'
     return _R41_BASE_OUTBOX_ENQUEUE(kind, endpoint, obj)
 
 
@@ -1453,137 +1453,39 @@ _r38_export_delivery_task = _r41_export_delivery_task
 # _r38_export_delivery_task dynamically, so the R41 completion hook is canonical.
 
 
-# R45 one-delivery gate shared by callback and pull paths.
-_R45_FILE_SEND_GUARD = _r38_threading.RLock()
-_R45_FILE_SEND_LOCKS = {}
-_R45_BASE_DELIVER_WORKER_EXPORT = _r38_deliver_worker_export
-
-
-def _r45_file_send_lock(jid):
-    key=str(jid or '')[:80]
-    with _R45_FILE_SEND_GUARD:
-        lock=_R45_FILE_SEND_LOCKS.get(key)
-        if lock is None:
-            lock=_r38_threading.Lock()
-            _R45_FILE_SEND_LOCKS[key]=lock
-        return lock
-
-
-def _r45_deliver_worker_export_once(body):
-    payload=dict(body or {})
-    jid=str(payload.get('job_id') or '')[:80]
-    if not jid:
-        return False
-    lock=_r45_file_send_lock(jid)
-    with lock:
-        row=_r35_delivery_get(jid) or {}
-        state=str(row.get('state') or '')
-        if state=='done':
-            return True
-        if state=='done_error' and not bool(payload.get('ok')):
-            return True
-        delivered=bool(_R45_BASE_DELIVER_WORKER_EXPORT(payload))
-        if delivered:
-            if bool(payload.get('ok')):
-                _r35_delivery_set(jid,'done',payload)
-            else:
-                _r35_delivery_set(jid,'done_error',payload,error=str(payload.get('error') or 'HEAVY job failed'))
-        return delivered
-
-
-# Existing callback delivery tasks resolve this symbol dynamically.
-_r38_deliver_worker_export = _r45_deliver_worker_export_once
-globals()['_r7_deliver_worker_export'] = _r45_deliver_worker_export_once
-
-
 def _r41_supervise_remote(jid,body,label,chat_id,msg_id):
-    """R45 final file supervisor: callback is optional, FAST pull is authoritative fallback.
-
-    The old final R41 supervisor only watched FAST's local delivery ledger.  The R43
-    status helper existed but was not used by this actual R40/R41 path, so a lost
-    HEAVY->FAST callback left the user waiting forever.  R45 polls HEAVY directly and,
-    once ready, downloads /internal/export/file/<job_id> and sends it to Telegram here.
-    """
-    original=str(jid or '')[:80]
-    started=_r33_time.time()
-    last_ui=0.0
-    last_poll=0.0
-    timeout=max(120,min(21600,int(_r33_os.getenv('R45_FAST_JOB_WAIT_SEC',_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600')) or '3600')))
-    deadline=started+timeout
+    original=str(jid or '')[:80]; started=_r33_time.time(); last_ui=0.0; timeout=max(300,min(21600,int(_r33_os.getenv('R40_FAST_JOB_WAIT_SEC','3600') or '3600'))); deadline=started+timeout
     err=''; ok=False
     try:
         while _r33_time.time()<deadline:
             canonical=_r40_canonical_job_id(original)
-            row=_r35_delivery_get(canonical) or {}
-            state=str(row.get('state') or '')
-            if state=='done':
-                ok=True; break
+            row=_r35_delivery_get(canonical) or {}; state=str(row.get('state') or '')
+            if state=='done': ok=True; break
             if state=='done_error':
                 b=row.get('body') if isinstance(row.get('body'),dict) else {}
                 err=str(row.get('error') or b.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]; break
-            out=_r38_outbox_get(original) or {}
-            ostate=str(out.get('state') or '')
-            if ostate=='failed':
-                err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
-
+            out=_r38_outbox_get(original) or {}; ostate=str(out.get('state') or '')
+            if ostate=='failed': err=str(out.get('last_error') or 'Render #2 отклонил задание')[:900]; break
             now=_r33_time.time()
-            # R45: do not rely on reverse callback. Poll the concrete job every 2 sec.
-            if now-last_poll>=2.0:
-                last_poll=now
-                poll_id=canonical or original
-                st=_r43_worker_export_status(poll_id)
-                alias=str(st.get('canonical_job_id') or st.get('duplicate_of') or '')[:80]
-                if alias and alias!=poll_id:
-                    canonical=alias
-                    st=_r43_worker_export_status(alias) or st
-                    if st: st['job_id']=alias
-                if bool(st.get('terminal_error')):
-                    err=str(st.get('error') or 'Render #2 завершил задачу с ошибкой')[:900]
-                    _r35_delivery_set(original,'done_error',st,error=err)
-                    break
-                if bool(st.get('ready')):
-                    payload=dict(body or {})
-                    payload.update({k:v for k,v in st.items() if v not in (None,'')})
-                    payload['job_id']=str(st.get('job_id') or canonical or original)
-                    payload['recipient_chat_id']=int(payload.get('recipient_chat_id') or chat_id or 0)
-                    payload['ok']=True
-                    # Callback and pull share the same send-once gate keyed by job_id.
-                    # Whichever path gets here first sends; the other observes done.
-                    _r35_delivery_set(original,'running',payload)
-                    delivered=bool(_r38_deliver_worker_export(payload))
-                    if delivered:
-                        _r35_delivery_set(original,'done',payload)
-                        if payload['job_id']!=original:
-                            _r35_delivery_set(payload['job_id'],'done',payload)
-                        ok=True
-                        break
-                    # Network/Telegram turbulence is retryable; do not terminally fail.
-                    _r35_delivery_set(original,'accepted',payload,error='R45 direct pull/send retry')
-
             if now-last_ui>=12.0:
-                if canonical!=original:
-                    phase=f'Render #2: забираю готовый файл {canonical[:12]}…'
-                elif ostate in {'pending','retry'}:
-                    phase='Render #2: запрос сохранён, проверяю готовность файла'
-                elif ostate in {'accepted','completed'}:
-                    phase='Render #2: выполняет задачу / FAST сам заберёт файл'
-                elif state=='running':
-                    phase='FAST получает файл и отправляет в Telegram'
-                else:
-                    phase='проверяю готовность файла Render #2'
-                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r45_file_progress')
+                if canonical!=original: phase=f'Render #2 объединил дубль с заданием {canonical[:12]}…'
+                elif bool(out.get('provisional')) and bool(out.get('peer_accepted')): phase='Render #2 принял задачу и выполняет её · резервная копия запроса сохранена на FAST'
+                elif ostate in {'pending','retry'}: phase='восстанавливаю связь с Render #2 · запрос сохранён, повторяю автоматически'
+                elif ostate in {'accepted','completed'} and state in {'running','accepted','dispatching',''}: phase='Render #2 выполняет задачу'
+                elif state in {'running','failed'}: phase='получаю и отправляю готовый результат'
+                else: phase='ожидаю подтверждение Render #2'
+                _r40_status_edit(chat_id,msg_id,_r40_status_text(label,_r40_elapsed(started),phase),'r41_file_progress')
                 last_ui=now
-            _r33_time.sleep(0.35)
-        else:
-            err=f'Render #2 не отдал файл за {timeout} сек.; job_id={original}'
+            _r33_time.sleep(0.5)
+        else: err=f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={original}'
     except Exception as exc:
         err=f'{type(exc).__name__}: {str(exc)[:800]}'
     elapsed=_r40_elapsed(started)
     if ok:
-        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r45_file_done')
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,'',final='ok'),'r41_file_done')
     else:
-        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r45_file_error')
-        try: log_error(f'R45 direct HEAVY file {original}: {err}')
+        _r40_status_edit(chat_id,msg_id,_r40_status_text(label,elapsed,err or 'нет подтверждения доставки',final='error'),'r41_file_error')
+        try: log_error(f'R41 async HEAVY job {original}: {err}')
         except Exception: pass
     _r40_status_delete_later(chat_id,msg_id,15)
     with _R40_SUP_LOCK: _R40_SUPERVISORS.pop(original,None)
@@ -1602,84 +1504,412 @@ except Exception:
 
 # R42 reliability barrier: previous-release peer jobs are not replayed; content pool has 4 workers.
 try:
-    bot_journal('r42_recovery_barrier_loaded', int(OWNER_ID or 0), 'drop stale R39-R41 peer outbox; 4 content workers; current jobs use Пер-R42')
+    bot_journal('r42_recovery_barrier_loaded', int(OWNER_ID or 0), 'drop stale R39-R41 peer outbox; 4 content workers; current jobs use Пер-R43')
 except Exception:
     pass
+# ---------------------------------------------------------------------------
+# R44 DIAGNOSTIC INTEROP LAYER
+# Purpose: observe the real FAST <-> HEAVY protocol without changing production
+# job semantics.  Adds owner-only Test menu, shared-Redis handshake diagnostics,
+# MEGA browser/download via HEAVY, reverse HEAVY->FAST ping, snapshot probe, and a
+# compact local JSONL journal that mirrors important button/process/traffic events.
+import json as _r44_json, os as _r44_os, time as _r44_time, threading as _r44_threading
+import secrets as _r44_secrets, tempfile as _r44_tempfile, hashlib as _r44_hashlib
+import html as _r44_html, re as _r44_re, shutil as _r44_shutil
+from pathlib import Path as _R44Path
+import requests as _r44_requests
 
-# ---------------- Пер-R43 resilient HEAVY file pull fallback ----------------
-# R42 primarily depended on HEAVY -> FAST callbacks.  A lost callback could leave
-# the canonical FAST file-job waiting even though the artifact already existed on
-# HEAVY.  R43 keeps callbacks as the fast path and adds an independent FAST ->
-# HEAVY status/pull path keyed by the same job_id.
-def _r43_worker_export_status(jid):
+_R44_DIAG_RELEASE='Пер-R44-DIAG'
+_R44_DIAG_LOCK=_r44_threading.RLock()
+_R44_DIAG_PATH=_R44Path(str(_r44_os.getenv('R44_DIAG_JOURNAL_PATH','/tmp/per_r44_diag_journal.jsonl') or '/tmp/per_r44_diag_journal.jsonl'))
+_R44_DIAG_MAX=max(262144,min(20*1024*1024,int(_r44_os.getenv('R44_DIAG_JOURNAL_MAX_BYTES','5242880') or '5242880')))
+_R44_TEST_MODE={}
+_R44_MEGA_TOKENS={}
+_R44_MEGA_TOKEN_LOCK=_r44_threading.RLock()
+_R44_TEST_KEY_PREFIX='per:r44:test:'
+_R44_TRAFFIC_WORDS=('TRAFFIC_AUDIT','DISPATCHER STUCK','STUCK_STACK','LOCKTRACE','INTERACTIVE FILE JOB','SPLIT FRONT','HEAVY','peer','Render #2','R4','BTNTRACE','FASTBTN','WEBHOOK')
+
+def _r44_redact(value):
+    s=str(value if value is not None else '')
     try:
-        base=globals().get('_split_peer_base',lambda:'')()
-        if not base:
-            return {}
-        headers_fn=globals().get('_split_headers')
-        hdr=headers_fn('per-r43-front-export-status') if callable(headers_fn) else {'X-Peer-Secret':str(_r33_os.getenv('PEER_SHARED_SECRET','') or '')}
-        try: _r38_peer_gate()
+        sec=str(_r44_os.getenv('PEER_SHARED_SECRET','') or '')
+        if sec and len(sec)>=6: s=s.replace(sec,'<peer-secret>')
+    except Exception: pass
+    for key in ('BOT_TOKEN','TELEGRAM_BOT_TOKEN','REDIS_URL','MEGA_PASSWORD','MEGA_SESSION','GOOGLE_SERVICE_ACCOUNT_JSON'):
+        try:
+            v=str(_r44_os.getenv(key,'') or '')
+            if v and len(v)>=8: s=s.replace(v,f'<{key.lower()}>')
         except Exception: pass
-        r=requests.get(base+'/internal/export/status/'+str(jid),headers=hdr,timeout=12)
-        if int(getattr(r,'status_code',0) or 0)!=200:
-            return {}
-        x=r.json() if r.content else {}
-        return x if isinstance(x,dict) else {}
-    except Exception:
-        return {}
+    return s[:2400]
 
-
-def _r43_wait_remote_delivery(jid,body):
-    timeout=max(300,min(21600,int(_r33_os.getenv('R38_FAST_JOB_WAIT_SEC','3600') or '3600')))
-    deadline=_r33_time.time()+timeout; last_progress=0.0; last_poll=0.0; pull_started=False
-    while _r33_time.time()<deadline:
-        row=_r35_delivery_get(jid); state=str(row.get('state') or '')
-        if state=='done': return True
-        if state=='done_error':
-            b=row.get('body') if isinstance(row.get('body'),dict) else {}
-            raise RuntimeError(str(row.get('error') or b.get('error') or 'Render #2 completed with an error')[:900])
-        out=_r38_outbox_get(jid); ostate=str(out.get('state') or '')
-        if ostate=='failed': raise RuntimeError(str(out.get('last_error') or 'Render #2 rejected the job')[:900])
-        now=_r33_time.time()
-        # Independent pull fallback.  Do not wait for the reverse callback forever.
-        if now-last_poll>=2.0 and ostate in {'accepted','retry'}:
-            last_poll=now
-            st=_r43_worker_export_status(jid)
-            canonical=str(st.get('canonical_job_id') or st.get('duplicate_of') or '')[:80]
-            if canonical and canonical!=jid:
-                # Follow the canonical job result for semantic duplicates.
-                cst=_r43_worker_export_status(canonical)
-                if cst: st=cst; st['job_id']=canonical
-            if bool(st.get('terminal_error')):
-                raise RuntimeError(str(st.get('error') or 'Render #2 completed with an error')[:900])
-            if bool(st.get('ready')) and not pull_started:
-                payload=dict(body or {})
-                payload.update({k:v for k,v in st.items() if v not in (None,'')})
-                payload['job_id']=str(st.get('job_id') or jid)
-                payload['ok']=True
-                # Deliver synchronously inside the canonical FAST file-job runner.
-                # This guarantees the result before its single-flight context closes.
-                pull_started=True
-                if bool(_r38_deliver_worker_export(payload)):
-                    _r35_delivery_set(jid,'done',payload)
-                    return True
-                pull_started=False
-        if now-last_progress>12:
+def _r44_diag(event, **fields):
+    try:
+        row={'ts':round(_r44_time.time(),3),'event':str(event or '')[:120],'thread':_r44_threading.current_thread().name[:80]}
+        for k,v in fields.items(): row[str(k)[:80]]=_r44_redact(v)
+        raw=_r44_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n'
+        with _R44_DIAG_LOCK:
+            _R44_DIAG_PATH.parent.mkdir(parents=True,exist_ok=True)
             try:
-                if ostate in {'pending','retry'}: phase='Render #2: задание сохранено, проверяю связь'
-                elif ostate=='accepted': phase='Render #2 выполняет задачу / проверяю готовый файл'
-                elif state in {'running','failed'}: phase='получаю файл Render #2'
-                else: phase='ожидаю Render #2'
-                _file_job_progress(phase,force=True)
+                if _R44_DIAG_PATH.exists() and _R44_DIAG_PATH.stat().st_size>_R44_DIAG_MAX:
+                    old=_R44_DIAG_PATH.with_suffix(_R44_DIAG_PATH.suffix+'.1')
+                    try: old.unlink(missing_ok=True)
+                    except Exception: pass
+                    try: _R44_DIAG_PATH.replace(old)
+                    except Exception: pass
             except Exception: pass
-            last_progress=now
-        _r33_time.sleep(0.45)
-    raise RuntimeError(f'Render #2 did not deliver the result within {timeout} sec; job_id={jid}')
+            with open(_R44_DIAG_PATH,'a',encoding='utf-8') as fh: fh.write(raw)
+    except Exception:
+        pass
 
-# The final remote adapter resolves this symbol at call time.
-_r38_wait_remote_delivery=_r43_wait_remote_delivery
-try:
-    bot_journal('r43_file_bridge_loaded',int(OWNER_ID or 0),'callback + FAST pull-status fallback; same job_id; no file loss on callback failure')
-except Exception:
-    pass
+def _r44_diag_tail(limit=30):
+    try:
+        if not _R44_DIAG_PATH.exists(): return []
+        with open(_R44_DIAG_PATH,'r',encoding='utf-8',errors='replace') as fh:
+            rows=fh.readlines()[-max(1,min(100,int(limit or 30))):]
+        out=[]
+        for line in rows:
+            try: out.append(_r44_json.loads(line))
+            except Exception: continue
+        return out
+    except Exception: return []
+
+# Mirror the existing rich journal rather than adding a second instrumentation maze.
+_R44_PREV_BOT_JOURNAL=globals().get('bot_journal')
+def _r44_bot_journal(event, chat_id=None, detail='', level='INFO', *args, **kwargs):
+    try: _r44_diag('bot_journal',name=event,chat=chat_id,level=level,detail=detail)
+    except Exception: pass
+    if callable(_R44_PREV_BOT_JOURNAL): return _R44_PREV_BOT_JOURNAL(event,chat_id,detail,level,*args,**kwargs)
+    return None
+if callable(_R44_PREV_BOT_JOURNAL): globals()['bot_journal']=_r44_bot_journal
+
+_R44_PREV_LOG_ERROR=globals().get('log_error')
+def _r44_log_error(msg,*args,**kwargs):
+    _r44_diag('log_error',message=msg)
+    if callable(_R44_PREV_LOG_ERROR): return _R44_PREV_LOG_ERROR(msg,*args,**kwargs)
+if callable(_R44_PREV_LOG_ERROR): globals()['log_error']=_r44_log_error
+
+_R44_PREV_LOG_INFO=globals().get('log_info')
+def _r44_log_info(msg,*args,**kwargs):
+    try:
+        text=str(msg or '')
+        if any(w.casefold() in text.casefold() for w in _R44_TRAFFIC_WORDS): _r44_diag('log_info',message=text)
+    except Exception: pass
+    if callable(_R44_PREV_LOG_INFO): return _R44_PREV_LOG_INFO(msg,*args,**kwargs)
+if callable(_R44_PREV_LOG_INFO): globals()['log_info']=_r44_log_info
+
+def _r44_peer_base():
+    fn=globals().get('_r32_peer_base_impl') or globals().get('_split_peer_base')
+    try:
+        base=str(fn() if callable(fn) else '')
+    except Exception: base=''
+    if not base:
+        base=str(_r44_os.getenv('PEER_SERVICE_URL','') or '').strip().rstrip('/')
+        if base and not base.startswith(('http://','https://')): base='https://'+base
+    return base.rstrip('/')
+
+def _r44_headers(agent='per-r44-diag'):
+    fn=globals().get('_split_headers')
+    if callable(fn):
+        try: return dict(fn(agent) or {})
+        except Exception: pass
+    return {'X-Peer-Secret':str(_r44_os.getenv('PEER_SHARED_SECRET','') or ''),'User-Agent':agent}
+
+def _r44_front_redis():
+    for name in ('_r38_outbox_redis_client','_r35_delivery_redis_client'):
+        fn=globals().get(name)
+        if callable(fn):
+            try:
+                c=fn()
+                if c is not None and bool(c.ping()): return c
+            except Exception: pass
+    try:
+        import redis as _r44_redis
+        url=str(_r44_os.getenv('REDIS_URL','') or '').strip()
+        if not url:return None
+        c=_r44_redis.Redis.from_url(url,decode_responses=False,socket_connect_timeout=2,socket_timeout=3)
+        if c.ping(): return c
+    except Exception: pass
+    return None
+
+def _r44_mode(chat_id): return str(_R44_TEST_MODE.get(int(chat_id),'direct') or 'direct')
+def _r44_set_mode(chat_id,mode): _R44_TEST_MODE[int(chat_id)]='redis' if str(mode)=='redis' else 'direct'; return _r44_mode(chat_id)
+
+def _r44_request(chat_id, method, path, *, json_body=None, params=None, timeout=20, stream=False):
+    cid=int(chat_id); mode=_r44_mode(cid); base=_r44_peer_base(); start=_r44_time.monotonic()
+    if not base: return None,{'ok':False,'error':'PEER_SERVICE_URL не настроен','mode':mode,'elapsed':0}
+    headers=_r44_headers('per-r44-diag-'+mode); nonce=''; rclient=None; rkey=''; redis_verified=None
+    if mode=='redis':
+        rclient=_r44_front_redis()
+        if rclient is None:
+            return None,{'ok':False,'error':'Redis на FAST недоступен','mode':mode,'elapsed':0,'redis_verified':False}
+        nonce=_r44_secrets.token_hex(10); rkey=_R44_TEST_KEY_PREFIX+nonce
+        try:
+            rclient.setex(rkey,90,_r44_json.dumps({'side':'front','ts':_r44_time.time(),'chat':cid},separators=(',',':')))
+            headers['X-R44-Redis-Test']=nonce
+        except Exception as exc:
+            return None,{'ok':False,'error':'FAST Redis write: '+str(exc)[:220],'mode':mode,'elapsed':0,'redis_verified':False}
+    try:
+        r=_r44_requests.request(str(method).upper(),base+str(path),headers=headers,json=json_body,params=params,timeout=timeout,stream=stream)
+        elapsed=_r44_time.monotonic()-start
+        if mode=='redis' and rclient is not None:
+            try:
+                raw=rclient.get(rkey)
+                if isinstance(raw,bytes): raw=raw.decode('utf-8','replace')
+                obj=_r44_json.loads(raw or '{}') if raw else {}
+                redis_verified=(str(obj.get('side') or '')=='heavy' and bool(obj.get('front_seen')))
+            except Exception: redis_verified=False
+            try:rclient.delete(rkey)
+            except Exception:pass
+        meta={'ok':200<=int(r.status_code)<300,'status':int(r.status_code),'mode':mode,'elapsed':round(elapsed,3),'redis_verified':redis_verified,'content_type':str(r.headers.get('Content-Type') or '')[:120]}
+        if not stream:
+            try: meta['payload']=r.json() if r.content else {}
+            except Exception: meta['payload']={'raw':(r.text or '')[:800]}
+        _r44_diag('peer_http',method=method,path=path,status=r.status_code,elapsed=elapsed,mode=mode,redis_verified=redis_verified,bytes=r.headers.get('Content-Length',''))
+        return r,meta
+    except Exception as exc:
+        elapsed=_r44_time.monotonic()-start
+        try:
+            if rclient is not None and rkey:rclient.delete(rkey)
+        except Exception:pass
+        _r44_diag('peer_http_error',method=method,path=path,elapsed=elapsed,mode=mode,error=f'{type(exc).__name__}: {exc}')
+        return None,{'ok':False,'error':f'{type(exc).__name__}: {str(exc)[:500]}','mode':mode,'elapsed':round(elapsed,3),'redis_verified':False if mode=='redis' else None}
+
+@app.route('/internal/r44/test/reverse',methods=['POST'])
+def r44_front_reverse_probe():
+    auth=globals().get('_split_authorized_request')
+    if not callable(auth) or not bool(auth()): return ({'ok':False},404)
+    body=request.get_json(silent=True) or {}; nonce=str(body.get('nonce') or '')[:120]
+    _r44_diag('reverse_probe_received',nonce=nonce,remote=str(getattr(request,'remote_addr','') or ''))
+    return ({'ok':True,'role':'front','release':_R44_DIAG_RELEASE,'nonce':nonce,'ts':_r44_time.time()},200)
+
+def _r44_token(path,kind='dir'):
+    raw=str(kind)+'\0'+str(path)
+    tok=_r44_hashlib.sha1(raw.encode('utf-8','ignore')).hexdigest()[:14]
+    with _R44_MEGA_TOKEN_LOCK:_R44_MEGA_TOKENS[tok]={'path':str(path),'kind':str(kind),'ts':_r44_time.time()}
+    return tok
+
+def _r44_token_get(tok):
+    with _R44_MEGA_TOKEN_LOCK:return dict(_R44_MEGA_TOKENS.get(str(tok),{}) or {})
+
+def _r44_test_menu_text(chat_id,remote=None):
+    cid=int(chat_id); mode=_r44_mode(cid); rc=_r44_front_redis(); redis_front='✅' if rc is not None else '⛔'
+    peer=_r44_peer_base() or '—'; host=_r44_re.sub(r'^https?://','',peer).split('/')[0]
+    lines=['🧪 <b>ТЕСТ #1 FAST ↔ #2 HEAVY</b>','',f'Режим теста: <b>{"Redis handshake" if mode=="redis" else "прямой HTTP"}</b>',f'FAST Redis: {redis_front}',f'HEAVY URL: <code>{_r44_html.escape(host[:80])}</code>']
+    if isinstance(remote,dict):
+        lines+=['',f'HEAVY: {"✅ отвечает" if remote.get("ok") else "⛔ ошибка"}']
+        if remote.get('status') is not None: lines.append(f'HTTP: {remote.get("status")} · {remote.get("elapsed",0)}с')
+        if mode=='redis': lines.append(f'Общий Redis: {"✅ один и тот же" if remote.get("redis_verified") else "⛔ не подтверждён"}')
+        p=remote.get('payload') if isinstance(remote.get('payload'),dict) else {}
+        if p:
+            lines.append(f'MEGA #2: {"✅" if p.get("mega_ok") else "🟠"} · <code>{_r44_html.escape(str(p.get("mega_root") or "—")[:90])}</code>')
+            lines.append(f'Redis #2: {"✅" if p.get("redis_ok") else "⛔"} · configured={int(bool(p.get("redis_configured")))}')
+            lines.append(f'Front виден #2: {"✅" if p.get("front_configured") else "⛔"}')
+    lines+=['','Здесь тестируется реальная связь, MEGA и общий Redis. Производственный транспорт заданий этим переключателем не меняется.']
+    return window_mark('\n'.join(lines),'Ф4044')
+
+def _r44_test_menu_kb(chat_id):
+    cid=int(chat_id); kb=types.InlineKeyboardMarkup(row_width=2); mode=_r44_mode(cid)
+    kb.row(IB('🔗 #1 → #2 HTTP',callback_data='r44:test:echo'),IB('↩️ #2 → #1',callback_data='r44:test:reverse'))
+    kb.row(IB('📁 MEGA #2',callback_data='r44:test:mega:root'),IB('🗃 Снимок БД',callback_data='r44:test:snapshot'))
+    kb.row(IB(('🧠 Redis: ВКЛ' if mode=='redis' else '🧠 Redis: ВЫКЛ'),callback_data='r44:test:redis_toggle'),IB('🩺 Полный тест',callback_data='r44:test:full'))
+    kb.row(IB('📜 Последние события',callback_data='r44:test:tail'),IB('📥 Скачать журнал',callback_data='r44:test:journal'))
+    kb.row(IB('🔄 Статус #2',callback_data='r44:test:status'))
+    day=str(get_chat_store(cid).get('current_view_day') or today_key())
+    kb.row(IB('⬅️ Основное окно',callback_data=f'd:{day}:back_main'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+def _r44_mega_screen(chat_id,path,page=0):
+    r,meta=_r44_request(chat_id,'GET','/internal/r44/test/mega/list',params={'path':str(path)},timeout=45)
+    p=meta.get('payload') if isinstance(meta.get('payload'),dict) else {}
+    if not meta.get('ok') or not p.get('ok'):
+        text=window_mark('📁 <b>MEGA #2</b>\n\n⛔ '+_r44_html.escape(str(p.get('error') or meta.get('error') or f'HTTP {meta.get("status")}')[:1200]),'Ф4045')
+        kb=types.InlineKeyboardMarkup();kb.row(IB('🔙 В тест',callback_data='r44:test:open'));return text,kb
+    entries=list(p.get('entries') or []); page=max(0,int(page or 0)); per=9; pages=max(1,(len(entries)+per-1)//per); page=min(page,pages-1)
+    text=window_mark(f'📁 <b>MEGA #2</b>\n\nПуть: <code>{_r44_html.escape(str(p.get("path") or path)[:500])}</code>\nПапок/файлов: {len(entries)} · страница {page+1}/{pages}\nПолучено за {meta.get("elapsed",0)}с','Ф4045')
+    kb=types.InlineKeyboardMarkup(row_width=1)
+    for ent in entries[page*per:(page+1)*per]:
+        ep=str(ent.get('path') or ''); kind=str(ent.get('type') or 'file'); name=str(ent.get('name') or ep.rsplit('/',1)[-1] or '/')
+        tok=_r44_token(ep,kind); label=('📁 ' if kind=='dir' else '📄 ')+name[:46]
+        kb.row(IB(label,callback_data=f'r44:test:mega:{"d" if kind=="dir" else "f"}:{tok}'))
+    nav=[]
+    ptok=_r44_token(str(p.get('path') or path),'dir')
+    if page>0: nav.append(IB('◀️',callback_data=f'r44:test:mega:p:{ptok}:{page-1}'))
+    if page+1<pages: nav.append(IB('▶️',callback_data=f'r44:test:mega:p:{ptok}:{page+1}'))
+    if nav: kb.row(*nav)
+    parent=str(p.get('parent') or '')
+    if parent and parent!=str(p.get('path') or ''):
+        kb.row(IB('⬆️ Вверх',callback_data=f'r44:test:mega:d:{_r44_token(parent,"dir")}'))
+    kb.row(IB('🔄 Обновить',callback_data=f'r44:test:mega:d:{ptok}'),IB('🔙 В тест',callback_data='r44:test:open'))
+    return text,kb
+
+def _r44_send_mega_file(chat_id,path):
+    cid=int(chat_id); r,meta=_r44_request(cid,'GET','/internal/r44/test/mega/file',params={'path':str(path)},timeout=120,stream=True)
+    if r is None or not meta.get('ok'):
+        return False,str(meta.get('error') or f'HTTP {meta.get("status")}')[:700]
+    tmp=None
+    try:
+        name=str(path).rstrip('/').rsplit('/',1)[-1] or 'mega_file.bin'
+        fd,tmp=_r44_tempfile.mkstemp(prefix='r44_mega_',suffix='_'+_r44_re.sub(r'[^A-Za-z0-9_.-]+','_',name)[-70:]);_r44_os.close(fd)
+        size=0
+        with open(tmp,'wb') as fh:
+            for chunk in r.iter_content(1024*512):
+                if not chunk: continue
+                size+=len(chunk)
+                if size>50*1024*1024: raise RuntimeError('Файл больше диагностического лимита 50 МБ')
+                fh.write(chunk)
+        with open(tmp,'rb') as fh: bot.send_document(cid,fh,caption=f'🧪 R44 · HEAVY передал из MEGA\n{name}')
+        _r44_diag('mega_file_delivered',chat=cid,path=path,bytes=size,elapsed=meta.get('elapsed'))
+        return True,f'{name} · {size} байт'
+    except Exception as exc:
+        _r44_diag('mega_file_error',chat=cid,path=path,error=exc);return False,f'{type(exc).__name__}: {str(exc)[:500]}'
+    finally:
+        try:
+            if tmp:_r44_os.unlink(tmp)
+        except Exception:pass
+
+def _r44_render_tail():
+    rows=_r44_diag_tail(28); lines=['📜 <b>R44 · последние события FAST</b>','']
+    for row in rows[-24:]:
+        ts=_r44_time.strftime('%H:%M:%S',_r44_time.localtime(float(row.get('ts') or 0)))
+        ev=str(row.get('event') or '')[:40]; detail=str(row.get('name') or row.get('path') or row.get('message') or row.get('detail') or '')[:100]
+        lines.append(f'<code>{ts}</code> · {_r44_html.escape(ev)} · {_r44_html.escape(detail)}')
+    if len(lines)==2: lines.append('Пока пусто.')
+    return window_mark('\n'.join(lines),'Ф4046')
+
+def _r44_full_test(chat_id):
+    cid=int(chat_id); results=[]
+    for label,method,path,body,to in [
+        ('#1→#2','POST','/internal/r44/test/echo',{'nonce':_r44_secrets.token_hex(6)},12),
+        ('#2→#1','POST','/internal/r44/test/reverse',{'nonce':_r44_secrets.token_hex(6)},15),
+        ('Статус','GET','/internal/r44/test/status',None,15),
+    ]:
+        r,m=_r44_request(cid,method,path,json_body=body,timeout=to); p=m.get('payload') if isinstance(m.get('payload'),dict) else {}
+        results.append((label,bool(m.get('ok') and p.get('ok',True)),m,p))
+    r,m=_r44_request(cid,'GET','/internal/r44/test/mega/list',params={'path':''},timeout=45);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};results.append(('MEGA',bool(m.get('ok') and p.get('ok')),m,p))
+    lines=['🩺 <b>ПОЛНЫЙ ТЕСТ #1 ↔ #2</b>','']
+    for label,ok,m,p in results:
+        extra=''
+        if label=='MEGA' and ok: extra=f' · entries={len(p.get("entries") or [])}'
+        if _r44_mode(cid)=='redis': extra+=f' · Redis={"OK" if m.get("redis_verified") else "NO"}'
+        lines.append(f'{"✅" if ok else "⛔"} {label}: {m.get("elapsed",0)}с{extra}')
+        if not ok: lines.append('   '+_r44_html.escape(str(p.get('error') or m.get('error') or f'HTTP {m.get("status")}')[:260]))
+    return window_mark('\n'.join(lines),'Ф4047')
+
+# Owner-only Test button in the actual main window.
+_R44_PREV_MAIN_KB=globals().get('build_main_keyboard')
+def _r44_build_main_keyboard(day_key,chat_id=None):
+    kb=_R44_PREV_MAIN_KB(day_key,chat_id) if callable(_R44_PREV_MAIN_KB) else types.InlineKeyboardMarkup()
+    try: cid=int(chat_id if chat_id is not None else current_state_chat_id() or 0)
+    except Exception: cid=0
+    if cid!=int(OWNER_ID or 0): return kb
+    try:
+        rows=globals().get('_v217_rows',lambda x:list(getattr(x,'keyboard',None) or []))(kb)
+        cbfn=globals().get('_v217_btn_cb',lambda b:str(getattr(b,'callback_data','') or ''))
+        if not any(cbfn(b)=='r44:test:open' for row in rows for b in (row or [])):
+            rows.append([IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open')])
+            setfn=globals().get('_v217_set_rows')
+            if callable(setfn): kb=setfn(kb,rows)
+            else: kb.row(IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
+    except Exception:
+        try:kb.row(IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
+        except Exception:pass
+    return kb
+if callable(_R44_PREV_MAIN_KB): globals()['build_main_keyboard']=_r44_build_main_keyboard
+
+_R44_PREV_CONTOUR_GUARD=globals().get('contour_callback_guard')
+def _r44_test_guard(call,resolved):
+    raw=str(resolved or '')
+    if not raw.startswith('r44:test:'):
+        return bool(_R44_PREV_CONTOUR_GUARD(call,raw)) if callable(_R44_PREV_CONTOUR_GUARD) else False
+    try: cid=int(call.message.chat.id);uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
+    except Exception:return True
+    if cid!=int(OWNER_ID or 0) or uid!=int(OWNER_ID or 0):
+        try:bot.answer_callback_query(call.id,'Только владелец.',show_alert=True)
+        except Exception:pass
+        return True
+    try:bot.answer_callback_query(call.id)
+    except Exception:pass
+    _r44_diag('test_button',chat=cid,action=raw,mode=_r44_mode(cid))
+    try:
+        if raw=='r44:test:open': safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:redis_toggle':
+            new='direct' if _r44_mode(cid)=='redis' else 'redis';_r44_set_mode(cid,new);safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:status':
+            _,m=_r44_request(cid,'GET','/internal/r44/test/status',timeout=15);safe_edit(bot,call,_r44_test_menu_text(cid,m),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:echo':
+            nonce=_r44_secrets.token_hex(8);_,m=_r44_request(cid,'POST','/internal/r44/test/echo',json_body={'nonce':nonce,'sent_at':_r44_time.time()},timeout=12);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};ok=bool(m.get('ok') and p.get('nonce')==nonce)
+            text=window_mark(f'🔗 <b>#1 FAST → #2 HEAVY</b>\n\n{"✅ Успех" if ok else "⛔ Ошибка"}\nHTTP: {m.get("status","—")} · {m.get("elapsed",0)}с\nNonce: <code>{nonce}</code>\nОтвет: <code>{_r44_html.escape(str(p.get("nonce") or "—"))}</code>\nRedis handshake: {m.get("redis_verified") if _r44_mode(cid)=="redis" else "не используется"}','Ф4048');safe_edit(bot,call,text,reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:reverse':
+            nonce=_r44_secrets.token_hex(8);_,m=_r44_request(cid,'POST','/internal/r44/test/reverse',json_body={'nonce':nonce},timeout=15);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};rr=p.get('front_reply') if isinstance(p.get('front_reply'),dict) else {};ok=bool(m.get('ok') and p.get('ok') and rr.get('nonce')==nonce)
+            text=window_mark(f'↩️ <b>#2 HEAVY → #1 FAST</b>\n\n{"✅ Успех" if ok else "⛔ Ошибка"}\nОбщее время: {m.get("elapsed",0)}с\nHEAVY увидел Front: {"✅" if p.get("front_http_ok") else "⛔"}\nNonce вернулся: {"✅" if rr.get("nonce")==nonce else "⛔"}\nRedis handshake: {m.get("redis_verified") if _r44_mode(cid)=="redis" else "не используется"}\n{_r44_html.escape(str(p.get("error") or m.get("error") or "")[:500])}','Ф4049');safe_edit(bot,call,text,reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:snapshot':
+            _,m=_r44_request(cid,'POST','/internal/r44/test/snapshot',json_body={'nonce':_r44_secrets.token_hex(6)},timeout=90);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};text=window_mark(f'🗃 <b>Снимок данных #1 → #2</b>\n\n{"✅ HEAVY получил свежую SQLite" if m.get("ok") and p.get("ok") else "⛔ Ошибка"}\nВремя: {m.get("elapsed",0)}с\nBytes: {p.get("snapshot_bytes","—")}\nToken: <code>{_r44_html.escape(str(p.get("token") or "—")[:80])}</code>\n{_r44_html.escape(str(p.get("error") or m.get("error") or "")[:600])}','Ф4050');safe_edit(bot,call,text,reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:mega:root':
+            text,kb=_r44_mega_screen(cid,'',0);safe_edit(bot,call,text,reply_markup=kb,parse_mode='HTML');return True
+        if raw.startswith('r44:test:mega:d:'):
+            tok=raw.split(':')[-1];rec=_r44_token_get(tok);text,kb=_r44_mega_screen(cid,rec.get('path') or '',0);safe_edit(bot,call,text,reply_markup=kb,parse_mode='HTML');return True
+        if raw.startswith('r44:test:mega:p:'):
+            parts=raw.split(':');tok=parts[-2];page=int(parts[-1]);rec=_r44_token_get(tok);text,kb=_r44_mega_screen(cid,rec.get('path') or '',page);safe_edit(bot,call,text,reply_markup=kb,parse_mode='HTML');return True
+        if raw.startswith('r44:test:mega:f:'):
+            tok=raw.split(':')[-1];rec=_r44_token_get(tok);path=rec.get('path') or '';safe_edit(bot,call,window_mark('📥 HEAVY скачивает файл из MEGA и передаёт FAST…','Ф4051'),reply_markup=_r44_test_menu_kb(cid));ok,detail=_r44_send_mega_file(cid,path);safe_edit(bot,call,window_mark(('✅ Передано: ' if ok else '⛔ Ошибка: ')+_r44_html.escape(detail),'Ф4051'),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:full': safe_edit(bot,call,_r44_full_test(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:tail': safe_edit(bot,call,_r44_render_tail(),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+        if raw=='r44:test:journal':
+            _r44_diag('journal_download',chat=cid)
+            if not _R44_DIAG_PATH.exists(): _r44_diag('journal_created',chat=cid)
+            with open(_R44_DIAG_PATH,'rb') as fh:bot.send_document(cid,fh,caption='📜 R44 диагностический журнал FAST')
+            return True
+    except Exception as exc:
+        _r44_diag('test_handler_error',chat=cid,action=raw,error=f'{type(exc).__name__}: {exc}')
+        try:safe_edit(bot,call,window_mark('⛔ <b>R44 TEST</b>\n\n'+_r44_html.escape(f'{type(exc).__name__}: {str(exc)[:1200]}'),'Ф4052'),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML')
+        except Exception:pass
+        return True
+    return True
+if callable(_R44_PREV_CONTOUR_GUARD):globals()['contour_callback_guard']=_r44_test_guard
+
+# Communication/task hooks for the diagnostic journal.
+_R44_PREV_PEER_DISPATCH=globals().get('_r38_outbox_dispatch_one')
+if callable(_R44_PREV_PEER_DISPATCH):
+    def _r44_peer_dispatch(row):
+        jid=str((row or {}).get('job_id') or '');kind=str((row or {}).get('kind') or '');start=_r44_time.monotonic();_r44_diag('job_dispatch_start',job_id=jid,kind=kind,endpoint=(row or {}).get('endpoint'),attempts=(row or {}).get('attempts'))
+        try:return _R44_PREV_PEER_DISPATCH(row)
+        finally:
+            rr=globals().get('_r38_outbox_get',lambda x:{}) (jid) if jid else {};_r44_diag('job_dispatch_end',job_id=jid,kind=kind,state=(rr or {}).get('state'),elapsed=round(_r44_time.monotonic()-start,3),error=(rr or {}).get('last_error'))
+    globals()['_r38_outbox_dispatch_one']=_r44_peer_dispatch
+
+_R44_PREV_EXPORT_DELIVERY=globals().get('_r38_export_delivery_task')
+if callable(_R44_PREV_EXPORT_DELIVERY):
+    def _r44_export_delivery(body):
+        jid=str((body or {}).get('job_id') or '');start=_r44_time.monotonic();_r44_diag('result_delivery_start',job_id=jid,ok=(body or {}).get('ok'),filename=(body or {}).get('filename'))
+        try:return _R44_PREV_EXPORT_DELIVERY(body)
+        finally:_r44_diag('result_delivery_end',job_id=jid,elapsed=round(_r44_time.monotonic()-start,3),state=(globals().get('_r35_delivery_get',lambda x:{}) (jid) or {}).get('state'))
+    globals()['_r38_export_delivery_task']=_r44_export_delivery
+
+_R44_PREV_PING=globals().get('_split_ping_once')
+if callable(_R44_PREV_PING):
+    def _r44_ping_once(*a,**k):
+        st=_r44_time.monotonic();
+        try:return _R44_PREV_PING(*a,**k)
+        finally:_r44_diag('peer_health_ping',elapsed=round(_r44_time.monotonic()-st,3),status=(globals().get('_SPLIT_STATE') or {}).get('peer_status'),error=(globals().get('_SPLIT_STATE') or {}).get('peer_last_error'))
+    globals()['_split_ping_once']=_r44_ping_once
+
+_R44_PREV_INTERACTIVE_SUBMIT=globals().get('submit_interactive_file_job')
+if callable(_R44_PREV_INTERACTIVE_SUBMIT):
+    def _r44_submit_interactive_file_job(chat_id, kind, label, func, *args, **kwargs):
+        _r44_diag('interactive_job_submit',chat=chat_id,kind=kind,label=label,func=getattr(func,'__name__',str(func)) if func is not None else '')
+        st=_r44_time.monotonic()
+        try:
+            result=_R44_PREV_INTERACTIVE_SUBMIT(chat_id,kind,label,func,*args,**kwargs)
+            _r44_diag('interactive_job_submit_done',chat=chat_id,kind=kind,label=label,elapsed=round(_r44_time.monotonic()-st,3),result=result)
+            return result
+        except Exception as exc:
+            _r44_diag('interactive_job_submit_error',chat=chat_id,kind=kind,label=label,elapsed=round(_r44_time.monotonic()-st,3),error=f'{type(exc).__name__}: {exc}')
+            raise
+    globals()['submit_interactive_file_job']=_r44_submit_interactive_file_job
+
+_r44_diag('r44_diag_loaded',release=_R44_DIAG_RELEASE,peer=_r44_peer_base(),redis_fast=bool(_r44_front_redis()))
+try: bot_journal('r44_diag_loaded',int(OWNER_ID or 0),'owner test menu + FAST journal + HEAVY MEGA browser + direct/shared-Redis handshake diagnostics')
+except Exception:pass
+
+
 # v262
