@@ -23,7 +23,7 @@ def compile_all():
     ok('python_compile',not bad,'; '.join(bad[:5]))
 
 compile_all()
-for req in ['PROJECT_RULES.md','PATCH_PROTOCOL.md','FINALIZATION_REPORT.md','INFO/BOT_MAP.md','FINALIZATION_GATE.py']:
+for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md','FINALIZATION_GATE.py']:
     ok('required_'+req,(ROOT/req).is_file(),req)
 
 if ROLE=='fast':
@@ -47,7 +47,7 @@ if ROLE=='fast':
     for fn,s in all_py.items():
         for m in hot_methods:
             for mat in re.finditer(rf'(?m)^\s*bot\.{re.escape(m)}\s*=',s): binds.append((fn,m))
-    ok('telegram_bindings_only_89',all(fn=='89_callback_final.py' for fn,_ in binds),str(binds))
+    ok('telegram_bindings_only_09_final_transport',all(fn=='09_final_transport.py' for fn,_ in binds),str(binds))
     ok('telegram_bindings_count',len(binds)==8,f'count={len(binds)} {binds}')
 
     runtime_py={k:v for k,v in all_py.items() if k!='FINALIZATION_GATE.py'}
@@ -80,9 +80,17 @@ if ROLE=='fast':
                         if isinstance(t,ast.Name): out.add(t.id)
             return out
         except Exception:return set()
-    for mod,label in [('100_r33_heavy_offload.py','r100_no_prev_orig_base'),('98_split_front.py','r98_no_prev_orig_base')]:
-        bad=sorted(x for x in assigned_ids(all_py.get(mod,'')) if re.search(r'_(?:PREV|ORIG|BASE)_',x))
-        ok(label,not bad,','.join(bad[:8]))
+    def merged_section(src, old_name):
+        marker=f'# --- ИСТОЧНИК: {old_name} ---'
+        if marker not in src: return ''
+        tail=src.split(marker,1)[1]
+        nxt=tail.find('# --- ИСТОЧНИК: ')
+        return tail if nxt < 0 else tail[:nxt]
+    merged=all_py.get('10_split_policy_offload.py','')
+    for old_name,label in [('98_split_front.py','r98_no_prev_orig_base'),('100_r33_heavy_offload.py','r100_no_prev_orig_base')]:
+        section=merged_section(merged,old_name)
+        bad=sorted(x for x in assigned_ids(section) if re.search(r'_(?:PREV|ORIG|BASE)_',x))
+        ok(label,bool(section) and not bad,('missing section' if not section else ','.join(bad[:8])))
 
     hot_public=['submit_interactive_file_job','v163_webhook_select_lane','contour_callback_guard','build_main_keyboard','v149_extension_callback','_r38_outbox_dispatch_one','_r38_outbox_enqueue','_r38_outbox_pending_rows']
     bad_globals=[]
@@ -93,7 +101,7 @@ if ROLE=='fast':
 
     ns={}; exec(text('runtime_config.py'),ns)
     env=ns.get('FRONT_INTERNAL_ENV') or {}
-    limits={'BOT_THREAD_STACK_KB':512,'UI_WORKERS':2,'FAST_UI_WORKERS':2,'WINDOW_RENDER_WORKERS':2,'CALLBACK_ACK_WORKERS':1,'UI_CLEANUP_WORKERS':1,'UI_DELETE_WORKERS':1,'DELTA_WORKERS':1,'BACKGROUND_WORKERS':1,'SCHEDULER_WORKERS':2,'R21_HEAVY_DISPATCH_WORKERS':2,'BOT_JOURNAL_MAX':600,'R32_EVENT_QUEUE_MAX':5000}
+    limits={'BOT_THREAD_STACK_KB':512,'UI_WORKERS':2,'FAST_UI_WORKERS':2,'WINDOW_RENDER_WORKERS':2,'CALLBACK_ACK_WORKERS':2,'UI_CLEANUP_WORKERS':1,'UI_DELETE_WORKERS':1,'DELTA_WORKERS':1,'BACKGROUND_WORKERS':1,'SCHEDULER_WORKERS':2,'R21_HEAVY_DISPATCH_WORKERS':2,'BOT_JOURNAL_MAX':600,'R32_EVENT_QUEUE_MAX':5000,'WEBHOOK_WORKERS':2}
     bad=[]
     for k,maxv in limits.items():
         try:
@@ -101,6 +109,65 @@ if ROLE=='fast':
         except Exception: bad.append(f'{k}=invalid')
     ok('fast_memory_budget',not bad,'; '.join(bad))
     ok('state_events_contract','/internal/state/events' in joined,'state events endpoint/transport missing')
+
+    # R48 performance/finalization invariants.
+    def _fn_sources(src: str, wanted: set[str]):
+        out={}
+        try:
+            tree=ast.parse(src); lines=src.splitlines()
+            for node in ast.walk(tree):
+                if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in wanted:
+                    out[node.name]='\n'.join(lines[node.lineno-1:node.end_lineno])
+        except Exception:
+            pass
+        return out
+
+    core_src=all_py.get('01_core_data.py','')
+    msg_src=all_py.get('04_messages_features.py','')
+    web_src=all_py.get('07_state_web.py','')
+    rel_src=all_py.get('08_reliability_tasks.py','')
+    split_src=all_py.get('10_split_policy_offload.py','')
+    core_fns=_fn_sources(core_src,{'_lowram_flush_chat','bump_quick_balance_recreate_counter','_tg_call_retry'})
+    rel_fns=_fn_sources(rel_src,{'_execute_telegram_payload_core'})
+    split_fns=_fn_sources(split_src,{'_split_snapshot_meta'})
+    ok('r48_lowram_flush_ram_only','SQLITE.' not in core_fns.get('_lowram_flush_chat','') and 'save_data(' not in core_fns.get('_lowram_flush_chat',''),'LOW-RAM flush must only create a RAM snapshot')
+    ok('r48_visual_counter_ram_only','save_data(' not in core_fns.get('bump_quick_balance_recreate_counter',''),'visual counter must not persist on every message')
+    ok('r48_no_whole_handler_chat_lock','telegram_execution_chat_lock' not in rel_fns.get('_execute_telegram_payload_core','') and 'with locked_chat' not in rel_fns.get('_execute_telegram_payload_core',''),'whole Telegram handler must not hold chat lock')
+    ok('r48_peer_health_ram_only','SQLITE.' not in split_fns.get('_split_snapshot_meta',''),'peer health must not touch SQLite')
+    ok('r48_sqlite_dedicated_reader', all(x in core_src for x in ["R25TracedRLock('sqlite-read')",'PRAGMA query_only=ON','def _read_one','def _read_all']),'query-only SQLite reader channel missing')
+    ok('r48_single_finance_persist_owner', count(r'(?m)^def persist_finance_chat_local_fast\(',joined)==1 and count(r'(?m)^\s*persist_finance_chat_local_fast\s*=',joined)==0,'finance persistence must have one direct owner')
+    ok('r48_finance_persist_guard','held_by_current_thread' in _fn_sources(msg_src,{'persist_finance_chat_local_fast'}).get('persist_finance_chat_local_fast',''),'finance persist must reject SQLite while chat lock is held')
+    ok('r48_navigation_coalesce', all(x in web_src for x in ['_R48_NAV_INFLIGHT','def _r48_nav_coalesce_key','R48 NAV COALESCE']),'safe navigation coalescing missing')
+    ok('r48_recovery_yields_to_user','r27_user_quiet_for' in web_src and '5.0' in web_src,'webhook recovery user-activity yield missing')
+    ok('r48_no_callback_witness_thread','r18-cb-witness-' not in web_src,'callback witness must use bounded pool/scheduler')
+    ok('r48_no_event_thread_fallback','vys262-event-r13' not in split_src,'state event fallback must not spawn per-event thread')
+
+    # Literal whole-project lock audit: direct disk/network persistence is forbidden
+    # inside the two central state locks. Keep this broad so future regressions fail PACKAGE.
+    hard_calls={'save_data','persist_finance_chat_local_fast','finance_integrity_append','_tg_call_retry',
+                'send_message','edit_message_text','edit_message_caption','edit_message_reply_markup',
+                'delete_message','send_document','answer_callback_query','set_cold','set_cold_many',
+                'save_chat','save_chat_bundle','save_root','set_kv','set_meta','backup_to'}
+    lock_hits=[]
+    def _call_name(n):
+        return n.id if isinstance(n,ast.Name) else n.attr if isinstance(n,ast.Attribute) else ''
+    for fn,src in runtime_py.items():
+        try: tree=ast.parse(src)
+        except Exception: continue
+        for owner in [n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]:
+            for w in [n for n in ast.walk(owner) if isinstance(n,(ast.With,ast.AsyncWith))]:
+                exprs=[]
+                for item in w.items:
+                    try: exprs.append(ast.unparse(item.context_expr))
+                    except Exception: pass
+                lock_kind = 'chat' if any(('locked_chat' in e or 'telegram_execution_chat_lock' in e) for e in exprs) else 'data' if any(re.search(r'\bdata_lock\b',e) for e in exprs) else ''
+                if not lock_kind: continue
+                for call in [n for n in ast.walk(w) if isinstance(n,ast.Call)]:
+                    name=_call_name(call.func)
+                    sqlite_attr=isinstance(call.func,ast.Attribute) and isinstance(call.func.value,ast.Name) and call.func.value.id=='SQLITE'
+                    if name in hard_calls or sqlite_attr:
+                        lock_hits.append(f'{fn}:{owner.name}:{lock_kind}:{name}@{call.lineno}')
+    ok('r48_no_direct_io_under_chat_or_data_lock',not lock_hits,'; '.join(lock_hits[:12]))
 
 elif ROLE=='heavy':
     s=text('worker_service.py')
