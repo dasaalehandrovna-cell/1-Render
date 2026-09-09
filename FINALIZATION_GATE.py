@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import ast, hashlib, json, py_compile, re, sys
+import ast, hashlib, json, os, py_compile, re, runpy, sys, threading
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
@@ -23,8 +23,17 @@ def compile_all():
     ok('python_compile',not bad,'; '.join(bad[:5]))
 
 compile_all()
-for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md','FINALIZATION_GATE.py']:
-    ok('required_'+req,(ROOT/req).is_file(),req)
+# INFO is release documentation, not a runtime dependency.  A Render/Git deployment
+# may legitimately transfer only root runtime files.  PACKAGE validation keeps the
+# docs mandatory by default; Docker sets FINALIZATION_REQUIRE_INFO=0 so missing
+# documentation can never prevent the production bot from starting.
+_require_info = str(os.getenv('FINALIZATION_REQUIRE_INFO','1')).strip().lower() not in {'0','false','no','off'}
+_runtime_build = str(os.getenv('FINALIZATION_RUNTIME_BUILD','0')).strip().lower() in {'1','true','yes','on'}
+_run_startup_smoke = str(os.getenv('FINALIZATION_STARTUP_SMOKE','0')).strip().lower() in {'1','true','yes','on'}
+ok('required_FINALIZATION_GATE.py',(ROOT/'FINALIZATION_GATE.py').is_file(),'FINALIZATION_GATE.py')
+for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md']:
+    if _require_info:
+        ok('required_'+req,(ROOT/req).is_file(),req)
 
 if ROLE=='fast':
     manifest=json.loads(text('modules_manifest.json'))
@@ -178,20 +187,21 @@ if ROLE=='fast':
        '09_final_transport.py' in parts and '10_split_policy_offload.py' in parts and
        parts.index('09_final_transport.py') < parts.index('10_split_policy_offload.py'),
        str(parts))
-    docker_src=text('Dockerfile') if (ROOT/'Dockerfile').is_file() else ''
-    dockerignore_src=text('.dockerignore') if (ROOT/'.dockerignore').is_file() else ''
-    ok('r48_docker_build_import_smoke',
-       'python FINALIZATION_GATE.py' in docker_src and 'import bot' in docker_src and 'R48 FAST IMPORT SMOKE PASS' in docker_src,
-       'Dockerfile must run gate + real bot import before CMD')
-    ok('r48_docker_no_copy_dot',
-       not re.search(r'(?m)^\s*COPY\s+\.\s+\.?/?',docker_src),
-       'Dockerfile must never COPY the whole repository into FAST')
-    ok('r48_docker_explicit_compact_copy',
-       all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py','COPY INFO/ ./INFO/']),
-       'Dockerfile must explicitly copy compact runtime and INFO')
-    ok('r48_dockerignore_allowlist',
-       dockerignore_src.lstrip().startswith('# R48 CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
-       '.dockerignore must be a strict compact allowlist')
+    if not _runtime_build:
+        docker_src=text('Dockerfile') if (ROOT/'Dockerfile').is_file() else ''
+        dockerignore_src=text('.dockerignore') if (ROOT/'.dockerignore').is_file() else ''
+        ok('r48_docker_build_import_smoke',
+           'FINALIZATION_REQUIRE_INFO=0 FINALIZATION_RUNTIME_BUILD=1 FINALIZATION_STARTUP_SMOKE=1' in docker_src and 'python FINALIZATION_GATE.py' in docker_src,
+           'Dockerfile must run runtime-only gate with deterministic startup smoke before CMD')
+        ok('r48_docker_no_copy_dot',
+           not re.search(r'(?m)^\s*COPY\s+\.\s+\.?/?',docker_src),
+           'Dockerfile must never COPY the whole repository into FAST')
+        ok('r48_docker_explicit_compact_copy',
+           all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py']) and 'COPY INFO/' not in docker_src,
+           'Dockerfile must explicitly copy only compact runtime; INFO must not be a production dependency')
+        ok('r48_dockerignore_allowlist',
+           dockerignore_src.lstrip().startswith('# R48 CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
+           '.dockerignore must be a strict runtime-only compact allowlist; INFO is release-only')
 
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
     # inside the two central state locks. Keep this broad so future regressions fail PACKAGE.
@@ -219,6 +229,26 @@ if ROLE=='fast':
                     if name in hard_calls or sqlite_attr:
                         lock_hits.append(f'{fn}:{owner.name}:{lock_kind}:{name}@{call.lineno}')
     ok('r48_no_direct_io_under_chat_or_data_lock',not lock_hits,'; '.join(lock_hits[:12]))
+
+    if _run_startup_smoke:
+        # Deterministic build-time import smoke.  Execute the complete modular bot
+        # and all startup contracts, but prevent daemon/background threads from
+        # actually starting during Docker build.  This catches NameError/order/
+        # contract regressions without requiring Telegram/Redis/MEGA network I/O.
+        _orig_thread_start = threading.Thread.start
+        threading.Thread.start = lambda self: None
+        try:
+            ns = runpy.run_path(str(ROOT/'bot.py'), run_name='r48_gate_startup_smoke')
+            contract = ns.get('r29_assert_r28_fast_ui_contract')
+            bot_obj = ns.get('bot')
+            msg_n = len(getattr(bot_obj,'message_handlers',[]) or [])
+            cb_n = len(getattr(bot_obj,'callback_query_handlers',[]) or [])
+            smoke_ok = callable(contract) and contract() is True and msg_n > 0 and cb_n > 0
+            ok('r48_deterministic_startup_smoke', smoke_ok, f'handlers={msg_n}/{cb_n}')
+        except BaseException as exc:
+            ok('r48_deterministic_startup_smoke', False, f'{type(exc).__name__}: {exc}')
+        finally:
+            threading.Thread.start = _orig_thread_start
 
 elif ROLE=='heavy':
     s=text('worker_service.py')

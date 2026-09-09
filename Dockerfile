@@ -22,14 +22,15 @@ COPY 01_core_data.py 02_transport_safety.py 03_diagnostics_memory.py \
      04_messages_features.py 05_finance_ui.py 06_commands_callbacks.py \
      07_state_web.py 08_reliability_tasks.py 09_final_transport.py \
      10_split_policy_offload.py ./
-COPY INFO/ ./INFO/
+# INFO/ is release documentation and is intentionally NOT copied into the runtime image.
+# Missing docs in a Render/Git build context must never prevent the bot from starting.
 
-# Fail the image build before Deploy if structure/startup is broken.
-RUN python FINALIZATION_GATE.py \
- && B_T=123456:STARTUPSMOKE DB_FILE=/tmp/r48_build_smoke.sqlite3 \
+# Fail the image build before Deploy if runtime structure/startup is broken.
+RUN B_T=123456:STARTUPSMOKE DB_FILE=/tmp/r48_build_smoke.sqlite3 \
     REDIS_URL= PEER_PRIVATE_URL= PEER_SERVICE_URL= PEER_SHARED_SECRET= \
     MEGA_EMAIL= MEGA_PASSWORD= TRAFFIC_AUDIT_ENABLED=0 \
-    python -c "import bot; assert bot.r29_assert_r28_fast_ui_contract() is True; print('R48 FAST IMPORT SMOKE PASS')" \
+    FINALIZATION_REQUIRE_INFO=0 FINALIZATION_RUNTIME_BUILD=1 FINALIZATION_STARTUP_SMOKE=1 \
+    python FINALIZATION_GATE.py \
  && rm -f /tmp/r48_build_smoke.sqlite3 /tmp/r48_build_smoke.sqlite3-wal /tmp/r48_build_smoke.sqlite3-shm
 
 CMD ["python", "start_front.py"]

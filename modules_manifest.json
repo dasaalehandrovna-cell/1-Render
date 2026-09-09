@@ -25,7 +25,7 @@
     "09_final_transport.py": "a89e4a83fd3d43d89f072bcdbe4570db630c694ba65b4cd6aa0a4fd574b41210",
     "10_split_policy_offload.py": "f1537b1168915a561ebb0eae5045fee78e73a35fa28a99c5a220dab260589c2c"
   },
-  "release": "Пер-R48-FINAL-LOCKFIX-FAST-STARTUPFIX-COMPACT14-RU",
+  "release": "Пер-R48-FINAL-CLEANBUILD2-LOCKFIX-STARTUPFIX-COMPACT14-RU",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -169,6 +169,9 @@
     "r48_webhook_workers_2_ack_workers_2",
     "r48_fast_startup_semantic_renderer_contract",
     "r48_no_historical_renderer_filename_contract",
-    "r48_single_final_fast_ui_binding"
+    "r48_single_final_fast_ui_binding",
+    "r48_cleanbuild_runtime_docs_decoupled",
+    "r48_render_context_info_optional",
+    "r48_docker_runtime_only_allowlist"
   ]
 }
