@@ -3039,7 +3039,7 @@ def _r22_execute_window_render(payload: dict) -> None:
 
 
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
-    """R28: direct v262 render path. No render queue between callback and Telegram."""
+    """R49 root-fix: enqueue latest window render; callback never waits for Telegram RTT."""
     chat_id = int(chat_id)
     message_id = int(message_id)
     try:
@@ -3072,55 +3072,31 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
     except Exception:
         pass
     try:
-        cancel_fast_ui_edit(chat_id, message_id)
+        ctx_fn = globals().get('r25_trace_current')
+        ctx = ctx_fn() if callable(ctx_fn) else {}
+        payload['_r25_update_id'] = str((ctx or {}).get('update_id') or '')
+        payload['_r22_action'] = str((ctx or {}).get('action') or '')[:180]
+    except Exception:
+        payload['_r25_update_id'] = ''
+        payload['_r22_action'] = ''
+    payload['_r22_enqueued_mono'] = _v160_time.monotonic()
+    key = f'{chat_id}:{message_id}'
+    try:
+        seq = WINDOW_RENDER_TASK_POOL.submit_latest(key, _r22_execute_window_render, payload)
+    except Exception as exc:
+        try: log_error(f'R49 WINDOW RENDER ENQUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
+        except Exception: pass
+        return 'failed'
+    if not seq:
+        try: log_error(f'R49 WINDOW RENDER QUEUE FULL chat={chat_id} msg={message_id}')
+        except Exception: pass
+        return 'failed'
+    try:
+        st = globals().get('r25_trace_stage')
+        if callable(st): st('RENDER_ENQUEUED', 0.0, f'seq={seq}')
     except Exception:
         pass
-    if r50_ui_context_stale(chat_id, message_id):
-        try: bot_journal('r50_stale_ui_render_skipped', chat_id, f'message={message_id}; purpose={purpose}')
-        except Exception: pass
-        return 'stale_skipped'
-    key = (chat_id, message_id)
-    with _V160_FAST_EDIT_LOCKS[key]:
-        if r50_ui_context_stale(chat_id, message_id): return 'stale_skipped'
-        now_m = _v160_time.monotonic()
-        last = float(_V160_FAST_EDIT_LAST.get(key, 0.0) or 0.0)
-        remain = _V160_FAST_EDIT_MIN_GAP - (now_m - last)
-        if remain > 0:
-            _v160_time.sleep(remain)
-        _V160_FAST_EDIT_LAST[key] = _v160_time.monotonic()
-        try:
-            apply_fn = globals().get('window_diag_fast_ui_apply')
-            if callable(apply_fn):
-                apply_fn(payload, delayed=False)
-        except Exception:
-            pass
-        _uid = ''
-        _action = ''
-        try:
-            ctx_fn = globals().get('r25_trace_current')
-            ctx = ctx_fn() if callable(ctx_fn) else {}
-            _uid = str((ctx or {}).get('update_id') or '')
-            _action = str((ctx or {}).get('action') or '')[:180]
-            st = globals().get('r25_trace_stage')
-            if callable(st): st('TELEGRAM_EDIT_START')
-        except Exception:
-            pass
-        t0 = _v160_time.monotonic()
-        result = _perform_fast_ui_edit(payload)
-        elapsed = max(0.0, _v160_time.monotonic() - t0)
-        try:
-            st = globals().get('r25_trace_stage')
-            if callable(st): st('TELEGRAM_EDIT_DONE', elapsed, str(result or ''))
-            log_info(f'FASTBTN direct-render chat={chat_id} msg={message_id} action={_action} purpose={str(purpose or "")[:80]} telegram={elapsed:.3f}s result={result}')
-            rows = globals().get('_V177_PERF_STAGES')
-            if rows is not None:
-                rows.append({'ts': _v160_time.time(), 'action': _action, 'stage': 'telegram_render_done', 'elapsed': elapsed})
-        except Exception:
-            pass
-        return result
-
-_V160_CALLBACK_LOCK = _v160_threading.RLock()
-_V160_CALLBACK_IDS = {}
+    return 'scheduled'
 
 def _v160_exact_callback_duplicate(call) -> bool:
     call_id = str(getattr(call, 'id', '') or '')
@@ -7174,11 +7150,11 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
             # callback shares this state lane in R22.
             return (V166_FINANCE_UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
         if chat_id and message_id:
-            # R50: safe navigation is latest-wins per visible window.  Business/money
-            # mutations remain FIFO, but stale calendar/info/back renders are replaced.
-            if _v166_is_safe_window_callback(raw):
-                return (NAV_UI_TASK_POOL, f'nav-window:{chat_id}:{message_id}')
-            return (V166_WINDOW_UI_TASK_POOL, f'fast-window-business:{chat_id}:{message_id}')
+            # R24: one small FIFO actor per visible Telegram window. Every click is
+            # processed exactly in arrival order; no parallel state races and no click
+            # is sacrificed as "stale". Heavy work is dispatched only after this
+            # short FAST stage by the existing R21 split helpers.
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
         return (V166_WINDOW_UI_TASK_POOL, f'fast-callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)
 
@@ -7732,7 +7708,7 @@ def _finance_root_persist_job_v243(chat_id: int) -> None:
         with data_lock:
             data.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
             data['_state_meta']['bot_version'] = VERSION
-        root_snapshot = r50_root_snapshot(data)
+            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
         SQLITE.save_root(root_snapshot)
         try:
             bot_journal('finance_root_persist_v243', int(chat_id), 'background root persisted')
@@ -11736,7 +11712,8 @@ def _v172_persist(chat_id: int, reason: str='task_change') -> None:
     """Persist root state without holding data_lock during SQLite I/O (R36)."""
     try:
         import copy as _r36_copy
-        root_snapshot = r50_root_snapshot(data)
+        with data_lock:
+            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
         SQLITE.save_root(root_snapshot)
     except Exception as exc:
         try:

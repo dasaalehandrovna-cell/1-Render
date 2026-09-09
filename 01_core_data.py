@@ -601,32 +601,21 @@ class LatestKeyedTaskPool:
 
     def submit_latest(self, key, func, *args, **kwargs):
         key = str(key)
-        on_supersede = kwargs.pop('_on_supersede', None)
-        superseded = None
         with self._lock:
             if key not in self._active_keys and len(self._active_keys) >= self.max_pending_keys:
                 self._rejected += 1
                 return 0
             self._seq[key] += 1
             seq = int(self._seq[key])
-            task = (seq, func, args, kwargs, time.monotonic(), on_supersede)
+            task = (seq, func, args, kwargs, time.monotonic())
             if key in self._latest:
-                superseded = self._latest.get(key)
                 self._replaced += 1
             self._latest[key] = task
             self._submitted += 1
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
-        if superseded is not None:
-            try:
-                cb = superseded[5] if len(superseded) > 5 else None
-                if callable(cb): cb()
-            except Exception: pass
-        return seq
-
-    def submit(self, key, func, *args, **kwargs) -> bool:
-        return bool(self.submit_latest(key, func, *args, **kwargs))
+            return seq
 
     def is_latest(self, key, seq: int) -> bool:
         key = str(key)
@@ -646,7 +635,7 @@ class LatestKeyedTaskPool:
                     self._active_keys.discard(key)
                 self._ready.task_done()
                 continue
-            seq, func, args, kwargs, enqueued_mono, on_supersede = task
+            seq, func, args, kwargs, enqueued_mono = task
             wait = max(0.0, time.monotonic() - enqueued_mono)
             with self._lock:
                 self._max_wait = max(self._max_wait, wait)
@@ -840,11 +829,9 @@ WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 2, 2, 8
 UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI_MAX_PENDING', 400, 50, 2000))
 # R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
 # can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.
-FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui-business', _env_int('FAST_UI_WORKERS', 2, 2, 8), _env_int('FAST_UI_MAX_PENDING', 300, 50, 2000))
-# R50: safe navigation is latest-wins.  Only one queued render per visible window.
-NAV_UI_TASK_POOL = LatestKeyedTaskPool('nav-ui', _env_int('NAV_UI_WORKERS', 3, 1, 8), _env_int('NAV_UI_MAX_KEYS', 256, 32, 1000))
+FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 2, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
 # R22: Telegram editMessageText/caption runs here, never inside callback workers.
-WINDOW_RENDER_TASK_POOL = KeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 2, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING', 900, 100, 4000))
+WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 2, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 1000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 2, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
 UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 1, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
 UI_DELETE_TASK_POOL = KeyedTaskPool('ui-delete', _env_int('UI_DELETE_WORKERS', 1, 1, 4), _env_int('UI_DELETE_MAX_PENDING', 1200, 100, 4000))
@@ -1182,9 +1169,8 @@ def _r27_background_yield_before_lock(lock_name: str) -> None:
         name = threading.current_thread().name
         if not name.startswith(_R27_BG_LOCK_PREFIXES):
             return
-        grace = max(0.5, min(5.0, float(os.getenv('R27_FAST_USER_PRIORITY_SEC', '3.0') or '3.0')))
-        max_wait = max(grace, min(60.0, float(os.getenv('R50_BG_LOCK_MAX_WAIT_SEC', '30') or '30')))
-        deadline = time.monotonic() + max_wait
+        grace = max(0.2, min(3.0, float(os.getenv('R27_FAST_USER_PRIORITY_SEC', '1.6') or '1.6')))
+        deadline = time.monotonic() + grace
         while r27_user_quiet_for() < grace and time.monotonic() < deadline:
             time.sleep(0.025)
     except Exception:
@@ -1278,71 +1264,6 @@ class R25TracedRLock:
 chat_locks = {}
 _CHAT_LOCKS_GUARD = threading.RLock()
 data_lock = R25TracedRLock('data')
-# R50: chat registry is independent from root-state lock.  A chat lock must never
-# block while waiting for data_lock; this removes the chat->data lock convoy.
-_CHAT_STORE_REGISTRY_LOCK = threading.RLock()
-_R50_UI_EPOCH_LOCK = threading.RLock()
-_R50_UI_EPOCH_BY_WINDOW = defaultdict(int)
-_R50_UI_EPOCH_BY_CHAT = defaultdict(int)
-_R50_UI_LAST_ACTIVITY = {}
-_R50_UI_CONTEXT = threading.local()
-
-def r50_ui_note_interaction(chat_id: int, message_id=None, action: str=''):
-    try: cid=int(chat_id)
-    except Exception: return (None,0)
-    try: mid=int(message_id) if message_id is not None else 0
-    except Exception: mid=0
-    with _R50_UI_EPOCH_LOCK:
-        _R50_UI_EPOCH_BY_CHAT[cid] = int(_R50_UI_EPOCH_BY_CHAT.get(cid,0))+1
-        _R50_UI_LAST_ACTIVITY[cid] = time.monotonic()
-        if mid:
-            key=(cid,mid)
-            _R50_UI_EPOCH_BY_WINDOW[key] = int(_R50_UI_EPOCH_BY_WINDOW.get(key,0))+1
-            epoch=int(_R50_UI_EPOCH_BY_WINDOW[key])
-        else:
-            epoch=int(_R50_UI_EPOCH_BY_CHAT[cid])
-    return ((cid,mid) if mid else (cid,0), epoch)
-
-def r50_ui_chat_epoch(chat_id: int) -> int:
-    try: cid=int(chat_id)
-    except Exception: return 0
-    with _R50_UI_EPOCH_LOCK: return int(_R50_UI_EPOCH_BY_CHAT.get(cid,0) or 0)
-
-def r50_ui_is_quiet(chat_id: int, min_quiet: float=5.0) -> bool:
-    try: cid=int(chat_id)
-    except Exception: return True
-    with _R50_UI_EPOCH_LOCK: last=float(_R50_UI_LAST_ACTIVITY.get(cid,0.0) or 0.0)
-    if last and time.monotonic()-last < max(0.0,float(min_quiet or 0.0)): return False
-    try:
-        for nm in ('NAV_UI_TASK_POOL','START_UI_TASK_POOL','V166_FINANCE_UI_TASK_POOL'):
-            pool=globals().get(nm)
-            if pool is None or not hasattr(pool,'stats'): continue
-            st=pool.stats() or {}
-            if int(st.get('active') or 0)>0 or int(st.get('pending') or 0)>0: return False
-    except Exception: pass
-    return True
-
-def r50_ui_set_context(window_key, epoch: int):
-    _R50_UI_CONTEXT.window_key=window_key; _R50_UI_CONTEXT.epoch=int(epoch or 0)
-
-def r50_ui_clear_context():
-    for nm in ('window_key','epoch'):
-        try: delattr(_R50_UI_CONTEXT,nm)
-        except Exception: pass
-
-def r50_ui_context_stale(chat_id=None, message_id=None) -> bool:
-    key=getattr(_R50_UI_CONTEXT,'window_key',None); epoch=int(getattr(_R50_UI_CONTEXT,'epoch',0) or 0)
-    if not key or not epoch: return False
-    try:
-        cid,mid=int(key[0]),int(key[1])
-        if chat_id is not None and int(chat_id)!=cid: return False
-        if message_id is not None and int(message_id or 0) not in (0,mid): return False
-        with _R50_UI_EPOCH_LOCK: current=int(_R50_UI_EPOCH_BY_WINDOW.get((cid,mid),0) or 0)
-        return current != epoch
-    except Exception: return False
-
-def r50_ui_epoch_matches(chat_id: int, expected_epoch: int) -> bool:
-    return int(r50_ui_chat_epoch(chat_id)) == int(expected_epoch or 0)
 
 def r36_lock_snapshot_text() -> str:
     rows=[]
@@ -2282,26 +2203,6 @@ def _lowram_rebuild_daily(records):
     return daily
 
 
-def r50_capture_chat_snapshot_refs(store: dict) -> tuple[dict, dict]:
-    """Very short, shallow detach suitable for use while chat_lock is held."""
-    def detach(v):
-        if isinstance(v, dict): return dict(v)
-        if isinstance(v, list): return list(v)
-        if isinstance(v, set): return set(v)
-        return v
-    meta = {str(k): detach(v) for k,v in dict.items(store) if str(k) not in LOWRAM_COLD_KEYS}
-    cold = {str(k): detach(dict.__getitem__(store,k)) for k in LOWRAM_COLD_KEYS if dict.__contains__(store,k)}
-    return meta, cold
-
-def r50_finalize_chat_snapshot(meta_refs: dict, cold_refs: dict) -> tuple[dict,dict]:
-    """Recursive copy/rebuild outside chat_lock."""
-    meta = copy.deepcopy(meta_refs or {})
-    cold = copy.deepcopy(cold_refs or {})
-    for rec_key, daily_key in (('records','daily_records'),('ars_records','ars_daily_records'),('usd_records','usd_daily_records')):
-        if rec_key in cold:
-            cold[daily_key] = _lowram_rebuild_daily(cold.get(rec_key) or [])
-    return meta, cold
-
 def _lowram_flush_chat(chat_id: int, store: dict | None=None, evict: bool=False):
     """R48: snapshot LOW-RAM state only; never perform SQLite I/O here.
 
@@ -2365,16 +2266,12 @@ def _lowram_release_chat(chat_id):
         return
     try:
         cid = int(chat_id)
-        meta_refs = None; cold_refs = None
-        store = (data.get('chats', {}) or {}).get(str(cid)) if isinstance(data, dict) else None
+        meta_payload = None; cold_batch = None
         with locked_chat(cid):
+            store = (data.get('chats', {}) or {}).get(str(cid)) if isinstance(data, dict) else None
             if isinstance(store, dict):
-                meta_refs, cold_refs = r50_capture_chat_snapshot_refs(store)
-                for key in list(LOWRAM_COLD_KEYS):
-                    if dict.__contains__(store, key): dict.pop(store, key, None)
-                if isinstance(store, ColdChatStore): store._cold_loaded.clear()
-        if meta_refs is not None:
-            meta_payload, cold_batch = r50_finalize_chat_snapshot(meta_refs, cold_refs or {})
+                meta_payload, cold_batch = _lowram_flush_chat(cid, store, evict=True)
+        if meta_payload is not None:
             saved = SQLITE.save_chat_bundle(cid, meta_payload, cold_batch or {})
             with _LOWRAM_LOCK:
                 _LOWRAM_STATS['cold_saves'] += int(saved or 0)
@@ -2423,26 +2320,21 @@ def _lowram_materialize_chat_snapshot(chat_id: int, store: dict | None=None) -> 
 def _lowram_flush_all_hot(evict: bool=False):
     if not LOWRAM_ENABLED or not isinstance(data, dict):
         return
-    with _CHAT_STORE_REGISTRY_LOCK:
+    with data_lock:
         chat_ids = list(((data.get('chats', {}) or {}).keys()))
-    root_snapshot = r50_root_snapshot(data)
+        root_snapshot = copy.deepcopy(_sqlite_pack_root(data))
     bundles = []
     for cid_s in chat_ids:
         try: cid = int(cid_s)
         except Exception: continue
-        store = ((data.get('chats', {}) or {}).get(str(cid)))
         with locked_chat(cid):
+            store = ((data.get('chats', {}) or {}).get(str(cid)))
             if isinstance(store, dict):
-                meta_refs, cold_refs = r50_capture_chat_snapshot_refs(store)
-                if evict:
-                    for key in list(LOWRAM_COLD_KEYS):
-                        if dict.__contains__(store,key): dict.pop(store,key,None)
-                    if isinstance(store, ColdChatStore): store._cold_loaded.clear()
-                bundles.append((cid, meta_refs, cold_refs))
-    # Recursive copy and SQLite both happen outside chat locks.
+                meta, cold = _lowram_flush_chat(cid, store, evict=evict)
+                bundles.append((cid, meta, cold))
+    # No global/chat lock while waiting for SQLite.
     total = 0
-    for cid, meta_refs, cold_refs in bundles:
-        meta, cold = r50_finalize_chat_snapshot(meta_refs, cold_refs)
+    for cid, meta, cold in bundles:
         total += int(SQLITE.save_chat_bundle(cid, meta, cold) or 0)
     SQLITE.save_root(root_snapshot)
     if total:
@@ -2465,27 +2357,6 @@ def lowram_status_text() -> str:
 
 def _sqlite_pack_root(d: dict) -> dict:
     return {k: v for k, v in (d or {}).items() if k != 'chats'}
-
-def r50_root_snapshot(d: dict | None=None) -> dict:
-    """Copy root state without holding data_lock during recursive deepcopy."""
-    src = d if isinstance(d, dict) else data
-    # only top-level reference capture is protected; recursive work happens outside.
-    with data_lock:
-        refs = dict(_sqlite_pack_root(src))
-    last_exc = None
-    for _ in range(4):
-        try:
-            return copy.deepcopy(refs)
-        except (RuntimeError, KeyError) as exc:
-            last_exc = exc
-            time.sleep(0)
-            with data_lock:
-                refs = dict(_sqlite_pack_root(src))
-    try:
-        return json.loads(json.dumps(refs, ensure_ascii=False, default=str))
-    except Exception:
-        if last_exc: raise last_exc
-        raise
 
 def _sqlite_unpack_data(root: dict | None, chats: dict | None) -> dict:
     d = default_data()
@@ -6943,11 +6814,8 @@ def set_hidden_finance_mode(chat_id: int, enabled: bool):
     save_data(data, chat_ids=[chat_id])
     schedule_config_backup_for_chats(chat_id)
 
-def force_recreate_balance_panel(chat_id: int, automatic: bool=False, expected_epoch: int|None=None):
+def force_recreate_balance_panel(chat_id: int):
     """Пересоздаёт быстрый остаток, чтобы он снова стал последним окном в чате."""
-    if automatic:
-        if expected_epoch is not None and not r50_ui_epoch_matches(chat_id, expected_epoch): return
-        if not r50_ui_is_quiet(chat_id, 5.0): return
     if finance_window_mode(chat_id) not in {'open', 'first'}:
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
@@ -6977,18 +6845,16 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float=4.0):
     try: chat_id = int(chat_id)
     except Exception: return
     if not is_finance_mode(chat_id) or finance_window_mode(chat_id) != 'normal': return
-    expected_epoch = r50_ui_chat_epoch(chat_id)
     def _job():
         try:
-            if not r50_ui_epoch_matches(chat_id, expected_epoch): return
-            if not r50_ui_is_quiet(chat_id, 5.0): return
             day_key = None
-            store = get_chat_store(chat_id)
             with locked_chat(chat_id):
+                store = get_chat_store(chat_id)
                 if int(store.get('main_window_msg_count', 0) or 0) < 10: return
                 store['main_window_msg_count'] = 0
                 day_key = store.get('current_view_day') or today_key()
-            recreate_main_window_now(chat_id, day_key, automatic=True, expected_epoch=expected_epoch)
+            # UI/network work is deliberately outside chat_lock.
+            recreate_main_window_now(chat_id, day_key)
         except Exception as e:
             log_error(f'schedule_main_window_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}')
     scheduler_key = f'main-window-recreate:{chat_id}'
@@ -7029,13 +6895,12 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float=60.0):
     try: chat_id = int(chat_id)
     except Exception: return
     if finance_window_mode(chat_id) != 'first' or not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id) or get_quick_balance_behavior(chat_id) != 'first': return
-    expected_epoch = r50_ui_chat_epoch(chat_id)
     def _job():
         try:
-            if not r50_ui_epoch_matches(chat_id, expected_epoch) or not r50_ui_is_quiet(chat_id, 5.0): return
-            allowed = bool(finance_window_mode(chat_id) == 'first' and is_finance_mode(chat_id) and is_quick_balance_enabled(chat_id) and get_quick_balance_behavior(chat_id) == 'first')
+            with locked_chat(chat_id):
+                allowed = bool(finance_window_mode(chat_id) == 'first' and is_finance_mode(chat_id) and is_quick_balance_enabled(chat_id) and get_quick_balance_behavior(chat_id) == 'first')
             if allowed:
-                force_recreate_balance_panel(chat_id, automatic=True, expected_epoch=expected_epoch)
+                force_recreate_balance_panel(chat_id)
         except Exception as e:
             log_error(f'schedule_quick_balance_first_recreate({chat_id}): {e}')
     scheduler_key = f'quick-balance-first:{chat_id}'
@@ -7050,18 +6915,16 @@ def schedule_quick_balance_recreate_after_quiet(chat_id: int, delay: float=4.0):
     try: chat_id = int(chat_id)
     except Exception: return
     if finance_window_mode(chat_id) not in {'open', 'first'} or not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id): return
-    expected_epoch = r50_ui_chat_epoch(chat_id)
     def _job():
         try:
-            if not r50_ui_epoch_matches(chat_id, expected_epoch) or not r50_ui_is_quiet(chat_id, 5.0): return
             should = False
-            store = get_chat_store(chat_id)
             with locked_chat(chat_id):
+                store = get_chat_store(chat_id)
                 if int(store.get('balance_panel_msg_count', 0) or 0) >= 3:
                     store['balance_panel_msg_count'] = 0
                     should = True
             if should:
-                force_recreate_balance_panel(chat_id, automatic=True, expected_epoch=expected_epoch)
+                force_recreate_balance_panel(chat_id)
         except Exception as e:
             log_error(f'schedule_quick_balance_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}')
     scheduler_key = f'quick-balance-recreate:{chat_id}'
@@ -12059,14 +11922,10 @@ def build_chat_settings_backup_payload(chat_id: int, store: dict | None=None) ->
     store = store or get_chat_store(chat_id)
     cid = str(chat_id)
     with data_lock:
-        fr_ref = dict(data.get('forward_rules', {}) or {})
-        ff_ref = dict(data.get('forward_finance', {}) or {})
-        fac_ref = dict(data.get('finance_active_chats', {}) or {})
-        flags_ref = dict(data.get('backup_flags', {}) or {})
-    fr = json.loads(json.dumps(fr_ref, ensure_ascii=False, default=str))
-    ff = json.loads(json.dumps(ff_ref, ensure_ascii=False, default=str))
-    fac = json.loads(json.dumps(fac_ref, ensure_ascii=False, default=str))
-    flags = json.loads(json.dumps(flags_ref, ensure_ascii=False, default=str))
+        fr = json.loads(json.dumps(data.get('forward_rules', {}) or {}, ensure_ascii=False, default=str))
+        ff = json.loads(json.dumps(data.get('forward_finance', {}) or {}, ensure_ascii=False, default=str))
+        fac = json.loads(json.dumps(data.get('finance_active_chats', {}) or {}, ensure_ascii=False, default=str))
+        flags = json.loads(json.dumps(data.get('backup_flags', {}) or {}, ensure_ascii=False, default=str))
     incoming_rules = {src: (dsts or {}).get(cid) for src, dsts in fr.items() if cid in (dsts or {})}
     outgoing_rules = fr.get(cid, {}) or {}
     incoming_finance = {src: (dsts or {}).get(cid) for src, dsts in ff.items() if cid in (dsts or {})}
@@ -12409,10 +12268,7 @@ def initialize_delta_baseline(payload: dict | None=None):
     if snapshot is None:
         with data_lock:
             _persist_forward_index_in_data(data)
-            root_refs = dict(_sqlite_pack_root(data))
-        with _CHAT_STORE_REGISTRY_LOCK:
-            chat_refs = {str(cid): dict(store) if isinstance(store,dict) else store for cid,store in ((data or {}).get('chats',{}) or {}).items()}
-        snapshot = {**root_refs, 'chats': chat_refs}
+            snapshot = data or {}
     recs, metas, root_sig = _delta_baseline_from_payload(snapshot or {})
     with _delta_state_lock:
         _delta_record_baseline = recs
@@ -12424,15 +12280,13 @@ def _build_delta_payload(chat_ids: list[int], generation_map: dict[int, int]) ->
     requested_ids = sorted({int(x) for x in chat_ids})
     with data_lock:
         _persist_forward_index_in_data(data)
-        root_refs = {str(key): value for key, value in (data or {}).items() if key != 'chats'}
-    with _CHAT_STORE_REGISTRY_LOCK:
+        state = {str(key): _delta_json_clone(value) for key, value in (data or {}).items() if key != 'chats'}
         all_chats = (data or {}).get('chats', {}) or {}
-        hot_refs = {str(cid): dict(all_chats.get(str(cid), {}) or {}) for cid in requested_ids}
-    state = {str(key): _delta_json_clone(value) for key, value in root_refs.items()}
+        hot_chat_meta = {str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {}) for cid in requested_ids}
     if LOWRAM_ENABLED:
-        state['chats'] = {str(cid): _delta_json_clone(_lowram_materialize_chat_snapshot(cid, hot_refs.get(str(cid), {}) or {})) for cid in requested_ids}
+        state['chats'] = {str(cid): _delta_json_clone(_lowram_materialize_chat_snapshot(cid, hot_chat_meta.get(str(cid), {}) or {})) for cid in requested_ids}
     else:
-        state['chats'] = {str(cid): _delta_json_clone(hot_refs.get(str(cid), {}) or {}) for cid in requested_ids}
+        state['chats'] = hot_chat_meta
     with _delta_state_lock:
         old_records = {int(cid): dict(sigs or {}) for cid, sigs in _delta_record_baseline.items()}
         old_meta = {int(cid): dict(sigs or {}) for cid, sigs in _delta_meta_baseline.items()}
@@ -12959,10 +12813,7 @@ def _v177_legacy_0077_make_global_backup_payload() -> dict:
     """Универсальный полный JSON: данные, настройки и индекс старых пересланных сообщений."""
     with data_lock:
         _persist_forward_index_in_data(data)
-        root_refs = dict(_sqlite_pack_root(data))
-    with _CHAT_STORE_REGISTRY_LOCK:
-        chat_refs = {str(cid): dict(store) if isinstance(store,dict) else store for cid,store in ((data or {}).get('chats',{}) or {}).items()}
-    payload = json.loads(json.dumps({**root_refs, 'chats': chat_refs}, ensure_ascii=False, default=str))
+        payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
     payload.setdefault('chats', {})
     payload.setdefault('forward_rules', data.get('forward_rules', {}) if isinstance(data, dict) else {})
     payload.setdefault('forward_finance', data.get('forward_finance', {}) if isinstance(data, dict) else {})
@@ -15292,24 +15143,22 @@ def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
             _persist_forward_index_in_data(d)
         except Exception as e:
             log_error(f'save_data forward_index: {e}')
-    root_payload = r50_root_snapshot(d)
-    if chat_ids is not None:
-        source_ids = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
-        for cid in source_ids:
-            try: ids.add(int(cid))
-            except Exception: pass
-    elif not full:
-        cid = current_state_chat_id()
-        if cid is not None:
-            try: ids.add(int(cid))
-            except Exception: pass
-    all_chat_ids = []
-    if full or not ids:
-        with _CHAT_STORE_REGISTRY_LOCK:
-            source_chat_ids = list((d.get('chats', {}) or {}).keys())
-        for cid_s in source_chat_ids:
-            try: all_chat_ids.append(int(cid_s))
-            except Exception: pass
+        root_payload = copy.deepcopy(_sqlite_pack_root(d))
+        if chat_ids is not None:
+            source_ids = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
+            for cid in source_ids:
+                try: ids.add(int(cid))
+                except Exception: pass
+        elif not full:
+            cid = current_state_chat_id()
+            if cid is not None:
+                try: ids.add(int(cid))
+                except Exception: pass
+        all_chat_ids = []
+        if full or not ids:
+            for cid_s in list((d.get('chats', {}) or {}).keys()):
+                try: all_chat_ids.append(int(cid_s))
+                except Exception: pass
     SQLITE.save_root(root_payload)
     if root_only:
         return
@@ -15317,19 +15166,15 @@ def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
     bundles=[]
     for cid in target_ids:
         try:
-            store = ((d.get('chats', {}) or {}).get(str(cid)))
-            if not isinstance(store, dict): continue
             with locked_chat(cid):
+                store = ((d.get('chats', {}) or {}).get(str(cid)))
+                if not isinstance(store, dict):
+                    continue
                 if LOWRAM_ENABLED:
-                    meta_refs, cold_refs = r50_capture_chat_snapshot_refs(store)
+                    meta, cold = _lowram_flush_chat(cid, store, evict=False)
                 else:
-                    meta_refs, cold_refs = dict(store), {}
-            # Recursive copy is intentionally outside chat_lock.
-            if LOWRAM_ENABLED:
-                meta, cold = r50_finalize_chat_snapshot(meta_refs, cold_refs)
-            else:
-                meta, cold = copy.deepcopy(meta_refs), {}
-            bundles.append((cid, meta, cold))
+                    meta, cold = copy.deepcopy(dict(store)), {}
+                bundles.append((cid, meta, cold))
         except Exception as exc:
             log_error(f'save_data snapshot chat={cid}: {exc}')
             if ids and not full:
@@ -15366,7 +15211,7 @@ def get_chat_store(chat_id: int) -> dict:
     Хранилище данных одного чата.
     Добавлено поле "known_chats" для отображения названий/username в меню пересылки.
     """
-    with _CHAT_STORE_REGISTRY_LOCK:
+    with data_lock:
         chats = data.setdefault('chats', {})
         store = chats.setdefault(str(chat_id), {'info': {}, 'known_chats': {}, 'balance': 0, 'next_id': 1, 'active_windows': {}, 'edit_wait': None, 'edit_target': None, 'current_view_day': today_key(), 'finance_mode': False, 'settings': {'auto_add': True, 'quick_balance_enabled': False, 'quick_balance_behavior': 'normal', 'quick_balance_user_selected': False, 'hidden_finance': False, 'auto_backup_enabled': True, 'auto_backup_to_chat_enabled': True, 'auto_backup_to_channel_enabled': True, 'auto_backup_to_mega_enabled': True, 'journal_enabled': True, 'buttons_current_window': True, 'forward_copy_edit_mode': 'slash', 'main_article_buttons_enabled': False, 'main_financial_value_buttons_enabled': False, 'gomonk_enabled': False, 'gomonk_entries': [], 'remaining_with_gomonk': True, 'usd_gomonk_enabled': False, 'usd_gomonk_entries': [], 'usd_remaining_with_gomonk': True, 'usd_display_enabled': False, 'currency_mode': 'ars', 'remaining_show_ost_label': True}})
         if LOWRAM_ENABLED and (not isinstance(store, ColdChatStore)):
@@ -16410,15 +16255,11 @@ def save_chat_xlsx(chat_id: int, path: str | None=None, store: dict | None=None)
         return None
 
 def snapshot_chat_store(chat_id: int) -> dict:
-    """R50: recursive/file snapshot work is outside chat_lock."""
-    cid=int(chat_id); store=get_chat_store(cid)
-    with locked_chat(cid):
-        meta_refs, cold_refs = r50_capture_chat_snapshot_refs(store) if LOWRAM_ENABLED else (dict(store), {})
-    if LOWRAM_ENABLED:
-        meta, cold = r50_finalize_chat_snapshot(meta_refs, cold_refs)
-        meta.update(cold)
-        return meta
-    return json.loads(json.dumps(meta_refs, ensure_ascii=False, default=str))
+    """Стабильный снимок одного чата для файлового бэкапа."""
+    with locked_chat(int(chat_id)):
+        normalize_chat_records(int(chat_id))
+        store = data.get('chats', {}).get(str(chat_id)) or get_chat_store(chat_id)
+        return json.loads(json.dumps(store, ensure_ascii=False, default=str))
 
 def build_chat_backup_payload(chat_id: int, store: dict | None=None) -> dict:
     """JSON для чтения: последние операции и даты находятся сверху."""
@@ -19802,18 +19643,16 @@ def _v234_config_projection_from_payload(payload: dict) -> dict:
 def config_guard_projection_v234() -> dict:
     with data_lock:
         payload = {k: v for k, v in (data or {}).items() if k != 'chats'}
-    chats = {}
-    with _CHAT_STORE_REGISTRY_LOCK:
-        items = list(((data or {}).get('chats') or {}).items())
-    for cid, store in items:
-        if isinstance(store, dict):
-            try:
-                meta = _lowram_store_meta_payload(store) if globals().get('LOWRAM_ENABLED') else dict(store)
-            except Exception:
-                meta = dict(store)
-            chats[str(cid)] = meta
-    payload['chats'] = chats
-    return _v234_config_projection_from_payload(payload)
+        chats = {}
+        for cid, store in ((data or {}).get('chats') or {}).items():
+            if isinstance(store, dict):
+                try:
+                    meta = _lowram_store_meta_payload(store) if globals().get('LOWRAM_ENABLED') else dict(store)
+                except Exception:
+                    meta = dict(store)
+                chats[str(cid)] = meta
+        payload['chats'] = chats
+        return _v234_config_projection_from_payload(payload)
 
 def _v234_config_hash(projection: dict) -> str:
     raw = json.dumps(projection or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)

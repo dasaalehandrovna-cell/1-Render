@@ -506,8 +506,8 @@ def apply_linked_finance_edit_v262(anchor_chat_id: int, anchor_rec: dict, *, upd
                     current = _v262_records_for_origin(int(cid), origin_key)
                     primary = current[0][1] if current else rows[0][1]
                     touched_days[int(cid)] = str(primary.get('day_key') or store.get('current_view_day') or today_key())
-                    _r48_primary = dict(primary) if isinstance(primary, dict) else primary
-                    _r48_before_primary = dict(before_primary or {})
+                    _r48_primary = copy.deepcopy(primary) if isinstance(primary, dict) else primary
+                    _r48_before_primary = copy.deepcopy(before_primary or {})
                     _r48_changed_here = int(changed_here or 0)
                 if not persist_finance_chat_local_fast(int(cid)):
                     raise RuntimeError('local SQLite finance persist failed')
@@ -2801,52 +2801,6 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
     return result
 
 
-def _split_push_snapshot_now_v263(reason='shutdown'):
-    """Directly hand the final SQLite image to worker so shutdown cannot race a fetch job."""
-    base, secret = _split_peer_base(), _split_secret()
-    if not base or not secret:
-        return False
-    workdir = _split_tempfile.mkdtemp(prefix='v263_front_push_')
-    raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
-    gz = raw + '.gz'
-    try:
-        SQLITE.backup_to(raw)
-        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
-            _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
-        # Seed shared durable cache before contacting worker; this survives worker deploys.
-        try:
-            _split_cache_snapshot_to_redis_v266(reason=str(reason or 'shutdown'), existing_gz=gz)
-        except Exception:
-            pass
-        with open(gz, 'rb') as fh:
-            body = fh.read()
-        r = requests.post(
-            base + '/internal/snapshot/upload', data=body,
-            headers={**_split_headers('vys-262-front-final-push'), 'Content-Type': 'application/gzip', 'X-Snapshot-Reason': str(reason or '')[:120], 'X-Split-State-Token': _split_current_state_token_v264()},
-            timeout=20,
-        )
-        if 200 <= r.status_code < 300:
-            row={}
-            try: row=r.json() if r.content else {}
-            except Exception: row={}
-            if str(row.get('status') or '') != 'stale_ignored':
-                try:
-                    _split_promote_delta_baseline_v267(raw)
-                except Exception:
-                    pass
-                return True
-            _SPLIT_STATE['sync_last_error'] = 'worker has a newer full state; stale front snapshot ignored'
-            return False
-        try: _SPLIT_STATE['sync_last_error'] = f'final push HTTP {r.status_code}: {r.text[:160]}'
-        except Exception: pass
-    except Exception as exc:
-        try: _SPLIT_STATE['sync_last_error'] = 'final push: ' + str(exc)[:180]
-        except Exception: pass
-    finally:
-        _split_shutil.rmtree(workdir, ignore_errors=True)
-    return False
-
-
 # R15 idle-only full rebase.  This replaces the old immediate full fallback that
 # uploaded ~1.1 MB repeatedly during finance bursts.
 def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
@@ -3957,8 +3911,8 @@ except Exception:
 R31 extends the stable R30 layer with a third owner Info-menu mode:
 NEW = compact grouped menu, OLD = pre-R29 legacy, THIRD = functional settings hub.
 The user-confirmed R28/R29 hot path stays intact: ordinary callback -> handler ->
-direct Telegram edit. No render queue, remote HTTP or heavy snapshot is inserted
-before a visual response.
+non-blocking render admission. Telegram network I/O runs only in the dedicated
+window-render executor; no remote HTTP or heavy snapshot is inserted before admission.
 """
 
 R31_RELEASE_NAME = 'Пер-R43'
@@ -3972,25 +3926,25 @@ R29_INPUT_SETTINGS_KEY = 'r29_input_sources'
 R29_INPUT_DEFAULTS = {'forwarded': True, 'other_bots': True}
 
 def r29_assert_r28_fast_ui_contract() -> bool:
-    """Semantic startup guard for the R28/R48 direct button-render contract.
+    """Semantic startup guard for the R49 non-blocking button-render contract.
 
-    COMPACT14 intentionally reorganizes source files, so this guard must validate
-    the active callable and its behavior rather than a historical filename.
+    The callback owner may prepare a payload in RAM, but Telegram network RTT must
+    run only in WINDOW_RENDER_TASK_POOL.
     """
     fn = globals().get('fast_ui_edit_message_text')
     canonical = globals().get('_canon_fast_ui_edit_message_text__001')
     if not callable(fn):
         raise RuntimeError('R29 FAST UI CONTRACT: fast_ui_edit_message_text is missing')
     if not callable(canonical) or fn is not canonical:
-        raise RuntimeError('R29 FAST UI CONTRACT: active renderer is not the canonical direct owner')
+        raise RuntimeError('R29 FAST UI CONTRACT: active renderer is not the canonical owner')
     try:
         source = inspect.getsource(canonical)
     except Exception as exc:
         raise RuntimeError('R29 FAST UI CONTRACT: cannot inspect canonical renderer: ' + str(exc))
-    if 'WINDOW_RENDER_TASK_POOL' in source or '_r22_execute_window_render(' in source:
-        raise RuntimeError('R29 FAST UI CONTRACT: render queue reintroduced before Telegram')
-    if '_perform_fast_ui_edit(payload)' not in source:
-        raise RuntimeError('R29 FAST UI CONTRACT: direct Telegram render call is missing')
+    if 'WINDOW_RENDER_TASK_POOL.submit_latest' not in source or '_r22_execute_window_render' not in source:
+        raise RuntimeError('R29 FAST UI CONTRACT: latest-wins render admission is missing')
+    if '_perform_fast_ui_edit(payload)' in source or '_v160_time.sleep(' in source:
+        raise RuntimeError('R29 FAST UI CONTRACT: Telegram RTT/sleep leaked back into callback renderer')
     return True
 
 # Enforce immediately after all R28 modules have loaded and before accepting traffic.
@@ -4573,6 +4527,106 @@ def _r30_legacy_info_keyboard_with_controls(chat_id: int):
         return kb
 
 
+_R49_REDIS_CONTROL_LOCK = __import__('threading').RLock()
+_R49_REDIS_CONTROL = {'switching': False, 'target': False, 'peer_ok': None, 'detail': ''}
+
+def _r49_redis_runtime_state() -> dict:
+    try:
+        import runtime_config as _r49_runtime_config
+        row = dict(_r49_runtime_config.redis_runtime_state() or {})
+    except Exception as exc:
+        row = {'configured': False, 'enabled': False, 'error': f'{type(exc).__name__}: {str(exc)[:160]}'}
+    with _R49_REDIS_CONTROL_LOCK:
+        row['switching'] = bool(_R49_REDIS_CONTROL.get('switching'))
+        row['target'] = bool(_R49_REDIS_CONTROL.get('target'))
+        row['peer_ok'] = _R49_REDIS_CONTROL.get('peer_ok')
+        row['detail'] = str(_R49_REDIS_CONTROL.get('detail') or '')[:180]
+    return row
+
+def _r49_redis_button():
+    st = _r49_redis_runtime_state()
+    if st.get('switching'):
+        label = '⏳ Redis: ' + ('ВКЛЮЧАЮ…' if st.get('target') else 'ВЫКЛЮЧАЮ…')
+    elif not st.get('configured'):
+        label = '🧱 Redis: ⛔ НЕТ REDIS_URL'
+    elif st.get('enabled'):
+        label = '🧱 Redis: 🟢 ВКЛ'
+    else:
+        label = '🧱 Redis: ⚪ ВЫКЛ'
+    return IB(label, callback_data='r49:redis:toggle')
+
+def _r49_info_inject_redis_toggle(kb, chat_id: int):
+    if int(chat_id) != int(OWNER_ID or 0):
+        return kb
+    try:
+        rows_fn = globals().get('_v177_info_rows')
+        set_fn = globals().get('_v177_info_set_rows')
+        rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or [])
+        rows = [list(row or []) for row in rows if not any(_r29_button_callback(b) == 'r49:redis:toggle' for b in (row or []))]
+        insert_at = len(rows)
+        for i, row in enumerate(rows):
+            if any((_r29_button_callback(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in _r29_button_text(b).casefold()) for b in (row or [])):
+                insert_at = i
+                break
+        rows.insert(insert_at, [_r49_redis_button()])
+        if callable(set_fn):
+            return set_fn(kb, rows)
+        setattr(kb, 'keyboard', rows)
+    except Exception:
+        try: kb.row(_r49_redis_button())
+        except Exception: pass
+    return kb
+
+def _r49_render_info_after_redis(chat_id: int, message_id: int):
+    try:
+        fast_ui_edit_message_text(int(chat_id), int(message_id), _r29_build_info_text(int(chat_id)),
+                                  reply_markup=_r29_build_info_keyboard(int(chat_id)),
+                                  purpose='safe_edit:r49_redis_runtime')
+    except Exception:
+        pass
+
+def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -> None:
+    enabled = bool(enabled)
+    ok = False
+    detail = ''
+    try:
+        base = globals().get('_split_peer_base', lambda: '')()
+        secret = globals().get('_split_secret', lambda: '')()
+        if not base or not secret:
+            raise RuntimeError('Render #2 peer is not configured')
+        headers_fn = globals().get('_split_headers')
+        headers = dict(headers_fn('vys-262-r49-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
+        response = __import__('requests').post(base.rstrip('/') + '/internal/runtime/redis',
+                                               json={'enabled': enabled}, headers=headers, timeout=12)
+        try: payload = response.json() if response.content else {}
+        except Exception: payload = {}
+        peer_state = (payload or {}).get('redis') or {}
+        if not (200 <= int(response.status_code) < 300 and bool(payload.get('ok'))):
+            raise RuntimeError(f'HEAVY HTTP {response.status_code}: {str(payload or response.text)[:240]}')
+        if bool(peer_state.get('enabled')) != enabled:
+            raise RuntimeError(str(peer_state.get('error') or 'HEAVY Redis state did not match request')[:220])
+        import runtime_config as _r49_runtime_config
+        local_state = _r49_runtime_config.set_redis_runtime_enabled(enabled)
+        if bool(local_state.get('enabled')) != enabled:
+            raise RuntimeError(str(local_state.get('error') or 'FAST Redis state did not match request')[:220])
+        ok = True
+        detail = 'FAST + HEAVY: ' + ('Redis enabled' if enabled else 'Redis disabled')
+    except Exception as exc:
+        detail = f'{type(exc).__name__}: {str(exc)[:260]}'
+        # Enabling is transactional: if HEAVY could not enable, FAST stays OFF.
+        if enabled:
+            try:
+                import runtime_config as _r49_runtime_config
+                _r49_runtime_config.set_redis_runtime_enabled(False)
+            except Exception:
+                pass
+    finally:
+        with _R49_REDIS_CONTROL_LOCK:
+            _R49_REDIS_CONTROL.update({'switching': False, 'target': enabled, 'peer_ok': bool(ok), 'detail': detail})
+        try: bot_journal('r49_redis_runtime_switch', int(chat_id), f'enabled={int(enabled)}; ok={int(ok)}; {detail}')
+        except Exception: pass
+        _r49_render_info_after_redis(int(chat_id), int(message_id))
+
 def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     cid = int(chat_id)
     if cid != int(OWNER_ID or 0):
@@ -4592,7 +4646,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
         'ℹ️ ИНФО · Пер-R43\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
-        '⚡ FAST UI: прямой путь R28 защищён.\n'
+        '⚡ FAST UI: callback не ждёт Telegram; рендер идёт отдельной latest-wins очередью.\n'
         '🛰 HEAVY: тяжёлая работа после UI.\n'
         '🔒 Директивный режим: бизнес-логика владельца не переключается контуром.',
         'Ф89'
@@ -4622,9 +4676,9 @@ def _r29_build_info_keyboard(chat_id: int):
         return kb
     mode = r30_info_menu_mode(cid, False)
     if mode == 'old':
-        return _r30_legacy_info_keyboard_with_controls(cid)
+        return _r49_info_inject_redis_toggle(_r30_legacy_info_keyboard_with_controls(cid), cid)
     if mode == R31_MENU_MODE_THIRD:
-        return _r31_third_info_keyboard(cid)
+        return _r49_info_inject_redis_toggle(_r31_third_info_keyboard(cid), cid)
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(IB('📊 Состояние', callback_data='r29:info:status'), IB('🔗 Интеграции', callback_data='r29:info:integrations'))
     kb.row(IB('⚙️ Настройки', callback_data='r29:info:settings'), IB('📁 Журналы', callback_data='r29:info:journals'))
@@ -4634,7 +4688,7 @@ def _r29_build_info_keyboard(chat_id: int):
         kb.row(IB('🧩 Конструкторы', callback_data='r31:constructors:open'))
     kb.row(_r30_menu_mode_button(cid))
     kb.row(IB('🔙 Назад', callback_data='nav_prev'), IB('❌ Закрыть', callback_data='info_close'))
-    return kb
+    return _r49_info_inject_redis_toggle(kb, cid)
 
 
 build_info_text = _r29_build_info_text
@@ -4940,6 +4994,42 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
         mid = int(call.message.message_id)
     except Exception:
         return bool(_R29_PREV_CONTOUR_GUARD(call, raw)) if callable(_R29_PREV_CONTOUR_GUARD) else False
+
+    if raw == 'r49:redis:toggle':
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только владелец может переключать Redis.', show_alert=True)
+            except Exception: pass
+            return True
+        state = _r49_redis_runtime_state()
+        if state.get('switching'):
+            try: bot.answer_callback_query(call.id, 'Переключение Redis уже выполняется.')
+            except Exception: pass
+            return True
+        target = not bool(state.get('enabled'))
+        if target and not bool(state.get('configured')):
+            try: bot.answer_callback_query(call.id, 'REDIS_URL не настроен в Render. Redis остаётся выключен.', show_alert=True)
+            except Exception: pass
+            return True
+        # OFF is fail-safe: disable FAST immediately. ON becomes active only after
+        # HEAVY confirms the same state in the detached control job.
+        if not target:
+            try:
+                import runtime_config as _r49_runtime_config
+                _r49_runtime_config.set_redis_runtime_enabled(False)
+            except Exception:
+                pass
+        with _R49_REDIS_CONTROL_LOCK:
+            _R49_REDIS_CONTROL.update({'switching': True, 'target': target, 'peer_ok': None, 'detail': ''})
+        try: bot.answer_callback_query(call.id, 'Redis: ' + ('включаю…' if target else 'выключаю…'))
+        except Exception: pass
+        safe_edit(bot, call, _r29_build_info_text(cid), reply_markup=_r29_build_info_keyboard(cid))
+        pool = globals().get('GENERAL_TASK_POOL')
+        queued = bool(pool and pool.submit_unique('r49-redis-runtime-control', _r49_apply_redis_runtime_job, target, cid, mid))
+        if not queued:
+            with _R49_REDIS_CONTROL_LOCK:
+                _R49_REDIS_CONTROL.update({'switching': False, 'peer_ok': False, 'detail': 'control queue busy'})
+            safe_edit(bot, call, _r29_build_info_text(cid), reply_markup=_r29_build_info_keyboard(cid))
+        return True
 
     if raw == 'r30:menu:toggle':
         # Presentation-only owner setting.  It is intentionally handled before
@@ -5620,20 +5710,48 @@ def _split_schedule_idle_full_reconcile_v270(reason='need_full',delay=None):
 def _split_request_worker_full_sync_r18(reason='need_full'):
     return True,'R34 event-stream mode: full rebase not required'
 
-def _split_push_snapshot_now_v263(reason='shutdown'):
-    r32_flush_state_events(timeout=float(_r32_os.getenv('R32_SHUTDOWN_EVENT_FLUSH_SEC','8') or '8'))
-    try: r20_schedule_durable_capsule('r43-shutdown:'+str(reason or '')[:80],delay=0.05)
-    except Exception: pass
-    # R43: HEAVY is no longer the full-state authority. Publish one exact full
-    # SQLite image to shared Redis on graceful deploy/shutdown so the next FAST
-    # container can restore without waiting for Render #2.
-    if str(_r32_os.getenv('R43_FAST_AUTHORITY','1') or '1').strip().lower() in {'1','true','yes','on'}:
-        try:
-            fn=globals().get('_split_cache_snapshot_to_redis_v266')
-            if callable(fn): fn(reason='r43-shutdown:'+str(reason or '')[:100])
-        except Exception as exc:
-            _R32_EVENT_STATE['last_error']=f'R43 shutdown Redis snapshot {type(exc).__name__}: {str(exc)[:160]}'
-    return True
+def _split_push_snapshot_now_v263(reason='shutdown', sync_mega=False):
+    """Send one exact SQLite image to HEAVY; only HEAVY is allowed to publish it to MEGA."""
+    try:
+        r32_flush_state_events(timeout=float(_r32_os.getenv('R32_SHUTDOWN_EVENT_FLUSH_SEC','8') or '8'))
+    except Exception:
+        pass
+    base, secret = _split_peer_base(), _split_secret()
+    if not base or not secret:
+        _R32_EVENT_STATE['last_error'] = 'HEAVY peer is not configured for exact snapshot handoff'
+        return False
+    workdir = _split_tempfile.mkdtemp(prefix='r49_front_heavy_snapshot_')
+    raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
+    gz = raw + '.gz'
+    try:
+        SQLITE.backup_to(raw)
+        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
+            _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
+        with open(gz, 'rb') as fh:
+            body = fh.read()
+        headers = {**_split_headers('vys-262-r49-fast-heavy-snapshot'),
+                   'Content-Type': 'application/gzip',
+                   'X-Snapshot-Reason': str(reason or '')[:120],
+                   'X-Split-State-Token': _split_current_state_token_v264(),
+                   'X-Snapshot-Promote-Mode': 'sync' if bool(sync_mega) else 'async'}
+        timeout = 240 if bool(sync_mega) else 30
+        r = __import__('requests').post(base + '/internal/snapshot/upload', data=body, headers=headers, timeout=timeout)
+        try: row = r.json() if r.content else {}
+        except Exception: row = {}
+        if 200 <= int(r.status_code) < 300:
+            if str(row.get('status') or '') == 'stale_ignored':
+                _R32_EVENT_STATE['last_error'] = 'HEAVY has newer snapshot; stale FAST image ignored'
+                return False
+            if bool(sync_mega) and not bool(row.get('mega_promoted')):
+                _R32_EVENT_STATE['last_error'] = 'HEAVY accepted snapshot but did not confirm MEGA promotion'
+                return False
+            return True
+        _R32_EVENT_STATE['last_error'] = f'HEAVY snapshot HTTP {r.status_code}: {str(row or r.text)[:220]}'
+    except Exception as exc:
+        _R32_EVENT_STATE['last_error'] = f'HEAVY snapshot {type(exc).__name__}: {str(exc)[:180]}'
+    finally:
+        _split_shutil.rmtree(workdir, ignore_errors=True)
+    return False
 
 def r32_event_stream_status():
     # R45-FIX2: diagnostics/UI reads cached counters only; never touch outbox SQLite.
@@ -5815,11 +5933,11 @@ send_export_for_chat_to = send_export_for_chat_to
 send_exact_range_export = send_exact_range_export
 send_tabl_lsx_for_chat = send_tabl_lsx_for_chat
 
-# Defensive R28 hot-path regression gate stays active. R34 itself contains no render queue.
+# Defensive R49 hot-path regression gate: callback renderer must only enqueue.
 try:
     _src=__import__('inspect').getsource(globals().get('fast_ui_edit_message_text'))
-    if 'WINDOW_RENDER_TASK_POOL' in _src or '_perform_fast_ui_edit' not in _src:
-        raise RuntimeError('R34 HOTPATH GUARD: R28 direct render contract changed')
+    if 'WINDOW_RENDER_TASK_POOL.submit_latest' not in _src or '_r22_execute_window_render' not in _src or '_perform_fast_ui_edit(payload)' in _src:
+        raise RuntimeError('R34 HOTPATH GUARD: R49 non-blocking render contract changed')
 except OSError:
     pass
 

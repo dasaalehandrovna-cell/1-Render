@@ -4417,18 +4417,17 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
     durable, so deploy/crash safety is retained while the visible UI can already run.
     """
     claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, 'callback_query')
-    _r48_coalesce_key = None  # R50 latest-wins replaces the old same-raw inflight set.
-    _r50_nav_window_key = None; _r50_nav_epoch = 0
-    if claim_state == 'new':
-        try:
-            cq=(payload or {}).get('callback_query') or {}; raw=str(cq.get('data') or '')
-            msg=cq.get('message') or {}; cid=(msg.get('chat') or {}).get('id'); mid=msg.get('message_id')
-            safe_fn=globals().get('_v166_is_safe_window_callback')
-            if cid is not None and mid is not None and callable(safe_fn) and safe_fn(raw):
-                _r50_nav_window_key, _r50_nav_epoch = r50_ui_note_interaction(int(cid), int(mid), raw)
-            elif cid is not None:
-                r50_ui_note_interaction(int(cid), None, raw)
-        except Exception: pass
+    _r48_coalesce_key = _r48_nav_coalesce_key(payload) if claim_state == 'new' else None
+    if claim_state == 'new' and _r48_coalesce_key:
+        with _R48_NAV_COALESCE_LOCK:
+            if _r48_coalesce_key in _R48_NAV_INFLIGHT:
+                UPDATE_DISPATCHER.finish(update_id, True, 'coalesced_safe_navigation_r48')
+                try: UI_CLEANUP_TASK_POOL.submit(f'r48-coalesced:{update_id}', _r48_mark_coalesced_callback_durable, payload, update_id, update_chat_id)
+                except Exception: pass
+                try: log_info(f'R48 NAV COALESCE update={update_id} chat={update_chat_id} key={_r48_coalesce_key}')
+                except Exception: pass
+                return ('OK', 200)
+            _R48_NAV_INFLIGHT.add(_r48_coalesce_key)
     if claim_state == 'new':
         update_enqueued_at = time.time()
 
@@ -4452,12 +4451,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             try:
                 try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_START')
                 except Exception: pass
-                if _r50_nav_window_key and _r50_nav_epoch:
-                    r50_ui_set_context(_r50_nav_window_key, _r50_nav_epoch)
-                try:
-                    _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
-                finally:
-                    if _r50_nav_window_key and _r50_nav_epoch: r50_ui_clear_context()
+                _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
                 try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_DONE')
                 except Exception: pass
                 success = True
@@ -4502,16 +4496,11 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             selected_pool, selected_key = selector(payload, 'callback_query', update_key)
         else:
             selected_pool, selected_key = (FAST_UI_TASK_POOL, f'fast-callback:{update_key}')
-        def _r50_superseded():
-            try: UPDATE_DISPATCHER.finish(update_id, True, 'superseded_safe_navigation_r50')
-            except Exception: pass
-            try: UI_CLEANUP_TASK_POOL.submit(f'r50-superseded:{update_id}', _r48_mark_coalesced_callback_durable, payload, update_id, update_chat_id)
-            except Exception: pass
-        if hasattr(selected_pool, 'submit_latest'):
-            queued = bool(selected_pool.submit_latest(selected_key, _process_callback, _on_supersede=_r50_superseded))
-        else:
-            queued = bool(selected_pool.submit(selected_key, _process_callback))
-        if not queued:
+        if not selected_pool.submit(selected_key, _process_callback):
+            if _r48_coalesce_key:
+                try:
+                    with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
+                except Exception: pass
             UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
             return ('BUSY', 503)
         UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
@@ -4625,9 +4614,6 @@ def telegram_webhook():
             update_id = time.time_ns()
         update_key = update_chat_id if update_chat_id is not None else update_id
         update_type = 'edited_message' if isinstance(payload, dict) and 'edited_message' in payload else 'callback_query' if isinstance(payload, dict) and 'callback_query' in payload else 'message' if isinstance(payload, dict) and 'message' in payload else 'other'
-        if update_type in {'message','edited_message'} and update_chat_id is not None:
-            try: r50_ui_note_interaction(int(update_chat_id), None, update_type)
-            except Exception: pass
         if update_type == 'callback_query':
             # Rare finance toggles keep the pre-execution cloud witness because replaying
             # a toggle twice can reverse state. All normal/navigation callbacks take R22.
@@ -9263,65 +9249,67 @@ def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str='replace'
         src.close()
 
 def _v153_restore_failed_tasks_from_db(raw: str, allowed_chat_ids: set[int] | None=None) -> int:
-    if not mega_is_configured():
-        return 0
+    """Restore exported failed-task files through HEAVY; FAST has no runtime MEGA credentials."""
     conn = _v153_sqlite3.connect(raw)
     try:
         row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='failed_tasks'").fetchone()
         tasks = _v153_json.loads(row[0]) if row else []
     finally:
         conn.close()
-    restored = 0
-    remote_dir = mega_task_remote_dir('failed')
-    ensure_mega_task_dirs()
+    selected = []
     for task in tasks or []:
         if not isinstance(task, dict) or task.get('load_error'):
             continue
         cid = int(task.get('chat_id') or 0)
         if allowed_chat_ids is not None and cid not in allowed_chat_ids:
             continue
-        key = str(task.get('task_id') or task.get('update_id') or '').strip()
+        key = str(task.get('task_id') or task.get('update_id') or task.get('job_id') or '').strip()
         if not key:
             continue
-        folder = _v153_tempfile.mkdtemp(prefix='v153_failed_restore_')
-        try:
-            name = f'task_{key}.json'
-            local = _v153_os.path.join(folder, name)
-            _V153Path(local).write_text(_v153_json.dumps(v153_sanitize(task), ensure_ascii=False, indent=2), encoding='utf-8')
-            if mega_put_replace(local, remote_dir, name, archive_previous=False):
-                restored += 1
-        finally:
-            _v153_shutil.rmtree(folder, ignore_errors=True)
-    try:
-        mega_task_refresh_registry()
-    except Exception:
-        pass
+        clean = v153_sanitize(task)
+        clean['_restore_key_v153'] = key
+        selected.append(clean)
+    if not selected:
+        return 0
+    base = globals().get('_split_peer_base', lambda: '')()
+    headers_fn = globals().get('_split_headers')
+    if not base or not callable(headers_fn):
+        raise RuntimeError('HEAVY peer unavailable for failed-task restore')
+    restored = 0
+    # Keep the request bounded; HEAVY owns all MEGA I/O and verifies every batch.
+    for pos in range(0, len(selected), 50):
+        chunk = selected[pos:pos + 50]
+        response = requests.post(
+            str(base).rstrip('/') + '/internal/restore/failed-tasks',
+            json={'tasks': chunk},
+            headers=headers_fn('vys-262-r49-restore-failed-tasks'),
+            timeout=180,
+        )
+        if not (200 <= response.status_code < 300):
+            raise RuntimeError(f'HEAVY failed-task restore HTTP {response.status_code}: {response.text[:220]}')
+        body = response.json() if response.content else {}
+        if not bool(body.get('ok')) or int(body.get('restored') or 0) != len(chunk):
+            raise RuntimeError('HEAVY failed-task restore incomplete: ' + str(body)[:260])
+        restored += int(body.get('restored') or 0)
     return restored
 
-def _v240_retry_pending_restore_reanchor() -> bool:
-    """Best-effort durable follow-up for a restore already accepted locally.
 
-    This never rolls the restored state back. It temporarily opens Recovery Authority,
-    publishes the *current* accepted state as a fresh canonical lineage, then closes the
-    exception again. A transient remote outage therefore cannot make /restore fail.
-    """
+def _v240_retry_pending_restore_reanchor() -> bool:
+    """Retry manual-restore publication through HEAVY; FAST never touches MEGA at runtime."""
     pending = SQLITE.get_meta('restore_control_v240', 'remote_reanchor_pending', {}) or {}
     if not isinstance(pending, dict) or not pending:
         return True
     if bool(globals().get('_V241_RESTORE_ACTIVE', False)):
         _v240_schedule_pending_restore_reanchor_retry(30.0)
         return False
-    previous = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
     try:
-        active = mega_publish_current_sqlite_v242('pending_remote_reanchor_v242:' + str(pending.get('reason') or 'restore'), manual_restore=False, allow_destructive=True) or {}
-        result = {'active': active}
+        push = globals().get('_split_push_snapshot_now_v263')
+        if not callable(push) or not bool(push('restore_retry:' + str(pending.get('reason') or 'restore'), sync_mega=True)):
+            raise RuntimeError('HEAVY did not confirm MEGA publication')
         SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', {})
         SQLITE.set_meta('restore_control_v240', 'config_remote_pending', {})
-        try:
-            runtime_event('restore_remote_reanchor_completed_v240', f"generation={(result.get('active') or {}).get('generation', '—')}", 'INFO')
-        except Exception:
-            pass
+        try: runtime_event('restore_remote_reanchor_completed_v240', 'backend=HEAVY->MEGA', 'INFO')
+        except Exception: pass
         return True
     except Exception as exc:
         pending['last_retry_at'] = now_local().isoformat(timespec='microseconds')
@@ -9330,13 +9318,9 @@ def _v240_retry_pending_restore_reanchor() -> bool:
         SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', pending)
         delay = min(600.0, 30.0 * 2 ** min(4, int(pending.get('retry_count') or 1) - 1))
         _v240_schedule_pending_restore_reanchor_retry(delay)
-        try:
-            runtime_event('restore_remote_reanchor_retry_failed_v240', str(exc)[:500], 'WARN')
-        except Exception:
-            pass
+        try: runtime_event('restore_remote_reanchor_retry_failed_v240', str(exc)[:500], 'WARN')
+        except Exception: pass
         return False
-    finally:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = previous
 
 def _v240_schedule_pending_restore_reanchor_retry(delay: float=20.0):
     sched = globals().get('DELAYED_SCHEDULER')
@@ -9622,7 +9606,17 @@ def _v153_extension_callback(call, data_str: str) -> bool:
             token, action = (parts[2], parts[3])
             if action == 'cancel':
                 with _V153_LOCK:
-                    row = _V153_RESTORE_PENDING.pop(token, None)
+                    current = _V153_RESTORE_PENDING.get(token)
+                    if current and current.get('_restore_queued'):
+                        row = None
+                        already_started = True
+                    else:
+                        row = _V153_RESTORE_PENDING.pop(token, None)
+                        already_started = False
+                if already_started:
+                    try: bot.answer_callback_query(call.id, 'Восстановление уже запущено и не может быть отменено.', show_alert=True)
+                    except Exception: pass
+                    return True
                 if row:
                     for path in (row.get('gz'), row.get('raw')):
                         try:
@@ -9638,7 +9632,38 @@ def _v153_extension_callback(call, data_str: str) -> bool:
                     pass
                 return True
             if action == 'replace':
-                return _v153_execute_restore(token, 'replace', call)
+                uid = _v153_actor_id(call)
+                with _V153_LOCK:
+                    row = _V153_RESTORE_PENDING.get(token)
+                    if not row:
+                        already = False
+                        allowed = False
+                    else:
+                        allowed = bool(uid == int(row.get('uid') or 0) or _v153_platform_owner(uid))
+                        already = bool(row.get('_restore_queued'))
+                        if allowed and not already:
+                            row['_restore_queued'] = True
+                if not row:
+                    try: bot.answer_callback_query(call.id, 'Файл восстановления устарел', show_alert=True)
+                    except Exception: pass
+                    return True
+                if not allowed:
+                    try: bot.answer_callback_query(call.id, 'Это подтверждение другого пользователя', show_alert=True)
+                    except Exception: pass
+                    return True
+                if already:
+                    try: bot.answer_callback_query(call.id, 'Восстановление уже выполняется.')
+                    except Exception: pass
+                    return True
+                safe_edit(bot, call, '⏳ Восстановление принято. Выполняю в отдельном recovery-потоке…')
+                queued = bool(RECOVERY_TASK_POOL.submit_unique(f'v153-restore:{token}', _v153_execute_restore, token, 'replace', call))
+                if not queued:
+                    with _V153_LOCK:
+                        current = _V153_RESTORE_PENDING.get(token)
+                        if current:
+                            current['_restore_queued'] = False
+                    safe_edit(bot, call, '⚠️ Очередь восстановления занята. Нажмите «Восстановить» ещё раз.')
+                return True
     return False
 
 def _v153_prune_restore_pending() -> None:
@@ -10275,50 +10300,48 @@ def _v243_mark_runtime_restore_healthy(reason: str, *, remote_confirmed: bool=Fa
     return {'ok': True, 'detail': detail, 'remote_confirmed': bool(remote_confirmed), 'generation': str(generation or '')}
 
 def _canon_v240_restore_reanchor_guaranteed__002(reason: str) -> dict:
-    """Local restore is accepted immediately; MEGA publication is attempted immediately via one WRITE path."""
+    """Publish an accepted manual restore through HEAVY -> MEGA, never MEGA from FAST."""
     previous = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
     try:
-        publish = globals().get('mega_publish_current_sqlite_v242')
-        if not callable(publish):
-            raise RuntimeError('v242 unified MEGA publisher unavailable')
-        active = publish(str(reason or 'restore'), manual_restore=True, allow_destructive=True) or {}
+        push = globals().get('_split_push_snapshot_now_v263')
+        if not callable(push):
+            raise RuntimeError('HEAVY snapshot handoff is unavailable')
+        if not bool(push('manual_restore:' + str(reason or 'restore'), sync_mega=True)):
+            raise RuntimeError('HEAVY did not confirm MEGA publication')
+        try:
+            cp = config_guard_accept_current_v234('restore_heavy_mega:' + str(reason)) or {}
+        except Exception:
+            cp = {}
+        total = int((constitution_semantic_manifest_from_live() or {}).get('total_records') or 0)
+        active = {'backend': 'heavy-mega', 'generation': 'HEAVY-MEGA-CONFIRMED', 'total_records': total}
         SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', {})
-        try:
-            runtime_event('restore_remote_reanchor_confirmed_v242', f"generation={active.get('generation')}; records={active.get('total_records')}")
-        except Exception:
-            pass
-        try:
-            _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=True, generation=str(active.get('generation') or ''))
-        except Exception:
-            pass
-        return {'active': active, 'lineage': str(active.get('storage_lineage_v239') or ''), 'config_checkpoint': config_guard_latest_local_v234() or {}, 'remote_confirmed_v240': True, 'remote_confirmed_v242': True}
+        try: runtime_event('restore_remote_reanchor_confirmed_v242', 'backend=HEAVY->MEGA', 'INFO')
+        except Exception: pass
+        try: _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=True, generation='HEAVY-MEGA-CONFIRMED')
+        except Exception: pass
+        return {'active': active, 'lineage': '', 'config_checkpoint': cp, 'remote_confirmed_v240': True, 'remote_confirmed_v242': True}
     except Exception as exc:
         err = str(exc)[:700]
         try:
-            cp = config_guard_accept_current_v234('restore_local_pending_v242:' + str(reason))
+            cp = config_guard_accept_current_v234('restore_local_pending_heavy:' + str(reason))
         except Exception:
             cp = {}
-        pending = {'at': now_local().isoformat(timespec='microseconds'), 'reason': str(reason), 'error': err, 'lineage': str(_v239_storage_lineage(create=False) if '_v239_storage_lineage' in globals() else ''), 'config_generation': int((cp or {}).get('generation') or 0)}
-        try:
-            SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', pending)
-        except Exception:
-            pass
-        try:
-            _v240_schedule_pending_restore_reanchor_retry(20.0)
-        except Exception:
-            pass
-        try:
-            runtime_event('restore_remote_reanchor_pending_v242', err, 'WARN')
-        except Exception:
-            pass
-        try:
-            _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=False, generation='LOCAL-PENDING')
-        except Exception:
-            pass
-        return {'active': {'backend': 'local', 'generation': 'LOCAL-PENDING', 'total_records': int((constitution_semantic_manifest_from_live() or {}).get('total_records') or 0)}, 'lineage': pending.get('lineage') or '', 'config_checkpoint': cp, 'remote_confirmed_v240': False, 'remote_confirmed_v242': False, 'warning': err}
+        pending = {'at': now_local().isoformat(timespec='microseconds'), 'reason': str(reason), 'error': err,
+                   'config_generation': int((cp or {}).get('generation') or 0)}
+        try: SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', pending)
+        except Exception: pass
+        try: _v240_schedule_pending_restore_reanchor_retry(20.0)
+        except Exception: pass
+        try: runtime_event('restore_remote_reanchor_pending_v242', err, 'WARN')
+        except Exception: pass
+        try: _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=False, generation='LOCAL-PENDING')
+        except Exception: pass
+        return {'active': {'backend': 'local', 'generation': 'LOCAL-PENDING', 'total_records': int((constitution_semantic_manifest_from_live() or {}).get('total_records') or 0)},
+                'lineage': '', 'config_checkpoint': cp, 'remote_confirmed_v240': False, 'remote_confirmed_v242': False, 'warning': err}
     finally:
         globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(previous or globals().get('_V241_RESTORE_ACTIVE', False))
+
 _V242_MEGA_DB_CATALOG_CACHE = {}
 
 def _v242_mega_database_catalog(limit: int=14) -> list[dict]:
