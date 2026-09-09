@@ -3504,57 +3504,7 @@ def _v160_note_window_meta(chat_id: int, message_id: int, text: str, purpose: st
         if len(_V160_LAST_WINDOW_META) > 1200:
             for stale in list(_V160_LAST_WINDOW_META)[:200]:
                 _V160_LAST_WINDOW_META.pop(stale, None)
-_V160_ORIG_SEND_MESSAGE = getattr(bot, 'send_message', None)
-_V160_ORIG_EDIT_MESSAGE_TEXT = getattr(bot, 'edit_message_text', None)
-_V160_ORIG_EDIT_MESSAGE_CAPTION = getattr(bot, 'edit_message_caption', None)
-if callable(_V160_ORIG_SEND_MESSAGE):
-
-    def _v160_send_message(chat_id, text, *args, **kwargs):
-        try:
-            kwargs['reply_markup'] = _v160_augment_markup(kwargs.get('reply_markup'), str(text or ''), chat_id)
-        except Exception:
-            pass
-        result = _V160_ORIG_SEND_MESSAGE(chat_id, text, *args, **kwargs)
-        try:
-            _v160_note_window_meta(int(chat_id), int(getattr(result, 'message_id', 0) or 0), str(text or ''), 'send_message')
-        except Exception:
-            pass
-        return result
-    bot.send_message = _v160_send_message
-if callable(_V160_ORIG_EDIT_MESSAGE_TEXT):
-
-    def _v160_edit_message_text(text, *args, **kwargs):
-        chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[0] if len(args) > 0 else None
-        message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
-        try:
-            kwargs['reply_markup'] = _v160_augment_markup(kwargs.get('reply_markup'), str(text or ''), chat_id)
-        except Exception:
-            pass
-        result = _V160_ORIG_EDIT_MESSAGE_TEXT(text, *args, **kwargs)
-        try:
-            _v160_note_window_meta(int(chat_id), int(message_id), str(text or ''), 'edit_message_text')
-        except Exception:
-            pass
-        return result
-    bot.edit_message_text = _v160_edit_message_text
-if callable(_V160_ORIG_EDIT_MESSAGE_CAPTION):
-
-    def _v160_edit_message_caption(*args, **kwargs):
-        caption = kwargs.get('caption')
-        if caption is None and args:
-            caption = args[0]
-        chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[1] if len(args) > 1 else None
-        try:
-            kwargs['reply_markup'] = _v160_augment_markup(kwargs.get('reply_markup'), str(caption or ''), chat_id)
-        except Exception:
-            pass
-        result = _V160_ORIG_EDIT_MESSAGE_CAPTION(*args, **kwargs)
-        try:
-            _v160_note_window_meta(int(kwargs.get('chat_id')), int(kwargs.get('message_id')), str(caption or ''), 'edit_message_caption')
-        except Exception:
-            pass
-        return result
-    bot.edit_message_caption = _v160_edit_message_caption
+# FINALIZED: v160 markup/meta logic is called by 89_callback_final.py; no bot override here.
 
 def _v160_annotation_roots():
     gs = data.setdefault('_global_settings', {})
@@ -4818,52 +4768,7 @@ def _v161_tokenize_text(text: str, chat_id: int, message_id: int | None=None) ->
         lines[idx] = f'{code}-({token}){glyph}'
         return ('\n'.join(lines), token)
     return (body, token)
-_V161_PREV_SEND = getattr(bot, 'send_message', None)
-_V161_PREV_EDIT_TEXT = getattr(bot, 'edit_message_text', None)
-_V161_PREV_EDIT_CAPTION = getattr(bot, 'edit_message_caption', None)
-if callable(_V161_PREV_SEND):
-
-    def _v161_send_message(chat_id, text, *args, **kwargs):
-        decorated, token = _v161_tokenize_text(str(text or ''), int(chat_id), None)
-        result = _V161_PREV_SEND(chat_id, decorated, *args, **kwargs)
-        try:
-            mid = int(getattr(result, 'message_id', 0) or 0)
-            if token and mid:
-                with _V161_TOKEN_LOCK:
-                    _V161_WINDOW_TOKENS[int(chat_id), mid] = token
-        except Exception:
-            pass
-        return result
-    bot.send_message = _v161_send_message
-if callable(_V161_PREV_EDIT_TEXT):
-
-    def _v161_edit_message_text(text, *args, **kwargs):
-        chat_id = int(kwargs.get('chat_id') or 0)
-        message_id = int(kwargs.get('message_id') or 0)
-        decorated, token = _v161_tokenize_text(str(text or ''), chat_id, message_id)
-        result = _V161_PREV_EDIT_TEXT(decorated, *args, **kwargs)
-        if token and chat_id and message_id:
-            with _V161_TOKEN_LOCK:
-                _V161_WINDOW_TOKENS[chat_id, message_id] = token
-        return result
-    bot.edit_message_text = _v161_edit_message_text
-if callable(_V161_PREV_EDIT_CAPTION):
-
-    def _v161_edit_message_caption(*args, **kwargs):
-        positional = list(args)
-        caption = kwargs.get('caption')
-        if caption is None and positional:
-            caption = positional.pop(0)
-        chat_id = int(kwargs.get('chat_id') or 0)
-        message_id = int(kwargs.get('message_id') or 0)
-        decorated, token = _v161_tokenize_text(str(caption or ''), chat_id, message_id)
-        kwargs['caption'] = decorated
-        result = _V161_PREV_EDIT_CAPTION(*positional, **kwargs)
-        if token and chat_id and message_id:
-            with _V161_TOKEN_LOCK:
-                _V161_WINDOW_TOKENS[chat_id, message_id] = token
-        return result
-    bot.edit_message_caption = _v161_edit_message_caption
+# FINALIZED: v161 tokenization is called by 89_callback_final.py; no bot override here.
 _V161_PREV_SOURCE_META = _v177_legacy_0319_v160_source_meta
 
 def _canon_v160_source_meta__001(chat_id: int, message_id: int, marker: str, text: str='') -> dict:
@@ -5421,27 +5326,7 @@ def _canon_v162_force_start__001(msg) -> bool:
             except Exception:
                 pass
             return True
-_V162_ORIGINAL_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
-
-def _v162_process_new_updates(updates):
-    remaining = []
-    for update in list(updates or []):
-        msg = getattr(update, 'message', None)
-        if msg is not None and _v162_is_start_message(msg):
-            try:
-                _v162_force_start(msg)
-            except Exception as exc:
-                try:
-                    log_error(f'v162 /start interceptor: {exc}')
-                except Exception:
-                    pass
-            continue
-        remaining.append(update)
-    if remaining and callable(_V162_ORIGINAL_PROCESS_NEW_UPDATES):
-        return _V162_ORIGINAL_PROCESS_NEW_UPDATES(remaining)
-    return None
-if callable(_V162_ORIGINAL_PROCESS_NEW_UPDATES):
-    bot.process_new_updates = _v162_process_new_updates
+# FINALIZED: /start interception is executed by the single dispatcher in 89_callback_final.py.
 
 def _v177_legacy_0287_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v162_tempfile.mkdtemp(prefix='v162_restore_validate_')

@@ -809,127 +809,334 @@ def final_callback_router(call):
             pass
 bot.callback_query_handler(func=lambda c: True)(final_callback_router)
 _V179_FINAL_CALLBACK_HANDLERS = 1
-_V221_FINAL_SEND = getattr(bot, 'send_message', None)
-_V221_FINAL_EDIT_TEXT = getattr(bot, 'edit_message_text', None)
-_V221_FINAL_EDIT_CAPTION = getattr(bot, 'edit_message_caption', None)
-_V221_FINAL_EDIT_MARKUP = getattr(bot, 'edit_message_reply_markup', None)
-_V221_FINAL_DELETE = getattr(bot, 'delete_message', None)
 
-def _v221_final_filter_markup(chat_id, reply_markup):
+# FINALIZATION ONLY: exactly one application-level incoming update dispatcher.
+# Message-only interceptors are executed inline; callback_query bypasses them and reaches
+# pyTelegramBotAPI directly.  No PREV/ORIG wrapper chain is retained.
+_FINAL_NATIVE_PROCESS_NEW_UPDATES = telebot.TeleBot.process_new_updates
+
+def _final_dispatch_non_callback_once(update):
+    msg = getattr(update, 'message', None)
+    if msg is not None:
+        try:
+            if _v221_owner_message_command(msg):
+                return True
+        except Exception as exc:
+            try: log_error(f'final owner-message interceptor: {exc}')
+            except Exception: pass
+
+    task_msg = None
+    for attr in ('message', 'edited_message', 'channel_post', 'edited_channel_post'):
+        candidate = getattr(update, attr, None)
+        if candidate is not None:
+            task_msg = candidate
+            break
+    if task_msg is not None and not bool(getattr(update, '_v219_task_ingested', False)):
+        try:
+            setattr(update, '_v219_task_ingested', True)
+            if _v219_task_ingest_message(task_msg):
+                return True
+        except Exception as exc:
+            try: log_error(f'final task-ingest interceptor: {exc}')
+            except Exception: pass
+
+    if msg is not None:
+        try:
+            if _v218_complete_command(msg):
+                return True
+        except Exception as exc:
+            try: log_error(f'final v218 reminder completion: {exc}')
+            except Exception: pass
+        try:
+            if _v217_complete_command(msg):
+                return True
+        except Exception as exc:
+            try: log_error(f'final v217 reminder completion: {exc}')
+            except Exception: pass
+        try:
+            if _v162_is_start_message(msg):
+                _v162_force_start(msg)
+                return True
+        except Exception as exc:
+            try: log_error(f'final /start interceptor: {exc}')
+            except Exception: pass
+    return False
+
+def _final_process_new_updates(updates):
+    callbacks = []
+    native_rows = []
+    for update in list(updates or []):
+        if getattr(update, 'callback_query', None) is not None:
+            callbacks.append(update)
+            continue
+        if not _final_dispatch_non_callback_once(update):
+            native_rows.append(update)
+    if callbacks:
+        _FINAL_NATIVE_PROCESS_NEW_UPDATES(bot, callbacks)
+    if native_rows:
+        return _FINAL_NATIVE_PROCESS_NEW_UPDATES(bot, native_rows)
+    return None
+
+bot.process_new_updates = _final_process_new_updates
+_FINAL_NATIVE_TELEBOT = telebot.TeleBot
+_FINAL_NATIVE_SEND = _FINAL_NATIVE_TELEBOT.send_message
+_FINAL_NATIVE_EDIT_TEXT = _FINAL_NATIVE_TELEBOT.edit_message_text
+_FINAL_NATIVE_EDIT_CAPTION = _FINAL_NATIVE_TELEBOT.edit_message_caption
+_FINAL_NATIVE_EDIT_MARKUP = _FINAL_NATIVE_TELEBOT.edit_message_reply_markup
+_FINAL_NATIVE_DELETE = _FINAL_NATIVE_TELEBOT.delete_message
+_FINAL_NATIVE_SEND_DOCUMENT = _FINAL_NATIVE_TELEBOT.send_document
+
+
+def _final_filter_markup(chat_id, reply_markup):
     try:
-        fn = globals().get('v221_finalize_contour_markup')
-        return fn(reply_markup, int(chat_id or 0)) if callable(fn) else reply_markup
+        fn = globals().get('v221_final_reply_markup')
+        if callable(fn):
+            return fn(int(chat_id), reply_markup)
     except Exception:
-        return reply_markup
+        pass
+    return reply_markup
 
-def _v227_prepare_transport_markup(chat_id, reply_markup, text=''):
-    """Prepare exactly what Telegram should receive: augment first, final policy last."""
+
+def _final_prepare_markup(chat_id, reply_markup, text=''):
+    prepared = reply_markup
     try:
         fn = globals().get('v227_render_effective_contour_markup')
         if callable(fn):
-            return fn(reply_markup, str(text or ''), int(chat_id or 0))
+            prepared = fn(int(chat_id), prepared, text=str(text or ''))
+        else:
+            fn = globals().get('_v160_augment_markup')
+            if callable(fn):
+                prepared = fn(prepared, str(text or ''), int(chat_id))
     except Exception:
-        pass
-    prepared = reply_markup
-    try:
-        augment = globals().get('_v160_augment_markup')
-        if callable(augment):
-            prepared = augment(prepared, str(text or ''), int(chat_id or 0))
-    except Exception:
-        pass
-    return _v221_final_filter_markup(chat_id, prepared)
+        prepared = reply_markup
+    return _final_filter_markup(chat_id, prepared)
 
-def _v221_record_transport(chat_id, message_id, reply_markup, text='', source_markup=None):
+
+def _final_record_transport(chat_id, message_id, reply_markup, text='', source_markup=None):
     try:
         fn = globals().get('v221_record_live_markup')
-        if callable(fn) and reply_markup is not None:
-            try:
-                fn(int(chat_id), int(message_id), reply_markup, str(text or ''), source_markup=source_markup)
-            except TypeError:
-                fn(int(chat_id), int(message_id), reply_markup, str(text or ''))
-        elif callable(globals().get('v221_forget_live_markup')) and reply_markup is None:
-            globals()['v221_forget_live_markup'](int(chat_id), int(message_id))
+        if callable(fn):
+            fn(int(chat_id), int(message_id), reply_markup, text=str(text or ''), source_markup=source_markup)
     except Exception:
         pass
-if callable(_V221_FINAL_SEND):
 
-    def _v221_send_message(chat_id, text, *args, **kwargs):
-        source_markup = kwargs.get('reply_markup')
-        prepared = _v227_prepare_transport_markup(chat_id, source_markup, text)
-        kwargs['reply_markup'] = prepared
-        result = _V221_FINAL_SEND(chat_id, text, *args, **kwargs)
+
+def _native_telegram(method, *args, **kwargs):
+    return method(bot, *args, **kwargs)
+
+
+def _final_send_message(chat_id, text, *args, **kwargs):
+    cid = int(chat_id)
+    source_markup = kwargs.get('reply_markup')
+    decorated, token = _v161_tokenize_text(str(text or ''), cid, None)
+    prepared = _final_prepare_markup(cid, source_markup, decorated)
+    kwargs['reply_markup'] = prepared
+    result = _native_telegram(_FINAL_NATIVE_SEND, cid, decorated, *args, **kwargs)
+    mid = int(getattr(result, 'message_id', 0) or 0)
+    try: _v160_note_window_meta(cid, mid, decorated, 'send_message')
+    except Exception: pass
+    if token and mid:
         try:
-            _v221_record_transport(int(chat_id), int(getattr(result, 'message_id', 0) or 0), prepared, text, source_markup=source_markup)
-        except Exception:
-            pass
-        return result
-    bot.send_message = _v221_send_message
-if callable(_V221_FINAL_EDIT_TEXT):
+            with _V161_TOKEN_LOCK:
+                _V161_WINDOW_TOKENS[cid, mid] = token
+        except Exception: pass
+    _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
+    return result
 
-    def _v221_edit_message_text(text, *args, **kwargs):
-        chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[0] if len(args) > 0 else None
-        message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
-        source_markup = kwargs.get('reply_markup')
-        prepared = _v227_prepare_transport_markup(chat_id, source_markup, text)
-        kwargs['reply_markup'] = prepared
-        result = _V221_FINAL_EDIT_TEXT(text, *args, **kwargs)
-        if chat_id is not None and message_id is not None:
-            _v221_record_transport(chat_id, message_id, prepared, text, source_markup=source_markup)
-        return result
-    bot.edit_message_text = _v221_edit_message_text
-if callable(_V221_FINAL_EDIT_CAPTION):
 
-    def _v221_edit_message_caption(*args, **kwargs):
-        positional = list(args)
-        caption = kwargs.get('caption')
-        if caption is None and positional:
-            caption = positional[0]
-        chat_id = kwargs.get('chat_id')
-        message_id = kwargs.get('message_id')
-        if chat_id is None and len(positional) > 1:
-            chat_id = positional[1]
-        if message_id is None and len(positional) > 2:
-            message_id = positional[2]
-        source_markup = kwargs.get('reply_markup')
-        prepared = _v227_prepare_transport_markup(chat_id, source_markup, caption)
-        kwargs['reply_markup'] = prepared
-        result = _V221_FINAL_EDIT_CAPTION(*args, **kwargs)
-        if chat_id is not None and message_id is not None:
-            _v221_record_transport(chat_id, message_id, prepared, caption, source_markup=source_markup)
-        return result
-    bot.edit_message_caption = _v221_edit_message_caption
-if callable(_V221_FINAL_EDIT_MARKUP):
-
-    def _v221_edit_message_reply_markup(*args, **kwargs):
-        positional = list(args)
-        chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else positional[0] if len(positional) > 0 else None
-        message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
-        source_markup = kwargs.get('reply_markup') if 'reply_markup' in kwargs else positional[2] if len(positional) > 2 else None
-        prepared = _v221_final_filter_markup(chat_id, source_markup)
-        if 'reply_markup' in kwargs:
-            kwargs['reply_markup'] = prepared
-        elif len(positional) > 2:
-            positional[2] = prepared
-            args = tuple(positional)
-        result = _V221_FINAL_EDIT_MARKUP(*args, **kwargs)
-        if chat_id is not None and message_id is not None:
-            _v221_record_transport(chat_id, message_id, prepared, '', source_markup=source_markup)
-        return result
-    bot.edit_message_reply_markup = _v221_edit_message_reply_markup
-if callable(_V221_FINAL_DELETE):
-
-    def _v221_delete_message(chat_id, message_id, *args, **kwargs):
-        result = _V221_FINAL_DELETE(chat_id, message_id, *args, **kwargs)
+def _final_edit_message_text(text, *args, **kwargs):
+    chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[0] if len(args) > 0 else None
+    message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
+    cid = int(chat_id or 0); mid = int(message_id or 0)
+    decorated, token = _v161_tokenize_text(str(text or ''), cid, mid)
+    source_markup = kwargs.get('reply_markup')
+    prepared = _final_prepare_markup(cid, source_markup, decorated)
+    kwargs['reply_markup'] = prepared
+    sig = _v153_ui_sig('text', cid, mid, decorated, prepared)
+    cached = _v153_ui_cached(sig)
+    if cached is not None:
+        return cached
+    try:
+        result = _native_telegram(_FINAL_NATIVE_EDIT_TEXT, decorated, *args, **kwargs)
+    except Exception as exc:
+        if 'message is not modified' in str(exc).casefold():
+            try: bot_journal('telegram_edit_idempotent', cid, f'message={mid}')
+            except Exception: pass
+            result = True
+        else:
+            raise
+    result = _v153_ui_remember(sig, result)
+    try: _v160_note_window_meta(cid, mid, decorated, 'edit_message_text')
+    except Exception: pass
+    if token and cid and mid:
         try:
-            fn = globals().get('v221_forget_live_markup')
-            if callable(fn):
-                fn(int(chat_id), int(message_id))
-        except Exception:
-            pass
-        return result
-    bot.delete_message = _v221_delete_message
+            with _V161_TOKEN_LOCK:
+                _V161_WINDOW_TOKENS[cid, mid] = token
+        except Exception: pass
+    _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
+    return result
+
+
+def _final_edit_message_caption(*args, **kwargs):
+    positional = list(args)
+    caption = kwargs.get('caption')
+    if caption is None and positional:
+        caption = positional.pop(0)
+    chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else positional[0] if len(positional) > 0 else None
+    message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
+    cid = int(chat_id or 0); mid = int(message_id or 0)
+    decorated, token = _v161_tokenize_text(str(caption or ''), cid, mid)
+    source_markup = kwargs.get('reply_markup')
+    prepared = _final_prepare_markup(cid, source_markup, decorated)
+    kwargs['caption'] = decorated
+    kwargs['reply_markup'] = prepared
+    result = _native_telegram(_FINAL_NATIVE_EDIT_CAPTION, *positional, **kwargs)
+    try: _v160_note_window_meta(cid, mid, decorated, 'edit_message_caption')
+    except Exception: pass
+    if token and cid and mid:
+        try:
+            with _V161_TOKEN_LOCK:
+                _V161_WINDOW_TOKENS[cid, mid] = token
+        except Exception: pass
+    _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
+    return result
+
+
+def _final_edit_message_reply_markup(*args, **kwargs):
+    positional = list(args)
+    chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else positional[0] if len(positional) > 0 else None
+    message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
+    cid = int(chat_id or 0); mid = int(message_id or 0)
+    source_markup = kwargs.get('reply_markup') if 'reply_markup' in kwargs else positional[2] if len(positional) > 2 else None
+    prepared = _final_filter_markup(cid, source_markup)
+    if 'reply_markup' in kwargs:
+        kwargs['reply_markup'] = prepared
+    elif len(positional) > 2:
+        positional[2] = prepared
+    sig = _v153_ui_sig('markup', cid, mid, '', prepared)
+    cached = _v153_ui_cached(sig)
+    if cached is not None:
+        return cached
+    try:
+        result = _native_telegram(_FINAL_NATIVE_EDIT_MARKUP, *positional, **kwargs)
+    except Exception as exc:
+        if 'message is not modified' in str(exc).casefold():
+            try: bot_journal('telegram_markup_idempotent', cid, f'message={mid}')
+            except Exception: pass
+            result = True
+        else:
+            raise
+    result = _v153_ui_remember(sig, result)
+    _final_record_transport(cid, mid, prepared, '', source_markup=source_markup)
+    return result
+
+
+def _final_delete_message(chat_id, message_id, *args, **kwargs):
+    cid = int(chat_id); mid = int(message_id)
+    try:
+        result = _native_telegram(_FINAL_NATIVE_DELETE, cid, mid, *args, **kwargs)
+    except Exception as exc:
+        low = str(exc).casefold()
+        if any(x in low for x in ('message to delete not found', "message can't be deleted", 'message identifier is not specified')):
+            result = True
+            try: bot_journal('telegram_delete_already_gone', cid, f'message={mid}')
+            except Exception: pass
+        else:
+            raise
+    try: unregister_open_window(cid, mid)
+    except Exception: pass
+    try:
+        fn = globals().get('v221_forget_live_markup')
+        if callable(fn): fn(cid, mid)
+    except Exception: pass
+    return result
+
+
+def _final_send_document(chat_id, document, *args, **kwargs):
+    cid = int(chat_id)
+    work_doc = document
+    hook_cleanup = None
+    sanitized_cleanup = None
+    try:
+        hook = getattr(_SEND_DOCUMENT_TRANSFORM_LOCAL, 'hook', None)
+        if callable(hook):
+            try:
+                transformed = hook(cid, work_doc, args, kwargs)
+                if isinstance(transformed, tuple) and len(transformed) == 2:
+                    work_doc, hook_cleanup = transformed
+                elif transformed is not None:
+                    work_doc = transformed
+            except Exception as exc:
+                try: log_error(f'send_document transform final: {exc}')
+                except Exception: pass
+
+        caption = str(kwargs.get('caption') or '')
+        purpose = str(kwargs.get('purpose') or '')
+        name = str(getattr(work_doc, 'name', '') or '')
+        if name and _v153_os.path.isfile(name):
+            safe = v153_prepare_safe_file(name, f'{caption} {purpose}')
+            if safe != name:
+                temp_dir = _v153_os.path.dirname(safe)
+                opened = open(safe, 'rb')
+                work_doc = opened
+                def _safe_cleanup():
+                    try: opened.close()
+                    except Exception: pass
+                    _v153_shutil.rmtree(temp_dir, ignore_errors=True)
+                    _V153_SANITIZED_TEMP.discard(temp_dir)
+                sanitized_cleanup = _safe_cleanup
+
+        new_name = v152_human_download_name(cid, work_doc, caption, purpose)
+        if new_name:
+            try:
+                if hasattr(work_doc, 'file_name'):
+                    work_doc.file_name = new_name
+                elif hasattr(work_doc, 'read'):
+                    work_doc = _V152NamedFileProxy(work_doc, new_name)
+            except Exception: pass
+
+        last_exc = None
+        for attempt in range(1, 4):
+            try:
+                result = _native_telegram(_FINAL_NATIVE_SEND_DOCUMENT, cid, work_doc, *args, **kwargs)
+                try:
+                    ctx = getattr(_FILE_JOB_CONTEXT, 'value', None)
+                    if isinstance(ctx, dict):
+                        key = str(ctx.get('key') or '')
+                        with _FILE_JOB_LOCK:
+                            st = _FILE_JOB_STATE.get(key)
+                            if isinstance(st, dict):
+                                st['telegram_documents_sent'] = int(st.get('telegram_documents_sent') or 0) + 1
+                                st['telegram_document_message_id'] = int(getattr(result, 'message_id', 0) or 0)
+                except Exception: pass
+                return result
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= 3 or not _v163_transient_send_error(exc):
+                    raise
+                _v163_time.sleep(0.35 if attempt == 1 else 1.0)
+        if last_exc:
+            raise last_exc
+    finally:
+        if callable(sanitized_cleanup):
+            try: sanitized_cleanup()
+            except Exception: pass
+        if callable(hook_cleanup):
+            try: hook_cleanup()
+            except Exception: pass
+
+
+# FINALIZATION ONLY: the seven application-level Telegram method bindings live here and nowhere else.
+bot.send_message = _final_send_message
+bot.edit_message_text = _final_edit_message_text
+bot.edit_message_caption = _final_edit_message_caption
+bot.edit_message_reply_markup = _final_edit_message_reply_markup
+bot.delete_message = _final_delete_message
+bot.send_document = _final_send_document
+bot.answer_callback_query = _tracked_answer_callback_query
+
 try:
-    _canon_bot_journal__001('v221_final_transport_policy_ready', int(OWNER_ID or 0), 'after_constructor=1; annotation/menu final_filter=1; live_markup_registry=1')
+    _canon_bot_journal__001('final_transport_policy_ready', int(OWNER_ID or 0), 'single_native_transport=1; no_prev_chain=1')
 except Exception:
     pass
 _add_export_period_rows = _canon_add_export_period_rows__001
@@ -946,7 +1153,6 @@ _durable_effect_report = _canon_durable_effect_report__001
 _durable_expected_effects = _canon_durable_expected_effects__001
 _durable_normalize_expected_for_route = _canon_durable_normalize_expected_for_route__001
 _exact_export_rows = _canon_exact_export_rows__001
-_execute_telegram_payload = _canon_execute_telegram_payload__001
 _export_calendar_start_keyboard = _canon_export_calendar_start_keyboard__001
 _export_end_calendar_keyboard = _canon_export_end_calendar_keyboard__001
 _file_job_progress = _canon_file_job_progress__001
@@ -959,7 +1165,7 @@ _google_sheets_create_category_report = _canon_google_sheets_create_category_rep
 _google_spreadsheet_id = _canon_google_spreadsheet_id__001
 _interactive_file_job_runner = _canon_interactive_file_job_runner__001
 _is_bot_removed_error = _canon_is_bot_removed_error__001
-_mega_run = _canon_mega_run__001
+# FINALIZED: _mega_run already has its final implementation in 73_state_export_runtime.py.
 _mega_task_move = _canon_mega_task_move__002
 _mega_task_prune_done_async = _canon_mega_task_prune_done_async__002
 _mega_task_upload_new_pending = _canon_mega_task_upload_new_pending__004
@@ -1229,7 +1435,6 @@ unregister_open_window = _canon_unregister_open_window__001
 update_chat_info_from_chat_object = _canon_update_chat_info_from_chat_object__001
 update_chat_info_from_message = _canon_update_chat_info_from_message__001
 update_or_send_day_window = _canon_update_or_send_day_window__001
-v149_extension_callback = _canon_v149_extension_callback__002
 v152_human_download_name = _canon_v152_human_download_name__001
 v163_webhook_select_lane = _canon_v163_webhook_select_lane__001
 v217_callback_final = _canon_v217_callback_final__002

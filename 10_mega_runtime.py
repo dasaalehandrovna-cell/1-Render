@@ -160,7 +160,7 @@ def _v178_mega_gate_exit() -> None:
         _V178_MEGA_PRIORITY_ACTIVE = False
         _V178_MEGA_PRIORITY_CV.notify_all()
 
-def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
+def _mega_exec_raw(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
     """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
     gate = globals().get('external_access_allowed_v233')
     gate_category = 'mega_control' if bool(control_plane) else 'mega'
@@ -256,10 +256,7 @@ def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, ch
     if callable(guard):
         return guard(f'mega:{cmd}', _execute_once, attempts=2, base_delay=0.6)
     return _execute_once()
-try:
-    _v177_legacy_0063_mega_run.__name__ = '_mega_run'
-except Exception:
-    pass
+# FINALIZED: public _mega_run is defined once in 73_state_export_runtime.py.
 TRAFFIC_AUDIT_REMOTE_DIR = MEGA_BACKUP_DIR.rstrip('/') + '/runtime/traffic_audit'
 TRAFFIC_AUDIT_REMOTE_NAME = 'latest_traffic_audit.json.gz'
 

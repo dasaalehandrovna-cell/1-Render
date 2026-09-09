@@ -705,30 +705,7 @@ def _canon_v172_task_message_input__001(msg) -> bool:
         pass
     return True
 
-def _v172_install_message_input_wrapper() -> int:
-    for row in list(getattr(bot, 'message_handlers', []) or []):
-        if not isinstance(row, dict):
-            continue
-        fn = row.get('function')
-        if not callable(fn) or getattr(fn, '_v172_task_input', False):
-            continue
-        if getattr(fn, '__name__', '') != 'on_any_message':
-            continue
-
-        def _wrapped(msg, _original=fn):
-            try:
-                if _v172_task_message_input(msg):
-                    return
-            except Exception as exc:
-                try:
-                    log_error(f'v172 task input: {exc}')
-                except Exception:
-                    pass
-            return _original(msg)
-        _wrapped._v172_task_input = True
-        row['function'] = _wrapped
-        return 1
-    return 0
+# R47 FINALIZATION: _v172_install_message_input_wrapper removed; hook is inline in on_any_message.
 
 def _v172_command_text(msg) -> str:
     raw = str(getattr(msg, 'text', '') or '')
@@ -1105,7 +1082,7 @@ if callable(_V172_PREV_RUNTIME_MARK_READY):
         except Exception:
             pass
         return result
-_V172_MESSAGE_WRAPPERS = _v172_install_message_input_wrapper()
+_V172_MESSAGE_WRAPPERS = 0
 _V172_CALLBACK_HANDLERS = 0
 try:
     _v177_legacy_0007_bot_journal('v172_installed', int(OWNER_ID or 0), f'task_dispatcher=1; callback={_V172_CALLBACK_HANDLERS}; message_wrap={_V172_MESSAGE_WRAPPERS}; root_delta_maps=3')
@@ -1874,38 +1851,7 @@ def _v212_legacy__v174_handle_own_input(msg) -> bool:
                 pass
     return True
 
-def _v174_install_message_wrapper() -> int:
-    for row in list(getattr(bot, 'message_handlers', []) or []):
-        if not isinstance(row, dict):
-            continue
-        fn = row.get('function')
-        if not callable(fn) or getattr(fn, '_v174_task_auto', False):
-            continue
-        if not (getattr(fn, '_v172_task_input', False) or getattr(fn, '__name__', '') == 'on_any_message'):
-            continue
-
-        def _wrapped_v174(msg, _original=fn):
-            try:
-                if _v174_handle_own_input(msg):
-                    return
-            except Exception as exc:
-                try:
-                    log_error(f'v174 keyword input: {exc}')
-                except Exception:
-                    pass
-            try:
-                _v174_auto_process(msg)
-            except Exception as exc:
-                try:
-                    log_error(f'v174 auto process: {exc}')
-                except Exception:
-                    pass
-            return _original(msg)
-        _wrapped_v174._v174_task_auto = True
-        _wrapped_v174._v172_task_input = True
-        row['function'] = _wrapped_v174
-        return 1
-    return 0
+# R47 FINALIZATION: _v174_install_message_wrapper removed; hook is inline in on_any_message.
 
 def _v174_command_tasks(msg):
     cid = int(msg.chat.id)
@@ -2828,7 +2774,7 @@ def _canon_build_main_keyboard__001(day_key: str, chat_id=None):
     except Exception:
         pass
     return kb
-_V174_MESSAGE_WRAP = _v174_install_message_wrapper()
+_V174_MESSAGE_WRAP = 0
 _V174_COMMAND_REPLACED = _v174_replace_command_handlers()
 _V174_CALLBACK = 0
 _V174_LEGACY_CALLBACK = 0
@@ -4988,27 +4934,7 @@ def _v217_complete_command(msg) -> bool:
     ok, answer = _v149_complete_reminder(int(rid), cid, uid, _v149_actor_label(msg))
     send_and_auto_delete(cid, answer, 12)
     return True
-_V217_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
-
-def _v217_process_new_updates(updates):
-    remaining = []
-    for update in list(updates or []):
-        msg = getattr(update, 'message', None)
-        if msg is not None:
-            try:
-                if _v217_complete_command(msg):
-                    continue
-            except Exception as exc:
-                try:
-                    log_error(f'v217 reminder complete command: {exc}')
-                except Exception:
-                    pass
-        remaining.append(update)
-    if remaining and callable(_V217_PREV_PROCESS_NEW_UPDATES):
-        return _V217_PREV_PROCESS_NEW_UPDATES(remaining)
-    return None
-if callable(_V217_PREV_PROCESS_NEW_UPDATES):
-    bot.process_new_updates = _v217_process_new_updates
+# FINALIZED: v217 interception is executed inline by the single dispatcher in 89_callback_final.py.
 _V217_PREV_GO_MODE = _canon_v215_go_mode__001
 
 def _v217_go_mode(call, mode: str) -> bool:
@@ -5331,27 +5257,7 @@ def _canon_v218_complete_command__001(msg) -> bool:
     ok, answer = _v149_complete_reminder(int(rid), cid, uid, _v149_actor_label(msg))
     send_and_auto_delete(cid, answer, 12)
     return True
-_V218_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
-
-def _v218_process_new_updates(updates):
-    remaining = []
-    for update in list(updates or []):
-        msg = getattr(update, 'message', None)
-        if msg is not None:
-            try:
-                if _v218_complete_command(msg):
-                    continue
-            except Exception as exc:
-                try:
-                    log_error(f'v218 reminder completion command: {exc}')
-                except Exception:
-                    pass
-        remaining.append(update)
-    if remaining and callable(_V218_PREV_PROCESS_NEW_UPDATES):
-        return _V218_PREV_PROCESS_NEW_UPDATES(remaining)
-    return None
-if callable(_V218_PREV_PROCESS_NEW_UPDATES):
-    bot.process_new_updates = _v218_process_new_updates
+# FINALIZED: v218 interception is executed inline by the single dispatcher in 89_callback_final.py.
 
 def _v218_demo_title(mode: str) -> str:
     return {'finance': '💰 ФИНАНСЫ', 'forward': '🔁 ПЕРЕСЫЛКА', 'reminders': '⏰ НАПОМИНАНИЯ', 'tasks': '📋 ЗАДАЧИ'}.get(str(mode), 'РЕЖИМ')
@@ -5658,30 +5564,7 @@ def _v219_task_auto_process(msg) -> None:
         except Exception:
             pass
         return None
-_V219_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
-
-def _v219_process_new_updates(updates):
-    for update in list(updates or []):
-        for attr, edited in (('message', False), ('edited_message', True), ('channel_post', False), ('edited_channel_post', True)):
-            msg = getattr(update, attr, None)
-            if msg is None:
-                continue
-            try:
-                _v219_task_ingest_message(msg, is_edit=edited, source_kind=attr)
-                try:
-                    setattr(msg, '_v219_task_ingested', True)
-                except Exception:
-                    pass
-            except Exception as exc:
-                try:
-                    log_error(f'v219 task ingest {attr}: {exc}')
-                except Exception:
-                    pass
-    if callable(_V219_PREV_PROCESS_NEW_UPDATES):
-        return _V219_PREV_PROCESS_NEW_UPDATES(updates)
-    return None
-if callable(_V219_PREV_PROCESS_NEW_UPDATES):
-    bot.process_new_updates = _v219_process_new_updates
+# FINALIZED: v219 interception is executed inline by the single dispatcher in 89_callback_final.py.
 
 def _v219_task_text_prompt_keyboard(chat_id: int, sid: str, task: dict, message_id: int=0):
     kb = _v214_task_prompt_markup(int(chat_id), 'task', sid, 'text', '', str(task.get('uid') or ''), False)
@@ -6861,27 +6744,7 @@ def _v221_capture_owner_message(msg) -> bool:
     except Exception:
         pass
     return True
-_V221_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
-
-def _v221_process_new_updates(updates):
-    remaining = []
-    for update in list(updates or []):
-        msg = getattr(update, 'message', None)
-        if msg is not None:
-            try:
-                if _v221_capture_owner_message(msg):
-                    continue
-            except Exception as exc:
-                try:
-                    log_error(f'v221 owner-message capture: {exc}')
-                except Exception:
-                    pass
-        remaining.append(update)
-    if remaining and callable(_V221_PREV_PROCESS_NEW_UPDATES):
-        return _V221_PREV_PROCESS_NEW_UPDATES(remaining)
-    return None
-if callable(_V221_PREV_PROCESS_NEW_UPDATES):
-    bot.process_new_updates = _v221_process_new_updates
+# FINALIZED: v221 interception is executed inline by the single dispatcher in 89_callback_final.py.
 
 def v221_owner_message_callback_final(call, resolved: str) -> bool:
     raw = str(resolved or '')

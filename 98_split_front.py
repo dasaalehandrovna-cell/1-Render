@@ -1134,17 +1134,17 @@ def _split_v167_google_upsert_named_tab(tab_title, rows, target_chat_id, layout=
 
 
 # Apply final bindings after 89_callback_final.py.
-globals()['schedule_delta_backup'] = _v262_split_schedule_delta_backup
-globals()['persist_critical_delta_now'] = _v262_split_persist_critical_delta_now
-globals()['schedule_full_backup_only'] = _v262_split_schedule_full_backup_only
-globals()['mega_upload_latest_database_backup'] = _v262_split_mega_upload_latest_database_backup
-globals()['schedule_config_backup_for_chats'] = _v262_split_schedule_config_backup_for_chats
-globals()['_google_sheets_create_category_report'] = _v262_split_google_sheets_create_category_report
-globals()['_v167_google_upsert_named_tab'] = _split_v167_google_upsert_named_tab
-globals()['tenant_google_status_text'] = _split_tenant_google_status_text
-globals()['tenant_google_keyboard'] = _split_tenant_google_keyboard
-globals()['tenant_google_test'] = _split_tenant_google_test
-globals()['tenant_google_set_credentials'] = _split_reject_front_google_credentials
+schedule_delta_backup = _v262_split_schedule_delta_backup
+persist_critical_delta_now = _v262_split_persist_critical_delta_now
+schedule_full_backup_only = _v262_split_schedule_full_backup_only
+mega_upload_latest_database_backup = _v262_split_mega_upload_latest_database_backup
+schedule_config_backup_for_chats = _v262_split_schedule_config_backup_for_chats
+_google_sheets_create_category_report = _v262_split_google_sheets_create_category_report
+_v167_google_upsert_named_tab = _split_v167_google_upsert_named_tab
+tenant_google_status_text = _split_tenant_google_status_text
+tenant_google_keyboard = _split_tenant_google_keyboard
+tenant_google_test = _split_tenant_google_test
+tenant_google_set_credentials = _split_reject_front_google_credentials
 
 # R11: no legacy MEGA delta is allowed to execute on the fast Front. Some old
 # delayed callbacks may have been armed before this final split module loaded; make
@@ -1166,17 +1166,17 @@ def _r11_split_legacy_delta_noop():
         pass
     return True
 
-globals()['_run_delta_batch'] = _r11_split_legacy_delta_noop
-globals()['_V234_MEGA_RUN_DELTA_BATCH'] = _r11_split_legacy_delta_noop
+_run_delta_batch = _r11_split_legacy_delta_noop
+_V234_MEGA_RUN_DELTA_BATCH = _r11_split_legacy_delta_noop
 _r11_split_legacy_delta_noop()
 
 # R11: note the exact moment a finance row became durable on Front. During a
 # Telegram update the remote handoff waits until the handler has finished; finance
 # forwarding/background commits that happen outside the update schedule their own
 # coalesced Worker handoff.
-_R11_BASE_PERSIST_FINANCE_LOCAL = globals().get('persist_finance_chat_local_fast')
+_R11_PERSIST_FINANCE_CORE = globals().get('persist_finance_chat_local_fast')
 def _r11_persist_finance_chat_local_fast(chat_id: int) -> bool:
-    ok = bool(_R11_BASE_PERSIST_FINANCE_LOCAL(int(chat_id))) if callable(_R11_BASE_PERSIST_FINANCE_LOCAL) else False
+    ok = bool(_R11_PERSIST_FINANCE_CORE(int(chat_id))) if callable(_R11_PERSIST_FINANCE_CORE) else False
     if not ok:
         return False
     try:
@@ -1189,8 +1189,8 @@ def _r11_persist_finance_chat_local_fast(chat_id: int) -> bool:
         pass
     return True
 
-if callable(_R11_BASE_PERSIST_FINANCE_LOCAL):
-    globals()['persist_finance_chat_local_fast'] = _r11_persist_finance_chat_local_fast
+if callable(_R11_PERSIST_FINANCE_CORE):
+    persist_finance_chat_local_fast = _r11_persist_finance_chat_local_fast
 
 _split_threading.Thread(target=_split_peer_loop, name='v262-front-peer', daemon=True).start()
 
@@ -1402,9 +1402,9 @@ def user_state_shadow_apply_v265(loaded):
 
 # Apply the shadow as part of canonical load, before tenant/bootstrap defaults can
 # create a factory profile. This is intentionally after normal SQLite unpacking.
-_V265_BASE_LOAD_DATA = load_data
+_LOAD_DATA_CORE = load_data
 def load_data():
-    loaded = _V265_BASE_LOAD_DATA()
+    loaded = _LOAD_DATA_CORE()
     return user_state_shadow_apply_v265(loaded)
 
 
@@ -1607,11 +1607,11 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
     """Commit logical + RAM continuity locally, then asynchronously hand it to worker."""
     try:
         if full:
-            _V263_BASE_SAVE_DATA(data, full=True)
+            _SAVE_DATA_CORE(data, full=True)
         elif chat_id is not None:
-            _V263_BASE_SAVE_DATA(data, chat_ids=[int(chat_id)])
+            _SAVE_DATA_CORE(data, chat_ids=[int(chat_id)])
         else:
-            _V263_BASE_SAVE_DATA(data, root_only=True)
+            _SAVE_DATA_CORE(data, root_only=True)
     except Exception as exc:
         try: log_error(f'CONTINUITY local save R4: {exc}')
         except Exception: pass
@@ -1796,7 +1796,7 @@ def r20_schedule_durable_capsule(reason='state_change', delay=None):
 # R20: redirect the original v262 config-guard remote sync to the HEAVY capsule.
 # This preserves the semantic trigger/generation of v262 without allowing FAST to
 # log into MEGA or perform a remote upload. HEAVY persists Redis + MEGA asynchronously.
-_R20_BASE_CONFIG_GUARD_SYNC_REMOTE = globals().get('config_guard_sync_remote_v234')
+_CONFIG_GUARD_SYNC_CORE = globals().get('config_guard_sync_remote_v234')
 def _r20_config_guard_sync_remote(*, recovery_write=False):
     try:
         r20_schedule_durable_capsule('config_guard_remote_sync', delay=2.0)
@@ -1806,7 +1806,7 @@ def _r20_config_guard_sync_remote(*, recovery_write=False):
         try: log_error(f'R20 config durable schedule: {exc}')
         except Exception: pass
         return False
-globals()['config_guard_sync_remote_v234'] = _r20_config_guard_sync_remote
+config_guard_sync_remote_v234 = _r20_config_guard_sync_remote
 
 # R15: full user-state shadow/continuity is a coalesced background checkpoint.
 # The finance record itself has already been committed by persist_finance_chat_local_fast;
@@ -1832,9 +1832,9 @@ def _split_continuity_checkpoint_fire_v270():
         pass
     try:
         if cid is not None:
-            _V263_BASE_SAVE_DATA(data, chat_ids=[int(cid)])
+            _SAVE_DATA_CORE(data, chat_ids=[int(cid)])
         else:
-            _V263_BASE_SAVE_DATA(data, root_only=True)
+            _SAVE_DATA_CORE(data, root_only=True)
         user_state_shadow_capture_v265('bg:' + reason)
         continuity_capture_v263('bg:' + reason)
         _split_mark_state_changed_v264('bg_continuity:' + reason)
@@ -1868,10 +1868,10 @@ def split_schedule_continuity_checkpoint_v270(chat_id=None, reason='update', del
 
 # Any logical save, not only finance, now requests remote durability.  The worker
 # coalesces these calls, so Telegram handlers do not wait for MEGA.
-_V263_BASE_SAVE_DATA = save_data
+_SAVE_DATA_CORE = save_data
 
 def save_data(d, chat_ids=None, full=False, root_only=False):
-    result = _V263_BASE_SAVE_DATA(d, chat_ids=chat_ids, full=full, root_only=root_only)
+    result = _SAVE_DATA_CORE(d, chat_ids=chat_ids, full=full, root_only=root_only)
     # Non-Telegram/background mutations need their own freshness marker.  Telegram
     # updates receive exactly one marker after the handler, avoiding extra hot-path IO.
     try:
@@ -1922,14 +1922,13 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
 
 
 # Persist RAM-only sessions after every successfully executed Telegram update.
-_V263_BASE_EXECUTE_TELEGRAM_PAYLOAD = _execute_telegram_payload
-
+# FINAL owner: this is the sole public execution function; core locking lives in 75.
 def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str='other'):
     _SPLIT_UPDATE_CONTEXT.active = True
     _SPLIT_UPDATE_CONTEXT.finance_dirty = False
     finance_dirty = False
     try:
-        result = _V263_BASE_EXECUTE_TELEGRAM_PAYLOAD(payload, update_id, update_chat_id, update_type)
+        result = _execute_telegram_payload_core(payload, update_id, update_chat_id, update_type)
     finally:
         finance_dirty = bool(getattr(_SPLIT_UPDATE_CONTEXT, 'finance_dirty', False))
         _SPLIT_UPDATE_CONTEXT.active = False
@@ -2047,14 +2046,14 @@ def _split_schedule_idle_full_reconcile_v270(reason='need_full', delay=None):
     return True
 
 # Snapshot download always captures the latest RAM continuity first.
-_V263_BASE_SPLIT_FRONT_STATE_DOWNLOAD = split_front_state_download_v262
+_STATE_DOWNLOAD_CORE = split_front_state_download_v262
 
 def split_front_state_download_v263():
     # R5: a worker fetch must be read-only. R4 rewrote continuity.saved_at on every
     # GET, making two identical snapshots look different and causing needless follow-ups.
     if not _split_authorized_request():
         return ({'ok': False}, 404)
-    return _V263_BASE_SPLIT_FRONT_STATE_DOWNLOAD()
+    return _STATE_DOWNLOAD_CORE()
 
 # Replace Flask endpoint function while keeping the already registered URL rule.
 try:
@@ -2065,7 +2064,7 @@ except Exception:
 
 # Final graceful shutdown: original code drains queues and saves full SQLite; then
 # push that exact DB to worker cache immediately, before the process exits.
-_V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN = runtime_graceful_shutdown
+_RUNTIME_SHUTDOWN_CORE = runtime_graceful_shutdown
 
 def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
     # R18 deploy handoff order is deliberate: do NOT put slow MEGA/archive work in
@@ -2082,7 +2081,7 @@ def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
         except Exception: pass
     result = None
     try:
-        result = _V263_BASE_RUNTIME_GRACEFUL_SHUTDOWN(signal_name)
+        result = _RUNTIME_SHUTDOWN_CORE(signal_name)
     finally:
         try:
             continuity_checkpoint_v263(None, reason=f'shutdown-post:{signal_name}', full=True, schedule=False)
@@ -2179,9 +2178,9 @@ except Exception:
     pass
 
 # Suppress boot-time snapshot storms and publish exactly one fully migrated state at READY.
-_V265_BASE_RUNTIME_MARK_READY = runtime_mark_ready
+_RUNTIME_MARK_READY_CORE = runtime_mark_ready
 def runtime_mark_ready(detail: str=''):
-    result = _V265_BASE_RUNTIME_MARK_READY(detail)
+    result = _RUNTIME_MARK_READY_CORE(detail)
     try:
         user_state_shadow_capture_v265('boot_ready')
         continuity_capture_v263('boot_ready')
@@ -2281,7 +2280,7 @@ def _r7_finance_changed_now(chat_id: int, day_key: str | None=None, reason: str=
         pass
 
 # finance_changed() resolves this name at execution time.
-globals()['_finance_changed_now'] = _r7_finance_changed_now
+_finance_changed_now = _r7_finance_changed_now
 
 
 def _r7_linked_edit_postcommit(origin_chat_id: int, origin_msg_id: int, touched_days: dict, repaint_copies: bool):
@@ -2307,7 +2306,7 @@ def _r7_linked_edit_postcommit(origin_chat_id: int, origin_msg_id: int, touched_
         except Exception:
             pass
 
-globals()['_v262_postcommit_linked_edit'] = _r7_linked_edit_postcommit
+_v262_postcommit_linked_edit = _r7_linked_edit_postcommit
 
 
 # R7 finance bulk-delete postcommit: callers already committed the normalized chat.
@@ -2320,7 +2319,7 @@ def _r7_v262_finance_postcommit_job(chat_id: int, day_key: str, reason: str):
     try: finance_changed(cid, dk, reason=f'r16-reconcile:{reason}', delay=0.18)
     except Exception: pass
 
-globals()['_v262_finance_postcommit_job']=_r7_v262_finance_postcommit_job
+_v262_finance_postcommit_job = _r7_v262_finance_postcommit_job
 
 # R9.2: chat-removal classification is implemented canonically in 00_core.py.
 # Do not rebind probe_bot_in_chat here: bot.py runtime-contract requires its
@@ -2417,8 +2416,7 @@ def _r7_google_test(tenant_id):
             pass
     return ok, text
 
-_R7_BASE_GOOGLE_HANDLE = globals().get('tenant_google_handle_message')
-_R7_BASE_V149_CALLBACK = globals().get('v149_extension_callback')
+_GOOGLE_HANDLE_CORE = globals().get('tenant_google_handle_message')
 
 
 def _r7_google_handle_message(msg) -> bool:
@@ -2455,77 +2453,23 @@ def _r7_google_handle_message(msg) -> bool:
         try: send_and_auto_delete(int(msg.chat.id), '❌ Google: ' + str(exc)[:600], 20)
         except Exception: pass
         return True
-    return bool(_R7_BASE_GOOGLE_HANDLE(msg)) if callable(_R7_BASE_GOOGLE_HANDLE) else False
+    return bool(_GOOGLE_HANDLE_CORE(msg)) if callable(_GOOGLE_HANDLE_CORE) else False
 
 
-def _r7_v149_extension_callback(call, data_str: str) -> bool:
-    raw = str(data_str or '')
-    if raw.startswith('v149:google:'):
-        action = raw.split(':', 2)[2]
-        cid = int(call.message.chat.id)
-        uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
-        ok_manage, tid = _v149_google_can_manage(cid, uid, owner_only=True)
-        if not ok_manage:
-            try: bot.answer_callback_query(call.id, 'Только владелец пространства', show_alert=True)
-            except Exception: pass
-            return True
-        if action in {'service_email', 'connect'}:
-            info = _r7_google_worker_info(fetch=False)
-            email = str(info.get('service_email') or '')
-            if email:
-                bot.send_message(cid, '📧 Email service account:\n\n<code>' + email + '</code>\n\nОткройте свою Google Таблицу → «Поделиться» → добавьте этот email → права «Редактор».', parse_mode='HTML')
-            else:
-                _status = bot.send_message(cid, '⏳ Получаю email service account с Render #2…')
-                _status_mid = int(getattr(_status, 'message_id', 0) or 0)
-                def _r24_google_email_fetch(_cid=cid, _mid=_status_mid):
-                    info2 = _r7_google_worker_info(fetch=True)
-                    email2 = str(info2.get('service_email') or '')
-                    text2 = ('📧 Email service account:\n\n<code>' + email2 + '</code>\n\nОткройте свою Google Таблицу → «Поделиться» → добавьте этот email → права «Редактор».') if email2 else '❌ Render #2 не отдал email service account. Проверьте GOOGLE_SERVICE_ACCOUNT_JSON.'
-                    try: bot.edit_message_text(text2, chat_id=_cid, message_id=_mid, parse_mode='HTML')
-                    except Exception: pass
-                try: GENERAL_TASK_POOL.submit_unique(f'r24-google-email:{cid}', _r24_google_email_fetch)
-                except Exception: pass
-            try: bot.answer_callback_query(call.id)
-            except Exception: pass
-            return True
-        if action == 'test':
-            _status = bot.send_message(cid, '⏳ Проверяю доступ к Google на Render #2…')
-            _status_mid = int(getattr(_status, 'message_id', 0) or 0)
-            def _r24_google_test_fetch(_tid=str(tid), _cid=cid, _mid=_status_mid):
-                try:
-                    _ok, _text = _r7_google_test(_tid)
-                    prefix = '✅ ' if _ok else '🟡 '
-                    out = prefix + str(_text or '')
-                except Exception as exc:
-                    out = '❌ Google: ' + str(exc)[:600]
-                try: bot.edit_message_text(out, chat_id=_cid, message_id=_mid)
-                except Exception: pass
-            try: GENERAL_TASK_POOL.submit_unique(f'r24-google-test:{tid}', _r24_google_test_fetch)
-            except Exception: pass
-            try: bot.answer_callback_query(call.id)
-            except Exception: pass
-            return True
-        if action == 'sheet':
-            _v149_google_wait(tid, 'sheet', cid, uid)
-            bot.send_message(cid, '2️⃣ Пришлите сюда ссылку на Google Таблицу.\n\nПример: https://docs.google.com/spreadsheets/d/...\n\nСразу после ссылки бот сам проверит доступ. JSON-ключ сюда присылать не нужно.')
-            try: bot.answer_callback_query(call.id)
-            except Exception: pass
-            return True
-    return bool(_R7_BASE_V149_CALLBACK(call, raw)) if callable(_R7_BASE_V149_CALLBACK) else False
+# R47 FINALIZATION: obsolete R7 callback wrapper removed; R29 Google router is canonical.
 
 # Final Google bindings.
-globals()['tenant_google_status_text'] = _r7_google_status_text
-globals()['tenant_google_keyboard'] = _r7_google_keyboard
-globals()['tenant_google_test'] = _r7_google_test
-globals()['tenant_google_handle_message'] = _r7_google_handle_message
-globals()['v149_extension_callback'] = _r7_v149_extension_callback
+tenant_google_status_text = _r7_google_status_text
+tenant_google_keyboard = _r7_google_keyboard
+tenant_google_test = _r7_google_test
+tenant_google_handle_message = _r7_google_handle_message
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('v149:google:service_email', 'Ф233')
 except Exception:
     pass
 
 # --- Heavy file export bridge: front prepares business rows, worker serializes/uploads. ---
-_R7_BASE_SEND_EXPORT = globals().get('send_export_for_chat_to')
+_SEND_EXPORT_CORE = globals().get('send_export_for_chat_to')
 _R7_EXPORT_SEEN = {}
 _R7_EXPORT_SEEN_LOCK = _split_threading.RLock()
 
@@ -2576,7 +2520,7 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
     force_google = delivery == 'google' or style == 'google_notes'
     # Google Sheets already has a dedicated worker path with richer formatting.
     if force_google:
-        return _R7_BASE_SEND_EXPORT(recipient_chat_id, target_chat_id, mode, day_key, file_type, excel_style_override, excel_options_override, delivery) if callable(_R7_BASE_SEND_EXPORT) else False
+        return _SEND_EXPORT_CORE(recipient_chat_id, target_chat_id, mode, day_key, file_type, excel_style_override, excel_options_override, delivery) if callable(_SEND_EXPORT_CORE) else False
     try:
         raw_mode = str(mode or 'all')
         if raw_mode.startswith('xlsxstat_'):
@@ -2654,8 +2598,8 @@ def _r7_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mod
         try: log_error(f'R7 worker export {get_chat_display_name(target_chat_id)}: {exc}')
         except Exception: pass
         # Safety fallback preserves monolith behaviour if worker is temporarily unavailable.
-        if callable(_R7_BASE_SEND_EXPORT):
-            return _R7_BASE_SEND_EXPORT(recipient_chat_id, target_chat_id, mode, day_key, file_type, excel_style_override, excel_options_override, delivery)
+        if callable(_SEND_EXPORT_CORE):
+            return _SEND_EXPORT_CORE(recipient_chat_id, target_chat_id, mode, day_key, file_type, excel_style_override, excel_options_override, delivery)
         return False
 
 
@@ -2734,7 +2678,7 @@ def split_front_export_result_r7():
         _split_threading.Thread(target=_r34_export_delivery_task,args=(dict(body),),daemon=True).start()
     return ({'ok':True,'accepted':True,'delivered':False},202)
 
-globals()['send_export_for_chat_to'] = _r7_send_export_for_chat_to
+send_export_for_chat_to = _r7_send_export_for_chat_to
 
 # R7 marker coverage for the task callback that was seen in production plus Google UX.
 try:
@@ -2749,7 +2693,7 @@ except Exception:
     pass
 
 # --- R7 exact-range export and strict Front Google isolation. ---
-_R7_BASE_EXACT_EXPORT = globals().get('send_exact_range_export')
+_EXACT_EXPORT_CORE = globals().get('send_exact_range_export')
 
 
 def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override=None, excel_options_override=None, delivery: str='chat'):
@@ -2824,12 +2768,12 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
         try: log_error(f'R7 exact worker export {target_chat_id}: {exc}')
         except Exception: pass
         # If worker is down, keep the old local export only as an emergency compatibility fallback.
-        if callable(_R7_BASE_EXACT_EXPORT):
-            return _R7_BASE_EXACT_EXPORT(recipient_chat_id,target_chat_id,start_key,start_rid,end_key,end_rid,file_type,excel_style_override,excel_options_override,delivery)
+        if callable(_EXACT_EXPORT_CORE):
+            return _EXACT_EXPORT_CORE(recipient_chat_id,target_chat_id,start_key,start_rid,end_key,end_rid,file_type,excel_style_override,excel_options_override,delivery)
         return False
 
 
-globals()['send_exact_range_export']=_r7_send_exact_range_export
+send_exact_range_export = _r7_send_exact_range_export
 
 # Active front hooks must never perform Google OAuth/Drive/Sheets network work.
 def _r7_front_google_forbidden(*args, **kwargs):
@@ -2838,9 +2782,9 @@ def _r7_front_google_forbidden(*args, **kwargs):
 def _r7_front_create_sheet_disabled(tenant_id: str, title: str='Финансы бота'):
     raise RuntimeError('Создайте Google Таблицу в своём аккаунте, расшарьте её service-account как Редактору и подключите через /google. Создание таблиц сервисным аккаунтом отключено, чтобы владельцем файла оставались вы.')
 
-globals()['_google_access_token']=_r7_front_google_forbidden
-globals()['tenant_google_upload_export']=_r7_front_google_forbidden
-globals()['tenant_google_create_spreadsheet']=_r7_front_create_sheet_disabled
+_google_access_token = _r7_front_google_forbidden
+tenant_google_upload_export = _r7_front_google_forbidden
+tenant_google_create_spreadsheet = _r7_front_create_sheet_disabled
 
 # v262
 
@@ -2909,9 +2853,9 @@ def _r10_worker_health_keyboard():
     return kb
 
 
-_R10_BASE_INFO_KB = globals().get('build_info_keyboard')
+_INFO_KB_CORE = globals().get('build_info_keyboard')
 def _r10_build_info_keyboard(chat_id: int):
-    kb=_R10_BASE_INFO_KB(int(chat_id)) if callable(_R10_BASE_INFO_KB) else types.InlineKeyboardMarkup()
+    kb=_INFO_KB_CORE(int(chat_id)) if callable(_INFO_KB_CORE) else types.InlineKeyboardMarkup()
     if int(chat_id) != int(OWNER_ID or 0): return kb
     rows=_v177_info_rows(kb)
     callbacks={_v177_info_btn_cb(b) for row in rows for b in row or []}
@@ -2928,11 +2872,11 @@ def _r10_build_info_keyboard(chat_id: int):
         kb=_v177_info_set_rows(kb,rows)
     return kb
 
-globals()['build_info_keyboard']=_r10_build_info_keyboard
+build_info_keyboard = _r10_build_info_keyboard
 
-_R10_BASE_MAIN_KB = globals().get('build_main_keyboard')
+_MAIN_KB_CORE = globals().get('build_main_keyboard')
 def _r10_build_main_keyboard(day_key: str, chat_id=None):
-    kb=_R10_BASE_MAIN_KB(day_key,chat_id) if callable(_R10_BASE_MAIN_KB) else types.InlineKeyboardMarkup()
+    kb=_MAIN_KB_CORE(day_key,chat_id) if callable(_MAIN_KB_CORE) else types.InlineKeyboardMarkup()
     try: cid=int(chat_id if chat_id is not None else current_state_chat_id() or 0)
     except Exception: cid=0
     if cid != int(OWNER_ID or 0): return kb
@@ -2943,9 +2887,9 @@ def _r10_build_main_keyboard(day_key: str, chat_id=None):
         kb=_v217_set_rows(kb,rows)
     return kb
 
-globals()['build_main_keyboard']=_r10_build_main_keyboard
+build_main_keyboard = _r10_build_main_keyboard
 
-_R10_BASE_CONTOUR_GUARD = globals().get('contour_callback_guard')
+_CONTOUR_GUARD_CORE = globals().get('contour_callback_guard')
 def _r10_contour_callback_guard(call, resolved: str) -> bool:
     raw=str(resolved or '')
     if raw.startswith('r10:worker:'):
@@ -2980,9 +2924,9 @@ def _r10_contour_callback_guard(call, resolved: str) -> bool:
         except Exception:
             pass
         return True
-    return bool(_R10_BASE_CONTOUR_GUARD(call,raw)) if callable(_R10_BASE_CONTOUR_GUARD) else False
+    return bool(_CONTOUR_GUARD_CORE(call,raw)) if callable(_CONTOUR_GUARD_CORE) else False
 
-globals()['contour_callback_guard']=_r10_contour_callback_guard
+contour_callback_guard = _r10_contour_callback_guard
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:*','Ф270')
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:status','Ф270')
@@ -3142,7 +3086,7 @@ def _r21_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, 
         pass
     return (True, 'Запущено')
 
-globals()['submit_interactive_file_job'] = _r21_submit_interactive_file_job
+submit_interactive_file_job = _r21_submit_interactive_file_job
 
 try:
     bot_journal('r21_every_button_fast_loaded', int(OWNER_ID or 0),

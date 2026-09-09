@@ -11,7 +11,7 @@ import json as _r33_json
 import os as _r33_os
 import time as _r33_time
 
-_R33_PREV_SUBMIT_FILE_JOB = globals().get('submit_interactive_file_job')
+_LOCAL_SUBMIT_FILE_JOB = globals().get('submit_interactive_file_job')
 _R33_HEAVY_FILE_KINDS = {
     'period_export','exact_export','xlsx','csv','tabl_lsx','json','json_full','sqlite',
     'runtime','journal','journal_current','window_markers','window_tz',
@@ -146,16 +146,7 @@ def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     # adapter defined below waits for the real FAST delivery callback.
     return True
 
-def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
-    kind_s=str(kind or 'file')
-    heavy=(kind_s in _R33_HEAVY_FILE_KINDS or kind_s.startswith('window_'))
-    if not heavy or not callable(_R33_PREV_SUBMIT_FILE_JOB):
-        return _R33_PREV_SUBMIT_FILE_JOB(chat_id,kind,label,func,*args,**kwargs) if callable(_R33_PREV_SUBMIT_FILE_JOB) else (False,'Экспорт недоступен')
-    fname=str(getattr(func,'__name__','') or '')
-    return _R33_PREV_SUBMIT_FILE_JOB(int(chat_id),kind_s,label,_r33_remote_file_adapter,kind_s,label,fname,args,kwargs)
-
-# Replace the final global symbol used by all existing handlers without touching them.
-globals()['submit_interactive_file_job']=submit_interactive_file_job
+# R47 FINALIZATION: no early submit override; R40 is the sole public owner.
 
 
 # R34 parity: legacy direct CSV/XLSX helpers are also query-only HEAVY jobs.
@@ -177,9 +168,9 @@ def send_tabl_lsx_for_chat(recipient_chat_id:int,target_chat_id:int):
     ok,_info=submit_interactive_file_job(int(recipient_chat_id),'tabl_lsx','Excel /tabl_lsx',_r34_export_marker,int(recipient_chat_id),int(target_chat_id))
     return bool(ok)
 
-globals()['send_export_for_chat_to']=send_export_for_chat_to
-globals()['send_exact_range_export']=send_exact_range_export
-globals()['send_tabl_lsx_for_chat']=send_tabl_lsx_for_chat
+send_export_for_chat_to = send_export_for_chat_to
+send_exact_range_export = send_exact_range_export
+send_tabl_lsx_for_chat = send_tabl_lsx_for_chat
 
 # Defensive R28 hot-path regression gate stays active. R34 itself contains no render queue.
 try:
@@ -323,7 +314,7 @@ def _r35_worker_file_submit(body:dict):
         if attempt<attempts: _r33_time.sleep(min(2.0,0.4*attempt))
     raise RuntimeError(last or 'Render #2 не подтвердил durable-приём задания')
 
-globals()['_r7_worker_file_submit']=_r35_worker_file_submit
+_r7_worker_file_submit = _r35_worker_file_submit
 
 def _r35_export_delivery_task(body):
     jid=str((body or {}).get('job_id') or '')
@@ -536,7 +527,7 @@ def _r38_outbox_get(jid):
     return best if isinstance(best,dict) else {}
 
 
-def _r38_outbox_pending_rows(limit=200):
+def _r38_outbox_pending_rows_core(limit=200):
     rows={str(x.get('job_id')):x for x in _r38_outbox_local_pending(limit) if str(x.get('job_id') or '')}
     c=_r38_outbox_redis_client()
     if c is not None:
@@ -635,7 +626,7 @@ def _r38_peer_attempt(row):
     return False,False,msg or f'HTTP {status}',0.0,payload
 
 
-def _r38_outbox_enqueue(kind,endpoint,body):
+def _r38_outbox_enqueue_core(kind,endpoint,body):
     obj=dict(body or {}); jid=str(obj.get('job_id') or __import__('secrets').token_hex(12)).strip()[:80]; obj['job_id']=jid
     existing=_r38_outbox_get(jid)
     if existing and str(existing.get('state') or '') in {'accepted','completed'}:
@@ -648,36 +639,7 @@ def _r38_outbox_enqueue(kind,endpoint,body):
     return jid
 
 
-def _r38_outbox_dispatch_one(row):
-    jid=str(row.get('job_id') or '')
-    if not jid:return
-    try:
-        ok,transient,detail,wait,payload=_r38_peer_attempt(row)
-        if ok:
-            canonical=str(payload.get('canonical_job_id') or payload.get('duplicate_of') or '')[:80]
-            row.update({'state':'accepted','accepted_at':_r33_time.time(),'last_error':'','peer_status':str(payload.get('status') or ''),'durable_backend':str(payload.get('durable_backend') or '')})
-            if canonical and canonical!=jid: row['canonical_job_id']=canonical
-            _r38_outbox_put(row,pending=False); _R38_PEER_STATE['accepted']=int(_R38_PEER_STATE.get('accepted') or 0)+1; _R38_PEER_STATE['last_ok']=_r33_time.time(); _R38_PEER_STATE['last_error']=''
-            if str(row.get('kind') or '')=='file':
-                cur=_r35_delivery_get(jid)
-                if canonical and canonical!=jid:
-                    _r35_delivery_set(jid,'alias',{'job_id':jid,'canonical_job_id':canonical,'duplicate_of':canonical,'operation':(row.get('body') or {}).get('operation'),'recipient_chat_id':(row.get('body') or {}).get('recipient_chat_id')})
-                elif str(cur.get('state') or '') not in {'running','done','done_error'}:
-                    _r35_delivery_set(jid,'accepted',{'job_id':jid,'operation':(row.get('body') or {}).get('operation'),'recipient_chat_id':(row.get('body') or {}).get('recipient_chat_id')})
-            return
-        attempts=int(row.get('attempts') or 0)+1; row['attempts']=attempts; row['last_error']=str(detail or '')[:500]
-        _R38_PEER_STATE['last_error']=row['last_error']
-        if transient:
-            row['state']='retry'; row['next_try']=_r33_time.time()+max(0.8,float(wait or 1.0)); _R38_PEER_STATE['retries']=int(_R38_PEER_STATE.get('retries') or 0)+1; _r38_outbox_put(row,pending=True)
-        else:
-            row['state']='failed'; row['failed_at']=_r33_time.time(); _r38_outbox_put(row,pending=False)
-            if str(row.get('kind') or '')=='file': _r35_delivery_set(jid,'done_error',{'job_id':jid,'ok':False,'error':'Render #2 rejected job: '+row['last_error']},error=row['last_error'])
-    except Exception as exc:
-        attempts=int(row.get('attempts') or 0)+1; wait=min(60.0,max(1.0,1.25*(2**min(5,attempts-1))))+_r38_random.uniform(0,1.0)
-        row.update({'state':'retry','attempts':attempts,'next_try':_r33_time.time()+wait,'last_error':f'{type(exc).__name__}: {str(exc)[:420]}'})
-        _R38_PEER_STATE['last_error']=row['last_error']; _R38_PEER_STATE['retries']=int(_R38_PEER_STATE.get('retries') or 0)+1; _r38_outbox_put(row,pending=True)
-
-
+# R47 FINALIZATION: obsolete pre-R41 outbox dispatcher removed.
 def _r38_outbox_loop():
     while True:
         worked=False; now=_r33_time.time()
@@ -699,7 +661,7 @@ def _r38_worker_file_submit(body:dict):
     # persisting to the outbox is enough to make HEAVY dispatch restart-safe.
     return _r38_outbox_enqueue('file','/internal/export/file',body)
 
-globals()['_r7_worker_file_submit']=_r38_worker_file_submit
+_r7_worker_file_submit = _r38_worker_file_submit
 
 
 def _r38_wait_remote_delivery(jid,body):
@@ -757,10 +719,10 @@ def _r38_google_submit_report(title,rows,layout='category',annotations_override=
     except Exception: pass
     return 'worker-job:'+jid
 
-globals()['_v262_split_google_sheets_create_category_report']=_r38_google_submit_report
+_v262_split_google_sheets_create_category_report = _r38_google_submit_report
 # R38 must also replace the canonical alias rebound by 89_callback_final/98_split_front.
 # Without this, several legacy/scheduled Google paths still call the old synchronous HTTP function.
-globals()['_google_sheets_create_category_report']=_r38_google_submit_report
+_google_sheets_create_category_report = _r38_google_submit_report
 
 
 def _r38_sync_peer_json(method,path,*,json_body=None,timeout=12,max_wait=45,agent='per-r38-front-sync'):
@@ -826,8 +788,8 @@ def _r38_google_worker_info(fetch=True):
     except Exception: pass
     return cached
 
-globals()['tenant_google_test']=_r38_tenant_google_test
-globals()['_r7_google_worker_info']=_r38_google_worker_info
+tenant_google_test = _r38_tenant_google_test
+_r7_google_worker_info = _r38_google_worker_info
 
 
 def _r38_google_result_handler():
@@ -907,7 +869,7 @@ def _r38_post_events(events,wire,large=False):
         st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1; st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=globals().get('_R32_EVENT_Q').qsize() if globals().get('_R32_EVENT_Q') is not None else 0; st['r32_event_last_ok']=_r33_time.time(); st['r32_event_last_error']=''; st['r34_event_last_revision_acked']=ack; st['r35_event_last_revision_applied_peer']=applied_ack
     return True
 
-globals()['_r34_post_events']=_r38_post_events
+_r34_post_events = _r38_post_events
 
 
 def _r38_deliver_worker_export(body):
@@ -958,10 +920,10 @@ def _r38_deliver_worker_export(body):
         except Exception:pass
         return False
 
-globals()['_r7_deliver_worker_export']=_r38_deliver_worker_export
+_r7_deliver_worker_export = _r38_deliver_worker_export
 
 
-def _r38_export_delivery_task(body):
+def _r38_export_delivery_task_core(body):
     jid=str(body.get('job_id') or ''); delivered=False
     try:delivered=bool(_r38_deliver_worker_export(dict(body)))
     except Exception as exc:_r35_delivery_set(jid,'failed',body,error=f'{type(exc).__name__}: {str(exc)[:700]}'); return
@@ -995,8 +957,6 @@ import threading as _r39_threading
 
 _R39_SIG_LOCK = _r39_threading.RLock()
 _R39_SIG_ACTIVE = {}
-_R39_BASE_OUTBOX_ENQUEUE = _r38_outbox_enqueue
-_R39_BASE_PENDING_ROWS = _r38_outbox_pending_rows
 
 
 def _r39_job_signature(kind, endpoint, body):
@@ -1027,8 +987,13 @@ def _r39_delivery_terminal(jid):
         return False
 
 
-def _r39_outbox_enqueue(kind, endpoint, body):
+def _r38_outbox_enqueue(kind, endpoint, body):
     obj = dict(body or {})
+    if str(kind or '') in {'file','google'}:
+        backend = _r41_front_outbox_backend() if '_r41_front_outbox_backend' in globals() else ''
+        obj['front_outbox_durable'] = bool(backend)
+        obj['front_outbox_backend'] = backend or 'local'
+        obj['front_release'] = 'Пер-R43'
     sig = _r39_job_signature(kind, endpoint, obj)
     now = _r33_time.time()
     # Fast in-process single-flight: repeated callback taps reuse the same job_id.
@@ -1042,7 +1007,7 @@ def _r39_outbox_enqueue(kind, endpoint, body):
     # Cross-restart collapse: inspect durable pending rows from Redis/local outbox.
     candidates = []
     try:
-        for r in _R39_BASE_PENDING_ROWS(500):
+        for r in _r38_outbox_pending_rows_core(500):
             if not isinstance(r, dict):
                 continue
             rb=r.get('body') if isinstance(r.get('body'),dict) else {}
@@ -1071,14 +1036,14 @@ def _r39_outbox_enqueue(kind, endpoint, body):
             with _R39_SIG_LOCK:
                 _R39_SIG_ACTIVE[sig] = {'job_id': jid0, 'ts': now}
             return jid0
-    jid = _R39_BASE_OUTBOX_ENQUEUE(kind, endpoint, obj)
+    jid = _r38_outbox_enqueue_core(kind, endpoint, obj)
     with _R39_SIG_LOCK:
         _R39_SIG_ACTIVE[sig] = {'job_id': str(jid), 'ts': now}
     return jid
 
 
-def _r39_pending_rows(limit=250):
-    rows = list(_R39_BASE_PENDING_ROWS(max(int(limit or 0), 500)) or [])
+def _r38_outbox_pending_rows(limit=250):
+    rows = list(_r38_outbox_pending_rows_core(max(int(limit or 0), 500)) or [])
     grouped = {}
     passthrough = []
     for row in rows:
@@ -1119,35 +1084,33 @@ def _r39_pending_rows(limit=250):
 
 
 # Replace the functions used dynamically by the already-defined dispatcher loop.
-_r38_outbox_enqueue = _r39_outbox_enqueue
-_r38_outbox_pending_rows = _r39_pending_rows
 
 # Clear the in-process semantic latch when the canonical delivery reaches a terminal state.
-_R39_BASE_EXPORT_DELIVERY_TASK = _r38_export_delivery_task
-def _r39_export_delivery_task(body):
+def _r38_export_delivery_task(body):
     jid = str((body or {}).get('job_id') or '')
     try:
-        return _R39_BASE_EXPORT_DELIVERY_TASK(body)
+        result = _r38_export_delivery_task_core(body)
+        return result
     finally:
         if jid:
+            try:
+                if _r39_delivery_terminal(jid):
+                    out=_r38_outbox_get(jid) or {'job_id':jid,'kind':'file'}
+                    out.update({'state':'completed','result_state':'done','provisional':False,'completed_at':_r33_time.time(),'last_error':''})
+                    _r38_outbox_put(out,pending=False)
+            except Exception:
+                pass
             with _R39_SIG_LOCK:
                 for sig, row in list(_R39_SIG_ACTIVE.items()):
                     if str((row or {}).get('job_id') or '') == jid and _r39_delivery_terminal(jid):
                         _R39_SIG_ACTIVE.pop(sig, None)
-_r38_export_delivery_task = _r39_export_delivery_task
 
 try:
     bot_journal('r39_singleflight_loaded', int(OWNER_ID or 0), 'semantic heavy-job dedupe; stale outbox collapse; same job_id for repeated taps')
 except Exception:
     pass
 
-try:
-    if not globals().get('_R38_OUTBOX_THREAD_STARTED'):
-        globals()['_R38_OUTBOX_THREAD_STARTED']=True
-        _r38_threading.Thread(target=_r38_outbox_loop,name='per-r38-peer-outbox',daemon=True).start()
-    bot_journal('r38_peer_transport_loaded',int(OWNER_ID or 0),'durable FAST outbox; 429/5xx/Cloudflare retry; same job_id; Google+file unified dispatch')
-except Exception:
-    pass
+# R47 FINALIZATION: outbox thread starts only after all final owners are defined.
 
 
 # ---------------------------------------------------------------------------
@@ -1157,8 +1120,6 @@ except Exception:
 # thread follows canonical/duplicate jobs until the real Telegram/Google delivery ACK.
 _R40_SUP_LOCK = _r38_threading.RLock()
 _R40_SUPERVISORS = {}
-_R40_BASE_SUBMIT_FILE_JOB = globals().get('submit_interactive_file_job')
-_R40_BASE_EXPORT_RESULT_HANDLER = globals().get('_r38_export_result_handler')
 
 
 def _r40_canonical_job_id(jid):
@@ -1185,7 +1146,7 @@ def _r40_export_result_handler():
     if canonical and canonical!=jid:
         _r35_delivery_set(jid,'alias',{'job_id':jid,'canonical_job_id':canonical,'duplicate_of':canonical,'operation':body.get('operation'),'recipient_chat_id':body.get('recipient_chat_id')})
         return ({'ok':True,'delivered':True,'alias':True,'canonical_job_id':canonical},200)
-    return _R40_BASE_EXPORT_RESULT_HANDLER() if callable(_R40_BASE_EXPORT_RESULT_HANDLER) else ({'ok':False,'error':'base delivery handler unavailable'},503)
+    return _r38_export_result_handler()
 
 try: app.view_functions['split_front_export_result_r7']=_r40_export_result_handler
 except Exception: pass
@@ -1292,9 +1253,9 @@ def _r40_submit_heavy_file(chat_id,kind,label,func,*args,**kwargs):
 def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
     kind_s=str(kind or 'file'); heavy=(kind_s in _R33_HEAVY_FILE_KINDS or kind_s.startswith('window_'))
     if heavy: return _r40_submit_heavy_file(chat_id,kind_s,label,func,*args,**kwargs)
-    return _R40_BASE_SUBMIT_FILE_JOB(chat_id,kind,label,func,*args,**kwargs) if callable(_R40_BASE_SUBMIT_FILE_JOB) else (False,'Экспорт недоступен')
+    return _LOCAL_SUBMIT_FILE_JOB(chat_id,kind,label,func,*args,**kwargs) if callable(_LOCAL_SUBMIT_FILE_JOB) else (False,'Экспорт недоступен')
 
-globals()['submit_interactive_file_job']=submit_interactive_file_job
+submit_interactive_file_job = submit_interactive_file_job
 
 try:
     bot_journal('r40_unified_transport_loaded',int(OWNER_ID or 0),'async FAST supervisor; canonical alias follow; per-job status; no EXPORT_TASK_POOL wait; window revision fence')
@@ -1324,8 +1285,8 @@ def _r40_google_wait(jid,timeout=900):
         _r33_time.sleep(0.5)
     return False,'',f'Google job timeout {int(timeout)} sec'
 
-globals()['_r40_google_query_submit']=_r40_google_query_submit
-globals()['_r40_google_wait']=_r40_google_wait
+_r40_google_query_submit = _r40_google_query_submit
+_r40_google_wait = _r40_google_wait
 
 
 # ---------------------------------------------------------------------------
@@ -1335,10 +1296,6 @@ globals()['_r40_google_wait']=_r40_google_wait
 # live HEAVY may start the same idempotent job immediately while FAST keeps the
 # request pending until the real result callback.  A HEAVY crash therefore never
 # loses the request: the same job_id is sent again by FAST.
-_R41_BASE_OUTBOX_ENQUEUE = _r38_outbox_enqueue
-_R41_BASE_OUTBOX_DISPATCH_ONE = _r38_outbox_dispatch_one
-_R41_BASE_EXPORT_DELIVERY_TASK = _r38_export_delivery_task
-
 
 def _r41_front_outbox_backend():
     try:
@@ -1356,21 +1313,8 @@ def _r41_front_outbox_backend():
     return ''
 
 
-def _r41_outbox_enqueue(kind, endpoint, body):
-    obj = dict(body or {})
-    if str(kind or '') in {'file','google'}:
-        backend = _r41_front_outbox_backend()
-        obj['front_outbox_durable'] = bool(backend)
-        obj['front_outbox_backend'] = backend or 'local'
-        obj['front_release'] = 'Пер-R43'
-    return _R41_BASE_OUTBOX_ENQUEUE(kind, endpoint, obj)
-
-
-# All later file + Google submission helpers resolve this name dynamically.
-_r38_outbox_enqueue = _r41_outbox_enqueue
-
-
-def _r41_outbox_dispatch_one(row):
+# R47 FINALIZATION: durability metadata is merged into _r39_outbox_enqueue.
+def _r38_outbox_dispatch_one(row):
     """Dispatch one peer job while treating HEAVY provisional admission as healthy.
 
     A provisional response means HEAVY accepted/queued the idempotent job using
@@ -1430,23 +1374,8 @@ def _r41_outbox_dispatch_one(row):
         _R38_PEER_STATE['last_error']=row['last_error']; _R38_PEER_STATE['retries']=int(_R38_PEER_STATE.get('retries') or 0)+1; _r38_outbox_put(row,pending=True)
 
 
-_r38_outbox_dispatch_one = _r41_outbox_dispatch_one
 
-
-def _r41_export_delivery_task(body):
-    jid=str((body or {}).get('job_id') or '')
-    result = _R41_BASE_EXPORT_DELIVERY_TASK(body)
-    try:
-        if jid and _r39_delivery_terminal(jid):
-            out=_r38_outbox_get(jid) or {'job_id':jid,'kind':'file'}
-            out.update({'state':'completed','result_state':'done','provisional':False,'completed_at':_r33_time.time(),'last_error':''})
-            _r38_outbox_put(out,pending=False)
-    except Exception:
-        pass
-    return result
-
-
-_r38_export_delivery_task = _r41_export_delivery_task
+# R47 FINALIZATION: delivery completion is handled by the sole _r38_export_delivery_task owner.
 
 
 # R40's R39 latch wrapper was installed before this patch.  It resolves
@@ -1573,30 +1502,7 @@ def _r44_diag_tail(limit=30):
         return out
     except Exception: return []
 
-# Mirror the existing rich journal rather than adding a second instrumentation maze.
-_R44_PREV_BOT_JOURNAL=globals().get('bot_journal')
-def _r44_bot_journal(event, chat_id=None, detail='', level='INFO', *args, **kwargs):
-    try: _r44_diag('bot_journal',name=event,chat=chat_id,level=level,detail=detail)
-    except Exception: pass
-    if callable(_R44_PREV_BOT_JOURNAL): return _R44_PREV_BOT_JOURNAL(event,chat_id,detail,level,*args,**kwargs)
-    return None
-if callable(_R44_PREV_BOT_JOURNAL): globals()['bot_journal']=_r44_bot_journal
-
-_R44_PREV_LOG_ERROR=globals().get('log_error')
-def _r44_log_error(msg,*args,**kwargs):
-    _r44_diag('log_error',message=msg)
-    if callable(_R44_PREV_LOG_ERROR): return _R44_PREV_LOG_ERROR(msg,*args,**kwargs)
-if callable(_R44_PREV_LOG_ERROR): globals()['log_error']=_r44_log_error
-
-_R44_PREV_LOG_INFO=globals().get('log_info')
-def _r44_log_info(msg,*args,**kwargs):
-    try:
-        text=str(msg or '')
-        if any(w.casefold() in text.casefold() for w in _R44_TRAFFIC_WORDS): _r44_diag('log_info',message=text)
-    except Exception: pass
-    if callable(_R44_PREV_LOG_INFO): return _R44_PREV_LOG_INFO(msg,*args,**kwargs)
-if callable(_R44_PREV_LOG_INFO): globals()['log_info']=_r44_log_info
-
+# R47 FINALIZATION: no global logger wrappers. Diagnostics write only explicit R44/R45 events.
 def _r44_peer_base():
     fn=globals().get('_r32_peer_base_impl') or globals().get('_split_peer_base')
     try:
@@ -1796,9 +1702,9 @@ def _r44_full_test(chat_id):
     return window_mark('\n'.join(lines),'Ф4047')
 
 # Owner-only Test button in the actual main window.
-_R44_PREV_MAIN_KB=globals().get('build_main_keyboard')
+_R44_MAIN_KB_CORE=globals().get('build_main_keyboard')
 def _r44_build_main_keyboard(day_key,chat_id=None):
-    kb=_R44_PREV_MAIN_KB(day_key,chat_id) if callable(_R44_PREV_MAIN_KB) else types.InlineKeyboardMarkup()
+    kb=_R44_MAIN_KB_CORE(day_key,chat_id) if callable(_R44_MAIN_KB_CORE) else types.InlineKeyboardMarkup()
     try: cid=int(chat_id if chat_id is not None else current_state_chat_id() or 0)
     except Exception: cid=0
     if cid!=int(OWNER_ID or 0): return kb
@@ -1814,99 +1720,12 @@ def _r44_build_main_keyboard(day_key,chat_id=None):
         try:kb.row(IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
         except Exception:pass
     return kb
-if callable(_R44_PREV_MAIN_KB): globals()['build_main_keyboard']=_r44_build_main_keyboard
+if callable(_R44_MAIN_KB_CORE): build_main_keyboard = _r44_build_main_keyboard
 
-_R44_PREV_CONTOUR_GUARD=globals().get('contour_callback_guard')
-def _r44_test_guard(call,resolved):
-    raw=str(resolved or '')
-    if not raw.startswith('r44:test:'):
-        return bool(_R44_PREV_CONTOUR_GUARD(call,raw)) if callable(_R44_PREV_CONTOUR_GUARD) else False
-    try: cid=int(call.message.chat.id);uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
-    except Exception:return True
-    if cid!=int(OWNER_ID or 0) or uid!=int(OWNER_ID or 0):
-        try:bot.answer_callback_query(call.id,'Только владелец.',show_alert=True)
-        except Exception:pass
-        return True
-    try:bot.answer_callback_query(call.id)
-    except Exception:pass
-    _r44_diag('test_button',chat=cid,action=raw,mode=_r44_mode(cid))
-    try:
-        if raw=='r44:test:open': safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:redis_toggle':
-            new='direct' if _r44_mode(cid)=='redis' else 'redis';_r44_set_mode(cid,new);safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:status':
-            _,m=_r44_request(cid,'GET','/internal/r44/test/status',timeout=15);safe_edit(bot,call,_r44_test_menu_text(cid,m),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:echo':
-            nonce=_r44_secrets.token_hex(8);_,m=_r44_request(cid,'POST','/internal/r44/test/echo',json_body={'nonce':nonce,'sent_at':_r44_time.time()},timeout=12);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};ok=bool(m.get('ok') and p.get('nonce')==nonce)
-            text=window_mark(f'🔗 <b>#1 FAST → #2 HEAVY</b>\n\n{"✅ Успех" if ok else "⛔ Ошибка"}\nHTTP: {m.get("status","—")} · {m.get("elapsed",0)}с\nNonce: <code>{nonce}</code>\nОтвет: <code>{_r44_html.escape(str(p.get("nonce") or "—"))}</code>\nRedis handshake: {m.get("redis_verified") if _r44_mode(cid)=="redis" else "не используется"}','Ф4048');safe_edit(bot,call,text,reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:reverse':
-            nonce=_r44_secrets.token_hex(8);_,m=_r44_request(cid,'POST','/internal/r44/test/reverse',json_body={'nonce':nonce},timeout=15);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};rr=p.get('front_reply') if isinstance(p.get('front_reply'),dict) else {};ok=bool(m.get('ok') and p.get('ok') and rr.get('nonce')==nonce)
-            text=window_mark(f'↩️ <b>#2 HEAVY → #1 FAST</b>\n\n{"✅ Успех" if ok else "⛔ Ошибка"}\nОбщее время: {m.get("elapsed",0)}с\nHEAVY увидел Front: {"✅" if p.get("front_http_ok") else "⛔"}\nNonce вернулся: {"✅" if rr.get("nonce")==nonce else "⛔"}\nRedis handshake: {m.get("redis_verified") if _r44_mode(cid)=="redis" else "не используется"}\n{_r44_html.escape(str(p.get("error") or m.get("error") or "")[:500])}','Ф4049');safe_edit(bot,call,text,reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:snapshot':
-            _,m=_r44_request(cid,'POST','/internal/r44/test/snapshot',json_body={'nonce':_r44_secrets.token_hex(6)},timeout=90);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};text=window_mark(f'🗃 <b>Снимок данных #1 → #2</b>\n\n{"✅ HEAVY получил свежую SQLite" if m.get("ok") and p.get("ok") else "⛔ Ошибка"}\nВремя: {m.get("elapsed",0)}с\nBytes: {p.get("snapshot_bytes","—")}\nToken: <code>{_r44_html.escape(str(p.get("token") or "—")[:80])}</code>\n{_r44_html.escape(str(p.get("error") or m.get("error") or "")[:600])}','Ф4050');safe_edit(bot,call,text,reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:mega:root':
-            text,kb=_r44_mega_screen(cid,'',0);safe_edit(bot,call,text,reply_markup=kb,parse_mode='HTML');return True
-        if raw.startswith('r44:test:mega:d:'):
-            tok=raw.split(':')[-1];rec=_r44_token_get(tok);text,kb=_r44_mega_screen(cid,rec.get('path') or '',0);safe_edit(bot,call,text,reply_markup=kb,parse_mode='HTML');return True
-        if raw.startswith('r44:test:mega:p:'):
-            parts=raw.split(':');tok=parts[-2];page=int(parts[-1]);rec=_r44_token_get(tok);text,kb=_r44_mega_screen(cid,rec.get('path') or '',page);safe_edit(bot,call,text,reply_markup=kb,parse_mode='HTML');return True
-        if raw.startswith('r44:test:mega:f:'):
-            tok=raw.split(':')[-1];rec=_r44_token_get(tok);path=rec.get('path') or '';safe_edit(bot,call,window_mark('📥 HEAVY скачивает файл из MEGA и передаёт FAST…','Ф4051'),reply_markup=_r44_test_menu_kb(cid));ok,detail=_r44_send_mega_file(cid,path);safe_edit(bot,call,window_mark(('✅ Передано: ' if ok else '⛔ Ошибка: ')+_r44_html.escape(detail),'Ф4051'),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:full': safe_edit(bot,call,_r44_full_test(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:tail': safe_edit(bot,call,_r44_render_tail(),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
-        if raw=='r44:test:journal':
-            _r44_diag('journal_download',chat=cid)
-            if not _R44_DIAG_PATH.exists(): _r44_diag('journal_created',chat=cid)
-            with open(_R44_DIAG_PATH,'rb') as fh:bot.send_document(cid,fh,caption='📜 R44 диагностический журнал FAST')
-            return True
-    except Exception as exc:
-        _r44_diag('test_handler_error',chat=cid,action=raw,error=f'{type(exc).__name__}: {exc}')
-        try:safe_edit(bot,call,window_mark('⛔ <b>R44 TEST</b>\n\n'+_r44_html.escape(f'{type(exc).__name__}: {str(exc)[:1200]}'),'Ф4052'),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML')
-        except Exception:pass
-        return True
-    return True
-if callable(_R44_PREV_CONTOUR_GUARD):globals()['contour_callback_guard']=_r44_test_guard
+_R44_CONTOUR_GUARD_CORE=globals().get('contour_callback_guard')
+# R47 FINALIZATION: R44 synchronous diagnostic guard removed; R45 is sole diagnostic callback owner.
 
-# Communication/task hooks for the diagnostic journal.
-_R44_PREV_PEER_DISPATCH=globals().get('_r38_outbox_dispatch_one')
-if callable(_R44_PREV_PEER_DISPATCH):
-    def _r44_peer_dispatch(row):
-        jid=str((row or {}).get('job_id') or '');kind=str((row or {}).get('kind') or '');start=_r44_time.monotonic();_r44_diag('job_dispatch_start',job_id=jid,kind=kind,endpoint=(row or {}).get('endpoint'),attempts=(row or {}).get('attempts'))
-        try:return _R44_PREV_PEER_DISPATCH(row)
-        finally:
-            rr=globals().get('_r38_outbox_get',lambda x:{}) (jid) if jid else {};_r44_diag('job_dispatch_end',job_id=jid,kind=kind,state=(rr or {}).get('state'),elapsed=round(_r44_time.monotonic()-start,3),error=(rr or {}).get('last_error'))
-    globals()['_r38_outbox_dispatch_one']=_r44_peer_dispatch
-
-_R44_PREV_EXPORT_DELIVERY=globals().get('_r38_export_delivery_task')
-if callable(_R44_PREV_EXPORT_DELIVERY):
-    def _r44_export_delivery(body):
-        jid=str((body or {}).get('job_id') or '');start=_r44_time.monotonic();_r44_diag('result_delivery_start',job_id=jid,ok=(body or {}).get('ok'),filename=(body or {}).get('filename'))
-        try:return _R44_PREV_EXPORT_DELIVERY(body)
-        finally:_r44_diag('result_delivery_end',job_id=jid,elapsed=round(_r44_time.monotonic()-start,3),state=(globals().get('_r35_delivery_get',lambda x:{}) (jid) or {}).get('state'))
-    globals()['_r38_export_delivery_task']=_r44_export_delivery
-
-_R44_PREV_PING=globals().get('_split_ping_once')
-if callable(_R44_PREV_PING):
-    def _r44_ping_once(*a,**k):
-        st=_r44_time.monotonic();
-        try:return _R44_PREV_PING(*a,**k)
-        finally:_r44_diag('peer_health_ping',elapsed=round(_r44_time.monotonic()-st,3),status=(globals().get('_SPLIT_STATE') or {}).get('peer_status'),error=(globals().get('_SPLIT_STATE') or {}).get('peer_last_error'))
-    globals()['_split_ping_once']=_r44_ping_once
-
-_R44_PREV_INTERACTIVE_SUBMIT=globals().get('submit_interactive_file_job')
-if callable(_R44_PREV_INTERACTIVE_SUBMIT):
-    def _r44_submit_interactive_file_job(chat_id, kind, label, func, *args, **kwargs):
-        _r44_diag('interactive_job_submit',chat=chat_id,kind=kind,label=label,func=getattr(func,'__name__',str(func)) if func is not None else '')
-        st=_r44_time.monotonic()
-        try:
-            result=_R44_PREV_INTERACTIVE_SUBMIT(chat_id,kind,label,func,*args,**kwargs)
-            _r44_diag('interactive_job_submit_done',chat=chat_id,kind=kind,label=label,elapsed=round(_r44_time.monotonic()-st,3),result=result)
-            return result
-        except Exception as exc:
-            _r44_diag('interactive_job_submit_error',chat=chat_id,kind=kind,label=label,elapsed=round(_r44_time.monotonic()-st,3),error=f'{type(exc).__name__}: {exc}')
-            raise
-    globals()['submit_interactive_file_job']=_r44_submit_interactive_file_job
-
+# R47 FINALIZATION: no transport monkey-patching for diagnostics.
 _r44_diag('r44_diag_loaded',release=_R44_DIAG_RELEASE,peer=_r44_peer_base(),redis_fast=bool(_r44_front_redis()))
 try: bot_journal('r44_diag_loaded',int(OWNER_ID or 0),'owner test menu + FAST journal + HEAVY MEGA browser + direct/shared-Redis handshake diagnostics')
 except Exception:pass
@@ -1924,8 +1743,8 @@ except Exception:pass
 import queue as _r45_queue, collections as _r45_collections
 
 _R45_RELEASE='Пер-R45-STABLE'
-_R45_DIAG_CALLBACK_POOL=KeyedTaskPool('r45-diag-callback',2,240)
-_R45_DIAG_NET_POOL=KeyedTaskPool('r45-diag-net',2,120)
+_R45_DIAG_CALLBACK_POOL=KeyedTaskPool('r45-diag-callback',1,120)
+_R45_DIAG_NET_POOL=KeyedTaskPool('r45-diag-net',1,60)
 _R45_DIAG_SEQ_LOCK=_r44_threading.RLock()
 _R45_DIAG_SEQ={}
 _R45_DIAG_RING=_r45_collections.deque(maxlen=max(500,min(5000,int(_r44_os.getenv('R45_DIAG_RING_ROWS','1500') or '1500'))))
@@ -2093,7 +1912,7 @@ def _r45_enqueue_diag(call,raw,label='Проверяю связь…'):
 
 # Diagnostic callbacks are admitted on their own tiny lane.  Even a future bug in a
 # diagnostic handler therefore cannot hold the production fast-window actor.
-_R45_PREV_SELECTOR=globals().get('v163_webhook_select_lane')
+_R45_SELECTOR_CORE=globals().get('v163_webhook_select_lane')
 def _r45_webhook_select_lane(payload,update_type,update_key):
     if str(update_type)=='callback_query':
         try:
@@ -2101,17 +1920,17 @@ def _r45_webhook_select_lane(payload,update_type,update_key):
             if raw.startswith('r44:test:') or raw.startswith('r45:test:'):
                 return (_R45_DIAG_CALLBACK_POOL,f'diag-admit:{update_key}:{(payload or {}).get("update_id","")}')
         except Exception:pass
-    if callable(_R45_PREV_SELECTOR):return _R45_PREV_SELECTOR(payload,update_type,update_key)
+    if callable(_R45_SELECTOR_CORE):return _R45_SELECTOR_CORE(payload,update_type,update_key)
     return (UI_TASK_POOL if str(update_type)=='callback_query' else WEBHOOK_TASK_POOL,str(update_key))
-globals()['v163_webhook_select_lane']=_r45_webhook_select_lane
+v163_webhook_select_lane = _r45_webhook_select_lane
 
 # Replace the synchronous R44 guard.  Only open/toggle/tail are local and immediate;
 # every network/MEGA/file probe is detached before this callback worker returns.
-_R45_BASE_CONTOUR_GUARD=_R44_PREV_CONTOUR_GUARD
+_R45_CONTOUR_GUARD_CORE=_R44_CONTOUR_GUARD_CORE
 def _r45_test_guard(call,resolved):
     raw=str(resolved or '')
     if not (raw.startswith('r44:test:') or raw.startswith('r45:test:')):
-        return bool(_R45_BASE_CONTOUR_GUARD(call,raw)) if callable(_R45_BASE_CONTOUR_GUARD) else False
+        return bool(_R45_CONTOUR_GUARD_CORE(call,raw)) if callable(_R45_CONTOUR_GUARD_CORE) else False
     try:cid=int(call.message.chat.id);uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
     except Exception:return True
     if cid!=int(OWNER_ID or 0) or uid!=int(OWNER_ID or 0):
@@ -2140,19 +1959,19 @@ def _r45_test_guard(call,resolved):
         try:safe_edit(bot,call,window_mark('⛔ <b>R45 TEST</b>\n\n'+_r44_html.escape(f'{type(exc).__name__}: {str(exc)[:1200]}'),'Ф4052'),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML')
         except Exception:pass
         return True
-globals()['contour_callback_guard']=_r45_test_guard
+contour_callback_guard = _r45_test_guard
 
 # Make stuck logs actionable and less noisy.  The original watchdog reads this global
 # on every pass, so changing it here affects the already-running watchdog thread.
 try:WEBHOOK_STUCK_WARN_SECONDS=max(12.0,float(_r44_os.getenv('WEBHOOK_STUCK_WARN_SECONDS','12') or '12'))
 except Exception:WEBHOOK_STUCK_WARN_SECONDS=12.0
 
-_R45_PREV_LOCK_SNAPSHOT=globals().get('r36_lock_snapshot_text')
+_R45_LOCK_SNAPSHOT_CORE=globals().get('r36_lock_snapshot_text')
 def _r45_lock_snapshot_text():
     parts=[]
     try:
-        if callable(_R45_PREV_LOCK_SNAPSHOT):
-            old=str(_R45_PREV_LOCK_SNAPSHOT() or '')
+        if callable(_R45_LOCK_SNAPSHOT_CORE):
+            old=str(_R45_LOCK_SNAPSHOT_CORE() or '')
             if old and old!='none':parts.append(old)
     except Exception:pass
     for nm in ('WEBHOOK_TASK_POOL','V166_WINDOW_UI_TASK_POOL','V166_FINANCE_UI_TASK_POOL','FAST_UI_TASK_POOL','_R45_DIAG_CALLBACK_POOL','_R45_DIAG_NET_POOL'):
@@ -2162,7 +1981,7 @@ def _r45_lock_snapshot_text():
             if st and (int(st.get('active') or 0)>0 or int(st.get('pending') or 0)>0):parts.append(f"{st.get('name')} a={st.get('active')} p={st.get('pending')} keys={st.get('keys')} maxwait={st.get('max_wait')}")
         except Exception:pass
     return '; '.join(parts) or 'none'
-globals()['r36_lock_snapshot_text']=_r45_lock_snapshot_text
+r36_lock_snapshot_text = _r45_lock_snapshot_text
 
 _r44_diag('r45_stable_loaded',release=_R45_RELEASE,diag_async=True,diag_workers=2,log_async=True)
 try:bot_journal('r45_stable_loaded',int(OWNER_ID or 0),'diagnostic HTTP/MEGA detached from callback actors; async diagnostic journal; independent diagnostic admission lane')
@@ -2172,7 +1991,7 @@ except Exception:pass
 # R45 snapshot conditional GET: HEAVY can cheaply ask whether its local SQLite mirror
 # already matches FAST.  When the state token is unchanged, FAST returns 304 before
 # creating/gzipping another full SQLite backup.
-_R45_BASE_STATE_DOWNLOAD=(globals().get('app').view_functions.get('split_front_state_download_v262') if globals().get('app') is not None else None)
+_R45_STATE_DOWNLOAD_CORE=(globals().get('app').view_functions.get('split_front_state_download_v262') if globals().get('app') is not None else None)
 def _r45_split_state_download_conditional():
     try:
         auth=globals().get('_split_authorized_request')
@@ -2190,10 +2009,46 @@ def _r45_split_state_download_conditional():
             return resp
     except Exception as exc:
         _r44_diag('snapshot_304_check_error',error=f'{type(exc).__name__}: {exc}')
-    if callable(_R45_BASE_STATE_DOWNLOAD):return _R45_BASE_STATE_DOWNLOAD()
+    if callable(_R45_STATE_DOWNLOAD_CORE):return _R45_STATE_DOWNLOAD_CORE()
     return ({'ok':False,'error':'state endpoint unavailable'},503)
 try:
-    if callable(_R45_BASE_STATE_DOWNLOAD):app.view_functions['split_front_state_download_v262']=_r45_split_state_download_conditional
+    if callable(_R45_STATE_DOWNLOAD_CORE):app.view_functions['split_front_state_download_v262']=_r45_split_state_download_conditional
 except Exception:pass
+
+
+
+
+# ---------------------------------------------------------------------------
+# R47 FINALIZATION: sole extension callback dispatcher.
+# No PREV/ORIG callback chain: each feature handler is standalone and returns False
+# when the callback does not belong to it.
+def v149_extension_callback(call, data_str: str) -> bool:
+    raw = str(data_str or '')
+    try:
+        if _google_extension_callback(call, raw):
+            return True
+        if _constructor_extension_callback(call, raw):
+            return True
+        if _reminder_extension_callback(call, raw):
+            return True
+        if _v153_extension_callback(call, raw):
+            return True
+        if _v152_handle_rights_callback(call, raw):
+            return True
+        if raw.startswith('v149:'):
+            return bool(_v177_legacy_0266_v149_extension_callback(call, raw))
+    except Exception as exc:
+        try: log_error(f'final extension callback {raw[:180]}: {type(exc).__name__}: {exc}')
+        except Exception: pass
+        return True
+    return False
+
+try:
+    if not globals().get('_R38_OUTBOX_THREAD_STARTED'):
+        globals()['_R38_OUTBOX_THREAD_STARTED']=True
+        _r38_threading.Thread(target=_r38_outbox_loop,name='per-r38-peer-outbox',daemon=True).start()
+    bot_journal('r38_peer_transport_loaded',int(OWNER_ID or 0),'durable FAST outbox; final R47 dispatcher; same job_id; Google+file unified dispatch')
+except Exception:
+    pass
 
 # v262

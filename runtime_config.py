@@ -1,4 +1,4 @@
-"""vys-262 R45 stable internal runtime configuration.
+"""vys-262 R47 FINALIZED internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r45-stable-stuckfix2"
+CONFIG_VERSION = "vys-262-r47-finalized-stuckfix2"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,20 +23,28 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "BOT_SPLIT_ROLE": "front",
     "RENDER_TELEGRAM_ONLY": "1",
     "MALLOC_ARENA_MAX": "2",
+    "BOT_THREAD_STACK_KB": "512",
+    "SCHEDULER_WORKERS": "2",
+    "R21_HEAVY_DISPATCH_WORKERS": "2",
+    "BOT_JOURNAL_MAX": "600",
+    "MEMORY_EVENT_KEEP": "100",
+    "FINANCE_INTEGRITY_KEEP": "800",
+    "R45_DIAG_RING_ROWS": "750",
+    "R45_DIAG_QUEUE_ROWS": "1500",
 
     # R26: FAST isolation + forensic trace + bounded full rebase cadence.
-    "UI_WORKERS": "6",
-        "FAST_UI_WORKERS": "6",
-        "FAST_UI_MAX_PENDING": "900",
-        "WINDOW_RENDER_WORKERS": "6",
-        "WINDOW_RENDER_MAX_PENDING": "900",
-    "UI_MAX_PENDING": "800",
-    "CALLBACK_ACK_WORKERS": "2",
-    "UI_CLEANUP_WORKERS": "2",
-    "UI_DELETE_WORKERS": "2",
-    "UI_DELETE_MAX_PENDING": "1200",
-    "R26_TRACE_RING_ROWS": "4000",
-    "R26_TRACE_EXPORT_ROWS": "4000",
+    "UI_WORKERS": "2",
+        "FAST_UI_WORKERS": "2",
+        "FAST_UI_MAX_PENDING": "300",
+        "WINDOW_RENDER_WORKERS": "2",
+        "WINDOW_RENDER_MAX_PENDING": "300",
+    "UI_MAX_PENDING": "300",
+    "CALLBACK_ACK_WORKERS": "1",
+    "UI_CLEANUP_WORKERS": "1",
+    "UI_DELETE_WORKERS": "1",
+    "UI_DELETE_MAX_PENDING": "400",
+    "R26_TRACE_RING_ROWS": "1200",
+    "R26_TRACE_EXPORT_ROWS": "1500",
     "R27_FAST_USER_PRIORITY_SEC": "2.0",
     "R27_SNAPSHOT_USER_QUIET_SEC": "30",
     "R27_STATE_MIRROR_DELAY_SEC": "30",
@@ -46,7 +54,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R28_STATE_MIRROR_DELAY_SEC": "30",
     "R28_FULL_SNAPSHOT_MIN_INTERVAL_SEC": "300",
     "R32_EVENT_STREAM_ENABLED": "1",
-    "R32_EVENT_QUEUE_MAX": "20000",
+    "R32_EVENT_QUEUE_MAX": "5000",
     "R40_EVENT_DB_BUSY_MS": "120",
     "R32_EVENT_BATCH_DELAY_SEC": "0.65",
     "R32_EVENT_BATCH_MAX": "192",
@@ -67,13 +75,13 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R35_FILE_SUBMIT_ATTEMPTS": "4",
     "R35_FILE_SUBMIT_TIMEOUT_SEC": "45",
     "R35_FAST_JOB_WAIT_SEC": "1800",
-    "R24_LOWRAM_EVICT_RSS_MB": "340",
-    "UI_CLEANUP_MAX_PENDING": "1200",
+    "R24_LOWRAM_EVICT_RSS_MB": "300",
+    "UI_CLEANUP_MAX_PENDING": "400",
     "WEBHOOK_WORKERS": "4",
     "WEBHOOK_STUCK_WARN_SECONDS": "5",
     "R25_TRACE_SLOW_LOCK_SEC": "0.020",
-    "DELTA_WORKERS": "2",
-    "BACKGROUND_WORKERS": "2",
+    "DELTA_WORKERS": "1",
+    "BACKGROUND_WORKERS": "1",
 
     # Small user-facing runtime constants
     "QUICK_EXPENSE_REMINDER_MINUTES": "60",

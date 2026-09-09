@@ -684,14 +684,13 @@ def _r29_build_info_keyboard(chat_id: int):
     return kb
 
 
-globals()['build_info_text'] = _r29_build_info_text
-globals()['build_info_keyboard'] = _r29_build_info_keyboard
+build_info_text = _r29_build_info_text
+build_info_keyboard = _r29_build_info_keyboard
 
 # ---------------------------------------------------------------------------
 # Google single-window UX.
 # ---------------------------------------------------------------------------
 
-_R29_GOOGLE_BASE_CALLBACK = globals().get('v149_extension_callback')
 _R29_GOOGLE_BASE_HANDLE = globals().get('tenant_google_handle_message')
 _R29_GOOGLE_BASE_KB = globals().get('tenant_google_keyboard')
 _R29_GOOGLE_BASE_STATUS = globals().get('tenant_google_status_text')
@@ -779,10 +778,10 @@ def _r29_google_begin_wait(tid: str, kind: str, cid: int, uid: int, panel_mid: i
     return sid
 
 
-def _r29_google_extension_callback(call, data_str: str) -> bool:
+def _google_extension_callback(call, data_str: str) -> bool:
     raw = str(data_str or '')
     if not raw.startswith('v149:google:'):
-        return bool(_R29_GOOGLE_BASE_CALLBACK(call, raw)) if callable(_R29_GOOGLE_BASE_CALLBACK) else False
+        return False
     try:
         cid = int(call.message.chat.id)
         uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
@@ -893,8 +892,8 @@ def _r29_google_extension_callback(call, data_str: str) -> bool:
         _r29_google_edit(cid, mid, '✅ Google этого пространства отключён.\n\n' + _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_disconnect')
         _r29_google_persist_background(str(tid), 'tenant_google_disconnect_r29')
         return True
-    # Unknown Google action: keep legacy compatibility, but only after known single-window paths.
-    return bool(_R29_GOOGLE_BASE_CALLBACK(call, raw)) if callable(_R29_GOOGLE_BASE_CALLBACK) else True
+    # Unknown Google action is consumed here; there is no predecessor callback chain.
+    return True
 
 
 def _r29_google_handle_message(msg) -> bool:
@@ -969,9 +968,8 @@ def _r29_google_handle_message(msg) -> bool:
         return True
 
 
-globals()['tenant_google_keyboard'] = _r29_google_keyboard
-globals()['v149_extension_callback'] = _r29_google_extension_callback
-globals()['tenant_google_handle_message'] = _r29_google_handle_message
+tenant_google_keyboard = _r29_google_keyboard
+tenant_google_handle_message = _r29_google_handle_message
 
 # ---------------------------------------------------------------------------
 # Final callback guard wrapper.  It is local and synchronous only for the first
@@ -1145,7 +1143,7 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
     return bool(_R29_PREV_CONTOUR_GUARD(call, raw)) if callable(_R29_PREV_CONTOUR_GUARD) else False
 
 
-globals()['contour_callback_guard'] = _r29_contour_callback_guard
+contour_callback_guard = _r29_contour_callback_guard
 
 # Marker declarations for the new local windows.
 try:

@@ -324,38 +324,10 @@ try:
     _v177_legacy_0181_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
 except Exception:
     pass
-_V163_PREV_SEND_DOCUMENT = getattr(bot, 'send_document', None)
-
 def _v163_transient_send_error(exc) -> bool:
     low = str(exc or '').casefold()
     return any((x in low for x in ('too many requests', 'retry after', 'internal server error', 'bad gateway', 'service unavailable', 'connection reset', 'remote disconnected', 'temporarily unavailable')))
-if callable(_V163_PREV_SEND_DOCUMENT):
-
-    def _v163_send_document(chat_id, document, *args, **kwargs):
-        last_exc = None
-        for attempt in range(1, 4):
-            try:
-                result = _V163_PREV_SEND_DOCUMENT(chat_id, document, *args, **kwargs)
-                try:
-                    ctx = getattr(_FILE_JOB_CONTEXT, 'value', None)
-                    if isinstance(ctx, dict):
-                        key = str(ctx.get('key') or '')
-                        with _FILE_JOB_LOCK:
-                            st = _FILE_JOB_STATE.get(key)
-                            if isinstance(st, dict):
-                                st['telegram_documents_sent'] = int(st.get('telegram_documents_sent') or 0) + 1
-                                st['telegram_document_message_id'] = int(getattr(result, 'message_id', 0) or 0)
-                except Exception:
-                    pass
-                return result
-            except Exception as exc:
-                last_exc = exc
-                if attempt >= 3 or not _v163_transient_send_error(exc):
-                    raise
-                _v163_time.sleep(0.35 if attempt == 1 else 1.0)
-        if last_exc:
-            raise last_exc
-    bot.send_document = _v163_send_document
+# FINALIZED: send_document retry/accounting is called by 89_callback_final.py; no bot override here.
 _V163_BASE_FILE_RUNNER = _v177_legacy_0015_interactive_file_job_runner
 
 def file_job_mark_external_delivery(kind: str, reference: str='') -> bool:
@@ -1878,7 +1850,7 @@ def _v199_apply_raw_chat_migration(payload: dict) -> bool:
                 pass
     return changed
 
-def _canon_execute_telegram_payload__001(payload: dict, update_id=None, update_chat_id=None, update_type: str='other'):
+def _execute_telegram_payload_core(payload: dict, update_id=None, update_chat_id=None, update_type: str='other'):
     """Match execution locking to the v166 queue lane, so independent windows truly run in parallel."""
     try:
         _v199_apply_raw_chat_migration(payload)
@@ -5743,9 +5715,7 @@ def _v171_cycle_reminder_merge() -> str:
     except Exception:
         pass
     return mode
-_V171_PREV_V149_EXTENSION_CALLBACK = _v177_legacy_0268_v149_extension_callback
-
-def _canon_v149_extension_callback__001(call, data_str: str) -> bool:
+def _reminder_extension_callback(call, data_str: str) -> bool:
     raw = str(data_str or '')
     if raw.startswith('v149:rem:item_merge:') or raw.startswith('v149:rem:item_complete:'):
         chat_id = int(call.message.chat.id)
@@ -5823,8 +5793,6 @@ def _canon_v149_extension_callback__001(call, data_str: str) -> bool:
         except Exception:
             pass
         return True
-    if callable(_V171_PREV_V149_EXTENSION_CALLBACK):
-        return bool(_V171_PREV_V149_EXTENSION_CALLBACK(call, raw))
     return False
 try:
     WINDOW_MARKER_CONSTANTS.update({'v171:desc': 'Ф241', 'v171:desc_close': 'Ф241'})

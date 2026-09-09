@@ -2310,7 +2310,7 @@ try:
     CALLBACK_RECEIPT_ACK_DELAY_SECONDS = max(0.03, min(0.10, float(os.getenv('CALLBACK_RECEIPT_ACK_DELAY_SECONDS', '0.06') or '0.06')))
 except Exception:
     CALLBACK_RECEIPT_ACK_DELAY_SECONDS = 0.06
-_ORIGINAL_BOT_ANSWER_CALLBACK_QUERY = bot.answer_callback_query
+_NATIVE_BOT_ANSWER_CALLBACK_QUERY = telebot.TeleBot.answer_callback_query
 _R25_CALLBACK_TRACE_LOCK = threading.RLock()
 _R25_CALLBACK_TRACE_MAP = {}
 
@@ -2379,7 +2379,7 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         _r25_ack_started = time.monotonic()
         try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_START')
         except Exception: pass
-        result = _ORIGINAL_BOT_ANSWER_CALLBACK_QUERY(callback_query_id, *args, **kwargs)
+        result = _NATIVE_BOT_ANSWER_CALLBACK_QUERY(bot, callback_query_id, *args, **kwargs)
         try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_DONE elapsed={time.monotonic()-_r25_ack_started:.3f}s')
         except Exception: pass
         with _CALLBACK_ACK_LOCK:
@@ -2396,7 +2396,7 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
             row['inflight'] = False
             row['ts'] = time.time()
         raise
-bot.answer_callback_query = _tracked_answer_callback_query
+# FINALIZED: callback ACK is bound once in 89_callback_final.py.
 
 def _answer_callback_query_quiet(callback_id: str, chat_id=None):
     try:

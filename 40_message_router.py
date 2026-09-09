@@ -2,6 +2,27 @@
 @bot.message_handler(func=lambda m: not (m.text and m.text.startswith('/')), content_types=['text', 'photo', 'video', 'animation', 'audio', 'voice', 'video_note', 'document', 'sticker', 'location', 'venue', 'contact', 'dice', 'poll', 'game', 'story', 'paid_media', 'invoice'])
 def on_any_message(msg):
     chat_id = msg.chat.id
+    # R47 FINALIZATION: task input/auto hooks are inline; no message-handler wrappers.
+    try:
+        fn = globals().get('_v174_handle_own_input')
+        if callable(fn) and fn(msg):
+            return
+    except Exception as exc:
+        try: log_error(f'v174 keyword input: {exc}')
+        except Exception: pass
+    try:
+        fn = globals().get('_v174_auto_process')
+        if callable(fn): fn(msg)
+    except Exception as exc:
+        try: log_error(f'v174 auto process: {exc}')
+        except Exception: pass
+    try:
+        fn = globals().get('_v172_task_message_input')
+        if callable(fn) and fn(msg):
+            return
+    except Exception as exc:
+        try: log_error(f'v172 task input: {exc}')
+        except Exception: pass
     # R29: RAM-only input-source gate. Never wait for SQLite/Redis/network here.
     try:
         _r29_gate = globals().get('r29_inbound_message_allowed')
