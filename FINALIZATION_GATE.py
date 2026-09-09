@@ -279,10 +279,10 @@ if ROLE=='fast':
        'restore source/revision trace missing from startup or Watcher')
     # R49 root-fix contract: FAST startup recovery is MEGA-only.  Redis and HEAVY
     # are not restore dependencies; after startup FAST scrubs its MEGA credentials.
-    ok('r49_fast_startup_mega_only',
-       all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','R49_FAST_STARTUP_MEGA_ONLY']) and
+    ok('r50_fast_startup_mega_only',
+       all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','R50_FAST_STARTUP_MEGA_ONLY','def _startup_mega_roots','def _discover_generation_remotes']) and
        'redis.Redis' not in start_src and '/internal/snapshot' not in start_src,
-       'FAST startup must recover directly from MEGA only')
+       'FAST startup must recover directly from MEGA only and discover canonical/legacy generations')
     ok('r49_fast_runtime_mega_scrubbed',
        "os.environ.pop(key, None)" in start_src and "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
        "os.environ['MEGA_ENABLED'] = '0'" in start_src,

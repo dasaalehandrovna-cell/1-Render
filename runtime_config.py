@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r49-rootfix-mega-boot-redis-off"
+CONFIG_VERSION = "vys-262-r50-mega-bootstrap-rootfix"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -120,7 +120,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "SPLIT_PREBOOT_CAPTURE_WAIT_SEC": "4.0",
     "SPLIT_BOOT_WORKER_ATTEMPTS": "3",
     "SPLIT_BOOT_WORKER_TIMEOUT": "12",
-    "SPLIT_RESTORE_RETRY_SEC": "20",
+    "SPLIT_RESTORE_RETRY_SEC": "5",
+    "SPLIT_RESTORE_BOOT_ATTEMPTS": "3",
     "SPLIT_FORCE_BOOT_RESTORE": "0",
     "SPLIT_ALLOW_EMPTY_BOOT": "0",
     "SPLIT_EMERGENCY_MEGA": "1",

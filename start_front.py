@@ -1,8 +1,8 @@
 # v262
 #!/usr/bin/env python3
-"""Render #1 launcher: restore its SQLite directly from canonical MEGA, then run FAST.
+"""Render #1 launcher: restore its SQLite directly from MEGA, then run FAST.
 
-R49 root-fix policy:
+R50 root-fix policy:
 - startup/restart recovery belongs to FAST and contacts MEGA directly;
 - Redis and HEAVY are not part of startup recovery;
 - after startup, FAST logs out of MEGA and removes MEGA credentials from its process;
@@ -171,6 +171,72 @@ def _canonical_mega_root() -> str:
     return '/' + str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups2-2') or 'TelegramBotBackups2-2').strip('/')
 
 
+def _startup_mega_roots() -> list[str]:
+    """MEGA roots allowed only during FAST startup recovery.
+
+    R50 keeps the configured root authoritative, but can bootstrap it from the
+    historical roots that HEAVY itself already understands. This closes the
+    empty-new-root race without re-enabling runtime MEGA access in FAST.
+    """
+    out: list[str] = []
+    for raw in [_canonical_mega_root(), *str(os.getenv(
+        'MEGA_LEGACY_BACKUP_DIRS',
+        '/TelegramBotBackups-2T,/TelegramBotBackups',
+    ) or '').split(',')]:
+        root = '/' + str(raw or '').strip().strip('/')
+        if root != '/' and root not in out:
+            out.append(root)
+    return out
+
+
+def _mega_missing(detail: str) -> bool:
+    low = str(detail or '').casefold()
+    return any(x in low for x in ('not found', 'no such', 'does not exist', "couldn't find", 'couldn\'t find'))
+
+
+def _manifest_generation_remote(root: str, tmpdir: Path, mega_timeout: int) -> tuple[str, str]:
+    """Return manifest-selected immutable generation, if one exists."""
+    manifest_remote = root.rstrip('/') + '/database/current_manifest.json'
+    md = tmpdir / ('manifest_' + str(abs(hash(root))))
+    md.mkdir(exist_ok=True)
+    try:
+        mg = _run(['mega-get', manifest_remote, str(md)], timeout=mega_timeout)
+    except Exception as exc:
+        return '', f'{manifest_remote}: {type(exc).__name__}'
+    if mg.returncode != 0:
+        detail = (mg.stderr or mg.stdout or 'mega-get failed').strip()
+        return '', f'{manifest_remote}: {detail[:180]}'
+    rows = list(md.rglob('current_manifest.json')) + list(md.rglob('*.json'))
+    if not rows:
+        return '', f'{manifest_remote}: downloaded manifest missing'
+    try:
+        payload = json.loads(rows[0].read_text(encoding='utf-8')) or {}
+    except Exception as exc:
+        return '', f'{manifest_remote}: invalid JSON {type(exc).__name__}'
+    generation_remote = str(payload.get('remote_generation') or '').strip()
+    if generation_remote and not generation_remote.startswith('/'):
+        generation_remote = root.rstrip('/') + '/database/generations/' + generation_remote.rsplit('/', 1)[-1]
+    if not generation_remote and payload.get('generation'):
+        generation_remote = root.rstrip('/') + '/database/generations/' + str(payload.get('generation')).rsplit('/', 1)[-1]
+    if not generation_remote:
+        return '', f'{manifest_remote}: no generation pointer'
+    return generation_remote, f'{manifest_remote}: generation={generation_remote.rsplit("/",1)[-1]}'
+
+
+def _discover_generation_remotes(root: str, mega_timeout: int, limit: int = 3) -> tuple[list[str], str]:
+    """Find newest immutable generations when current_manifest is absent/stale."""
+    generations = root.rstrip('/') + '/database/generations'
+    try:
+        found = _run(['mega-find', generations, '--pattern=generation_*.sqlite3.gz', '--type=f'], timeout=mega_timeout)
+    except Exception as exc:
+        return [], f'{generations}: {type(exc).__name__}'
+    if found.returncode != 0:
+        detail = (found.stderr or found.stdout or 'mega-find failed').strip()
+        return [], f'{generations}: {detail[:180]}'
+    rows = sorted({x.strip() for x in (found.stdout or '').splitlines() if x.strip().endswith('.sqlite3.gz')}, reverse=True)
+    return rows[:max(1, int(limit))], f'{generations}: found={len(rows)}'
+
+
 def _r32_event_valid(ev: object) -> bool:
     if not isinstance(ev, dict) or int(ev.get('schema') or 0) != 32:
         return False
@@ -316,8 +382,15 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
 
 
 def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
-    """Restore from the one canonical MEGA tree. No Redis/HEAVY fallback exists here."""
-    root = _canonical_mega_root()
+    """Restore FAST from MEGA once per process start, then leave MEGA completely.
+
+    R50 read order per root:
+      current_manifest -> immutable generation -> latest -> newest generation fallback.
+    Root order:
+      configured canonical root -> explicitly configured legacy roots.
+    """
+    roots = _startup_mega_roots()
+    canonical_root = roots[0]
     mega_timeout = max(45, min(900, int(os.getenv('MEGA_TIMEOUT', '120') or '120')))
     login_timeout = max(45, min(300, int(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120')))
     logged, detail = _mega_login(login_timeout)
@@ -325,25 +398,36 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
         return False, detail
     tmpdir = Path(tempfile.mkdtemp(prefix='v262_fast_startup_mega_'))
     try:
-        remotes = [root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz']
-        manifest_dir = tmpdir / 'manifest'
-        manifest_dir.mkdir(exist_ok=True)
-        try:
-            mg = _run(['mega-get', root.rstrip('/') + '/database/current_manifest.json', str(manifest_dir)], timeout=mega_timeout)
-        except Exception:
-            mg = None
-        if mg is not None and mg.returncode == 0:
-            manifests = list(manifest_dir.rglob('current_manifest.json')) + list(manifest_dir.rglob('*.json'))
-            if manifests:
-                try: payload = json.loads(manifests[0].read_text(encoding='utf-8')) or {}
-                except Exception: payload = {}
-                generation_remote = str(payload.get('remote_generation') or '').strip()
-                if not generation_remote and payload.get('generation'):
-                    generation_remote = root.rstrip('/') + '/database/generations/' + str(payload.get('generation'))
-                if generation_remote and generation_remote not in remotes:
-                    remotes.append(generation_remote)
-        errors = []
-        for idx, remote in enumerate(remotes):
+        candidates: list[tuple[str, str, str]] = []
+        discovery: list[str] = []
+        seen: set[str] = set()
+
+        def add(root: str, remote: str, source: str) -> None:
+            remote = str(remote or '').strip()
+            if remote and remote not in seen:
+                seen.add(remote)
+                candidates.append((root, remote, source))
+
+        for root in roots:
+            generation_remote, manifest_detail = _manifest_generation_remote(root, tmpdir, mega_timeout)
+            discovery.append(manifest_detail)
+            if generation_remote:
+                add(root, generation_remote, 'manifest')
+
+            # HEAVY R50 still publishes this compact canonical pointer. It is a
+            # compatibility READ only; FAST never writes it at runtime.
+            add(root, root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz', 'latest')
+
+            # A manifest can be missing after a partial/manual migration while an
+            # immutable generation is still perfectly valid. Discover it once at
+            # startup instead of polling one missing filename forever.
+            generations, find_detail = _discover_generation_remotes(root, mega_timeout)
+            discovery.append(find_detail)
+            for remote in generations:
+                add(root, remote, 'generation-scan')
+
+        errors: list[str] = []
+        for idx, (source_root, remote, source_kind) in enumerate(candidates):
             dl = tmpdir / f'd{idx}'
             dl.mkdir(exist_ok=True)
             try:
@@ -352,19 +436,44 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
                 errors.append(f'{remote}: {type(exc).__name__}')
                 continue
             if get.returncode != 0:
-                errors.append(f'{remote}: {(get.stderr or get.stdout or "mega-get failed")[:180]}')
+                detail = (get.stderr or get.stdout or 'mega-get failed').strip()
+                errors.append(f'{remote}: {detail[:180]}')
                 continue
-            candidates = list(dl.rglob('*.sqlite3.gz')) + [p for p in dl.rglob('*.gz') if p.name != 'latest_bot_state.sqlite3.gz']
-            for gz_path in candidates:
+            candidates_local = list(dl.rglob('*.sqlite3.gz')) + [p for p in dl.rglob('*.gz') if p.name != 'latest_bot_state.sqlite3.gz']
+            if not candidates_local:
+                errors.append(f'{remote}: download contains no SQLite gzip')
+                continue
+            for gz_path in candidates_local:
                 ok, install_detail = _install_gzip_db(gz_path, target)
-                if ok:
-                    replay_ok, replay_detail = _replay_mega_event_segments(target, root, mega_timeout)
-                    if replay_ok:
-                        return True, f'MEGA startup restore OK from {remote}; {install_detail}; {replay_detail}'
-                    errors.append(f'{remote}: base installed but event replay failed: {replay_detail}')
+                if not ok:
+                    errors.append(f'{remote}: {install_detail}')
                     continue
-                errors.append(f'{remote}: {install_detail}')
-        return False, ('; '.join(errors[-4:]) or 'canonical MEGA snapshot not available')[:700]
+
+                # Event streams may span a migration boundary. Replaying all known
+                # startup roots is safe because idempotence is tracked per shard.
+                replay_parts: list[str] = []
+                replay_failed = False
+                ordered_event_roots = [source_root]
+                if canonical_root != source_root:
+                    ordered_event_roots.append(canonical_root)
+                for event_root in ordered_event_roots:
+                    replay_ok, replay_detail = _replay_mega_event_segments(target, event_root, mega_timeout)
+                    replay_parts.append(f'{event_root}: {replay_detail}')
+                    if not replay_ok:
+                        replay_failed = True
+                        errors.append(f'{remote}: base installed but event replay failed at {event_root}: {replay_detail}')
+                        break
+                if replay_failed:
+                    continue
+                source_note = 'canonical' if source_root == canonical_root else 'legacy-bootstrap'
+                return True, (
+                    f'MEGA startup restore OK source={source_note}/{source_kind} root={source_root} '
+                    f'remote={remote}; {install_detail}; ' + '; '.join(replay_parts)
+                )[:1200]
+
+        useful_discovery = [x for x in discovery if x and not _mega_missing(x)]
+        tail = errors[-6:] + useful_discovery[-3:]
+        return False, ('; '.join(tail) or 'no valid MEGA snapshot/generation found in configured or legacy roots')[:1200]
     finally:
         # Runtime boundary: FAST must not keep an authenticated MEGAcmd session.
         try: _run(['mega-logout'], timeout=20)
@@ -388,7 +497,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 2,
-        'policy': 'R49_FAST_STARTUP_MEGA_ONLY',
+        'policy': 'R50_FAST_STARTUP_MEGA_ONLY',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -403,17 +512,21 @@ def main():
     }
     try:
         had_valid_local_before_restore = bool(trace['local_valid_before'])
-        while True:
+        max_attempts = max(1, min(12, int(os.getenv('SPLIT_RESTORE_BOOT_ATTEMPTS', '3') or '3')))
+        retry_sec = max(2, min(60, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '5') or '5')))
+        last_detail = ''
+        for attempt in range(1, max_attempts + 1):
             ok, detail = _restore_from_mega_startup(target)
+            last_detail = str(detail)
             trace['mega_ok'] = bool(ok)
-            trace['mega_detail'] = str(detail)[:700]
-            print('[SPLIT FRONT] R49 FAST direct MEGA startup restore:', ok, detail, flush=True)
+            trace['mega_detail'] = last_detail[:700]
+            trace['mega_attempt'] = attempt
+            trace['mega_attempts_max'] = max_attempts
+            print(f'[SPLIT FRONT] R50 FAST MEGA startup restore attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
             if ok:
                 trace['base_source'] = 'MEGA'
                 break
             if had_valid_local_before_restore and _db_valid(target):
-                # Availability fallback applies only to a DB that existed before this
-                # startup attempt, never to a partially restored fresh container.
                 trace['base_source'] = 'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE'
                 print('[SPLIT FRONT] keeping pre-existing valid local SQLite after MEGA attempt:', detail, flush=True)
                 break
@@ -421,7 +534,16 @@ def main():
                 trace['base_source'] = 'EMPTY_INIT'
                 print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
                 break
-            time.sleep(max(5, min(120, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '20') or '20'))))
+            if attempt < max_attempts:
+                time.sleep(retry_sec)
+        else:
+            # Never remain a healthy-looking web service that does no bot work. A
+            # fresh container without a valid MEGA recovery source must fail fast;
+            # Render can restart it and a later HEAVY checkpoint can then be picked up.
+            trace['base_source'] = 'MEGA_RESTORE_FAILED'
+            trace['local_valid_after'] = _db_valid(target)
+            print('[SPLIT FRONT] R50 FATAL: no valid MEGA startup snapshot after bounded attempts:', last_detail, flush=True)
+            raise RuntimeError('R50 MEGA startup restore failed: ' + last_detail[:700])
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
