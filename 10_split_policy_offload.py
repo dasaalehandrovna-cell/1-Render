@@ -506,8 +506,8 @@ def apply_linked_finance_edit_v262(anchor_chat_id: int, anchor_rec: dict, *, upd
                     current = _v262_records_for_origin(int(cid), origin_key)
                     primary = current[0][1] if current else rows[0][1]
                     touched_days[int(cid)] = str(primary.get('day_key') or store.get('current_view_day') or today_key())
-                    _r48_primary = copy.deepcopy(primary) if isinstance(primary, dict) else primary
-                    _r48_before_primary = copy.deepcopy(before_primary or {})
+                    _r48_primary = dict(primary) if isinstance(primary, dict) else primary
+                    _r48_before_primary = dict(before_primary or {})
                     _r48_changed_here = int(changed_here or 0)
                 if not persist_finance_chat_local_fast(int(cid)):
                     raise RuntimeError('local SQLite finance persist failed')

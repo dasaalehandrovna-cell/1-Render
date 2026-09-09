@@ -849,7 +849,9 @@ def ensure_usd_migration_for_chat(chat_id: int) -> int:
             rec['usd_amount']=float(comp.get('usd_amount') or 0); rec['usd_note']=str(comp.get('usd_note') or ''); rec['usd_only']=bool(comp.get('usd_only',False)); rec['source_finance_text']=reconstructed; rec['amount']=float(comp.get('amount',0) or 0); rec['note']=str(comp.get('note') or rec.get('note') or ''); changed+=1
         settings['usd_transactions_migrated_v93']=True
         if changed:
-            normalize_chat_records(cid); recalc_balance(cid); rebuild_month_short_ids(cid); rebuild_global_records()
+            normalize_chat_records(cid); recalc_balance(cid); rebuild_month_short_ids(cid)
+    if changed:
+        rebuild_global_records()
     save_data(data,chat_ids=[cid])
     if changed:
         try: bot_journal('usd_v93_migration',cid,f'records={changed}')
@@ -2960,7 +2962,7 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         store=get_chat_store(chat_id); all_sel=store.setdefault('edit_delete_selected',{})
         selected={int(x) for x in all_sel.get(day_key,[]) if int(x) in selected}
         if not selected: return 0
-        deleted_snapshot=[copy.deepcopy(r) for r in store.get('records',[]) or [] if int(r.get('id',-1)) in selected]
+        deleted_snapshot=[dict(r) for r in store.get('records',[]) or [] if int(r.get('id',-1)) in selected]
         before=len(store.get('records',[]) or []); store['records']=[r for r in store.get('records',[]) or [] if int(r.get('id',-1)) not in selected]
         daily=store.get('daily_records',{}) or {}
         for dk in list(daily.keys()):

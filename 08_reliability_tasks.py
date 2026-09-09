@@ -3075,8 +3075,13 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         cancel_fast_ui_edit(chat_id, message_id)
     except Exception:
         pass
+    if r50_ui_context_stale(chat_id, message_id):
+        try: bot_journal('r50_stale_ui_render_skipped', chat_id, f'message={message_id}; purpose={purpose}')
+        except Exception: pass
+        return 'stale_skipped'
     key = (chat_id, message_id)
     with _V160_FAST_EDIT_LOCKS[key]:
+        if r50_ui_context_stale(chat_id, message_id): return 'stale_skipped'
         now_m = _v160_time.monotonic()
         last = float(_V160_FAST_EDIT_LAST.get(key, 0.0) or 0.0)
         remain = _V160_FAST_EDIT_MIN_GAP - (now_m - last)
@@ -7169,11 +7174,11 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
             # callback shares this state lane in R22.
             return (V166_FINANCE_UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
         if chat_id and message_id:
-            # R24: one small FIFO actor per visible Telegram window. Every click is
-            # processed exactly in arrival order; no parallel state races and no click
-            # is sacrificed as "stale". Heavy work is dispatched only after this
-            # short FAST stage by the existing R21 split helpers.
-            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
+            # R50: safe navigation is latest-wins per visible window.  Business/money
+            # mutations remain FIFO, but stale calendar/info/back renders are replaced.
+            if _v166_is_safe_window_callback(raw):
+                return (NAV_UI_TASK_POOL, f'nav-window:{chat_id}:{message_id}')
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-window-business:{chat_id}:{message_id}')
         return (V166_WINDOW_UI_TASK_POOL, f'fast-callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)
 
@@ -7727,7 +7732,7 @@ def _finance_root_persist_job_v243(chat_id: int) -> None:
         with data_lock:
             data.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
             data['_state_meta']['bot_version'] = VERSION
-            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+        root_snapshot = r50_root_snapshot(data)
         SQLITE.save_root(root_snapshot)
         try:
             bot_journal('finance_root_persist_v243', int(chat_id), 'background root persisted')
@@ -11731,8 +11736,7 @@ def _v172_persist(chat_id: int, reason: str='task_change') -> None:
     """Persist root state without holding data_lock during SQLite I/O (R36)."""
     try:
         import copy as _r36_copy
-        with data_lock:
-            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+        root_snapshot = r50_root_snapshot(data)
         SQLITE.save_root(root_snapshot)
     except Exception as exc:
         try:

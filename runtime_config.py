@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r49-performance-restore-final"
+CONFIG_VERSION = "vys-262-r50-ui-actor-lockorder-final"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -36,6 +36,9 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "UI_WORKERS": "2",
         "FAST_UI_WORKERS": "2",
         "FAST_UI_MAX_PENDING": "300",
+    "NAV_UI_WORKERS": "3",
+    "NAV_UI_MAX_KEYS": "256",
+    "R50_UI_QUIET_SEC": "5",
         "WINDOW_RENDER_WORKERS": "2",
         "WINDOW_RENDER_MAX_PENDING": "300",
     "UI_MAX_PENDING": "300",
@@ -45,7 +48,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "UI_DELETE_MAX_PENDING": "400",
     "R26_TRACE_RING_ROWS": "1200",
     "R26_TRACE_EXPORT_ROWS": "1500",
-    "R27_FAST_USER_PRIORITY_SEC": "2.0",
+    "R27_FAST_USER_PRIORITY_SEC": "3.0",
+    "R50_BG_LOCK_MAX_WAIT_SEC": "30",
     "R27_SNAPSHOT_USER_QUIET_SEC": "30",
     "R27_STATE_MIRROR_DELAY_SEC": "30",
     "R27_FULL_SNAPSHOT_MIN_INTERVAL_SEC": "300",

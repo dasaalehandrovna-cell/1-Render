@@ -4417,17 +4417,18 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
     durable, so deploy/crash safety is retained while the visible UI can already run.
     """
     claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, 'callback_query')
-    _r48_coalesce_key = _r48_nav_coalesce_key(payload) if claim_state == 'new' else None
-    if claim_state == 'new' and _r48_coalesce_key:
-        with _R48_NAV_COALESCE_LOCK:
-            if _r48_coalesce_key in _R48_NAV_INFLIGHT:
-                UPDATE_DISPATCHER.finish(update_id, True, 'coalesced_safe_navigation_r48')
-                try: UI_CLEANUP_TASK_POOL.submit(f'r48-coalesced:{update_id}', _r48_mark_coalesced_callback_durable, payload, update_id, update_chat_id)
-                except Exception: pass
-                try: log_info(f'R48 NAV COALESCE update={update_id} chat={update_chat_id} key={_r48_coalesce_key}')
-                except Exception: pass
-                return ('OK', 200)
-            _R48_NAV_INFLIGHT.add(_r48_coalesce_key)
+    _r48_coalesce_key = None  # R50 latest-wins replaces the old same-raw inflight set.
+    _r50_nav_window_key = None; _r50_nav_epoch = 0
+    if claim_state == 'new':
+        try:
+            cq=(payload or {}).get('callback_query') or {}; raw=str(cq.get('data') or '')
+            msg=cq.get('message') or {}; cid=(msg.get('chat') or {}).get('id'); mid=msg.get('message_id')
+            safe_fn=globals().get('_v166_is_safe_window_callback')
+            if cid is not None and mid is not None and callable(safe_fn) and safe_fn(raw):
+                _r50_nav_window_key, _r50_nav_epoch = r50_ui_note_interaction(int(cid), int(mid), raw)
+            elif cid is not None:
+                r50_ui_note_interaction(int(cid), None, raw)
+        except Exception: pass
     if claim_state == 'new':
         update_enqueued_at = time.time()
 
@@ -4451,7 +4452,12 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             try:
                 try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_START')
                 except Exception: pass
-                _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
+                if _r50_nav_window_key and _r50_nav_epoch:
+                    r50_ui_set_context(_r50_nav_window_key, _r50_nav_epoch)
+                try:
+                    _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
+                finally:
+                    if _r50_nav_window_key and _r50_nav_epoch: r50_ui_clear_context()
                 try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_DONE')
                 except Exception: pass
                 success = True
@@ -4496,11 +4502,16 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             selected_pool, selected_key = selector(payload, 'callback_query', update_key)
         else:
             selected_pool, selected_key = (FAST_UI_TASK_POOL, f'fast-callback:{update_key}')
-        if not selected_pool.submit(selected_key, _process_callback):
-            if _r48_coalesce_key:
-                try:
-                    with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
-                except Exception: pass
+        def _r50_superseded():
+            try: UPDATE_DISPATCHER.finish(update_id, True, 'superseded_safe_navigation_r50')
+            except Exception: pass
+            try: UI_CLEANUP_TASK_POOL.submit(f'r50-superseded:{update_id}', _r48_mark_coalesced_callback_durable, payload, update_id, update_chat_id)
+            except Exception: pass
+        if hasattr(selected_pool, 'submit_latest'):
+            queued = bool(selected_pool.submit_latest(selected_key, _process_callback, _on_supersede=_r50_superseded))
+        else:
+            queued = bool(selected_pool.submit(selected_key, _process_callback))
+        if not queued:
             UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
             return ('BUSY', 503)
         UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
@@ -4614,6 +4625,9 @@ def telegram_webhook():
             update_id = time.time_ns()
         update_key = update_chat_id if update_chat_id is not None else update_id
         update_type = 'edited_message' if isinstance(payload, dict) and 'edited_message' in payload else 'callback_query' if isinstance(payload, dict) and 'callback_query' in payload else 'message' if isinstance(payload, dict) and 'message' in payload else 'other'
+        if update_type in {'message','edited_message'} and update_chat_id is not None:
+            try: r50_ui_note_interaction(int(update_chat_id), None, update_type)
+            except Exception: pass
         if update_type == 'callback_query':
             # Rare finance toggles keep the pre-execution cloud witness because replaying
             # a toggle twice can reverse state. All normal/navigation callbacks take R22.

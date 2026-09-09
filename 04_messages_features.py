@@ -4261,7 +4261,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
     with locked_chat(dst_chat_id):
         store = get_chat_store(dst_chat_id)
         existing = finder(dst_chat_id, dst_msg_id, source_msg) if callable(finder) else (find_record_by_message_id(dst_chat_id, dst_msg_id) if 'find_record_by_message_id' in globals() else None)
-        before = copy.deepcopy(existing) if isinstance(existing, dict) else None
+        before = dict(existing) if isinstance(existing, dict) else None
         result_rec = existing
         if comp is not None:
             if isinstance(existing, dict):
@@ -5299,12 +5299,16 @@ def persist_finance_chat_local_fast(chat_id: int) -> bool:
         lock = chat_lock_for(cid)
         if hasattr(lock, 'held_by_current_thread') and lock.held_by_current_thread():
             raise RuntimeError('R48 invariant: finance persist called while chat_lock is held')
+        store = get_chat_store(cid)
         with locked_chat(cid):
-            store = get_chat_store(cid)
             if LOWRAM_ENABLED:
-                payload, cold = _lowram_flush_chat(cid, store, evict=False)
+                meta_refs, cold_refs = r50_capture_chat_snapshot_refs(store)
             else:
-                payload, cold = copy.deepcopy(dict(store)), {}
+                meta_refs, cold_refs = dict(store), {}
+        if LOWRAM_ENABLED:
+            payload, cold = r50_finalize_chat_snapshot(meta_refs, cold_refs)
+        else:
+            payload, cold = copy.deepcopy(meta_refs), {}
         saved = SQLITE.save_chat_bundle(cid, payload, cold)
         if saved:
             try:

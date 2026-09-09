@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "234d692c933f0c2ea60e8956d2940adb8aa4f7ffe46980690bae782079cee58a",
+    "01_core_data.py": "9e38bc230a0da7548f9910e3aa1381cc4938f887c7ec2b0545a377629bee01ad",
     "02_transport_safety.py": "e8487fa51b3d9f04085ad5bd66cbaaa3447906b9338ed2a7582c8f71609d2d84",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
-    "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
-    "05_finance_ui.py": "92d5461809f6f9093fed055f2b3e10876c6af50b92cfe732925529909a5c35d3",
-    "06_commands_callbacks.py": "f92d7a2d9281f84cc24b8f9c3f1c5a88340a64a389824bf5f58b0d0f86068cab",
-    "07_state_web.py": "3a1af5486f0c64a3ebc85b1b6a9bb072002b0cf4df7e569abdf34da14631fc58",
-    "08_reliability_tasks.py": "698effb564f572d52ed5ffb3af2038f464f1e94125a32c532be9dd2c3973da63",
-    "09_final_transport.py": "8c4aab746ee4c47c3872c40bc8bb35a7daff4dcb88a5577060287b7c94fee11f",
-    "10_split_policy_offload.py": "95ce3f402a3b3b1976f8cf112a0475d90dcbaf00daf9ea4f39be08e70ed0447f"
+    "04_messages_features.py": "8cbac0fdd66742713e0f7c23238102bb221591e9b37674d0b92cc697d4b613fc",
+    "05_finance_ui.py": "94c81625b114ca33abe52c6f5c5e4261e5fcaaca6f7e76fecc6d68c96a30a3a3",
+    "06_commands_callbacks.py": "f3b19c02b182289b9eedd2c5a21e0bd36ab201ff6f1e38c1c83d109a662bcb05",
+    "07_state_web.py": "25e66265a6ae92097ea9a34f5f586d51af8cb5cdc5af55a3109968a220b80103",
+    "08_reliability_tasks.py": "0c6b6d8ef5eb57dc0d6fbb0f868806a2d01e42701747e63b1116202a9042e54a",
+    "09_final_transport.py": "884b06f9c5fa9b75c4467bd736d4e9b8a274b8466654700223cab95396bf1b35",
+    "10_split_policy_offload.py": "8dea5a8d57c7a985ffc1568f2e9f81379f2046b6de71904dc854f908f4cf4b30"
   },
-  "release": "Пер-R49-FINAL-PERFORMANCE-RESTORE-COMPACT14-RU",
+  "release": "Пер-R50-FINAL-UI-ACTOR-LOCKORDER-COMPACT14-RU",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -186,6 +186,15 @@
     "r49_runtime_lock_hold_trace",
     "r49_transitive_lock_io_gate",
     "r49_redis_event_before_heavy_mirror",
-    "r49_free_redis_fast_cache_policy"
+    "r49_free_redis_fast_cache_policy",
+    "r50_no_chat_to_data_lock_order",
+    "r50_root_snapshot_outside_data_lock",
+    "r50_chat_snapshot_recursive_copy_outside_lock",
+    "r50_safe_navigation_latest_wins",
+    "r50_stale_ui_epoch_transport_fence",
+    "r50_auto_recreate_epoch_quiet_fence",
+    "r50_background_lock_user_priority",
+    "r50_navigation_supersede_durable_finish",
+    "r50_no_recursive_copy_under_chat_lock"
   ]
 }
