@@ -3975,113 +3975,196 @@ WEBHOOK_HEADER_SECRET_ENABLED = False
 _V260_WEBHOOK_INBOX_KIND = 'webhook_inbox_v260'
 _V260_WEBHOOK_MAX_ATTEMPTS = 5
 
-# R36: Telegram admission/replay bookkeeping has its own tiny SQLite file.
-# The old implementation shared SQLITE.lock with the full finance/history database,
-# so a long finance JSON commit could delay webhook admission and vice versa.
+# R49: Telegram admission/replay uses one persistent SQLite store.  Schema/WAL are
+# configured exactly once; a single bounded writer serializes durable mutations and
+# a separate query-only connection serves reads.  Post-business `done` marks can be
+# queued asynchronously so bookkeeping never extends the user-visible handler.
 _V260_INBOX_DB = Path(os.getenv('WEBHOOK_INBOX_DB_FILE', str(DB_FILE) + '.webhook_inbox.sqlite3') or (str(DB_FILE) + '.webhook_inbox.sqlite3')).resolve()
-_V260_INBOX_LOCK = threading.RLock()
-_V260_INBOX_READY = False
 
-def _v260_inbox_connect():
-    global _V260_INBOX_READY
-    _V260_INBOX_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_V260_INBOX_DB), timeout=1.5, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute('PRAGMA journal_mode=WAL')
-        conn.execute('PRAGMA synchronous=FULL')
+class _V260WebhookInboxStore:
+    def __init__(self, path: Path):
+        import queue as _queue
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_lock = threading.RLock()
+        self.write_q = _queue.PriorityQueue(maxsize=max(128, min(5000, int(os.getenv('WEBHOOK_INBOX_WRITE_QUEUE_MAX', '1000') or '1000'))))
+        self.seq = 0
+        self.seq_lock = threading.RLock()
+        self.stats = {'submitted':0, 'done':0, 'failed':0, 'dropped':0, 'max_pending':0}
+        self.write_conn = sqlite3.connect(str(self.path), timeout=2.0, check_same_thread=False)
+        self.write_conn.row_factory = sqlite3.Row
+        self._configure(self.write_conn, writer=True)
+        self.read_conn = sqlite3.connect(str(self.path), timeout=1.0, check_same_thread=False)
+        self.read_conn.row_factory = sqlite3.Row
+        self._configure(self.read_conn, writer=False)
+        self.thread = threading.Thread(target=self._writer_loop, name='webhook-inbox-writer-1', daemon=True)
+        self.thread.start()
+
+    def _configure(self, conn, writer: bool):
         conn.execute('PRAGMA busy_timeout=1500')
-        conn.execute('CREATE TABLE IF NOT EXISTS inbox(update_id TEXT PRIMARY KEY, v TEXT NOT NULL, updated_ts REAL NOT NULL DEFAULT 0)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_inbox_updated ON inbox(updated_ts)')
-        conn.commit()
-        _V260_INBOX_READY = True
-        return conn
-    except Exception:
-        conn.close()
-        raise
+        if writer:
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=FULL')
+            conn.execute('CREATE TABLE IF NOT EXISTS inbox(update_id TEXT PRIMARY KEY, v TEXT NOT NULL, updated_ts REAL NOT NULL DEFAULT 0)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_inbox_updated ON inbox(updated_ts)')
+            conn.commit()
+        else:
+            try: conn.execute('PRAGMA query_only=ON')
+            except Exception: pass
 
-def _v260_inbox_write(row: dict) -> bool:
-    if not isinstance(row, dict) or not row.get('update_id'):
-        return False
-    payload = json.dumps(row, ensure_ascii=False, separators=(',', ':'), default=str)
-    with _V260_INBOX_LOCK:
-        conn = _v260_inbox_connect()
+    def _next_seq(self):
+        with self.seq_lock:
+            self.seq += 1
+            return self.seq
+
+    def _writer_loop(self):
+        while True:
+            priority, seq, fn, ev, box = self.write_q.get()
+            try:
+                box['result'] = fn(self.write_conn)
+                self.write_conn.commit()
+                box['ok'] = True
+                self.stats['done'] += 1
+            except Exception as exc:
+                try: self.write_conn.rollback()
+                except Exception: pass
+                box['error'] = exc
+                self.stats['failed'] += 1
+            finally:
+                if ev is not None: ev.set()
+                self.write_q.task_done()
+
+    def submit(self, fn, *, priority=1, wait=True, timeout=3.0):
+        ev = threading.Event() if wait else None
+        box = {'ok':False, 'result':None, 'error':None}
+        item = (max(0, min(9, int(priority))), self._next_seq(), fn, ev, box)
         try:
-            conn.execute('INSERT INTO inbox(update_id,v,updated_ts) VALUES(?,?,?) ON CONFLICT(update_id) DO UPDATE SET v=excluded.v,updated_ts=excluded.updated_ts', (str(row.get('update_id')), payload, float(row.get('updated_ts') or time.time())))
-            conn.commit(); return True
-        finally:
-            conn.close()
+            self.write_q.put(item, block=bool(wait), timeout=max(0.05, float(timeout)) if wait else 0)
+            self.stats['submitted'] += 1
+            self.stats['max_pending'] = max(int(self.stats.get('max_pending') or 0), self.write_q.qsize())
+        except Exception:
+            self.stats['dropped'] += 1
+            if wait: raise
+            return False
+        if not wait:
+            return True
+        if not ev.wait(max(0.5, float(timeout))):
+            raise TimeoutError('webhook inbox writer timeout')
+        if box.get('error') is not None:
+            raise box['error']
+        return box.get('result')
+
+    @staticmethod
+    def _dump(row):
+        return json.dumps(row, ensure_ascii=False, separators=(',', ':'), default=str)
+
+    def write_row(self, row: dict, *, wait=True, priority=1):
+        if not isinstance(row, dict) or not row.get('update_id'):
+            return False
+        payload = self._dump(row)
+        uid = str(row.get('update_id'))
+        ts = float(row.get('updated_ts') or time.time())
+        def _op(conn):
+            conn.execute('INSERT INTO inbox(update_id,v,updated_ts) VALUES(?,?,?) ON CONFLICT(update_id) DO UPDATE SET v=excluded.v,updated_ts=excluded.updated_ts', (uid, payload, ts))
+            return True
+        return self.submit(_op, priority=priority, wait=wait)
+
+    def read_row(self, update_id):
+        with self.read_lock:
+            row = self.read_conn.execute('SELECT v FROM inbox WHERE update_id=?', (str(update_id),)).fetchone()
+        if not row: return {}
+        try:
+            obj = json.loads(row[0])
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def mark(self, update_id, state: str, error: str='', *, wait=True, priority=1):
+        uid = str(update_id); new_state = str(state or ''); err = str(error or '')[:500]
+        def _op(conn):
+            raw = conn.execute('SELECT v FROM inbox WHERE update_id=?', (uid,)).fetchone()
+            try: row = json.loads(raw[0]) if raw else {}
+            except Exception: row = {}
+            if not isinstance(row, dict): row = {}
+            row.setdefault('update_id', uid); row.setdefault('payload', {}); row.setdefault('type', 'other')
+            attempts = max(0, int(row.get('attempts') or 0))
+            if new_state in {'running','external_running'} and str(row.get('state') or '') not in {'running','external_running'}:
+                attempts += 1
+            row.update({'state':new_state,'attempts':attempts,'error':err,'updated_at':now_local().isoformat(timespec='milliseconds'),'updated_ts':time.time()})
+            payload = self._dump(row)
+            conn.execute('INSERT INTO inbox(update_id,v,updated_ts) VALUES(?,?,?) ON CONFLICT(update_id) DO UPDATE SET v=excluded.v,updated_ts=excluded.updated_ts', (uid, payload, float(row['updated_ts'])))
+            return row
+        return self.submit(_op, priority=priority, wait=wait)
+
+    def scan(self):
+        with self.read_lock:
+            raw = self.read_conn.execute('SELECT update_id,v,updated_ts FROM inbox').fetchall()
+        out=[]
+        for r in raw:
+            try:
+                obj=json.loads(r[1]) if isinstance(r[1],str) else {}
+                if isinstance(obj,dict): out.append(obj)
+            except Exception: pass
+        return out
+
+    def delete_keys(self, keys):
+        vals=[(str(k),) for k in keys if str(k)]
+        if not vals: return 0
+        return self.submit(lambda conn: (conn.executemany('DELETE FROM inbox WHERE update_id=?', vals), len(vals))[1], priority=5, wait=True)
+
+    def status(self):
+        return dict(self.stats, pending=self.write_q.qsize(), alive=bool(self.thread.is_alive()))
+
+_V260_INBOX_STORE = _V260WebhookInboxStore(_V260_INBOX_DB)
+_V260_INBOX_READY = True
+
+# Compatibility names below are canonical thin APIs over the single R49 store; they
+# do not create connections or PRAGMAs per event.
+def _v260_inbox_write(row: dict) -> bool:
+    return bool(_V260_INBOX_STORE.write_row(row, wait=True, priority=1))
 
 def _v260_webhook_inbox_row(update_id) -> dict:
-    try:
-        with _V260_INBOX_LOCK:
-            conn = _v260_inbox_connect()
-            try:
-                row = conn.execute('SELECT v FROM inbox WHERE update_id=?', (str(update_id),)).fetchone()
-            finally:
-                conn.close()
-        if not row: return {}
-        obj = json.loads(row[0])
-        return obj if isinstance(obj, dict) else {}
-    except Exception:
-        return {}
+    try: return _V260_INBOX_STORE.read_row(update_id)
+    except Exception: return {}
 
 def _v260_webhook_inbox_put(update_id, payload, chat_id=None, update_type='other') -> bool:
-    """Durably register a Telegram update without touching the finance SQLite lock."""
+    """Durably register admission before HTTP 200; only this admission write waits."""
     try:
         old = _v260_webhook_inbox_row(update_id) or {}
         state = str(old.get('state') or '')
         row = {
-            'update_id': str(update_id), 'chat_id': chat_id, 'type': str(update_type or 'other'),
-            'payload': payload,
+            'update_id': str(update_id), 'chat_id': chat_id, 'type': str(update_type or 'other'), 'payload': payload,
             'state': state if state in {'queued','running','done','failed','external_pending','external_running','external_failed_review','needs_review'} else 'queued',
-            'attempts': max(0, int(old.get('attempts') or 0)),
-            'error': str(old.get('error') or '')[:500],
+            'attempts': max(0, int(old.get('attempts') or 0)), 'error': str(old.get('error') or '')[:500],
             'updated_at': now_local().isoformat(timespec='milliseconds'), 'updated_ts': time.time()
         }
-        return _v260_inbox_write(row)
+        return bool(_V260_INBOX_STORE.write_row(row, wait=True, priority=0))
     except Exception as exc:
-        log_error(f'WEBHOOK INBOX R36 put update={update_id}: {exc}')
+        log_error(f'WEBHOOK INBOX R49 put update={update_id}: {exc}')
         return False
 
 def _v260_webhook_inbox_mark(update_id, state: str, error: str=''):
-    try:
-        row = _v260_webhook_inbox_row(update_id) or {'update_id': str(update_id), 'payload': {}, 'type': 'other'}
-        new_state = str(state or '')
-        attempts = max(0, int(row.get('attempts') or 0))
-        if new_state in {'running', 'external_running'} and str(row.get('state') or '') not in {'running', 'external_running'}:
-            attempts += 1
-        row.update({'state': new_state, 'attempts': attempts, 'error': str(error or '')[:500], 'updated_at': now_local().isoformat(timespec='milliseconds'), 'updated_ts': time.time()})
-        _v260_inbox_write(row)
-        return row
+    try: return _V260_INBOX_STORE.mark(update_id, state, error, wait=True, priority=1) or {}
     except Exception as exc:
-        log_error(f'WEBHOOK INBOX R36 mark update={update_id}: {exc}')
+        log_error(f'WEBHOOK INBOX R49 mark update={update_id}: {exc}')
         return {}
+
+def _v260_webhook_inbox_mark_async(update_id, state: str='done', error: str='') -> bool:
+    try: return bool(_V260_INBOX_STORE.mark(update_id, state, error, wait=False, priority=2))
+    except Exception as exc:
+        log_error(f'WEBHOOK INBOX R49 async mark update={update_id}: {exc}')
+        return False
 
 def _v260_webhook_inbox_state(update_id) -> str:
     return str((_v260_webhook_inbox_row(update_id) or {}).get('state') or '')
 
 def _v260_inbox_scan_rows() -> list[dict]:
-    out=[]
-    with _V260_INBOX_LOCK:
-        conn=_v260_inbox_connect()
-        try: raw=conn.execute('SELECT update_id,v,updated_ts FROM inbox').fetchall()
-        finally: conn.close()
-    for r in raw:
-        try:
-            obj=json.loads(r[1]) if isinstance(r[1],str) else {}
-            if isinstance(obj,dict): out.append(obj)
-        except Exception: pass
-    return out
+    try: return _V260_INBOX_STORE.scan()
+    except Exception: return []
 
 def _v260_inbox_delete_keys(keys) -> None:
-    vals=[(str(k),) for k in keys if str(k)]
-    if not vals: return
-    with _V260_INBOX_LOCK:
-        conn=_v260_inbox_connect()
-        try:
-            conn.executemany('DELETE FROM inbox WHERE update_id=?', vals); conn.commit()
-        finally: conn.close()
+    try: _V260_INBOX_STORE.delete_keys(keys)
+    except Exception: pass
 
 def _v260_inbox_migrate_legacy_once() -> int:
     """Best-effort one-time read of R35 rows without taking SQLITE.lock."""
@@ -4320,7 +4403,7 @@ def _r48_nav_coalesce_key(payload: dict):
 def _r48_mark_coalesced_callback_durable(payload: dict, update_id, update_chat_id):
     try: _v260_webhook_inbox_put(update_id,payload,update_chat_id,'callback_query')
     except Exception: pass
-    try: _v260_webhook_inbox_mark(update_id,'done','coalesced_safe_navigation_r48')
+    try: _v260_webhook_inbox_mark_async(update_id,'done','coalesced_safe_navigation_r49')
     except Exception: pass
     try: _r22_callback_commit_background(update_id,update_chat_id,True,'coalesced_safe_navigation_r48')
     except Exception: pass
@@ -4446,6 +4529,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
     except Exception:
         pass
     try:
+        UPDATE_DISPATCHER.mark_http_acked(update_id)
         _cq = payload.get('callback_query') or {}
         log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={str(_cq.get("data") or "")[:180]} stage=FAST_ENQUEUED_HTTP200')
     except Exception:
@@ -4646,7 +4730,7 @@ def telegram_webhook():
                     try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_DONE')
                     except Exception: pass
                     success = True
-                    _v260_webhook_inbox_mark(update_id, 'done')
+                    _v260_webhook_inbox_mark_async(update_id, 'done')
                     _r13_commit_fn = globals().get('split_event_committed_v268')
                     if callable(_r13_commit_fn): _r13_commit_fn(update_id, update_chat_id, update_type, True, '')
                     if durable_cloud:
@@ -4693,11 +4777,14 @@ def telegram_webhook():
             # a restart will replay the local inbox, while source/forward operation keys make
             # that replay exact-once.  Cloud-durable updates retain their external witness path.
             if not durable_cloud:
+                UPDATE_DISPATCHER.mark_http_acked(update_id)
                 return ('OK', 200)
         if claim_state == 'pending' and _v260_webhook_inbox_state(update_id) in {'queued','running','done'} and not durable_cloud:
+            UPDATE_DISPATCHER.mark_http_acked(update_id)
             return ('OK', 200)
         state, dispatch_error = UPDATE_DISPATCHER.wait_result(ticket, WEBHOOK_ACK_WAIT_SECONDS)
         if state == 'done':
+            UPDATE_DISPATCHER.mark_http_acked(update_id)
             return ('OK', 200)
         if state == 'failed':
             return ('RETRY', 503)
@@ -4717,9 +4804,9 @@ def _v177_legacy_0269_set_webhook():
         bot.remove_webhook()
         time.sleep(0.5)
     try:
-        webhook_connections = max(1, min(100, int(os.getenv('WEBHOOK_MAX_CONNECTIONS', '40') or '40')))
+        webhook_connections = max(1, min(20, int(os.getenv('WEBHOOK_MAX_CONNECTIONS', '8') or '8')))
     except Exception:
-        webhook_connections = 40
+        webhook_connections = 8
     kwargs = dict(url=wh_url, max_connections=webhook_connections, allowed_updates=['message', 'edited_message', 'callback_query', 'channel_post', 'edited_channel_post', 'deleted_business_messages'])
     try:
         bot.set_webhook(secret_token=WEBHOOK_HEADER_SECRET, **kwargs)
@@ -4733,13 +4820,19 @@ try:
 except Exception:
     pass
 
-def _v177_start_web_server_early():
-    """Compatibility server starter; v211 decides WHEN the production port is bound."""
-
+def _start_web_server_bounded_r49():
+    """Production HTTP server with a bounded worker pool; never thread-per-request."""
+    try:
+        threads = max(2, min(16, int(os.getenv('WAITRESS_THREADS', '6') or '6')))
+    except Exception:
+        threads = 6
     def _serve():
-        app.run(host='0.0.0.0', port=PORT, threaded=True, use_reloader=False)
-    thread = threading.Thread(target=_serve, name='v177-web-early', daemon=True)
+        from waitress import serve
+        serve(app, host='0.0.0.0', port=int(PORT), threads=threads, channel_timeout=30, cleanup_interval=10)
+    thread = threading.Thread(target=_serve, name='web-server-1', daemon=True)
     thread.start()
+    try: runtime_event('bounded_http_server_r49', f'waitress_threads={threads}')
+    except Exception: pass
     return thread
 _V211_WEB_BIND_LOCK = threading.RLock()
 _V211_WEB_THREAD = None
@@ -4757,7 +4850,7 @@ def _v211_ensure_web_server_started(reason: str='ready-handoff'):
     with _V211_WEB_BIND_LOCK:
         if _V211_WEB_THREAD is not None and _V211_WEB_THREAD.is_alive():
             return _V211_WEB_THREAD
-        _V211_WEB_THREAD = _v177_start_web_server_early()
+        _V211_WEB_THREAD = _start_web_server_bounded_r49()
     try:
         runtime_event('web_server_bound_v211', f'reason={reason}; ready={int(runtime_is_ready())}')
     except Exception:
@@ -5065,6 +5158,25 @@ def main():
         runtime_event('boot_restore_error', str(e), 'ERROR')
     finally:
         globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = _v246_prev_recovery_authority
+    # R49: start_front is the single restore authority; expose its exact source map
+    # to Watcher instead of replacing it with a generic split-authoritative label.
+    try:
+        _trace_raw = str(os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
+        _trace = json.loads(_trace_raw) if _trace_raw else {}
+        if isinstance(_trace, dict) and _trace:
+            with _RUNTIME_LOCK:
+                _RUNTIME_STATE['restore_trace'] = _trace
+                _RUNTIME_STATE['restore_attempted'] = True
+                if _RUNTIME_STATE.get('restore_ok') is not False:
+                    _RUNTIME_STATE['restore_ok'] = bool(_trace.get('final_revision') or _trace.get('base_source') == 'EMPTY_INIT')
+                _RUNTIME_STATE['restore_detail'] = (
+                    f"R49 base={_trace.get('base_source') or '—'} rev={_trace.get('base_revision') or 0}; "
+                    f"events={_trace.get('redis_events_detail') or '—'}; capsule={_trace.get('redis_capsule_detail') or '—'}; "
+                    f"HEAVY={int(bool(_trace.get('heavy_contacted')))} MEGA={int(bool(_trace.get('mega_contacted')))}; "
+                    f"final={_trace.get('final_revision') or 0}"
+                )[:500]
+    except Exception as _trace_exc:
+        runtime_event('r49_restore_trace_parse_error', str(_trace_exc), 'WARN')
     try:
         purge = globals().get('purge_legacy_mega_root_state_v238')
         if callable(purge):

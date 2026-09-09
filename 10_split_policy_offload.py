@@ -5924,7 +5924,7 @@ def _r35_worker_file_submit(body:dict):
     jid=str(body.get('job_id') or __import__('secrets').token_hex(12)).strip()[:80]
     body['job_id']=jid
     last=''
-    attempts=max(2,min(6,int(__import__('os').getenv('R36_FILE_SUBMIT_ATTEMPTS',__import__('os').getenv('R35_FILE_SUBMIT_ATTEMPTS','4')) or '4')))
+    attempts=max(2,min(6,int(__import__('os').getenv('R36_FILE_SUBMIT_ATTEMPTS','4') or '4')))
     timeout=max(8.0,min(90.0,float(__import__('os').getenv('R36_FILE_SUBMIT_TIMEOUT_SEC','45') or '45')))
     for attempt in range(1,attempts+1):
         try:
@@ -6003,7 +6003,7 @@ except Exception:
     pass
 
 def _r35_wait_remote_delivery(jid,body):
-    timeout=max(60,min(7200,int(__import__('os').getenv('R36_FAST_JOB_WAIT_SEC',__import__('os').getenv('R35_FAST_JOB_WAIT_SEC','1800')) or '1800')))
+    timeout=max(60,min(7200,int(__import__('os').getenv('R36_FAST_JOB_WAIT_SEC','1800') or '1800')))
     deadline=_r33_time.time()+timeout; last_progress=0.0
     while _r33_time.time()<deadline:
         row=_r35_delivery_get(jid); state=str(row.get('state') or '')

@@ -170,10 +170,11 @@ def _redis_snapshot_revision_r18(client=None):
 
 
 def _restore_from_redis_direct_r18(target: Path):
-    """Freshness arbiter: use Redis snapshot only when it is newer than current target.
+    """R49 Redis-first restore.
 
-    This is intentionally boot-only.  It closes the race where Worker /tmp is stale
-    while the shared Redis durable cache already contains the final old-front state.
+    A valid payload is enough on a fresh container even when the metadata key is
+    missing.  Metadata revision is used for fast arbitration when available; the
+    SQLite image itself is always quick-checked before install.
     """
     if _redis is None:
         return False, 'redis package unavailable'
@@ -181,26 +182,26 @@ def _restore_from_redis_direct_r18(target: Path):
     if not url:
         return False, 'REDIS_URL empty'
     key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
-    tmpdir = Path(tempfile.mkdtemp(prefix='r18_redis_restore_'))
+    tmpdir = Path(tempfile.mkdtemp(prefix='r49_redis_restore_'))
     try:
-        client = _redis.Redis.from_url(url, socket_connect_timeout=2.0, socket_timeout=5.0, health_check_interval=30)
-        remote_rev = _redis_snapshot_revision_r18(client)
-        local_rev = _db_revision(target) if _db_valid(target) else 0.0
-        if remote_rev <= 0.0 or (_db_valid(target) and remote_rev <= local_rev + 0.000001):
-            return False, f'Redis not newer remote={remote_rev} local={local_rev}'
+        client = _redis.Redis.from_url(url, socket_connect_timeout=1.5, socket_timeout=4.0, health_check_interval=30)
         payload = client.get(key)
         if not payload:
-            return False, 'Redis snapshot missing'
+            return False, 'Redis snapshot empty'
+        remote_rev = _redis_snapshot_revision_r18(client)
+        local_rev = _db_revision(target) if _db_valid(target) else 0.0
+        if remote_rev > 0.0 and _db_valid(target) and remote_rev <= local_rev + 0.000001:
+            return False, f'Redis not newer remote={remote_rev} local={local_rev}'
         gz = tmpdir / 'latest.sqlite3.gz'
         gz.write_bytes(payload)
         if _install_gzip_db(gz, target):
-            return True, f'Redis newer snapshot installed revision={remote_rev}'
-        return False, 'Redis snapshot rejected/invalid'
+            installed_rev = _db_revision(target)
+            return True, f'Redis snapshot installed revision={installed_rev or remote_rev}; meta_revision={remote_rev}'
+        return False, f'Redis snapshot rejected/invalid meta_revision={remote_rev}'
     except Exception as exc:
         return False, f'{type(exc).__name__}: {str(exc)[:180]}'
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-
 
 def _restore_from_worker(target: Path):
     base, secret = _peer_base(), _secret()
@@ -504,22 +505,17 @@ def _r20_load_capsule_from_worker():
         return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
 
 def _r20_restore_capsule(target: Path):
-    # R43: FAST owns durability. Redis is queried first and, when available, HEAVY
-    # is not contacted during boot at all. HEAVY remains emergency fallback only.
-    redis_payload,redis_detail=_r20_load_capsule_from_redis()
-    if str(os.getenv('R43_FAST_AUTHORITY','1') or '1').strip().lower() in {'1','true','yes','on'} and redis_payload:
-        try:
-            ok,apply_detail=_r20_apply_capsule_to_db(target,redis_payload)
-            return True, 'redis='+redis_detail+'; '+apply_detail
-        except Exception as exc:
-            return False, f'capsule apply {type(exc).__name__}: {str(exc)[:180]}'
-    worker_payload,worker_detail=_r20_load_capsule_from_worker()
-    payload=_r20_merge_capsules(redis_payload,worker_payload)
-    if not payload:
-        return False, 'redis='+redis_detail+'; worker='+worker_detail
+    """R49: capsule is supplementary and must never force a HEAVY boot round-trip.
+
+    If Redis has it, merge it. If Redis is empty, the already-restored full SQLite is
+    sufficient; HEAVY is reserved for full-base emergency restore, not capsule lookup.
+    """
+    redis_payload, redis_detail = _r20_load_capsule_from_redis()
+    if not redis_payload:
+        return False, 'redis=' + redis_detail + '; skipped HEAVY capsule lookup (R49 Redis-first)'
     try:
-        ok,apply_detail=_r20_apply_capsule_to_db(target,payload)
-        return True, 'redis='+redis_detail+'; worker='+worker_detail+'; '+apply_detail
+        _ok, apply_detail = _r20_apply_capsule_to_db(target, redis_payload)
+        return True, 'redis=' + redis_detail + '; ' + apply_detail
     except Exception as exc:
         return False, f'capsule apply {type(exc).__name__}: {str(exc)[:180]}'
 
@@ -685,85 +681,126 @@ def _preboot_capture_old_front_r18():
 def main():
     server = _start_boot_port()
     target = _db_path()
+    trace = {
+        'schema': 1, 'policy': 'R49_REDIS_FIRST', 'started_at': time.time(),
+        'local_found': target.exists(), 'local_valid': False, 'local_revision': 0.0,
+        'redis_full_attempted': False, 'redis_full_ok': False, 'redis_full_detail': '',
+        'redis_events_ok': False, 'redis_events_detail': '',
+        'redis_capsule_ok': False, 'redis_capsule_detail': '',
+        'heavy_contacted': False, 'heavy_ok': False, 'heavy_detail': '',
+        'mega_contacted': False, 'mega_ok': False, 'mega_detail': '',
+        'base_source': '', 'base_revision': 0.0, 'final_revision': 0.0, 'elapsed_ms': 0.0,
+    }
     try:
-        # Capture the old live instance before Render switches the primary URL to this
-        # new preboot process.  This is the migration bridge from stale R17 caches.
-        _cap_ok, _cap_detail = _preboot_capture_old_front_r18()
-        print('[SPLIT FRONT] preboot old-front capture:', _cap_ok, _cap_detail, flush=True)
         force = _bool('SPLIT_FORCE_BOOT_RESTORE', False)
         always_remote = _bool('SPLIT_BOOT_ALWAYS_RESTORE', False)
         local_valid = _db_valid(target)
-        # R43: FAST is the data authority. On a fresh Render container, try the
-        # shared Redis snapshot before contacting HEAVY. HEAVY is a compute worker,
-        # not the primary boot/backup authority. Worker/MEGA remain emergency fallback.
-        if (not local_valid) and (not force):
+        trace['local_valid'] = bool(local_valid)
+        trace['local_revision'] = _db_revision(target) if local_valid else 0.0
+        if local_valid and not force:
+            trace['base_source'] = 'LOCAL_SQLITE'
+            trace['base_revision'] = trace['local_revision']
+
+        # R49 hard order: Redis is checked before HEAVY/MEGA. On a fresh Render
+        # container a valid Redis snapshot immediately becomes the base.
+        if not force:
+            trace['redis_full_attempted'] = True
             try:
-                _r43_ok, _r43_detail = _restore_from_redis_direct_r18(target)
-                print('[SPLIT FRONT] R43 Redis-first restore:', _r43_ok, _r43_detail, flush=True)
-                local_valid = bool(_r43_ok and _db_valid(target))
-            except Exception as _r43_exc:
-                print('[SPLIT FRONT] R43 Redis-first restore: False', type(_r43_exc).__name__, str(_r43_exc)[:180], flush=True)
-        if force or always_remote or not local_valid:
+                rok, rdetail = _restore_from_redis_direct_r18(target)
+            except Exception as exc:
+                rok, rdetail = False, f'{type(exc).__name__}: {str(exc)[:180]}'
+            trace['redis_full_ok'] = bool(rok)
+            trace['redis_full_detail'] = str(rdetail)[:300]
+            print('[SPLIT FRONT] R49 Redis-first restore:', rok, rdetail, flush=True)
+            if rok:
+                local_valid = _db_valid(target)
+                trace['base_source'] = 'REDIS_FULL'
+                trace['base_revision'] = _db_revision(target)
+
+        # Only an absent/invalid base proceeds to the second bot and then MEGA.
+        # R49 policy requested by owner: whenever we still have a valid local base
+        # but Redis was empty/unusable, seed that current base to Redis *before*
+        # contacting HEAVY/MEGA. On a fresh container with no valid local DB there
+        # is naturally nothing to seed, so fallback proceeds immediately.
+        need_fallback = bool(force or always_remote or not local_valid)
+        if need_fallback and local_valid and not trace.get('redis_full_ok'):
+            try:
+                pre_ok, pre_detail = _redis_seed_current_db(target, reason='r49_before_heavy_mega_fallback')
+            except Exception as exc:
+                pre_ok, pre_detail = False, f'{type(exc).__name__}: {str(exc)[:180]}'
+            trace['redis_pre_fallback_seed_ok'] = bool(pre_ok)
+            trace['redis_pre_fallback_seed_detail'] = str(pre_detail)[:300]
+            print('[SPLIT FRONT] R49 Redis pre-fallback seed:', pre_ok, pre_detail, flush=True)
+        if need_fallback:
+            # Optional rolling capture is deliberately after Redis, never before it.
+            try:
+                cap_ok, cap_detail = _preboot_capture_old_front_r18_legacy()
+                print('[SPLIT FRONT] R49 fallback preboot HEAVY capture:', cap_ok, cap_detail, flush=True)
+            except Exception as exc:
+                print('[SPLIT FRONT] R49 fallback preboot HEAVY capture: False', type(exc).__name__, str(exc)[:160], flush=True)
             while True:
+                trace['heavy_contacted'] = True
                 ok, detail = _restore_from_worker(target)
-                print('[SPLIT FRONT] worker restore:', ok, detail, flush=True)
+                trace['heavy_ok'] = bool(ok); trace['heavy_detail'] = str(detail)[:300]
+                print('[SPLIT FRONT] R49 HEAVY restore:', ok, detail, flush=True)
                 if ok:
+                    local_valid = _db_valid(target)
+                    trace['base_source'] = 'HEAVY'
+                    trace['base_revision'] = _db_revision(target)
                     break
-                # A valid local DB can be newer than MEGA during a temporary worker outage.
-                # Never overwrite it with an older cloud snapshot merely because the peer is down.
                 if local_valid and not force:
-                    print('[SPLIT FRONT] worker unavailable; keeping valid local SQLite:', detail, flush=True)
+                    print('[SPLIT FRONT] HEAVY unavailable; keeping valid local SQLite:', detail, flush=True)
                     break
+                trace['mega_contacted'] = True
                 ok, detail = _restore_from_mega_emergency(target)
-                print('[SPLIT FRONT] emergency MEGA:', ok, detail, flush=True)
+                trace['mega_ok'] = bool(ok); trace['mega_detail'] = str(detail)[:300]
+                print('[SPLIT FRONT] R49 MEGA disaster restore:', ok, detail, flush=True)
                 if ok:
+                    local_valid = _db_valid(target)
+                    trace['base_source'] = 'MEGA'
+                    trace['base_revision'] = _db_revision(target)
                     break
                 if _bool('SPLIT_ALLOW_EMPTY_BOOT', False):
                     print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
+                    trace['base_source'] = 'EMPTY_INIT'
                     break
                 time.sleep(max(5, min(120, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '20') or '20'))))
-        # R32/R18 freshness quorum: Worker /tmp can lag behind the shared Redis durable
-        # snapshot during a rolling deploy.  Prefer whichever has the newest revision.
-        if _db_valid(target):
-            if _bool('R43_FAST_AUTHORITY', True):
-                _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
-                print('[SPLIT FRONT] R43 Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
-            elif _bool('R32_EVENT_STREAM_ENABLED', True):
-                print('[SPLIT FRONT] R32 restore authority: HEAVY assembled checkpoint + event journal; Redis full-snapshot arbitration skipped', flush=True)
-            else:
-                _r18_ok, _r18_detail = _restore_from_redis_direct_r18(target)
-                print('[SPLIT FRONT] Redis freshness arbitration:', _r18_ok, _r18_detail, flush=True)
-                _settle_worker_handoff(target)
+
         if _db_valid(target) and _bool('R43_FAST_AUTHORITY', True):
-            _r43_ev_ok, _r43_ev_detail = _r43_replay_redis_events(target)
-            print('[SPLIT FRONT] R43 Redis event replay:', _r43_ev_ok, _r43_ev_detail, flush=True)
-        # R20: restore the newest independent v262-style settings/user-state capsule
-        # even when the full Worker SQLite image is slightly older.
+            ev_ok, ev_detail = _r43_replay_redis_events(target)
+            trace['redis_events_ok'] = bool(ev_ok); trace['redis_events_detail'] = str(ev_detail)[:300]
+            print('[SPLIT FRONT] R49 Redis event replay:', ev_ok, ev_detail, flush=True)
+
         if _db_valid(target):
-            _cap20_ok, _cap20_detail = _r20_restore_capsule(target)
-            print('[SPLIT FRONT] R20 durable capsule restore:', _cap20_ok, _cap20_detail, flush=True)
-        # R14: packaged runtime_config.py is authoritative for all internal tunables.
+            cap_ok, cap_detail = _r20_restore_capsule(target)
+            trace['redis_capsule_ok'] = bool(cap_ok); trace['redis_capsule_detail'] = str(cap_detail)[:300]
+            print('[SPLIT FRONT] R49 Redis capsule restore:', cap_ok, cap_detail, flush=True)
+
         install_internal_runtime_config('front')
-        # Service-account private key must never be loaded by the Telegram front.
         os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)
-        # R6 migration/deploy bridge: persist the exact restored/current DB in shared
-        # Redis before the worker can be redeployed and lose its /tmp cache.
-        if _bool('R43_FAST_AUTHORITY', True):
-            redis_ok, redis_detail = _redis_seed_current_db(target, reason='r43_front_boot_authority')
-            print('[SPLIT FRONT] R43 Redis durable seed:', redis_ok, redis_detail, flush=True)
-        elif _bool('R32_EVENT_STREAM_ENABLED', True):
-            print('[SPLIT FRONT] R32: full FAST->Redis boot seed skipped; HEAVY owns assembled restore state', flush=True)
-        else:
-            redis_ok, redis_detail = _redis_seed_current_db(target, reason='front_boot_after_restore')
-            print('[SPLIT FRONT] Redis durable seed:', redis_ok, redis_detail, flush=True)
-        # R19 single restore authority: start_front has already arbitrated Worker/Redis/
-        # local freshness. The legacy bot.main restore path must never run a second,
-        # potentially older Telegram/MEGA restore over this exact database.
+
+        # Re-seed Redis with the final assembled DB.  This keeps Free Redis as the
+        # fastest latest-state cache; HEAVY/MEGA remain independent fallbacks.
         if _db_valid(target):
-            _r19_revision = _db_revision(target)
+            redis_ok, redis_detail = _redis_seed_current_db(target, reason='r49_front_boot_final_state')
+            print('[SPLIT FRONT] R49 Redis final seed:', redis_ok, redis_detail, flush=True)
+
+        if _db_valid(target):
+            final_revision = _db_revision(target)
+            trace['final_revision'] = final_revision
+            if not trace.get('base_source'):
+                trace['base_source'] = 'LOCAL_SQLITE'
+                trace['base_revision'] = final_revision
             os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
-            os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(_r19_revision)
-            print(f'[SPLIT FRONT] R20 authoritative preboot DB revision={_r19_revision}', flush=True)
+            os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(final_revision)
+            print(f'[SPLIT FRONT] R49 authoritative preboot DB revision={final_revision}', flush=True)
+
+        trace['elapsed_ms'] = round((time.time() - float(trace['started_at'])) * 1000.0, 1)
+        trace['finished_at'] = time.time()
+        trace_json = json.dumps(trace, ensure_ascii=False, separators=(',', ':'))
+        os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
+        print('[RESTORE TRACE R49]', trace_json, flush=True)
+
         _stop_boot_port(server)
         runpy.run_path(str(Path(__file__).with_name('bot.py')), run_name='__main__')
     finally:

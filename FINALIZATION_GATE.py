@@ -200,7 +200,7 @@ if ROLE=='fast':
            all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py']) and 'COPY INFO/' not in docker_src,
            'Dockerfile must explicitly copy only compact runtime; INFO must not be a production dependency')
         ok('r48_dockerignore_allowlist',
-           dockerignore_src.lstrip().startswith('# R48 CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
+           dockerignore_src.lstrip().startswith('# R49 FINAL CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
            '.dockerignore must be a strict runtime-only compact allowlist; INFO is release-only')
 
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
@@ -230,6 +230,116 @@ if ROLE=='fast':
                         lock_hits.append(f'{fn}:{owner.name}:{lock_kind}:{name}@{call.lineno}')
     ok('r48_no_direct_io_under_chat_or_data_lock',not lock_hits,'; '.join(lock_hits[:12]))
 
+    # R49 PERFORMANCE / RESTORE FINALIZATION invariants.
+    start_src=all_py.get('start_front.py','')
+    cfg_src=all_py.get('runtime_config.py','')
+    req_src=text('requirements.txt') if (ROOT/'requirements.txt').is_file() else ''
+    owner_src=all_py.get('09_final_transport.py','')
+
+    ok('r49_sqlite_single_priority_writer',
+       all(x in core_src for x in ["name='sqlite-writer-1'",'self._writer_heap','def _writer_loop','def _write','def writer_status']) and
+       'PriorityQueue' not in core_src[core_src.find('class SQLiteState'):core_src.find('class SQLiteState')+5000],
+       'main SQLite must have one heap/priority writer owner')
+    direct_sqlite_owners=[]
+    for fn,src in runtime_py.items():
+        if fn=='01_core_data.py':
+            # Direct conn/lock access is allowed only inside SQLiteState itself.
+            try:
+                tree=ast.parse(src)
+                for node in ast.walk(tree):
+                    if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name not in {'__init__','_connect_read','_writer_loop','_write','_read_one','_read_all','backup_to','replace_database','close'}:
+                        seg='\n'.join(src.splitlines()[node.lineno-1:node.end_lineno])
+                        if 'SQLITE.lock' in seg or 'SQLITE.conn' in seg:
+                            direct_sqlite_owners.append(f'{fn}:{node.name}')
+            except Exception: pass
+        else:
+            try:
+                tree=ast.parse(src)
+                if any(isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name) and n.value.id=='SQLITE' and n.attr in {'lock','conn'} for n in ast.walk(tree)):
+                    direct_sqlite_owners.append(fn)
+            except Exception:
+                pass
+    ok('r49_no_external_sqlite_conn_lock',not direct_sqlite_owners,','.join(direct_sqlite_owners[:12]))
+
+    ok('r49_webhook_inbox_persistent_store',
+       'class _V260WebhookInboxStore' in web_src and '_v260_inbox_connect' not in web_src and
+       count(r'PRAGMA journal_mode=WAL', _fn_sources(web_src,{'__init__'}).get('__init__','')) <= 1 and
+       '_v260_webhook_inbox_mark_async' in web_src,
+       'webhook inbox must initialize once and mark done asynchronously')
+    ok('r49_owner_message_callable',
+       '_v221_owner_message_command' not in joined and '_v221_capture_owner_message(msg)' in owner_src and
+       count(r'(?m)^def _v221_capture_owner_message\(',joined)==1,
+       'owner-message interceptor must call the single existing canonical owner')
+    ok('r49_waitress_bounded_http',
+       'waitress' in req_src.lower() and 'from waitress import serve' in web_src and 'app.run(' not in web_src and
+       "WEBHOOK_MAX_CONNECTIONS\": \"8\"" in cfg_src and "WAITRESS_THREADS\": \"6\"" in cfg_src,
+       'FAST must use bounded Waitress and webhook max_connections=8')
+    ok('r49_restore_trace_present',
+       'R49_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R49]' in start_src and 'restore_trace' in web_src and 'RESTORE TRACE R49' in core_src,
+       'restore source/revision trace missing from startup or Watcher')
+    try:
+        i_redis=start_src.index('R49 Redis-first restore:')
+        i_heavy=start_src.index('R49 HEAVY restore:')
+        i_mega=start_src.index('R49 MEGA disaster restore:')
+        restore_order_ok=i_redis < i_heavy < i_mega
+    except ValueError:
+        restore_order_ok=False
+    ok('r49_restore_order_redis_heavy_mega',restore_order_ok,'expected Redis -> HEAVY -> MEGA')
+    ok('r49_redis_empty_falls_through',
+       "Redis snapshot empty" in start_src and 'need_fallback' in start_src and 'not local_valid' in start_src,
+       'empty/invalid Redis must not stop fallback recovery')
+    ok('r49_redis_before_heavy_mega_seed',
+       'r49_before_heavy_mega_fallback' in start_src and
+       '_r43_store_events_redis(events)' in split_src and split_src.index('_r43_store_events_redis(events)') < split_src.index("requests.post(base+endpoint"),
+       'current state/events must be persisted to Redis before HEAVY mirror/fallback when possible')
+    ok('r49_watchdog_http_ack_state',
+       'HTTP_200_SENT / INTERNAL_PROCESSING' in core_src and 'HTTP_NOT_ACKED / TELEGRAM_MAY_RETRY' in core_src and 'Telegram will retry until 2xx' not in core_src,
+       'watchdog must distinguish already-ACKed HTTP from Telegram retry risk')
+    ok('r49_runtime_lock_hold_trace',
+       'LOCKHELD' in core_src and 'LOCKHELD_STACK' in core_src and '0.050' in core_src and '0.250' in core_src,
+       'runtime central-lock hold thresholds/stack trace missing')
+
+    # Lightweight transitive call-graph audit.  Only direct Name() calls are
+    # followed to avoid conflating unrelated generic methods like dict.get().
+    # This catches helpers that hide SQLite/network/persist under central locks.
+    cg_calls={}; cg_locks=[]
+    cg_danger={'save_data','persist_finance_chat_local_fast','finance_integrity_append','_tg_call_retry',
+               '_split_cache_snapshot_to_redis_v266','_mega_run','_mega_exec_raw','run_cmd'}
+    for fn,src in runtime_py.items():
+        try: tree=ast.parse(src)
+        except Exception: continue
+        for node in ast.walk(tree):
+            if not isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)): continue
+            calls={c.func.id for c in ast.walk(node) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name)}
+            if any(isinstance(c,ast.Call) and isinstance(c.func,ast.Attribute) and isinstance(c.func.value,ast.Name) and c.func.value.id in {'SQLITE','requests'} for c in ast.walk(node)):
+                calls.add('__DIRECT_IO__')
+            cg_calls.setdefault(node.name,set()).update(calls)
+            if node.name.startswith('_v177_legacy_'): continue
+            for w in [x for x in ast.walk(node) if isinstance(x,(ast.With,ast.AsyncWith))]:
+                expr=' '.join(ast.unparse(i.context_expr) for i in w.items)
+                kind='chat' if ('locked_chat' in expr or 'telegram_execution_chat_lock' in expr) else 'data' if re.search(r'\bdata_lock\b',expr) else ''
+                if not kind: continue
+                wcalls={c.func.id for c in ast.walk(w) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name)}
+                if any(isinstance(c,ast.Call) and isinstance(c.func,ast.Attribute) and isinstance(c.func.value,ast.Name) and c.func.value.id in {'SQLITE','requests'} for c in ast.walk(w)):
+                    wcalls.add('__DIRECT_IO__')
+                cg_locks.append((fn,node.name,kind,node.lineno,wcalls))
+    def _cg_risk(name,seen=None):
+        seen=set() if seen is None else set(seen)
+        if name=='__DIRECT_IO__' or name in cg_danger: return [name]
+        if name in seen: return []
+        seen.add(name)
+        for nxt in cg_calls.get(name,()):
+            path=_cg_risk(nxt,seen)
+            if path: return [name]+path
+        return []
+    cg_hits=[]
+    for fn,owner,kind,line,wcalls in cg_locks:
+        for call in wcalls:
+            path=_cg_risk(call)
+            if path:
+                cg_hits.append(f'{fn}:{owner}:{kind}@{line}:'+' -> '.join(path)); break
+    ok('r49_no_indirect_io_under_central_locks',not cg_hits,'; '.join(cg_hits[:12]))
+
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot
         # and all startup contracts, but prevent daemon/background threads from
@@ -238,7 +348,7 @@ if ROLE=='fast':
         _orig_thread_start = threading.Thread.start
         threading.Thread.start = lambda self: None
         try:
-            ns = runpy.run_path(str(ROOT/'bot.py'), run_name='r48_gate_startup_smoke')
+            ns = runpy.run_path(str(ROOT/'bot.py'), run_name='r49_gate_startup_smoke')
             contract = ns.get('r29_assert_r28_fast_ui_contract')
             bot_obj = ns.get('bot')
             msg_n = len(getattr(bot_obj,'message_handlers',[]) or [])

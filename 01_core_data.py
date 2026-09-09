@@ -907,7 +907,7 @@ class DurableUpdateDispatcher:
             else:
                 attempts = 1
             event = threading.Event()
-            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'enqueued_at': None, 'queue_name': '', 'queue_key': '', 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': '', 'thread_ident': None, 'thread_name': '', 'stage': 'CLAIMED', 'stage_at': now, 'action': ''}
+            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'enqueued_at': None, 'queue_name': '', 'queue_key': '', 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': '', 'thread_ident': None, 'thread_name': '', 'stage': 'CLAIMED', 'stage_at': now, 'action': '', 'http_acked_at': None}
             self._tickets[key] = item
             return ('new', item)
 
@@ -922,6 +922,15 @@ class DurableUpdateDispatcher:
             item['queue_key'] = str(queue_key or '')[:180]
             item['stage'] = f"ENQUEUED:{item['queue_name'] or '?'}"
             item['stage_at'] = now
+
+    def mark_http_acked(self, update_id):
+        with self._lock:
+            item = self._tickets.get(str(update_id))
+            if item:
+                item['http_acked_at'] = time.time()
+                if item.get('stage') == 'CLAIMED':
+                    item['stage'] = 'HTTP_200_SENT'
+                    item['stage_at'] = item['http_acked_at']
 
     def mark_started(self, update_id):
         with self._lock:
@@ -1015,11 +1024,11 @@ class DurableUpdateDispatcher:
                             last = float(self._last_warn.get(key, 0) or 0)
                             if now - last >= WEBHOOK_STUCK_WARN_SECONDS:
                                 self._last_warn[key] = now
-                                warnings.append((key, item.get('chat_id'), item.get('type'), age, state, item.get('thread_ident'), item.get('thread_name'), item.get('stage'), item.get('stage_at'), item.get('action')))
+                                warnings.append((key, item.get('chat_id'), item.get('type'), age, state, item.get('thread_ident'), item.get('thread_name'), item.get('stage'), item.get('stage_at'), item.get('action'), item.get('http_acked_at')))
                     for key in stale_keys:
                         self._tickets.pop(key, None)
                         self._last_warn.pop(key, None)
-                for key, chat_id, typ, age, state, thread_ident, thread_name, stage, stage_at, action in warnings:
+                for key, chat_id, typ, age, state, thread_ident, thread_name, stage, stage_at, action, http_acked_at in warnings:
                     try:
                         stage_age = max(0.0, now - float(stage_at or now))
                         _locks = ''
@@ -1028,7 +1037,8 @@ class DurableUpdateDispatcher:
                             _locks = str(_snap_fn() if callable(_snap_fn) else '')
                         except Exception:
                             _locks = ''
-                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s stage={stage or "?"} stage_age={stage_age:.1f}s action={str(action or "")[:160]}; thread={thread_name or "?"}; locks={_locks or "unknown"}; Telegram will retry until 2xx')
+                        _http_state = ('HTTP_200_SENT / INTERNAL_PROCESSING' if http_acked_at else 'HTTP_NOT_ACKED / TELEGRAM_MAY_RETRY')
+                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s stage={stage or "?"} stage_age={stage_age:.1f}s action={str(action or "")[:160]}; thread={thread_name or "?"}; locks={_locks or "unknown"}; {_http_state}')
                     except Exception:
                         pass
                     try:
@@ -1221,13 +1231,30 @@ class R25TracedRLock:
         return ok
     def release(self):
         ident = threading.get_ident()
-        try:
-            return self._lock.release()
-        finally:
-            if self._owner_ident == ident:
-                self._owner_depth = max(0, int(self._owner_depth or 0)-1)
-                if self._owner_depth <= 0:
-                    self._owner_ident = None; self._owner_name = ''; self._owner_since = 0.0; self._owner_depth = 0
+        outermost = bool(self._owner_ident == ident and int(self._owner_depth or 0) == 1)
+        held = max(0.0, time.monotonic() - float(self._owner_since or 0.0)) if outermost else 0.0
+        owner_name = str(self._owner_name or threading.current_thread().name)
+        result = self._lock.release()
+        if self._owner_ident == ident:
+            self._owner_depth = max(0, int(self._owner_depth or 0)-1)
+            if self._owner_depth <= 0:
+                self._owner_ident = None; self._owner_name = ''; self._owner_since = 0.0; self._owner_depth = 0
+        # R49: log hold duration only after the raw lock has been released.  Logging
+        # itself must never extend the critical section.
+        if outermost and held >= 0.050:
+            try:
+                level = 'ERROR' if held >= 0.250 else 'WARN'
+                ctx = r25_trace_current()
+                line = f'LOCKHELD name={self.name} held={held:.3f}s thread={owner_name} update={ctx.get("update_id") or "-"} action={str(ctx.get("action") or "")[:120]}'
+                if level == 'ERROR': log_error(line)
+                else: log_info(line)
+                r26_diag_trace_line(line)
+                if held >= 1.0:
+                    stack = ''.join(traceback.format_stack(limit=18))
+                    r26_diag_trace_line(f'LOCKHELD_STACK name={self.name} held={held:.3f}s thread={owner_name}\n{stack[-9000:]}')
+            except Exception:
+                pass
+        return result
     def __enter__(self): self.acquire(); return self
     def __exit__(self, exc_type, exc, tb): self.release(); return False
     def __getattr__(self, name): return getattr(self._lock, name)
@@ -1740,13 +1767,100 @@ class SQLiteState:
 
     def __init__(self, path: str):
         self.path = path
-        self.lock = R25TracedRLock('sqlite')
+        # R49: one priority writer owns the main SQLite connection.  Callers never
+        # race each other for a raw writer mutex; interactive work is ordered ahead
+        # of reminders/schedulers/maintenance.  Reads keep their independent WAL
+        # query-only connection.
+        self.lock = R25TracedRLock('sqlite-writer-internal')
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=1.5)
         self.conn.row_factory = sqlite3.Row
         self.read_lock = R25TracedRLock('sqlite-read')
         self.read_conn = None
         self._init_db()
         self._open_reader()
+        self._writer_cv = threading.Condition(threading.RLock())
+        self._writer_heap = []
+        self._writer_seq = 0
+        self._writer_stop = False
+        self._writer_ident = None
+        self._writer_stats = {'submitted': 0, 'done': 0, 'failed': 0, 'max_pending': 0, 'last_wait_ms': 0.0}
+        self._writer_thread = threading.Thread(target=self._writer_loop, name='sqlite-writer-1', daemon=True)
+        self._writer_thread.start()
+
+    def _writer_priority(self, explicit=None) -> int:
+        if explicit is not None:
+            try: return max(0, min(9, int(explicit)))
+            except Exception: pass
+        name = threading.current_thread().name.lower()
+        if any(x in name for x in ('fast-ui', 'start-ui', 'callback', 'content', 'ui-')):
+            return 0
+        if 'webhook' in name or 'request' in name:
+            return 1
+        if 'reminder' in name:
+            return 3
+        if 'scheduler' in name or 'background' in name:
+            return 4
+        if 'maintenance' in name or 'backup' in name or 'snapshot' in name:
+            return 5
+        return 2
+
+    def _writer_loop(self):
+        import heapq as _heapq
+        self._writer_ident = threading.get_ident()
+        while True:
+            with self._writer_cv:
+                while not self._writer_heap and not self._writer_stop:
+                    self._writer_cv.wait(timeout=1.0)
+                if self._writer_stop and not self._writer_heap:
+                    return
+                _prio, _seq, task = _heapq.heappop(self._writer_heap)
+            started = time.monotonic()
+            try:
+                task['result'] = task['fn'](self.conn)
+                self.conn.commit()
+                task['ok'] = True
+            except Exception as exc:
+                try: self.conn.rollback()
+                except Exception: pass
+                task['error'] = exc
+                self._writer_stats['failed'] += 1
+            finally:
+                task['done_at'] = time.monotonic()
+                self._writer_stats['done'] += 1
+                self._writer_stats['last_wait_ms'] = round(max(0.0, started - task['queued_at']) * 1000.0, 3)
+                task['event'].set()
+
+    def _write(self, fn, *, priority=None, timeout=30.0):
+        # Re-entrant calls from the writer itself stay direct and never deadlock.
+        if threading.get_ident() == self._writer_ident:
+            result = fn(self.conn)
+            self.conn.commit()
+            return result
+        if not self._writer_thread.is_alive():
+            if str(os.getenv('FINALIZATION_STARTUP_SMOKE','0') or '0').lower() in {'1','true','yes','on'}:
+                result = fn(self.conn); self.conn.commit(); return result
+            raise RuntimeError('R49 SQLite writer thread is not alive')
+        import heapq as _heapq
+        ev = threading.Event()
+        task = {'fn': fn, 'event': ev, 'queued_at': time.monotonic(), 'ok': False, 'result': None, 'error': None}
+        with self._writer_cv:
+            self._writer_seq += 1
+            _heapq.heappush(self._writer_heap, (self._writer_priority(priority), self._writer_seq, task))
+            self._writer_stats['submitted'] += 1
+            self._writer_stats['max_pending'] = max(int(self._writer_stats.get('max_pending') or 0), len(self._writer_heap))
+            self._writer_cv.notify()
+        if not ev.wait(max(1.0, float(timeout or 30.0))):
+            raise TimeoutError('SQLite priority writer timeout')
+        if task.get('error') is not None:
+            raise task['error']
+        return task.get('result')
+
+    def writer_status(self) -> dict:
+        with self._writer_cv:
+            out = dict(self._writer_stats)
+            out['pending'] = len(self._writer_heap)
+            out['alive'] = bool(self._writer_thread.is_alive())
+            return out
 
     def _init_db(self):
         with self.lock:
@@ -1804,9 +1918,7 @@ class SQLiteState:
 
     def set_kv(self, key: str, obj):
         payload = self._dump(obj)
-        with self.lock:
-            self.conn.execute('INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', (key, payload))
-            self.conn.commit()
+        return self._write(lambda conn: conn.execute('INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', (key, payload)).rowcount)
 
     def load_root(self):
         return self.get_kv('root', None)
@@ -1825,23 +1937,20 @@ class SQLiteState:
 
     def save_chats(self, chats: dict):
         chats = chats or {}
-        # R36: JSON encoding can be expensive for finance history; never spend that CPU
-        # while monopolising the shared SQLite connection lock.
         encoded = {str(chat_id): self._dump(payload) for chat_id, payload in chats.items()}
-        with self.lock:
-            existing = {str(r[0]) for r in self.conn.execute('SELECT chat_id FROM chats').fetchall()}
-            self.conn.executemany('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', list(encoded.items()))
+        def _op(conn):
+            existing = {str(r[0]) for r in conn.execute('SELECT chat_id FROM chats').fetchall()}
+            conn.executemany('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', list(encoded.items()))
             stale = existing - set(encoded)
             if stale:
-                self.conn.executemany('DELETE FROM chats WHERE chat_id=?', [(k,) for k in stale])
-            self.conn.commit()
+                conn.executemany('DELETE FROM chats WHERE chat_id=?', [(k,) for k in stale])
+            return len(encoded)
+        return self._write(_op)
 
     def save_chat(self, chat_id, payload: dict):
         """Точечно сохраняет только один изменившийся чат."""
         encoded = self._dump(payload or {})
-        with self.lock:
-            self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), encoded))
-            self.conn.commit()
+        return self._write(lambda conn: conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), encoded)).rowcount)
 
     def save_chat_bundle(self, chat_id, payload: dict, cold_items: dict | None=None):
         """R48: persist chat metadata + loaded cold fields in one SQLite commit."""
@@ -1850,17 +1959,15 @@ class SQLiteState:
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
         for key, obj in (cold_items or {}).items():
             rows.append((str(chat_id), str(key), self._dump(obj), stamp))
-        with self.lock:
-            self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), encoded))
+        def _op(conn):
+            conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), encoded))
             if rows:
-                self.conn.executemany('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', rows)
-            self.conn.commit()
-        return len(rows)
+                conn.executemany('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', rows)
+            return len(rows)
+        return self._write(_op, priority=0 if any(x in threading.current_thread().name.lower() for x in ('content','fast-ui','start-ui','callback')) else None)
 
     def delete_chat(self, chat_id):
-        with self.lock:
-            self.conn.execute('DELETE FROM chats WHERE chat_id=?', (str(chat_id),))
-            self.conn.commit()
+        return self._write(lambda conn: conn.execute('DELETE FROM chats WHERE chat_id=?', (str(chat_id),)).rowcount)
 
     def get_meta(self, kind: str, key: str, default=None):
         row = self._read_one('SELECT v FROM meta WHERE kind=? AND k=?', (kind, key))
@@ -1868,9 +1975,7 @@ class SQLiteState:
 
     def set_meta(self, kind: str, key: str, obj):
         payload = self._dump(obj)
-        with self.lock:
-            self.conn.execute('INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v', (kind, key, payload))
-            self.conn.commit()
+        return self._write(lambda conn: conn.execute('INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v', (kind, key, payload)).rowcount)
 
     def get_cold(self, chat_id, key: str, default=None):
         row = self._read_one('SELECT v FROM cold_fields WHERE chat_id=? AND k=?', (str(chat_id), str(key)))
@@ -1879,9 +1984,7 @@ class SQLiteState:
     def set_cold(self, chat_id, key: str, obj):
         payload = self._dump(obj)
         stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        with self.lock:
-            self.conn.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', (str(chat_id), str(key), payload, stamp))
-            self.conn.commit()
+        return self._write(lambda conn: conn.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', (str(chat_id), str(key), payload, stamp)).rowcount)
 
     def set_cold_many(self, chat_id, items: dict):
         """R24: persist all loaded cold fields of one chat in one SQLite commit."""
@@ -1891,15 +1994,10 @@ class SQLiteState:
             rows.append((str(chat_id), str(key), self._dump(obj), stamp))
         if not rows:
             return 0
-        with self.lock:
-            self.conn.executemany('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', rows)
-            self.conn.commit()
-        return len(rows)
+        return self._write(lambda conn: (conn.executemany('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', rows), len(rows))[1])
 
     def delete_cold(self, chat_id, key: str):
-        with self.lock:
-            self.conn.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?', (str(chat_id), str(key)))
-            self.conn.commit()
+        return self._write(lambda conn: conn.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?', (str(chat_id), str(key))).rowcount)
 
     def cold_count(self, chat_id=None, key: str | None=None) -> int:
         sql = 'SELECT COUNT(*) FROM cold_fields'
@@ -1976,11 +2074,11 @@ class SQLiteState:
         return target_path
 
     def replace_database(self, source_path: str):
-        """Replace ephemeral working DB with a restored MEGA snapshot and reopen connection."""
+        """Replace the working DB through the single R49 writer owner."""
         source_path = str(source_path)
         if not os.path.exists(source_path):
             raise FileNotFoundError(source_path)
-        with self.lock:
+        def _replace(_conn):
             with self.read_lock:
                 try:
                     if self.read_conn is not None:
@@ -2003,6 +2101,9 @@ class SQLiteState:
             self.conn.row_factory = sqlite3.Row
             self._init_db()
             self._open_reader()
+            return True
+        return self._write(_replace, priority=0, timeout=60.0)
+
 SQLITE = SQLiteState(DB_FILE)
 LOWRAM_ENABLED = _env_bool('LOWRAM_ENABLED', '1')
 LOWRAM_COLD_KEYS = {'records', 'daily_records', 'daily_records_by_date', 'ars_records', 'ars_daily_records', 'ars_daily_records_by_date', 'usd_records', 'usd_daily_records', 'usd_daily_records_by_date', 'secret_messages'}
@@ -12181,10 +12282,11 @@ def _build_delta_payload(chat_ids: list[int], generation_map: dict[int, int]) ->
         _persist_forward_index_in_data(data)
         state = {str(key): _delta_json_clone(value) for key, value in (data or {}).items() if key != 'chats'}
         all_chats = (data or {}).get('chats', {}) or {}
-        if LOWRAM_ENABLED:
-            state['chats'] = {str(cid): _delta_json_clone(_lowram_materialize_chat_snapshot(cid, all_chats.get(str(cid), {}) or {})) for cid in requested_ids}
-        else:
-            state['chats'] = {str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {}) for cid in requested_ids}
+        hot_chat_meta = {str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {}) for cid in requested_ids}
+    if LOWRAM_ENABLED:
+        state['chats'] = {str(cid): _delta_json_clone(_lowram_materialize_chat_snapshot(cid, hot_chat_meta.get(str(cid), {}) or {})) for cid in requested_ids}
+    else:
+        state['chats'] = hot_chat_meta
     with _delta_state_lock:
         old_records = {int(cid): dict(sigs or {}) for cid, sigs in _delta_record_baseline.items()}
         old_meta = {int(cid): dict(sigs or {}) for cid, sigs in _delta_meta_baseline.items()}
@@ -13988,7 +14090,20 @@ def build_runtime_watcher_text() -> str:
     status = '🟢 READY' if runtime_is_ready() else '🟠 SHUTDOWN' if runtime_is_shutting_down() else '🟡 BOOT / RECOVERY'
     commit = str(ren.get('RENDER_GIT_COMMIT') or '—')
     instance = str(ren.get('RENDER_INSTANCE_ID') or '—')
+    restore_trace = st.get('restore_trace') or {}
     lines = ['🖥 Render / Сервер — Watcher', f'Состояние: {status}', f"Фаза: {st.get('phase') or '—'}", f'Версия: {VERSION}', f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}", f"Старт: {st.get('started_at') or '—'}", f"READY: {st.get('ready_at') or '—'}", f"BOOT: {(st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—')} сек", '', 'Render:', f"Instance: {(instance[-28:] if instance != '—' else instance)}", f"Commit: {(commit[:12] if commit != '—' else commit)}", f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}", f"Region/type: {ren.get('RENDER_REGION') or '—'} / {ren.get('RENDER_SERVICE_TYPE') or '—'}", f"PID/host: {proc.get('pid')} / {proc.get('hostname')}", '', 'Ресурсы:', f"Python RAM: {(proc.get('rss_mb') if proc.get('rss_mb') is not None else '—')} MB; пик: {(proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—')} MB", f"Контейнер RAM: {(proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—')} MB; пик: {(proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—')} MB", f"RAM лимит cgroup: {(proc.get('limit_mb') if proc.get('limit_mb') is not None else '—')} MB; контейнер: {(proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—')}%", f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count', '—')} | malloc_trim {memstate.get('malloc_trim_count', '—')} | blocked exports {memstate.get('blocked_heavy_jobs', '—')}", f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb', '—')} MB", f"Диск: занято {(disk.get('used_mb') if disk.get('used_mb') is not None else '—')} MB; свободно {(disk.get('free_mb') if disk.get('free_mb') is not None else '—')} MB", f"Потоков Python: {proc.get('threads')}", f"Runtime объекты: операции {audit.get('operation_items', '—')} | integrity {audit.get('integrity_events', '—')} | forward outcomes {audit.get('forward_outcomes', '—')} | fin batches {audit.get('finance_forward_batches', '—')}", f"Кэши/буферы: finance {audit.get('finance_cache_entries', '—')} | expense {audit.get('expense_drafts', '—')} | journal {audit.get('journal_buffer_rows', '—')} | reminder mode {audit.get('reminder_mode', '—')}", '', 'BOOT / Telegram gate:', f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}", f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}", f"Webhook получено: {st.get('webhook_received', 0)}", f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}", f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}", '', 'Очереди P/A | done err rej | max wait:']
+    if isinstance(restore_trace, dict) and restore_trace:
+        lines.extend([
+            '', 'RESTORE TRACE R49:',
+            f"Base: {restore_trace.get('base_source') or '—'} | revision {restore_trace.get('base_revision') or 0}",
+            f"Local: found={restore_trace.get('local_found')} valid={restore_trace.get('local_valid')} rev={restore_trace.get('local_revision') or 0}",
+            f"Redis full: attempted={restore_trace.get('redis_full_attempted')} ok={restore_trace.get('redis_full_ok')} | {str(restore_trace.get('redis_full_detail') or '—')[:180]}",
+            f"Redis events: ok={restore_trace.get('redis_events_ok')} | {str(restore_trace.get('redis_events_detail') or '—')[:180]}",
+            f"Redis capsule: ok={restore_trace.get('redis_capsule_ok')} | {str(restore_trace.get('redis_capsule_detail') or '—')[:180]}",
+            f"HEAVY: contacted={restore_trace.get('heavy_contacted')} ok={restore_trace.get('heavy_ok')} | {str(restore_trace.get('heavy_detail') or '—')[:160]}",
+            f"MEGA: contacted={restore_trace.get('mega_contacted')} ok={restore_trace.get('mega_ok')} | {str(restore_trace.get('mega_detail') or '—')[:160]}",
+            f"Final revision: {restore_trace.get('final_revision') or 0} | restore {restore_trace.get('elapsed_ms') or 0} ms",
+        ])
     for name in ('content', 'ui', 'callback-ack', 'recovery', 'reminder', 'finance', 'fin-forward', 'forward', 'delta', 'backup', 'export', 'general', 'maintenance', 'journal', 'delayed', 'dozvon'):
         q = queues.get(name) or {}
         lines.append(f"{name}: {q.get('pending', 0)}/{q.get('active', 0)} | {q.get('completed', 0)} {q.get('failed', 0)} {q.get('rejected', 0)} | {q.get('max_wait', 0)}с")
@@ -16551,10 +16666,10 @@ def _v186_clear_chat_scope_before_restore(chat_id: int) -> None:
     except Exception:
         pass
     try:
-        with SQLITE.lock:
-            SQLITE.conn.execute('DELETE FROM cold_fields WHERE chat_id=?', (cs,))
-            SQLITE.conn.execute('DELETE FROM chats WHERE chat_id=?', (cs,))
-            SQLITE.conn.commit()
+        def _delete_chat_storage(conn):
+            conn.execute('DELETE FROM cold_fields WHERE chat_id=?', (cs,))
+            conn.execute('DELETE FROM chats WHERE chat_id=?', (cs,))
+        SQLITE._write(_delete_chat_storage, priority=0)
     except Exception as exc:
         raise RuntimeError(f'Не удалось очистить SQLite scope чата {cid}: {exc}')
     try:
@@ -16693,10 +16808,10 @@ def restore_from_json(chat_id: int, path: str, *, actor_user_id: int | None=None
             raise RuntimeError('Полный глобальный JSON может восстановить только владелец платформы')
         restored_state = _migrate_full_state(payload)
         try:
-            with SQLITE.lock:
-                SQLITE.conn.execute('DELETE FROM cold_fields')
-                SQLITE.conn.execute('DELETE FROM chats')
-                SQLITE.conn.commit()
+            def _clear_chat_storage(conn):
+                conn.execute('DELETE FROM cold_fields')
+                conn.execute('DELETE FROM chats')
+            SQLITE._write(_clear_chat_storage, priority=0)
         except Exception as exc:
             raise RuntimeError(f'Не удалось очистить SQLite перед global JSON restore: {exc}')
         data = restored_state
@@ -18207,8 +18322,7 @@ def _constitution_reconcile_local_ledger_highwater_v260() -> dict:
     except Exception:
         best = {}
     try:
-        with SQLITE.lock:
-            rows = SQLITE.conn.execute("SELECT k,v FROM meta WHERE kind='data_constitution_pending'").fetchall()
+        rows = SQLITE._read_all("SELECT k,v FROM meta WHERE kind='data_constitution_pending'")
         for key, raw in rows:
             try:
                 ev = json.loads(raw) if isinstance(raw, str) else raw
@@ -19319,8 +19433,7 @@ def constitution_flush_local_only_ledger_v233(limit: int=5000) -> dict:
         return {'ok': False, 'reason': 'external_local_only', 'uploaded': 0, 'pending': 0}
     rows = []
     try:
-        with SQLITE.lock:
-            dbrows = SQLITE.conn.execute("SELECT k,v FROM meta WHERE kind='data_constitution_pending'").fetchall()
+        dbrows = SQLITE._read_all("SELECT k,v FROM meta WHERE kind='data_constitution_pending'")
         for row in dbrows:
             try:
                 key = str(row[0])

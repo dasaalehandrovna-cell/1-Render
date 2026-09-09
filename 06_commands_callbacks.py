@@ -2837,6 +2837,22 @@ def find_record_by_operation_key(chat_id: int, operation_key: str):
         pass
     return None
 
+def _r49_defer_operation_complete(op_id: str, detail: str) -> bool:
+    """Never persist operation bookkeeping while a chat/data lock is held."""
+    if not op_id:
+        return False
+    try:
+        pool = globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None and hasattr(pool, 'submit'):
+            return bool(pool.submit(f'r49-op-complete:{op_id}', operation_complete, op_id, str(detail or '')))
+        scheduler = globals().get('DELAYED_SCHEDULER')
+        if scheduler is not None:
+            scheduler.schedule(f'r49-op-complete:{op_id}', 0.05, operation_complete, op_id, str(detail or ''))
+            return True
+    except Exception:
+        pass
+    return False
+
 def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str='', usd_only: bool=False, source_finance_text: str=''):
     bot_journal('record_add_start', chat_id, f'amount={amount} note={note}')
     if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
@@ -2858,7 +2874,7 @@ def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int,
             if isinstance(existing_op, dict):
                 bot_journal('finance_duplicate_operation_blocked_v260', chat_id, f'operation_key={operation_key}')
                 if op_id and 'operation_complete' in globals():
-                    operation_complete(op_id, 'duplicate blocked by stable operation key; existing record reused')
+                    _r49_defer_operation_complete(op_id, 'duplicate blocked by stable operation key; existing record reused')
                 return existing_op
         if source_msg_id is not None:
             existing_any = find_record_by_message_id(int(chat_id), int(source_msg_id)) if 'find_record_by_message_id' in globals() else None
@@ -2867,7 +2883,7 @@ def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int,
                     _remember_finance_source_identity_v257(int(chat_id), existing_any, int(source_msg_id), 'records')
                 bot_journal('finance_duplicate_blocked_v257', chat_id, f'source_msg_id={source_msg_id} operation_key={operation_key}; central=1')
                 if op_id and 'operation_complete' in globals():
-                    operation_complete(op_id, 'duplicate blocked by stable source identity; existing record reused')
+                    _r49_defer_operation_complete(op_id, 'duplicate blocked by stable source identity; existing record reused')
                 return existing_any
             for existing in store.get('records', []) or []:
                 if not isinstance(existing, dict):
@@ -2877,7 +2893,7 @@ def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int,
                         existing['operation_key'] = operation_key
                     bot_journal('finance_duplicate_blocked', chat_id, f'source_msg_id={source_msg_id} operation_key={operation_key}')
                     if op_id and 'operation_complete' in globals():
-                        operation_complete(op_id, 'duplicate blocked; existing record reused')
+                        _r49_defer_operation_complete(op_id, 'duplicate blocked; existing record reused')
                     return existing
         rec = {'id': rid, 'short_id': '', 'timestamp': message_timestamp_iso(source_msg), 'amount': amount, 'note': note, 'source_msg_id': source_msg_id, 'source_order_msg_id': source_order_msg_id, 'owner': owner, 'msg_id': source_msg_id, 'origin_msg_id': source_msg_id, 'day_key': day_key, 'operation_key': operation_key}
         if source_msg is not None:
@@ -4337,8 +4353,8 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
         begin_restore = globals().get('_v241_restore_storage_barrier_begin')
         if callable(begin_restore):
             restore_epoch = int(begin_restore() or 0)
-        with data_lock:
-            result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
+        # R49: restore helper owns its own short mutation locks; never wrap filesystem/SQLite restore in global data_lock.
+        result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
         _v240_restore_reanchor_guaranteed(f'owner_json_prompt:{fname}')
         restore_success = True
         send_and_auto_delete(owner_chat_id, result + '\n🏛 DATA CONSTITUTION: состояние закреплено новым generation.', 15)

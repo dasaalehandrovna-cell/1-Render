@@ -5651,7 +5651,7 @@ def _final_dispatch_non_callback_once(update):
     msg = getattr(update, 'message', None)
     if msg is not None:
         try:
-            if _v221_owner_message_command(msg):
+            if _v221_capture_owner_message(msg):
                 return True
         except Exception as exc:
             try: log_error(f'final owner-message interceptor: {exc}')

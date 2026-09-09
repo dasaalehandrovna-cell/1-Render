@@ -1940,8 +1940,7 @@ def handle_direct_edit_insert_message(msg) -> bool:
             )
         else:
             amount, note = split_amount_and_note(value_text)
-            with locked_chat(target_chat_id):
-                ok = update_record_in_chat(target_chat_id, rid, amount, note, source_finance_text=value_text)
+            ok = update_record_in_chat(target_chat_id, rid, amount, note, source_finance_text=value_text)
         if not ok:
             send_and_auto_delete(chat_id, '❌ Запись для редактирования не найдена.', 10)
             return True
@@ -2952,10 +2951,15 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
 def delete_selected_records(chat_id: int, day_key: str) -> int:
     if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232(): return 0
     op_id=''; deleted_snapshot=[]; selected=set(); deleted=0
+    # Read the selection under the short chat lock, then create durable operation intent outside it.
     with locked_chat(chat_id):
         store=get_chat_store(chat_id); all_sel=store.setdefault('edit_delete_selected',{}); selected={int(x) for x in all_sel.get(day_key,[])}
+    if not selected: return 0
+    op_id=operation_begin('finance_bulk_delete',chat_id,target=str(day_key),payload={'selected':sorted(selected)},critical=True) if 'operation_begin' in globals() else ''
+    with locked_chat(chat_id):
+        store=get_chat_store(chat_id); all_sel=store.setdefault('edit_delete_selected',{})
+        selected={int(x) for x in all_sel.get(day_key,[]) if int(x) in selected}
         if not selected: return 0
-        op_id=operation_begin('finance_bulk_delete',chat_id,target=str(day_key),payload={'selected':sorted(selected)},critical=True) if 'operation_begin' in globals() else ''
         deleted_snapshot=[copy.deepcopy(r) for r in store.get('records',[]) or [] if int(r.get('id',-1)) in selected]
         before=len(store.get('records',[]) or []); store['records']=[r for r in store.get('records',[]) or [] if int(r.get('id',-1)) not in selected]
         daily=store.get('daily_records',{}) or {}

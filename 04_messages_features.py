@@ -5894,8 +5894,7 @@ def delete_forward_copies_for_source(src_chat_id: int, src_msg_id: int):
         except Exception as e:
             log_error(f'delete_forward_copies_for_source {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}')
         try:
-            with locked_chat(dst_chat_id):
-                delete_forwarded_finance_record_by_msg_id(dst_chat_id, dst_msg_id)
+            delete_forwarded_finance_record_by_msg_id(dst_chat_id, dst_msg_id)
         except Exception as e:
             log_error(f'delete_forwarded_finance_record_by_msg_id {dst_chat_id}:{dst_msg_id}: {e}')
     with forward_map_lock:
@@ -6237,8 +6236,7 @@ def _v260_schedule_finance_forward_repair(source_chat_id: int, source_msg_id: in
 def recover_partial_finance_forwards_v260(limit: int=200) -> int:
     rows=[]
     try:
-        with SQLITE.lock:
-            raw_rows=SQLITE.conn.execute("SELECT k,v FROM meta WHERE kind='forward_finance_ops_v260'").fetchall()
+        raw_rows=SQLITE._read_all("SELECT k,v FROM meta WHERE kind='forward_finance_ops_v260'")
         for _k,_v in raw_rows:
             try: row=json.loads(_v) if isinstance(_v,str) else _v
             except Exception: continue
@@ -6652,11 +6650,11 @@ def _v177_legacy_0156_migrate_chat_id_everywhere(old_chat_id: int, new_chat_id: 
                     gs['owner_access_chat_ids_v168'] = sorted({new_chat_id if int(x) == old_chat_id else int(x) for x in owners})
             except Exception:
                 pass
-            try:
-                reactivate_forward_target_v199(old_chat_id, migrated_to=new_chat_id, persist=False)
-            except Exception:
-                pass
-        # R48: all persistence / backup scheduling occurs after releasing global data_lock.
+        # R49: forward reactivation can persist/normalize; run it only after releasing data_lock.
+        try:
+            reactivate_forward_target_v199(old_chat_id, migrated_to=new_chat_id, persist=False)
+        except Exception:
+            pass
         save_data(data, full=True)
         persist_forward_rules_to_owner()
         try:

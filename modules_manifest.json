@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "b26e0082c7dae6943e84f7ad3c48e4435c9dc95cccf80a9f927fa9961010e829",
+    "01_core_data.py": "234d692c933f0c2ea60e8956d2940adb8aa4f7ffe46980690bae782079cee58a",
     "02_transport_safety.py": "e8487fa51b3d9f04085ad5bd66cbaaa3447906b9338ed2a7582c8f71609d2d84",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
-    "04_messages_features.py": "c7c4dc91e632363e199235a827ae0489791850224192512bfcc6175f30789598",
-    "05_finance_ui.py": "0707c7ac839c596529570b0194421354a8bcbba8605fa50dffe9e7d5055e10ac",
-    "06_commands_callbacks.py": "0b543df48b7cd8a959b45add740a25fc7b8d8b5c772682b1f873b47f75b7e599",
-    "07_state_web.py": "2a3579f8977a302d1af599c2742eb59b4ebad209981d8618f27ad2dd07f200f1",
+    "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
+    "05_finance_ui.py": "92d5461809f6f9093fed055f2b3e10876c6af50b92cfe732925529909a5c35d3",
+    "06_commands_callbacks.py": "f92d7a2d9281f84cc24b8f9c3f1c5a88340a64a389824bf5f58b0d0f86068cab",
+    "07_state_web.py": "3a1af5486f0c64a3ebc85b1b6a9bb072002b0cf4df7e569abdf34da14631fc58",
     "08_reliability_tasks.py": "698effb564f572d52ed5ffb3af2038f464f1e94125a32c532be9dd2c3973da63",
-    "09_final_transport.py": "a89e4a83fd3d43d89f072bcdbe4570db630c694ba65b4cd6aa0a4fd574b41210",
-    "10_split_policy_offload.py": "f1537b1168915a561ebb0eae5045fee78e73a35fa28a99c5a220dab260589c2c"
+    "09_final_transport.py": "8c4aab746ee4c47c3872c40bc8bb35a7daff4dcb88a5577060287b7c94fee11f",
+    "10_split_policy_offload.py": "95ce3f402a3b3b1976f8cf112a0475d90dcbaf00daf9ea4f39be08e70ed0447f"
   },
-  "release": "Пер-R48-FINAL-CLEANBUILD2-LOCKFIX-STARTUPFIX-COMPACT14-RU",
+  "release": "Пер-R49-FINAL-PERFORMANCE-RESTORE-COMPACT14-RU",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -172,6 +172,20 @@
     "r48_single_final_fast_ui_binding",
     "r48_cleanbuild_runtime_docs_decoupled",
     "r48_render_context_info_optional",
-    "r48_docker_runtime_only_allowlist"
+    "r48_docker_runtime_only_allowlist",
+    "r49_redis_first_restore",
+    "r49_redis_empty_heavy_mega_fallback",
+    "r49_restore_trace_watcher",
+    "r49_single_priority_sqlite_writer",
+    "r49_persistent_webhook_inbox",
+    "r49_async_webhook_done",
+    "r49_owner_message_nameerror_fix",
+    "r49_waitress_bounded_http",
+    "r49_webhook_max_connections_8",
+    "r49_http_ack_state_watchdog",
+    "r49_runtime_lock_hold_trace",
+    "r49_transitive_lock_io_gate",
+    "r49_redis_event_before_heavy_mirror",
+    "r49_free_redis_fast_cache_policy"
   ]
 }
