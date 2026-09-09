@@ -1924,13 +1924,11 @@ def _canon_file_job_progress__001(phase: str, current=None, total=None, force: b
         elapsed = _file_job_elapsed_text(now_m - started)
         cur = st.get('current')
         tot = st.get('total')
-    if not msg_id:
-        return
     try:
         with _FILE_JOB_LOCK:
             st2 = _FILE_JOB_STATE.get(key)
             rendered = _v199_render_active_file_state(st2) if isinstance(st2, dict) else _v159_file_status_text(label, elapsed, str(phase or 'работаю'), cur, tot)
-        bot.edit_message_text(rendered, chat_id=chat_id, message_id=int(msg_id))
+        _v199_upsert_service_window(chat_id, rendered)
     except Exception:
         pass
 
@@ -1949,11 +1947,10 @@ def _v177_legacy_0011_file_job_tick(key: str):
         cur = st.get('current')
         tot = st.get('total')
     try:
-        if msg_id:
-            with _FILE_JOB_LOCK:
-                st2 = _FILE_JOB_STATE.get(key)
-                rendered = _v199_render_active_file_state(st2) if isinstance(st2, dict) else _v159_file_status_text(label, elapsed, phase, cur, tot)
-            bot.edit_message_text(rendered, chat_id=chat_id, message_id=int(msg_id))
+        with _FILE_JOB_LOCK:
+            st2 = _FILE_JOB_STATE.get(key)
+            rendered = _v199_render_active_file_state(st2) if isinstance(st2, dict) else _v159_file_status_text(label, elapsed, phase, cur, tot)
+        _v199_upsert_service_window(chat_id, rendered)
     except Exception:
         pass
     with _FILE_JOB_LOCK:
@@ -2740,41 +2737,89 @@ def _v199_clear_service_message(chat_id: int, message_id: int) -> None:
     except Exception:
         pass
 
-def _v199_delete_service_message(chat_id: int, message_id: int) -> None:
+def _r51_service_apply(chat_id: int, version: int) -> None:
+    """Single latest-wins owner for F233 service window Telegram I/O."""
+    cid=int(chat_id)
+    row=_R51_SERVICE_DESIRED.get(cid)
+    if not isinstance(row,dict) or int(row.get('version') or 0)!=int(version): return
+    expected_epoch=int(row.get('chat_epoch') or 0)
+    # If the user moved on before this status even reached Telegram, do not resurrect it.
+    if expected_epoch and not r50_ui_epoch_matches(cid,expected_epoch):
+        return
+    desired_text=row.get('text')
+    parse_mode=row.get('parse_mode')
+    mid=_v199_service_message_id(cid)
+    if desired_text is None:
+        if mid:
+            try: _tg_call_retry(bot.delete_message,cid,mid,attempts=1,purpose='r51_service_delete')
+            except Exception: pass
+            _v199_clear_service_message(cid,mid)
+        return
+    marked=_v199_service_text(str(desired_text or ''))
+    if mid:
+        try:
+            kwargs={'chat_id':cid,'message_id':mid,'attempts':1,'purpose':'r51_service_edit'}
+            if parse_mode: kwargs['parse_mode']=parse_mode
+            _tg_call_retry(bot.edit_message_text,marked,**kwargs)
+            return
+        except Exception:
+            _v199_clear_service_message(cid,mid); mid=0
+    if expected_epoch and not r50_ui_epoch_matches(cid,expected_epoch): return
+    # Do not create a brand-new autonomous service window on top of a user who is
+    # actively clicking. Existing F233 may be updated; fresh creation waits for a
+    # later progress tick/quiet period.
     try:
-        bot.delete_message(int(chat_id), int(message_id))
-    except Exception:
-        pass
-    _v199_clear_service_message(chat_id, message_id)
+        _quiet=max(0.5,min(10.0,float(os.getenv('R51_SERVICE_CREATE_QUIET_SEC','1.5') or '1.5')))
+        if r51_ui_chat_quiet_for(cid) < _quiet:
+            return
+    except Exception: pass
+    try:
+        kwargs={'attempts':1,'purpose':'r51_service_send'}
+        if parse_mode: kwargs['parse_mode']=parse_mode
+        msg=_tg_call_retry(bot.send_message,cid,marked,**kwargs)
+        mid=int(getattr(msg,'message_id',0) or 0)
+    except Exception as exc:
+        try: log_error(f'R51 service send failed chat={cid}: {exc}')
+        except Exception: pass
+        return
+    if not mid: return
+    # If superseded while Telegram was in flight, delete the obsolete fresh window.
+    latest=_R51_SERVICE_DESIRED.get(cid)
+    if not isinstance(latest,dict) or int(latest.get('version') or 0)!=int(version) or (expected_epoch and not r50_ui_epoch_matches(cid,expected_epoch)):
+        try: UI_DELETE_TASK_POOL.submit(f'r51-service-stale-delete:{cid}:{mid}',_tg_call_retry,bot.delete_message,cid,mid,attempts=1,purpose='r51_service_stale_delete')
+        except Exception: pass
+        return
+    _V199_SERVICE_FAST_CACHE[cid]=mid
+    try:
+        store=get_chat_store(cid)
+        store['_v199_service_status_msg_id']=mid; store['_v199_service_status_runtime_id']=_V211_SERVICE_RUNTIME_ID
+        save_data(data,chat_ids=[cid])
+    except Exception: pass
+    try:
+        with _FILE_JOB_LOCK:
+            for st in _FILE_JOB_STATE.values():
+                if isinstance(st,dict) and int(st.get('chat_id') or 0)==cid:
+                    st['status_msg_id']=mid
+    except Exception: pass
+
+_R51_SERVICE_LOCK = _v160_threading.RLock()
+_R51_SERVICE_DESIRED = {}
+
+def _r51_service_submit(chat_id: int, text, parse_mode=None) -> int:
+    cid=int(chat_id)
+    with _R51_SERVICE_LOCK:
+        prev=_R51_SERVICE_DESIRED.get(cid) or {}
+        version=int(prev.get('version') or 0)+1
+        _R51_SERVICE_DESIRED[cid]={'version':version,'text':text,'parse_mode':parse_mode,'chat_epoch':r50_ui_chat_epoch(cid)}
+    SERVICE_UI_TASK_POOL.submit_latest(f'service:{cid}',_r51_service_apply,cid,version)
+    return _v199_service_message_id(cid)
+
+def _v199_delete_service_message(chat_id: int, message_id: int=0) -> None:
+    _r51_service_submit(int(chat_id),None,None)
 
 def _v199_upsert_service_window(chat_id: int, text: str, *, parse_mode=None) -> int:
-    chat_id = int(chat_id)
-    marked = _v199_service_text(text)
-    mid = _v199_service_message_id(chat_id)
-    if mid:
-        try:
-            kwargs = {'chat_id': chat_id, 'message_id': mid}
-            if parse_mode:
-                kwargs['parse_mode'] = parse_mode
-            bot.edit_message_text(marked, **kwargs)
-            return mid
-        except Exception:
-            _v199_clear_service_message(chat_id, mid)
-    kwargs = {}
-    if parse_mode:
-        kwargs['parse_mode'] = parse_mode
-    msg = bot.send_message(chat_id, marked, **kwargs)
-    mid = int(getattr(msg, 'message_id', 0) or 0)
-    if mid:
-        _V199_SERVICE_FAST_CACHE[chat_id] = mid
-        try:
-            _store = get_chat_store(chat_id)
-            _store['_v199_service_status_msg_id'] = mid
-            _store['_v199_service_status_runtime_id'] = _V211_SERVICE_RUNTIME_ID
-            save_data(data, chat_ids=[chat_id])
-        except Exception:
-            pass
-    return mid
+    # R51: never wait for Telegram from a callback/business worker.
+    return _r51_service_submit(int(chat_id),str(text or ''),parse_mode)
 
 def _v199_active_file_state_for_chat(chat_id: int):
     with _FILE_JOB_LOCK:
@@ -2809,11 +2854,10 @@ def _v199_service_helper_expire(chat_id: int, expected_deadline: float):
         st.pop('helper_deadline_v199', None)
         mid = int(st.get('status_msg_id') or 0)
         text = _v199_render_active_file_state(st)
-    if mid:
-        try:
-            bot.edit_message_text(text, chat_id=int(chat_id), message_id=mid)
-        except Exception:
-            pass
+    try:
+        _v199_upsert_service_window(int(chat_id), text)
+    except Exception:
+        pass
 
 def _canon_send_and_auto_delete__001(chat_id: int, text: str, delay: int=25):
     target_chat_id, routed_text = _v198_route_helper_message(chat_id, text)
@@ -2829,14 +2873,12 @@ def _canon_send_and_auto_delete__001(chat_id: int, text: str, delay: int=25):
                 st['helper_deadline_v199'] = deadline
                 mid = int(st.get('status_msg_id') or 0)
                 rendered = _v199_render_active_file_state(st)
-            if mid:
-                bot.edit_message_text(rendered, chat_id=int(target_chat_id), message_id=mid)
+            _v199_upsert_service_window(int(target_chat_id), rendered)
             _v160_schedule(f'v199:service-helper-expire:{int(target_chat_id)}', delay, _v199_service_helper_expire, int(target_chat_id), deadline)
             return
-        mid = _v199_upsert_service_window(int(target_chat_id), str(routed_text or ''))
-        if mid:
-            _v160_cancel_timer(f'v199:service-delete:{int(target_chat_id)}')
-            _v160_schedule(f'v199:service-delete:{int(target_chat_id)}', delay, _v199_delete_service_message, int(target_chat_id), int(mid))
+        _v199_upsert_service_window(int(target_chat_id), str(routed_text or ''))
+        _v160_cancel_timer(f'v199:service-delete:{int(target_chat_id)}')
+        _v160_schedule(f'v199:service-delete:{int(target_chat_id)}', delay, _v199_delete_service_message, int(target_chat_id), 0)
     except Exception as exc:
         try:
             log_error(f'send_and_auto_delete v199: {exc}')
@@ -2849,10 +2891,9 @@ def _v199_send_html_and_auto_delete_service(chat_id: int, html_text: str, delay:
         return
     delay = _v159_helper_delay(delay)
     try:
-        mid = _v199_upsert_service_window(int(target_chat_id), str(routed_text or ''), parse_mode='HTML')
-        if mid:
-            _v160_cancel_timer(f'v199:service-delete:{int(target_chat_id)}')
-            _v160_schedule(f'v199:service-delete:{int(target_chat_id)}', delay, _v199_delete_service_message, int(target_chat_id), int(mid))
+        _v199_upsert_service_window(int(target_chat_id), str(routed_text or ''), parse_mode='HTML')
+        _v160_cancel_timer(f'v199:service-delete:{int(target_chat_id)}')
+        _v160_schedule(f'v199:service-delete:{int(target_chat_id)}', delay, _v199_delete_service_message, int(target_chat_id), 0)
     except Exception as exc:
         try:
             log_error(f'send_html_and_auto_delete v199: {exc}')
@@ -3015,7 +3056,18 @@ def _r22_execute_window_render(payload: dict) -> None:
     try:
         try: log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_START')
         except Exception: pass
-        result = str(_perform_fast_ui_edit(payload) or 'failed')
+        _ctx_key = payload.get('_r51_window_key')
+        _ctx_epoch = int(payload.get('_r51_window_epoch') or 0)
+        if _ctx_key and _ctx_epoch:
+            r50_ui_set_context(tuple(_ctx_key), _ctx_epoch)
+        try:
+            if r50_ui_context_stale(payload.get('chat_id'), payload.get('message_id')):
+                result = 'stale_skipped'
+            else:
+                result = str(_perform_fast_ui_edit(payload) or 'failed')
+        finally:
+            if _ctx_key and _ctx_epoch:
+                r50_ui_clear_context()
     except Exception as exc:
         result = 'failed'
         try:
@@ -3039,64 +3091,65 @@ def _r22_execute_window_render(payload: dict) -> None:
 
 
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
-    """R49 root-fix: enqueue latest window render; callback never waits for Telegram RTT."""
-    chat_id = int(chat_id)
-    message_id = int(message_id)
+    """R51 final UI path: prepare in caller, perform Telegram I/O in latest render actor.
+
+    Business/callback workers never wait for editMessageText network RTT.  Per-window
+    latest-wins keeps at most one queued visual state while finance/business mutation
+    ordering remains untouched in the business actor.
+    """
+    chat_id = int(chat_id); message_id = int(message_id)
     try:
         code = (_V159_TIMER_PURPOSE_MARKERS or {}).get(str(purpose or ''))
-        if code:
-            text = _v159_force_marker(text, code)
-    except Exception:
-        pass
+        if code: text = _v159_force_marker(text, code)
+    except Exception: pass
     try:
         if 'secret' not in str(purpose or '').lower():
             reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, message_id)
             reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
-    except Exception:
-        pass
-    try:
-        text = _ensure_window_marker_for_render(text, reply_markup, chat_id, message_id, purpose)
-    except Exception:
-        pass
+    except Exception: pass
+    try: text = _ensure_window_marker_for_render(text, reply_markup, chat_id, message_id, purpose)
+    except Exception: pass
     try:
         augment = globals().get('_v160_augment_markup')
-        if callable(augment):
-            reply_markup = augment(reply_markup, text, chat_id)
-    except Exception:
-        pass
-    payload = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'reply_markup': reply_markup, 'parse_mode': parse_mode, 'purpose': purpose}
-    try:
-        prepare = globals().get('window_diag_prepare_fast_ui_payload')
-        if callable(prepare):
-            payload = prepare(payload) or payload
-    except Exception:
-        pass
-    try:
-        ctx_fn = globals().get('r25_trace_current')
-        ctx = ctx_fn() if callable(ctx_fn) else {}
-        payload['_r25_update_id'] = str((ctx or {}).get('update_id') or '')
-        payload['_r22_action'] = str((ctx or {}).get('action') or '')[:180]
-    except Exception:
-        payload['_r25_update_id'] = ''
-        payload['_r22_action'] = ''
-    payload['_r22_enqueued_mono'] = _v160_time.monotonic()
-    key = f'{chat_id}:{message_id}'
-    try:
-        seq = WINDOW_RENDER_TASK_POOL.submit_latest(key, _r22_execute_window_render, payload)
-    except Exception as exc:
-        try: log_error(f'R49 WINDOW RENDER ENQUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
+        if callable(augment): reply_markup = augment(reply_markup, text, chat_id)
+    except Exception: pass
+    if r50_ui_context_stale(chat_id, message_id):
+        try: bot_journal('r51_stale_ui_enqueue_skipped', chat_id, f'message={message_id}; purpose={purpose}')
         except Exception: pass
-        return 'failed'
+        return 'stale_skipped'
+    # Background visual work never outranks a fresh user interaction. Data jobs may
+    # continue, but their repaint is dropped during the hot interaction window.
+    try:
+        _tn=_v160_threading.current_thread().name.casefold()
+        if any(x in _tn for x in ('scheduler','background','reminder','maintenance','recovery')):
+            _guard=max(0.5,min(10.0,float(os.getenv('R51_BACKGROUND_RENDER_QUIET_SEC','3.0') or '3.0')))
+            if r51_ui_chat_quiet_for(chat_id) < _guard:
+                return 'background_quiet_skipped'
+    except Exception: pass
+    payload={'chat_id':chat_id,'message_id':message_id,'text':text,'reply_markup':reply_markup,'parse_mode':parse_mode,'purpose':purpose,'_r22_enqueued_mono':_v160_time.monotonic()}
+    try:
+        prepare=globals().get('window_diag_prepare_fast_ui_payload')
+        if callable(prepare): payload=prepare(payload) or payload
+    except Exception: pass
+    try:
+        ctx_key=getattr(_R50_UI_CONTEXT,'window_key',None); ctx_epoch=int(getattr(_R50_UI_CONTEXT,'epoch',0) or 0)
+        if ctx_key and ctx_epoch:
+            payload['_r51_window_key']=tuple(ctx_key); payload['_r51_window_epoch']=ctx_epoch
+    except Exception: pass
+    key=f'{chat_id}:{message_id}'
+    seq=WINDOW_RENDER_TASK_POOL.submit_latest(key,_r22_execute_window_render,payload)
     if not seq:
-        try: log_error(f'R49 WINDOW RENDER QUEUE FULL chat={chat_id} msg={message_id}')
+        try: log_error(f'R51 WINDOW RENDER QUEUE FULL chat={chat_id} msg={message_id}')
         except Exception: pass
-        return 'failed'
+        return 'busy'
     try:
-        st = globals().get('r25_trace_stage')
-        if callable(st): st('RENDER_ENQUEUED', 0.0, f'seq={seq}')
-    except Exception:
-        pass
-    return 'scheduled'
+        st=globals().get('r25_trace_stage')
+        if callable(st): st('TELEGRAM_RENDER_ENQUEUED',0.0,f'window={message_id}; seq={seq}')
+    except Exception: pass
+    return 'queued'
+
+_V160_CALLBACK_LOCK = _v160_threading.RLock()
+_V160_CALLBACK_IDS = {}
 
 def _v160_exact_callback_duplicate(call) -> bool:
     call_id = str(getattr(call, 'id', '') or '')
@@ -7150,11 +7203,11 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
             # callback shares this state lane in R22.
             return (V166_FINANCE_UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
         if chat_id and message_id:
-            # R24: one small FIFO actor per visible Telegram window. Every click is
-            # processed exactly in arrival order; no parallel state races and no click
-            # is sacrificed as "stale". Heavy work is dispatched only after this
-            # short FAST stage by the existing R21 split helpers.
-            return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
+            # R50: safe navigation is latest-wins per visible window.  Business/money
+            # mutations remain FIFO, but stale calendar/info/back renders are replaced.
+            if _v166_is_safe_window_callback(raw):
+                return (NAV_UI_TASK_POOL, f'nav-window:{chat_id}:{message_id}')
+            return (V166_WINDOW_UI_TASK_POOL, f'fast-window-business:{chat_id}:{message_id}')
         return (V166_WINDOW_UI_TASK_POOL, f'fast-callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)
 
@@ -7708,7 +7761,7 @@ def _finance_root_persist_job_v243(chat_id: int) -> None:
         with data_lock:
             data.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
             data['_state_meta']['bot_version'] = VERSION
-            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+        root_snapshot = r50_root_snapshot(data)
         SQLITE.save_root(root_snapshot)
         try:
             bot_journal('finance_root_persist_v243', int(chat_id), 'background root persisted')
@@ -11712,8 +11765,7 @@ def _v172_persist(chat_id: int, reason: str='task_change') -> None:
     """Persist root state without holding data_lock during SQLite I/O (R36)."""
     try:
         import copy as _r36_copy
-        with data_lock:
-            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
+        root_snapshot = r50_root_snapshot(data)
         SQLITE.save_root(root_snapshot)
     except Exception as exc:
         try:
