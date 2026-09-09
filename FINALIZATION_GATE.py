@@ -29,6 +29,14 @@ for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_
 if ROLE=='fast':
     manifest=json.loads(text('modules_manifest.json'))
     files=manifest.get('files') or {}; markers=manifest.get('file_markers') or {}
+    expected_root_py={
+        '01_core_data.py','02_transport_safety.py','03_diagnostics_memory.py','04_messages_features.py',
+        '05_finance_ui.py','06_commands_callbacks.py','07_state_web.py','08_reliability_tasks.py',
+        '09_final_transport.py','10_split_policy_offload.py','bot.py','start_front.py','runtime_config.py','FINALIZATION_GATE.py'
+    }
+    actual_root_py={p.name for p in ROOT.glob('*.py')}
+    ok('r48_compact_root_exact',actual_root_py==expected_root_py,
+       'extra='+','.join(sorted(actual_root_py-expected_root_py))+' missing='+','.join(sorted(expected_root_py-actual_root_py)))
     hash_bad=[]; marker_bad=[]
     for rel,sha in files.items():
         p=ROOT/rel
@@ -171,9 +179,19 @@ if ROLE=='fast':
        parts.index('09_final_transport.py') < parts.index('10_split_policy_offload.py'),
        str(parts))
     docker_src=text('Dockerfile') if (ROOT/'Dockerfile').is_file() else ''
+    dockerignore_src=text('.dockerignore') if (ROOT/'.dockerignore').is_file() else ''
     ok('r48_docker_build_import_smoke',
        'python FINALIZATION_GATE.py' in docker_src and 'import bot' in docker_src and 'R48 FAST IMPORT SMOKE PASS' in docker_src,
        'Dockerfile must run gate + real bot import before CMD')
+    ok('r48_docker_no_copy_dot',
+       not re.search(r'(?m)^\s*COPY\s+\.\s+\.?/?',docker_src),
+       'Dockerfile must never COPY the whole repository into FAST')
+    ok('r48_docker_explicit_compact_copy',
+       all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py','COPY INFO/ ./INFO/']),
+       'Dockerfile must explicitly copy compact runtime and INFO')
+    ok('r48_dockerignore_allowlist',
+       dockerignore_src.lstrip().startswith('# R48 CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
+       '.dockerignore must be a strict compact allowlist')
 
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
     # inside the two central state locks. Keep this broad so future regressions fail PACKAGE.
