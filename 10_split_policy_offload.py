@@ -3972,22 +3972,22 @@ R29_INPUT_SETTINGS_KEY = 'r29_input_sources'
 R29_INPUT_DEFAULTS = {'forwarded': True, 'other_bots': True}
 
 def r29_assert_r28_fast_ui_contract() -> bool:
-    """Hard startup guard for the user-confirmed R28 button-speed contract.
+    """Semantic startup guard for the R28/R48 direct button-render contract.
 
-    Future releases must fail loudly instead of silently re-introducing a render
-    queue between an ordinary callback handler and Telegram editMessageText.
+    COMPACT14 intentionally reorganizes source files, so this guard must validate
+    the active callable and its behavior rather than a historical filename.
     """
     fn = globals().get('fast_ui_edit_message_text')
+    canonical = globals().get('_canon_fast_ui_edit_message_text__001')
     if not callable(fn):
         raise RuntimeError('R29 FAST UI CONTRACT: fast_ui_edit_message_text is missing')
+    if not callable(canonical) or fn is not canonical:
+        raise RuntimeError('R29 FAST UI CONTRACT: active renderer is not the canonical direct owner')
     try:
-        filename = str(getattr(getattr(fn, '__code__', None), 'co_filename', '') or '')
-        source = inspect.getsource(fn)
+        source = inspect.getsource(canonical)
     except Exception as exc:
-        raise RuntimeError('R29 FAST UI CONTRACT: cannot inspect active renderer: ' + str(exc))
-    if not filename.endswith('74_ui_reliability_runtime.py'):
-        raise RuntimeError('R29 FAST UI CONTRACT: renderer owner changed: ' + filename)
-    if 'WINDOW_RENDER_TASK_POOL' in source:
+        raise RuntimeError('R29 FAST UI CONTRACT: cannot inspect canonical renderer: ' + str(exc))
+    if 'WINDOW_RENDER_TASK_POOL' in source or '_r22_execute_window_render(' in source:
         raise RuntimeError('R29 FAST UI CONTRACT: render queue reintroduced before Telegram')
     if '_perform_fast_ui_edit(payload)' not in source:
         raise RuntimeError('R29 FAST UI CONTRACT: direct Telegram render call is missing')

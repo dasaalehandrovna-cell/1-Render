@@ -1769,15 +1769,7 @@ def _canon_build_internal_timer_input_text__001(chat_id: int) -> str:
     else:
         text = '⏱ Настройка таймера'
     return _v159_force_marker(text, 'Ф184')
-_V159_PREV_FAST_UI_EDIT = _v177_legacy_0211_fast_ui_edit_message_text
 _V159_TIMER_PURPOSE_MARKERS = {'internal_timers': 'Ф183', 'internal_timer_pick': 'Ф184', 'internal_timer_digit': 'Ф185', 'internal_timer_unit': 'Ф186', 'internal_timer_backspace': 'Ф187', 'internal_timer_clear': 'Ф188', 'internal_timer_apply': 'Ф189', 'internal_timer_back_info': 'Ф54'}
-if callable(_V159_PREV_FAST_UI_EDIT):
-
-    def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
-        code = _V159_TIMER_PURPOSE_MARKERS.get(str(purpose or ''))
-        if code:
-            text = _v159_force_marker(text, code)
-        return _V159_PREV_FAST_UI_EDIT(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose)
 
 def _v177_legacy_0299_process_visual_status_enabled(chat_id: int) -> bool:
     return True

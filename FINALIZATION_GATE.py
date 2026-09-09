@@ -142,6 +142,39 @@ if ROLE=='fast':
     ok('r48_no_callback_witness_thread','r18-cb-witness-' not in web_src,'callback witness must use bounded pool/scheduler')
     ok('r48_no_event_thread_fallback','vys262-event-r13' not in split_src,'state event fallback must not spawn per-event thread')
 
+    # R48 STARTUPFIX: COMPACT14 contracts must validate semantic owners, never
+    # historical pre-compaction filenames. This exact regression made Render
+    # expose the preboot port while the Telegram runtime crashed during import.
+    r29_src=_fn_sources(split_src,{'r29_assert_r28_fast_ui_contract'}).get('r29_assert_r28_fast_ui_contract','')
+    ok('r48_r29_semantic_renderer_contract',
+       "fn is not canonical" in r29_src and "_perform_fast_ui_edit(payload)" in r29_src and "co_filename" not in r29_src,
+       'R29 must validate canonical callable behavior, not source filename')
+    ok('r48_no_historical_renderer_filename_contract',
+       '74_ui_reliability_runtime.py' not in r29_src,
+       'historical renderer filename contract remains')
+    ok('r48_no_prev_fast_ui_wrapper',
+       '_V159_PREV_FAST_UI_EDIT' not in rel_src and count(r'(?m)^\s*def fast_ui_edit_message_text\(',rel_src)==0,
+       'inactive PREV fast-ui wrapper remains')
+    final_transport=all_py.get('09_final_transport.py','')
+    ok('r48_one_final_fast_ui_binding',
+       count(r'(?m)^fast_ui_edit_message_text\s*=\s*_canon_fast_ui_edit_message_text__001\s*$',final_transport)==1 and
+       count(r'(?m)^\s*fast_ui_edit_message_text\s*=',joined)==1,
+       'fast_ui_edit_message_text must have one final binding')
+    bot_src=all_py.get('bot.py','')
+    try:
+        parts_match=re.search(r'MODULAR_SOURCE_PARTS\s*=\s*(\[[^\n]+\])',bot_src)
+        parts=ast.literal_eval(parts_match.group(1)) if parts_match else []
+    except Exception:
+        parts=[]
+    ok('r48_final_transport_loaded_before_policy_contract',
+       '09_final_transport.py' in parts and '10_split_policy_offload.py' in parts and
+       parts.index('09_final_transport.py') < parts.index('10_split_policy_offload.py'),
+       str(parts))
+    docker_src=text('Dockerfile') if (ROOT/'Dockerfile').is_file() else ''
+    ok('r48_docker_build_import_smoke',
+       'python FINALIZATION_GATE.py' in docker_src and 'import bot' in docker_src and 'R48 FAST IMPORT SMOKE PASS' in docker_src,
+       'Dockerfile must run gate + real bot import before CMD')
+
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
     # inside the two central state locks. Keep this broad so future regressions fail PACKAGE.
     hard_calls={'save_data','persist_finance_chat_local_fast','finance_integrity_append','_tg_call_retry',

@@ -21,11 +21,11 @@
     "05_finance_ui.py": "0707c7ac839c596529570b0194421354a8bcbba8605fa50dffe9e7d5055e10ac",
     "06_commands_callbacks.py": "0b543df48b7cd8a959b45add740a25fc7b8d8b5c772682b1f873b47f75b7e599",
     "07_state_web.py": "2a3579f8977a302d1af599c2742eb59b4ebad209981d8618f27ad2dd07f200f1",
-    "08_reliability_tasks.py": "dfc806453fc1486200da363ede930036eb93883a1168fe55f88fae2ab2dc4148",
+    "08_reliability_tasks.py": "698effb564f572d52ed5ffb3af2038f464f1e94125a32c532be9dd2c3973da63",
     "09_final_transport.py": "a89e4a83fd3d43d89f072bcdbe4570db630c694ba65b4cd6aa0a4fd574b41210",
-    "10_split_policy_offload.py": "92e5e3bbf41ade0368c49c5cf2c1b370855dcb6cea85a7b37d9ce569e4c42dc4"
+    "10_split_policy_offload.py": "f1537b1168915a561ebb0eae5045fee78e73a35fa28a99c5a220dab260589c2c"
   },
-  "release": "Пер-R48-FINAL-LOCKFIX-COMPACT14-RU",
+  "release": "Пер-R48-FINAL-LOCKFIX-FAST-STARTUPFIX-COMPACT14-RU",
   "release_features": [
     "r28_direct_render_guard",
     "info_menu_three_modes",
@@ -166,6 +166,9 @@
     "r48_navigation_callback_coalesce",
     "r48_recovery_yields_to_active_user",
     "r48_bounded_callback_event_fallbacks",
-    "r48_webhook_workers_2_ack_workers_2"
+    "r48_webhook_workers_2_ack_workers_2",
+    "r48_fast_startup_semantic_renderer_contract",
+    "r48_no_historical_renderer_filename_contract",
+    "r48_single_final_fast_ui_binding"
   ]
 }
