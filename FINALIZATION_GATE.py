@@ -287,10 +287,14 @@ if ROLE=='fast':
        "os.environ.pop(key, None)" in start_src and "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
        "os.environ['MEGA_ENABLED'] = '0'" in start_src,
        'FAST must discard MEGA credentials before normal runtime')
-    ok('r49_mega_event_replay_no_loss_shortcut',
-       'FAST_STARTUP_MEGA_EVENT_SEGMENTS' not in start_src and 'match.group(2)' not in start_src and
-       'Revision idempotence is per shard' in start_src,
-       'startup replay must not truncate/skip older shard events by global revision')
+    replay_src=_fn_sources(start_src,{'_replay_mega_event_segments'}).get('_replay_mega_event_segments','')
+    ok('r55_mega_event_replay_checkpoint_tail_safe',
+       'FAST_STARTUP_MEGA_EVENT_SEGMENTS' not in start_src and
+       '_event_remote_upper_ns' in replay_src and 'MEGA_EVENT_REPLAY_MARGIN_SEC' in replay_src and
+       'checkpoint_ts' in replay_src and 'safe_cutoff_ns' in replay_src and
+       'if upper is None' in replay_src and '_apply_r32_events(target, events)' in replay_src and
+       'current_max' not in replay_src.split('needed: list[str]')[0],
+       'startup may skip only segments provably older than the full-checkpoint timestamp; unknown names must replay')
     ok('r49_redis_packaged_default_off',
        '"REDIS_RUNTIME_DEFAULT": "0"' in cfg_src and 'def set_redis_runtime_enabled' in cfg_src and
        'os.environ["REDIS_URL"] = _REDIS_EXTERNAL_URL if _REDIS_RUNTIME_ENABLED else ""' in cfg_src,

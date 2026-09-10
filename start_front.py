@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 import json
 import os
 import runpy
@@ -402,9 +405,42 @@ def _apply_r32_events(path: Path, events: list[dict]) -> tuple[int, int]:
     return applied, stale
 
 
+def _event_remote_upper_ns(remote: str) -> int | None:
+    """Best-effort safe upper time/revision bound encoded by an immutable segment name."""
+    name = str(remote or '').rsplit('/', 1)[-1]
+    # R49+ direct archive: events_<min time_ns revision>_<max time_ns revision>_<digest>.json.gz
+    m = re.match(r'^events_(\d{15,})_(\d{15,})_[0-9a-fA-F]+\.json\.gz$', name)
+    if m:
+        try:
+            return int(m.group(2))
+        except Exception:
+            return None
+    # Earlier R32 archive: events_YYYYMMDD_HHMMSS_micro_<id>_<id>.json.gz.
+    # The filename timestamp is produced only after the batch was materialized, so it
+    # is an upper bound for the event creation times inside that immutable segment.
+    m = re.match(r'^events_(\d{8})_(\d{6})_(\d{6})_.*\.json\.gz$', name)
+    if m:
+        try:
+            dt = datetime.strptime(''.join(m.groups()), '%Y%m%d%H%M%S%f').replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1_000_000_000)
+        except Exception:
+            return None
+    return None
+
+
 def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> tuple[bool, str]:
-    """Replay compact post-checkpoint state events directly from MEGA onto startup DB."""
+    """Replay only the MEGA delta tail that can be newer than the full checkpoint.
+
+    R55 removes the R54 O(N remote round-trip) startup.  The full SQLite carries the
+    timestamp of the last committed logical state.  Every R32 event descriptor is
+    created *after* its SQLite mutation returns, and immutable segment names contain
+    either their max time_ns revision or a UTC creation timestamp.  Therefore a
+    segment whose upper bound is comfortably older than the checkpoint cannot add
+    state and may be skipped without downloading it.  A safety margin is replayed.
+    Unknown/legacy filenames are never skipped.
+    """
     event_root = root.rstrip('/') + '/events_r32'
+    started = time.monotonic()
     try:
         found = _run(['mega-find', event_root, '--pattern=events_*.json.gz', '--type=f'], timeout=mega_timeout)
     except Exception as exc:
@@ -418,40 +454,96 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
     rows = sorted({x.strip() for x in (found.stdout or '').splitlines() if x.strip().endswith('.json.gz')})
     if not rows:
         return True, 'no MEGA event segments'
-    print(f'[SPLIT FRONT] R54 MEGA event segments root={event_root} count={len(rows)}', flush=True)
-    # Correctness first: never truncate or globally skip archived event segments.
-    # Revision idempotence is per shard inside _apply_r32_events(). A global max
-    # can be ahead for shard A while shard B still needs an older segment.
-    current_max = _r32_max_revision(target)
-    work = Path(tempfile.mkdtemp(prefix='v262_fast_mega_events_'))
-    segments = applied = stale = 0
-    try:
-        for idx, remote in enumerate(rows):
-            if idx == 0 or (idx + 1) % 25 == 0 or idx + 1 == len(rows):
-                print(f'[SPLIT FRONT] R54 MEGA event progress {idx+1}/{len(rows)} root={event_root}', flush=True)
-            name = remote.rsplit('/', 1)[-1]
-            dl = work / f'e{idx}'
-            dl.mkdir(exist_ok=True)
+
+    checkpoint_ts = float(_db_revision(target) or 0.0)
+    margin_sec = max(2.0, min(120.0, float(os.getenv('MEGA_EVENT_REPLAY_MARGIN_SEC', '10') or '10')))
+    safe_cutoff_ns = int(max(0.0, checkpoint_ts - margin_sec) * 1_000_000_000) if checkpoint_ts > 0 else 0
+    needed: list[str] = []
+    skipped = 0
+    unknown = 0
+    for remote in rows:
+        upper = _event_remote_upper_ns(remote)
+        if safe_cutoff_ns and upper is not None and int(upper) <= safe_cutoff_ns:
+            skipped += 1
+        else:
+            needed.append(remote)
+            if upper is None:
+                unknown += 1
+    print(
+        f'[SPLIT FRONT] R55 MEGA event plan root={event_root} total={len(rows)} '
+        f'skipped_checkpoint={skipped} replay={len(needed)} unknown={unknown} '
+        f'checkpoint_ts={checkpoint_ts:.6f} margin={margin_sec:.1f}s',
+        flush=True,
+    )
+    if not needed:
+        return True, f'MEGA event replay tail empty total={len(rows)} skipped={skipped} checkpoint_ts={checkpoint_ts:.6f}'
+
+    work = Path(tempfile.mkdtemp(prefix='v262_fast_mega_events_tail_'))
+    download_workers = max(1, min(8, int(os.getenv('MEGA_EVENT_DOWNLOAD_WORKERS', '4') or '4')))
+
+    def _download_one(idx_remote: tuple[int, str]):
+        idx, remote = idx_remote
+        name = remote.rsplit('/', 1)[-1]
+        dl = work / f'e{idx:05d}'
+        dl.mkdir(parents=True, exist_ok=True)
+        t0 = time.monotonic()
+        try:
             get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
-            if get.returncode != 0:
-                return False, f'MEGA event download failed {name}: {(get.stderr or get.stdout or "")[:180]}'
-            files = list(dl.rglob(name)) or list(dl.rglob('events_*.json.gz')) or list(dl.rglob('*.json.gz'))
-            if not files:
-                return False, f'MEGA event file missing after download: {name}'
+        except Exception as exc:
+            return idx, remote, None, f'{type(exc).__name__}: {str(exc)[:180]}', time.monotonic() - t0
+        if get.returncode != 0:
+            return idx, remote, None, (get.stderr or get.stdout or 'mega-get failed')[:220], time.monotonic() - t0
+        files = list(dl.rglob(name)) or list(dl.rglob('events_*.json.gz')) or list(dl.rglob('*.json.gz'))
+        if not files:
+            return idx, remote, None, 'downloaded event file missing', time.monotonic() - t0
+        return idx, remote, files[0], '', time.monotonic() - t0
+
+    downloaded: dict[int, Path] = {}
+    try:
+        print(f'[SPLIT FRONT] R55 MEGA event tail download start count={len(needed)} workers={download_workers}', flush=True)
+        if download_workers == 1 or len(needed) == 1:
+            results = [_download_one(x) for x in enumerate(needed)]
+        else:
+            results = []
+            with ThreadPoolExecutor(max_workers=min(download_workers, len(needed)), thread_name_prefix='mega-tail') as ex:
+                futs = [ex.submit(_download_one, x) for x in enumerate(needed)]
+                for fut in as_completed(futs):
+                    results.append(fut.result())
+        slowest = 0.0
+        for idx, remote, path, err, elapsed in results:
+            slowest = max(slowest, float(elapsed or 0.0))
+            if err or path is None:
+                return False, f'MEGA event download failed {remote.rsplit("/",1)[-1]}: {err}'
+            downloaded[int(idx)] = path
+        print(
+            f'[SPLIT FRONT] R55 MEGA event tail download done count={len(downloaded)} '
+            f'slowest={slowest:.2f}s elapsed={time.monotonic()-started:.2f}s', flush=True,
+        )
+
+        applied = stale = segments = 0
+        current_max = _r32_max_revision(target)
+        for idx in range(len(needed)):
+            file_path = downloaded[idx]
+            name = file_path.name
             try:
-                obj = json.loads(gzip.decompress(files[0].read_bytes()).decode('utf-8'))
+                obj = json.loads(gzip.decompress(file_path.read_bytes()).decode('utf-8'))
                 events = [ev for ev in ((obj or {}).get('events') or []) if _r32_event_valid(ev)]
             except Exception as exc:
                 return False, f'MEGA event decode failed {name}: {type(exc).__name__}: {str(exc)[:150]}'
             if not events:
                 return False, f'MEGA event segment has no valid events: {name}'
             a, st = _apply_r32_events(target, events)
-            applied += a; stale += st; segments += 1
+            applied += a
+            stale += st
+            segments += 1
             current_max = max(current_max, max(int(ev.get('revision') or 0) for ev in events))
-            shutil.rmtree(dl, ignore_errors=True)
         if not _db_valid(target):
             return False, 'SQLite invalid after MEGA event replay'
-        return True, f'MEGA event replay segments={segments} applied={applied} stale={stale} max_revision={current_max}'
+        return True, (
+            f'MEGA event replay tail total={len(rows)} skipped={skipped} segments={segments} '
+            f'applied={applied} stale={stale} max_revision={current_max} '
+            f'checkpoint_ts={checkpoint_ts:.6f} elapsed={time.monotonic()-started:.2f}s'
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -459,18 +551,18 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
 def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
     """Restore FAST from MEGA once per process start, then leave MEGA completely.
 
-    R54 latency/correctness order is evaluated root-by-root and stops immediately
-    on the first valid base instead of probing every legacy root before trying the
-    canonical snapshot:
-      manifest generation -> latest -> generation scan -> next legacy root.
+    R55 recovery order follows the writer actually used by HEAVY: ``latest`` is
+    the live canonical full checkpoint. ``current_manifest`` is retained only as
+    immutable-generation fallback because older releases may leave it stale.
+      latest -> manifest generation -> generation scan -> next legacy root.
     """
     roots = _startup_mega_roots()
     canonical_root = roots[0]
     mega_timeout = max(45, min(900, int(os.getenv('MEGA_TIMEOUT', '120') or '120')))
     login_timeout = max(45, min(300, int(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120')))
-    print(f'[SPLIT FRONT] R54 MEGA login start roots={len(roots)} timeout={login_timeout}s', flush=True)
+    print(f'[SPLIT FRONT] R55 MEGA login start roots={len(roots)} timeout={login_timeout}s', flush=True)
     logged, detail = _mega_login(login_timeout)
-    print(f'[SPLIT FRONT] R54 MEGA login done ok={int(bool(logged))} detail={detail[:220]}', flush=True)
+    print(f'[SPLIT FRONT] R55 MEGA login done ok={int(bool(logged))} detail={detail[:220]}', flush=True)
     if not logged:
         return False, detail
     tmpdir = Path(tempfile.mkdtemp(prefix='v262_fast_startup_mega_'))
@@ -484,20 +576,20 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
         idx = candidate_index
         dl = tmpdir / f'd{idx}'
         dl.mkdir(exist_ok=True)
-        print(f'[SPLIT FRONT] R54 MEGA candidate start idx={idx} kind={source_kind} remote={remote}', flush=True)
+        print(f'[SPLIT FRONT] R55 MEGA candidate start idx={idx} kind={source_kind} remote={remote}', flush=True)
         t0 = time.monotonic()
         try:
             get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
         except Exception as exc:
             err = f'{remote}: {type(exc).__name__}: {str(exc)[:160]}'
             errors.append(err)
-            print(f'[SPLIT FRONT] R54 MEGA candidate fail idx={idx} elapsed={time.monotonic()-t0:.2f}s {err}', flush=True)
+            print(f'[SPLIT FRONT] R55 MEGA candidate fail idx={idx} elapsed={time.monotonic()-t0:.2f}s {err}', flush=True)
             return False, err
         if get.returncode != 0:
             detail2 = (get.stderr or get.stdout or 'mega-get failed').strip()
             err = f'{remote}: {detail2[:180]}'
             errors.append(err)
-            print(f'[SPLIT FRONT] R54 MEGA candidate miss idx={idx} elapsed={time.monotonic()-t0:.2f}s detail={detail2[:220]}', flush=True)
+            print(f'[SPLIT FRONT] R55 MEGA candidate miss idx={idx} elapsed={time.monotonic()-t0:.2f}s detail={detail2[:220]}', flush=True)
             return False, err
         candidates_local = list(dl.rglob('*.sqlite3.gz')) + [x for x in dl.rglob('*.gz') if x.name != 'latest_bot_state.sqlite3.gz']
         if not candidates_local:
@@ -514,10 +606,10 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
             if canonical_root != source_root:
                 ordered_event_roots.append(canonical_root)
             for event_root in ordered_event_roots:
-                print(f'[SPLIT FRONT] R54 MEGA event replay start root={event_root}', flush=True)
+                print(f'[SPLIT FRONT] R55 MEGA event replay start root={event_root}', flush=True)
                 replay_ok, replay_detail = _replay_mega_event_segments(target, event_root, mega_timeout)
                 replay_parts.append(f'{event_root}: {replay_detail}')
-                print(f'[SPLIT FRONT] R54 MEGA event replay done root={event_root} ok={int(bool(replay_ok))} detail={replay_detail[:260]}', flush=True)
+                print(f'[SPLIT FRONT] R55 MEGA event replay done root={event_root} ok={int(bool(replay_ok))} detail={replay_detail[:260]}', flush=True)
                 if not replay_ok:
                     errors.append(f'{remote}: base installed but event replay failed at {event_root}: {replay_detail}')
                     return False, errors[-1]
@@ -526,32 +618,34 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
                 f'MEGA startup restore OK source={source_note}/{source_kind} root={source_root} '
                 f'remote={remote}; {install_detail}; ' + '; '.join(replay_parts)
             )[:1200]
-            print(f'[SPLIT FRONT] R54 MEGA candidate success idx={idx} elapsed={time.monotonic()-t0:.2f}s', flush=True)
+            print(f'[SPLIT FRONT] R55 MEGA candidate success idx={idx} elapsed={time.monotonic()-t0:.2f}s', flush=True)
             return True, detail3
         return False, errors[-1] if errors else f'{remote}: invalid downloaded snapshot'
 
     try:
         for root_no, root in enumerate(roots, 1):
-            print(f'[SPLIT FRONT] R54 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
-            generation_remote, manifest_detail = _manifest_generation_remote(root, tmpdir, mega_timeout)
-            discovery.append(manifest_detail)
-            print(f'[SPLIT FRONT] R54 manifest root={root} detail={manifest_detail[:260]}', flush=True)
-            if generation_remote:
-                ok, done = try_remote(root, generation_remote, 'manifest')
-                if ok:
-                    return True, done
+            print(f'[SPLIT FRONT] R55 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
 
+            # HEAVY's active runtime checkpoint writer promotes this object on every
+            # successful full snapshot.  It is therefore the freshest control file
+            # in the current split architecture and must be tried before a possibly
+            # stale immutable-generation manifest left by an older release.
             latest = root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz'
             ok, done = try_remote(root, latest, 'latest')
             if ok:
                 return True, done
 
-            # Scan immutable generations only after the cheap canonical pointers
-            # failed.  The old R50 code scanned every legacy root before even trying
-            # canonical latest, which unnecessarily prolonged every rolling deploy.
+            generation_remote, manifest_detail = _manifest_generation_remote(root, tmpdir, mega_timeout)
+            discovery.append(manifest_detail)
+            print(f'[SPLIT FRONT] R55 manifest root={root} detail={manifest_detail[:260]}', flush=True)
+            if generation_remote:
+                ok, done = try_remote(root, generation_remote, 'manifest-fallback')
+                if ok:
+                    return True, done
+
             generations, find_detail = _discover_generation_remotes(root, mega_timeout)
             discovery.append(find_detail)
-            print(f'[SPLIT FRONT] R54 generation scan root={root} detail={find_detail[:260]}', flush=True)
+            print(f'[SPLIT FRONT] R55 generation scan root={root} detail={find_detail[:260]}', flush=True)
             for remote in generations:
                 ok, done = try_remote(root, remote, 'generation-scan')
                 if ok:
@@ -578,6 +672,17 @@ def _scrub_fast_runtime_mega_credentials() -> None:
 
 def main():
     server = _start_boot_port()
+    render_host = str(os.getenv('RENDER_EXTERNAL_HOSTNAME', '') or '').strip()
+    if render_host:
+        render_base = 'https://' + render_host
+        for legacy_key in ('APP_URL', 'WEBHOOK_URL'):
+            legacy_value = str(os.getenv(legacy_key, '') or '').strip().rstrip('/')
+            if legacy_value and legacy_value != render_base:
+                print(
+                    f'[SPLIT FRONT] R55 ENV WARN {legacy_key} points to another host; '
+                    f'ignoring legacy value in favor of Render host={render_base}',
+                    flush=True,
+                )
     target = _db_path()
     started = time.time()
     trace = {
@@ -653,7 +758,7 @@ def main():
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
         print('[RESTORE TRACE R49]', trace_json, flush=True)
 
-        # R54 rolling-deploy handoff: keep the preboot gateway accepting/spooling
+        # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after
         # every handler/route exists do we release PORT and enter main(), whose first
         # action binds the real Waitress server.  This removes the old live-but-503 gap.
@@ -664,7 +769,7 @@ def main():
         runtime_main = runtime_ns.get('main')
         if not callable(runtime_main):
             raise RuntimeError('R54 bot runtime loaded without callable main()')
-        print(f'[SPLIT FRONT] R54 runtime imported; switching preboot -> Waitress; captured={_PREBOOT_CAPTURED}', flush=True)
+        print(f'[SPLIT FRONT] R55 runtime imported; switching preboot -> Waitress; captured={_PREBOOT_CAPTURED}', flush=True)
         _stop_boot_port(server)
         time.sleep(0.05)
         runtime_main()
