@@ -1701,6 +1701,17 @@ def _canon_runtime_mark_ready__001(detail: str=''):
             _start_post_ready()
     except Exception:
         pass
+    # R54: rolling deploys may have been routed to start_front's preboot gateway
+    # while MEGA restore/import was still running. Replay those fsynced Telegram
+    # updates only after the canonical runtime is READY; update_id dedupe makes a
+    # simultaneous Telegram redelivery harmless.
+    try:
+        _preboot_replay = globals().get('_r54_schedule_preboot_replay')
+        if callable(_preboot_replay):
+            _preboot_replay()
+    except Exception as exc:
+        try: runtime_event('r54_preboot_replay_schedule_error', str(exc), 'ERROR')
+        except Exception: pass
     try:
         _notify = globals().get('_v211_notify_owner_ready_once')
         if callable(_notify):

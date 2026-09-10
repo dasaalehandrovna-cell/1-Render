@@ -4608,6 +4608,16 @@ def telegram_webhook():
         return ('SHUTTING DOWN', 503)
     if not runtime_is_ready():
         runtime_mark_webhook(payload if isinstance(payload, dict) else None, blocked='boot')
+        try:
+            _boot_cq = (payload.get('callback_query') or {}) if isinstance(payload, dict) else {}
+            log_info(
+                f'R54 WEBHOOK DURING BOOT update={(payload or {}).get("update_id") if isinstance(payload, dict) else "?"} '
+                f'type={"callback_query" if _boot_cq else "message" if isinstance(payload, dict) and "message" in payload else "other"} '
+                f'phase={str((_RUNTIME_STATE or {}).get("phase") or "")}'
+            )
+            r52_diag('WEBHOOK_DURING_BOOT', update=(payload or {}).get('update_id') if isinstance(payload, dict) else None, action=str(_boot_cq.get('data') or '')[:240], phase=str((_RUNTIME_STATE or {}).get('phase') or ''))
+        except Exception:
+            pass
         return ('BOOTING', 503)
     runtime_mark_webhook(payload if isinstance(payload, dict) else None)
     # R26 forensic receipt marker (normal Render log only; no DB/network dependency).
@@ -5012,6 +5022,98 @@ def _r53_start_webhook_watchdog_once() -> bool:
         _R53_WEBHOOK_WATCHDOG_STARTED = True
         threading.Thread(target=_r53_webhook_watchdog_loop, name='r53-webhook-watchdog', daemon=True).start()
     return True
+
+
+def _r54_replay_preboot_webhooks() -> dict:
+    """Replay Telegram updates captured by start_front while MEGA restore/import ran.
+
+    The preboot gateway deliberately returned HTTP 503 even after fsyncing the raw
+    update, so Telegram may redeliver it as well.  The canonical webhook inbox and
+    UPDATE_DISPATCHER dedupe by update_id, making local replay + Telegram retry safe.
+    """
+    raw_path = str(os.getenv('PREBOOT_WEBHOOK_SPOOL_FILE', '') or '').strip()
+    if not raw_path:
+        return {'ok': True, 'found': 0, 'replayed': 0, 'remaining': 0}
+    path = Path(raw_path)
+    if not path.exists():
+        return {'ok': True, 'found': 0, 'replayed': 0, 'remaining': 0}
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except Exception as exc:
+        log_error(f'R54 PREBOOT REPLAY read failed: {type(exc).__name__}: {str(exc)[:300]}')
+        return {'ok': False, 'found': 0, 'replayed': 0, 'remaining': -1}
+    replayed = 0
+    duplicates = 0
+    remaining = []
+    bad = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+            payload = row.get('payload') if isinstance(row, dict) else None
+            if not isinstance(payload, dict) or payload.get('update_id') is None:
+                bad += 1
+                continue
+            update_id = int(payload.get('update_id'))
+            # If Telegram already redelivered and completed this update while replay
+            # was waiting in the queue, discard the spool copy without executing it.
+            try:
+                if durable_update_processed(update_id) or _v260_webhook_inbox_state(update_id) == 'done':
+                    duplicates += 1
+                    continue
+            except Exception:
+                pass
+            headers = {}
+            if WEBHOOK_HEADER_SECRET_ENABLED:
+                headers['X-Telegram-Bot-Api-Secret-Token'] = WEBHOOK_HEADER_SECRET
+            with app.test_request_context(WEBHOOK_ROUTE_PATH, method='POST', json=payload, headers=headers):
+                result = telegram_webhook()
+            status = 200
+            if isinstance(result, tuple) and len(result) >= 2:
+                try: status = int(result[1])
+                except Exception: status = 500
+            elif hasattr(result, 'status_code'):
+                try: status = int(result.status_code)
+                except Exception: status = 500
+            if 200 <= status < 300:
+                replayed += 1
+                log_info(f'R54 PREBOOT REPLAY update={update_id} status={status} accepted=1')
+            else:
+                remaining.append(line)
+                log_error(f'R54 PREBOOT REPLAY update={update_id} status={status} accepted=0')
+        except Exception as exc:
+            remaining.append(line)
+            log_error(f'R54 PREBOOT REPLAY row failed: {type(exc).__name__}: {str(exc)[:300]}')
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    try:
+        if remaining:
+            tmp.write_text('\n'.join(remaining) + '\n', encoding='utf-8')
+            os.replace(tmp, path)
+        else:
+            path.unlink(missing_ok=True)
+            tmp.unlink(missing_ok=True)
+    except Exception as exc:
+        log_error(f'R54 PREBOOT REPLAY persist failed: {type(exc).__name__}: {str(exc)[:300]}')
+    report = {'ok': not remaining, 'found': len(lines), 'replayed': replayed, 'duplicates': duplicates, 'bad': bad, 'remaining': len(remaining)}
+    log_info('R54 PREBOOT REPLAY DONE ' + json.dumps(report, ensure_ascii=False, separators=(',', ':')))
+    try: r52_diag('PREBOOT_REPLAY_DONE', **report)
+    except Exception: pass
+    if remaining and not runtime_is_shutting_down():
+        try:
+            DELAYED_SCHEDULER.schedule('r54-preboot-replay-retry', 2.0, lambda: GENERAL_TASK_POOL.submit_unique('r54-preboot-replay', _r54_replay_preboot_webhooks))
+        except Exception:
+            pass
+    return report
+
+
+def _r54_schedule_preboot_replay() -> bool:
+    raw_path = str(os.getenv('PREBOOT_WEBHOOK_SPOOL_FILE', '') or '').strip()
+    if not raw_path or not Path(raw_path).exists():
+        return False
+    try:
+        return bool(GENERAL_TASK_POOL.submit_unique('r54-preboot-replay', _r54_replay_preboot_webhooks))
+    except Exception as exc:
+        log_error(f'R54 PREBOOT REPLAY schedule failed: {exc}')
+        return False
 
 try:
     _v177_legacy_0269_set_webhook.__name__ = 'set_webhook'
