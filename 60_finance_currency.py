@@ -728,20 +728,6 @@ def usd_rate_cached(force: bool=False) -> dict | None:
     age = time.time() - float(cache.get('fetched_ts', 0) or 0)
     if not force and cache.get('rate') and (age < USD_RATE_CACHE_SECONDS):
         return cache
-    # R24: FAST/UI window construction never waits for Redis or DolarAPI. A stale
-    # local rate is good enough for the first render; refresh happens after it.
-    _r24_thread_name = threading.current_thread().name.casefold()
-    _r24_ui_thread = _r24_thread_name.startswith(('fast-ui', 'ui-', 'start-ui', 'window-render'))
-    if not force and _r24_ui_thread:
-        try:
-            submit_unique = getattr(GENERAL_TASK_POOL, 'submit_unique', None)
-            if callable(submit_unique):
-                submit_unique('r24-usd-rate-refresh', usd_rate_cached, True)
-            else:
-                GENERAL_TASK_POOL.submit('r24-usd-rate-refresh', usd_rate_cached, True)
-        except Exception:
-            pass
-        return cache if cache.get('rate') else None
     if not force:
         kv_get = globals().get('kv_get_json_v248')
         if callable(kv_get):
@@ -916,16 +902,13 @@ def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
 
 def usd_balance_for_chat(chat_id: int) -> float:
     ensure_usd_migration_for_chat(int(chat_id))
-    store = get_chat_store(int(chat_id))
-    if '_usd_balance_cache_r16' in store:
-        try: return float(store.get('_usd_balance_cache_r16', 0) or 0)
-        except Exception: store.pop('_usd_balance_cache_r16', None)
     total = 0.0
-    for rec in store.get('records', []) or []:
-        try: total += float(rec.get('usd_amount', 0) or 0)
-        except Exception: pass
-    store['_usd_balance_cache_r16'] = float(total)
-    return float(total)
+    for rec in get_chat_store(int(chat_id)).get('records', []) or []:
+        try:
+            total += float(rec.get('usd_amount', 0) or 0)
+        except Exception:
+            pass
+    return total
 
 def usd_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     ensure_usd_migration_for_chat(int(chat_id))

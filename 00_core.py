@@ -23,7 +23,6 @@ import heapq
 import signal
 import socket
 import sys
-import traceback
 import platform
 import ctypes as _core_ctypes
 from datetime import datetime, timedelta, timezone
@@ -568,111 +567,6 @@ class KeyedTaskPool:
         with self._lock:
             return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error}
 
-
-class LatestKeyedTaskPool:
-    """R22 latest-wins keyed executor.
-
-    At most one task per key is executing and at most one *latest* task is waiting.
-    A newer render replaces an older queued render instead of building a stale UI
-    backlog.  Network RTT therefore never occupies the callback worker lane.
-    """
-
-    def __init__(self, name: str, workers: int=6, max_pending_keys: int=256):
-        self.name = str(name)
-        self.workers = max(1, int(workers))
-        self.max_pending_keys = max(10, int(max_pending_keys))
-        self._ready = queue.Queue()
-        self._lock = threading.RLock()
-        self._latest = {}
-        self._active_keys = set()
-        self._seq = defaultdict(int)
-        self._active_workers = 0
-        self._submitted = 0
-        self._replaced = 0
-        self._completed = 0
-        self._failed = 0
-        self._rejected = 0
-        self._max_wait = 0.0
-        self._last_error = ''
-        for idx in range(self.workers):
-            threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True).start()
-
-    def submit_latest(self, key, func, *args, **kwargs):
-        key = str(key)
-        with self._lock:
-            if key not in self._active_keys and len(self._active_keys) >= self.max_pending_keys:
-                self._rejected += 1
-                return 0
-            self._seq[key] += 1
-            seq = int(self._seq[key])
-            task = (seq, func, args, kwargs, time.monotonic())
-            if key in self._latest:
-                self._replaced += 1
-            self._latest[key] = task
-            self._submitted += 1
-            if key not in self._active_keys:
-                self._active_keys.add(key)
-                self._ready.put(key)
-            return seq
-
-    def is_latest(self, key, seq: int) -> bool:
-        key = str(key)
-        with self._lock:
-            return int(self._seq.get(key, 0) or 0) == int(seq or 0)
-
-    def _worker(self):
-        while True:
-            key = self._ready.get()
-            task = None
-            with self._lock:
-                task = self._latest.pop(key, None)
-                if task is not None:
-                    self._active_workers += 1
-            if task is None:
-                with self._lock:
-                    self._active_keys.discard(key)
-                self._ready.task_done()
-                continue
-            seq, func, args, kwargs, enqueued_mono = task
-            wait = max(0.0, time.monotonic() - enqueued_mono)
-            with self._lock:
-                self._max_wait = max(self._max_wait, wait)
-            try:
-                # If a newer render arrived before this task actually got CPU time,
-                # discard this stale task without touching Telegram.
-                if self.is_latest(key, seq):
-                    func(*args, **kwargs)
-                with self._lock:
-                    self._completed += 1
-            except Exception as exc:
-                with self._lock:
-                    self._failed += 1
-                    self._last_error = str(exc)[:300]
-                try:
-                    log_error(f'POOL {self.name}: {exc}')
-                except Exception:
-                    logging.exception('POOL %s', self.name)
-            finally:
-                with self._lock:
-                    self._active_workers = max(0, self._active_workers - 1)
-                    if key in self._latest:
-                        self._ready.put(key)
-                    else:
-                        self._active_keys.discard(key)
-                task = func = args = kwargs = None
-                self._ready.task_done()
-
-    def stats(self) -> dict:
-        with self._lock:
-            return {
-                'name': self.name, 'workers': self.workers, 'active': self._active_workers,
-                'pending': len(self._latest), 'keys': len(self._active_keys),
-                'submitted': self._submitted, 'replaced': self._replaced,
-                'completed': self._completed, 'failed': self._failed,
-                'rejected': self._rejected, 'max_wait': round(self._max_wait, 3),
-                'last_error': self._last_error,
-            }
-
 class DelayedTaskScheduler:
     """Один поток хранит все логические таймеры без сотен threading.Timer."""
 
@@ -687,11 +581,6 @@ class DelayedTaskScheduler:
         self._executed = 0
         self._cancelled = 0
         self._failed_dispatch = 0
-        # R45 stuck-fix: retry bookkeeping is per logical timer key.  A saturated
-        # executor must not turn one pending timer into a 2 Hz error/log storm.
-        self._retry_counts = {}
-        self._last_retry_log = {}
-        self._busy_requeues = 0
         threading.Thread(target=self._worker, name=f'{self.executor_pool.name}-scheduler', daemon=True).start()
 
     def _compact_locked(self, force: bool=False):
@@ -737,13 +626,7 @@ class DelayedTaskScheduler:
 
     def stats(self):
         with self._cv:
-            return {
-                'scheduled': len(self._deadlines), 'heap': len(self._heap),
-                'submitted': self._submitted, 'executed': self._executed,
-                'cancelled': self._cancelled, 'dispatch_failed': self._failed_dispatch,
-                'busy_requeues': self._busy_requeues,
-                'retry_keys': len(self._retry_counts),
-            }
+            return {'scheduled': len(self._deadlines), 'heap': len(self._heap), 'submitted': self._submitted, 'executed': self._executed, 'cancelled': self._cancelled, 'dispatch_failed': self._failed_dispatch}
 
     def _worker(self):
         while True:
@@ -759,57 +642,21 @@ class DelayedTaskScheduler:
                 if int(self._versions.get(key, 0)) != int(version):
                     continue
                 self._deadlines.pop(key, None)
-
-            # One stable executor key per logical timer.  schedule() is already latest-wins
-            # for a key, so allowing multiple concurrent executor copies is both wasteful
-            # and a source of queue amplification.
-            dispatch_key = f'delay:{key}'
-            try:
-                status = self.executor_pool.key_status(dispatch_key)
-            except Exception:
-                status = {'active': False, 'queued': 0}
-            same_key_busy = bool(status.get('active') or status.get('queued'))
-            ok = False if same_key_busy else self.executor_pool.submit_unique(dispatch_key, self._execute, func, args, kwargs)
-            if ok:
+            dispatch_key = f'delay:{key}:{seq}'
+            ok = self.executor_pool.submit(dispatch_key, self._execute, func, args, kwargs)
+            if not ok:
                 with self._cv:
-                    self._retry_counts.pop(key, None)
-                    self._last_retry_log.pop(key, None)
-                continue
-
-            now = time.time()
-            with self._cv:
-                if same_key_busy:
-                    self._busy_requeues += 1
-                    retry_count = int(self._retry_counts.get(key, 0) or 0)
-                    retry_delay = 0.35
-                else:
                     self._failed_dispatch += 1
-                    retry_count = int(self._retry_counts.get(key, 0) or 0) + 1
-                    self._retry_counts[key] = retry_count
-                    # 0.5, 1, 2, 4, 8, 10s (+ tiny deterministic jitter).
-                    retry_delay = min(10.0, 0.5 * (2 ** min(max(0, retry_count - 1), 5)))
-                    retry_delay += 0.05 * ((self._seq + retry_count) % 5)
-                if int(self._versions.get(key, 0)) == int(version):
-                    retry_at = now + retry_delay
-                    self._seq += 1
-                    self._deadlines[key] = retry_at
-                    heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
-                    self._cv.notify_all()
-
-            # Same-key busy is normal coalescing, not an error.  Real capacity failures
-            # are throttled to at most one log line per key every 5 seconds.
-            if not same_key_busy:
-                should_log = False
-                with self._cv:
-                    last_log = float(self._last_retry_log.get(key, 0.0) or 0.0)
-                    if now - last_log >= 5.0:
-                        self._last_retry_log[key] = now
-                        should_log = True
-                if should_log:
-                    try:
-                        log_error(f'DELAYED QUEUE FULL, BACKOFF: {key} retry={retry_count} next={retry_delay:.2f}s')
-                    except Exception:
-                        pass
+                    if int(self._versions.get(key, 0)) == int(version):
+                        retry_at = time.time() + 0.5
+                        self._seq += 1
+                        self._deadlines[key] = retry_at
+                        heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
+                        self._cv.notify_all()
+                try:
+                    log_error(f'DELAYED QUEUE FULL, RETRY: {key}')
+                except Exception:
+                    pass
 
     def _execute(self, func, args, kwargs):
         try:
@@ -823,16 +670,9 @@ def _env_int(name: str, default: int, minimum: int=1, maximum: int=128) -> int:
         return max(minimum, min(maximum, int(os.getenv(name, str(default)) or default)))
     except Exception:
         return int(default)
-WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 4, 2, 8), _env_int('WEBHOOK_MAX_PENDING', 400, 50, 2000))
+WEBHOOK_TASK_POOL = KeyedTaskPool('content', _env_int('WEBHOOK_WORKERS', 2, 2, 8), _env_int('WEBHOOK_MAX_PENDING', 400, 50, 2000))
 UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI_MAX_PENDING', 400, 50, 2000))
-# R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
-# can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.
-FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 4, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
-# R22: Telegram editMessageText/caption runs here, never inside callback workers.
-WINDOW_RENDER_TASK_POOL = KeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 6, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING', 900, 100, 4000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 1, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
-UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
-UI_DELETE_TASK_POOL = KeyedTaskPool('ui-delete', _env_int('UI_DELETE_WORKERS', 2, 1, 4), _env_int('UI_DELETE_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
 REMINDER_TASK_POOL = KeyedTaskPool('reminder', _env_int('REMINDER_WORKERS', 1, 1, 3), _env_int('REMINDER_MAX_PENDING', 250, 20, 1000))
 FINANCE_TASK_POOL = KeyedTaskPool('finance', _env_int('FINANCE_WORKERS', 2, 2, 8), _env_int('FINANCE_MAX_PENDING', 400, 50, 2000))
@@ -845,7 +685,7 @@ BACKGROUND_TASK_POOL = KeyedTaskPool('background', _env_int('BACKGROUND_WORKERS'
 MAINTENANCE_TASK_POOL = BACKGROUND_TASK_POOL
 JOURNAL_TASK_POOL = BACKGROUND_TASK_POOL
 GENERAL_TASK_POOL = BACKGROUND_TASK_POOL
-DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 4, 2, 8), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
+DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 1, 1, 2), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
 DOZVON_TASK_POOL = KeyedTaskPool('dozvon', _env_int('DOZVON_WORKERS', 1, 1, 2), _env_int('DOZVON_MAX_PENDING', 100, 10, 500))
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
 CALLBACK_ACK_SCHEDULER = DelayedTaskScheduler(CALLBACK_ACK_TASK_POOL)
@@ -854,9 +694,9 @@ try:
 except Exception:
     WEBHOOK_ACK_WAIT_SECONDS = 8.0
 try:
-    WEBHOOK_STUCK_WARN_SECONDS = max(5.0, min(300.0, float(os.getenv('WEBHOOK_STUCK_WARN_SECONDS', '5') or '5')))
+    WEBHOOK_STUCK_WARN_SECONDS = max(5.0, min(300.0, float(os.getenv('WEBHOOK_STUCK_WARN_SECONDS', '20') or '20')))
 except Exception:
-    WEBHOOK_STUCK_WARN_SECONDS = 5.0
+    WEBHOOK_STUCK_WARN_SECONDS = 20.0
 try:
     WEBHOOK_DONE_TTL_SECONDS = max(60.0, min(3600.0, float(os.getenv('WEBHOOK_DONE_TTL_SECONDS', '600') or '600')))
 except Exception:
@@ -905,46 +745,16 @@ class DurableUpdateDispatcher:
             else:
                 attempts = 1
             event = threading.Event()
-            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'enqueued_at': None, 'queue_name': '', 'queue_key': '', 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': '', 'thread_ident': None, 'thread_name': '', 'stage': 'CLAIMED', 'stage_at': now, 'action': ''}
+            item = {'update_id': key, 'chat_id': chat_id, 'type': str(update_type or 'other'), 'state': 'queued', 'created_at': now, 'started_at': None, 'finished_at': None, 'attempts': attempts, 'event': event, 'error': ''}
             self._tickets[key] = item
             return ('new', item)
-
-    def mark_enqueued(self, update_id, queue_name: str='', queue_key=''):
-        with self._lock:
-            item = self._tickets.get(str(update_id))
-            if not item or item.get('state') != 'queued':
-                return
-            now = time.time()
-            item['enqueued_at'] = now
-            item['queue_name'] = str(queue_name or '')[:80]
-            item['queue_key'] = str(queue_key or '')[:180]
-            item['stage'] = f"ENQUEUED:{item['queue_name'] or '?'}"
-            item['stage_at'] = now
 
     def mark_started(self, update_id):
         with self._lock:
             item = self._tickets.get(str(update_id))
             if item:
-                now = time.time()
                 item['state'] = 'running'
-                item['started_at'] = now
-                item['thread_ident'] = threading.get_ident()
-                item['thread_name'] = threading.current_thread().name
-                item['stage'] = 'WORKER_START'
-                item['stage_at'] = now
-
-    def mark_stage(self, update_id, stage: str, action: str=''):
-        with self._lock:
-            item = self._tickets.get(str(update_id))
-            if not item:
-                return
-            item['stage'] = str(stage or '')[:120]
-            item['stage_at'] = time.time()
-            if action:
-                item['action'] = str(action or '')[:240]
-            if item.get('state') == 'running' and not item.get('thread_ident'):
-                item['thread_ident'] = threading.get_ident()
-                item['thread_name'] = threading.current_thread().name
+                item['started_at'] = time.time()
 
     def finish(self, update_id, success=True, error=''):
         with self._lock:
@@ -989,9 +799,7 @@ class DurableUpdateDispatcher:
         with self._lock:
             pending = [x for x in self._tickets.values() if x.get('state') in {'queued', 'running'}]
             oldest = max([now - float(x.get('created_at', now)) for x in pending] or [0.0])
-            queued = sum(1 for x in pending if x.get('state') == 'queued')
-            running = sum(1 for x in pending if x.get('state') == 'running')
-            return {'pending': len(pending), 'queued': queued, 'running': running, 'oldest': round(oldest, 2), 'received': self._received, 'duplicates': self._duplicates, 'completed': self._completed, 'failed': self._failed, 'timeouts': self._timeouts, 'timeout_details': list(self._timeout_details[-12:]), 'retries': self._retries, 'last_error': self._last_error, 'ack_wait': WEBHOOK_ACK_WAIT_SECONDS}
+            return {'pending': len(pending), 'oldest': round(oldest, 2), 'received': self._received, 'duplicates': self._duplicates, 'completed': self._completed, 'failed': self._failed, 'timeouts': self._timeouts, 'timeout_details': list(self._timeout_details[-12:]), 'retries': self._retries, 'last_error': self._last_error, 'ack_wait': WEBHOOK_ACK_WAIT_SECONDS}
 
     def _watchdog(self):
         while True:
@@ -1013,304 +821,26 @@ class DurableUpdateDispatcher:
                             last = float(self._last_warn.get(key, 0) or 0)
                             if now - last >= WEBHOOK_STUCK_WARN_SECONDS:
                                 self._last_warn[key] = now
-                                warnings.append((key, item.get('chat_id'), item.get('type'), age, state, item.get('thread_ident'), item.get('thread_name'), item.get('stage'), item.get('stage_at'), item.get('action')))
+                                warnings.append((key, item.get('chat_id'), item.get('type'), age, state))
                     for key in stale_keys:
                         self._tickets.pop(key, None)
                         self._last_warn.pop(key, None)
-                for key, chat_id, typ, age, state, thread_ident, thread_name, stage, stage_at, action in warnings:
+                for key, chat_id, typ, age, state in warnings:
                     try:
-                        stage_age = max(0.0, now - float(stage_at or now))
-                        _locks = ''
-                        try:
-                            _snap_fn = globals().get('r36_lock_snapshot_text')
-                            _locks = str(_snap_fn() if callable(_snap_fn) else '')
-                        except Exception:
-                            _locks = ''
-                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s stage={stage or "?"} stage_age={stage_age:.1f}s action={str(action or "")[:160]}; thread={thread_name or "?"}; locks={_locks or "unknown"}; Telegram will retry until 2xx')
+                        log_error(f'DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s; Telegram will retry until 2xx')
                     except Exception:
                         pass
-                    try:
-                        frame = sys._current_frames().get(int(thread_ident)) if thread_ident else None
-                        if frame is not None:
-                            stack = ''.join(traceback.format_stack(frame, limit=24))
-                            if len(stack) > 14000:
-                                stack = stack[-14000:]
-                            _r26_stack_line = f'STUCK_STACK update={key} chat={chat_id} type={typ} age={age:.1f}s stage={stage or "?"} action={str(action or "")[:160]} thread={thread_name or thread_ident}\n{stack}'
-                            log_error(_r26_stack_line)
-                            r26_diag_trace_line(_r26_stack_line)
-                        else:
-                            log_error(f'STUCK_STACK update={key}: frame unavailable thread={thread_name or thread_ident}')
-                    except Exception as stack_exc:
-                        try: log_error(f'STUCK_STACK update={key}: capture failed {type(stack_exc).__name__}: {str(stack_exc)[:180]}')
-                        except Exception: pass
             except Exception:
                 time.sleep(2.0)
 UPDATE_DISPATCHER = DurableUpdateDispatcher()
-
-# R25: per-update forensic trace. It writes to normal Render logs only and never
-# touches SQLite/Redis, so diagnostics cannot become another user-path dependency.
-_R25_TRACE_LOCAL = threading.local()
-_R25_TRACE_SLOW_LOCK_SEC = max(0.005, float(os.getenv('R25_TRACE_SLOW_LOCK_SEC', '0.020') or '0.020'))
-
-# R26: zero-I/O forensic ring included in the downloadable current-version journal.
-# Appending here never touches SQLite/Redis/files, so diagnostics cannot slow buttons.
-_R26_TRACE_RING = deque(maxlen=max(500, min(10000, int(os.getenv('R26_TRACE_RING_ROWS','4000') or '4000'))))
-_R26_TRACE_RING_LOCK = threading.RLock()
-def r26_diag_trace_line(line: str):
-    try:
-        text = str(line or '')
-        if not text: return
-        stamp = now_local().isoformat(timespec='milliseconds') if 'now_local' in globals() else datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-        with _R26_TRACE_RING_LOCK:
-            _R26_TRACE_RING.append(f'{stamp} | {text[:12000]}')
-    except Exception:
-        pass
-def r26_diag_trace_snapshot(limit: int=4000):
-    try:
-        with _R26_TRACE_RING_LOCK:
-            return list(_R26_TRACE_RING)[-max(1,int(limit)): ]
-    except Exception:
-        return []
-
-def r25_trace_begin(update_id, chat_id=None, update_type='other', action=''):
-    _R25_TRACE_LOCAL.update_id = str(update_id or '')
-    _R25_TRACE_LOCAL.chat_id = chat_id
-    _R25_TRACE_LOCAL.update_type = str(update_type or 'other')
-    _R25_TRACE_LOCAL.action = str(action or '')[:240]
-    _R25_TRACE_LOCAL.started_mono = time.monotonic()
-    try: UPDATE_DISPATCHER.mark_stage(update_id, 'WORKER_START', action)
-    except Exception: pass
-    try:
-        _line=f'BTNTRACE update={update_id} chat={chat_id} type={update_type} action={str(action or "")[:180]} stage=WORKER_START'
-        log_info(_line); r26_diag_trace_line(_line)
-    except Exception: pass
-
-def r25_trace_set_action(action: str):
-    try:
-        _R25_TRACE_LOCAL.action = str(action or '')[:240]
-        ctx = r25_trace_current()
-        if ctx.get('update_id'):
-            UPDATE_DISPATCHER.mark_stage(ctx.get('update_id'), 'CALLBACK_ROUTER', str(action or ''))
-            _line=f'BTNTRACE update={ctx.get("update_id")} chat={ctx.get("chat_id")} action={str(action or "")[:180]} stage=CALLBACK_ROUTER'; log_info(_line); r26_diag_trace_line(_line)
-    except Exception:
-        pass
-
-def r25_trace_current():
-    return {
-        'update_id': str(getattr(_R25_TRACE_LOCAL, 'update_id', '') or ''),
-        'chat_id': getattr(_R25_TRACE_LOCAL, 'chat_id', None),
-        'update_type': str(getattr(_R25_TRACE_LOCAL, 'update_type', '') or ''),
-        'action': str(getattr(_R25_TRACE_LOCAL, 'action', '') or ''),
-        'started_mono': float(getattr(_R25_TRACE_LOCAL, 'started_mono', 0.0) or 0.0),
-    }
-
-def r25_trace_stage(stage: str, elapsed=None, detail: str='', emit: bool=True):
-    ctx = r25_trace_current()
-    update_id = ctx.get('update_id') or ''
-    if update_id:
-        try: UPDATE_DISPATCHER.mark_stage(update_id, stage, ctx.get('action') or '')
-        except Exception: pass
-    if emit:
-        try:
-            e = '' if elapsed is None else f' elapsed={max(0.0,float(elapsed)):.3f}s'
-            d = f' detail={str(detail or "")[:260]}' if detail else ''
-            _line=f'BTNTRACE update={update_id or "-"} chat={ctx.get("chat_id")} action={str(ctx.get("action") or "")[:180]} stage={str(stage or "")[:120]}{e}{d}'; log_info(_line); r26_diag_trace_line(_line)
-        except Exception: pass
-
-def r25_trace_end():
-    try:
-        for name in ('update_id','chat_id','update_type','action','started_mono'):
-            if hasattr(_R25_TRACE_LOCAL, name): delattr(_R25_TRACE_LOCAL, name)
-    except Exception: pass
-
-# R27: human input has priority over housekeeping on FAST.
-_R27_LAST_USER_ACTIVITY_MONO = 0.0
-_R27_USER_ACTIVITY_LOCK = threading.RLock()
-_R27_BG_LOCK_PREFIXES = ('ui-cleanup-', 'scheduler-', 'background-', 'reminder-')
-
-def r27_note_user_activity(kind='telegram'):
-    global _R27_LAST_USER_ACTIVITY_MONO
-    try:
-        with _R27_USER_ACTIVITY_LOCK:
-            _R27_LAST_USER_ACTIVITY_MONO = time.monotonic()
-    except Exception:
-        pass
-    return True
-
-def r27_user_quiet_for() -> float:
-    try:
-        with _R27_USER_ACTIVITY_LOCK:
-            last = float(_R27_LAST_USER_ACTIVITY_MONO or 0.0)
-        if last <= 0.0:
-            return 10**9
-        return max(0.0, time.monotonic() - last)
-    except Exception:
-        return 10**9
-
-def _r27_background_yield_before_lock(lock_name: str) -> None:
-    """Keep cleanup/scheduler/reminder work behind a just-arrived user button.
-
-    This never delays a traced Telegram handler and never delays the window-render
-    lane. It only prevents low-priority housekeeping from winning the next lock race.
-    """
-    try:
-        name = threading.current_thread().name
-        if not name.startswith(_R27_BG_LOCK_PREFIXES):
-            return
-        grace = max(0.2, min(3.0, float(os.getenv('R27_FAST_USER_PRIORITY_SEC', '1.6') or '1.6')))
-        deadline = time.monotonic() + grace
-        while r27_user_quiet_for() < grace and time.monotonic() < deadline:
-            time.sleep(0.025)
-    except Exception:
-        pass
-
-class R25TracedRLock:
-    """R36 RLock wrapper with holder attribution for real lock-stall diagnosis."""
-    def __init__(self, name):
-        self._lock = threading.RLock()
-        self.name = str(name or 'lock')
-        self._owner_ident = None
-        self._owner_name = ''
-        self._owner_since = 0.0
-        self._owner_depth = 0
-    def owner_snapshot(self):
-        ident = self._owner_ident
-        return {
-            'name': self.name,
-            'owner_ident': ident,
-            'owner_thread': str(self._owner_name or ''),
-            'held_seconds': round(max(0.0, time.monotonic()-float(self._owner_since or 0.0)), 3) if ident else 0.0,
-            'depth': int(self._owner_depth or 0),
-        }
-    def held_by_current_thread(self):
-        return self._owner_ident == threading.get_ident() and int(self._owner_depth or 0) > 0
-    def acquire(self, blocking=True, timeout=-1):
-        ctx = r25_trace_current()
-        traced = bool(ctx.get('update_id'))
-        if not traced and not self.held_by_current_thread():
-            _r27_background_yield_before_lock(self.name)
-        before = self.owner_snapshot()
-        t0 = time.monotonic()
-        if traced:
-            r25_trace_stage(f'{self.name.upper()}_LOCK_WAIT', detail=(f"holder={before.get('owner_thread') or '-'} held={before.get('held_seconds',0):.3f}s" if before.get('owner_ident') else ''), emit=False)
-        if timeout is None or float(timeout) < 0:
-            ok = self._lock.acquire(blocking)
-        else:
-            ok = self._lock.acquire(blocking, timeout)
-        waited = max(0.0, time.monotonic() - t0)
-        if ok:
-            ident = threading.get_ident()
-            if self._owner_ident == ident:
-                self._owner_depth = int(self._owner_depth or 0) + 1
-            else:
-                self._owner_ident = ident
-                self._owner_name = threading.current_thread().name
-                self._owner_since = time.monotonic()
-                self._owner_depth = 1
-        detail = ''
-        if waited >= _R25_TRACE_SLOW_LOCK_SEC and before.get('owner_ident'):
-            detail = f"waited_for={before.get('owner_thread') or before.get('owner_ident')} held_before={before.get('held_seconds',0):.3f}s"
-        if traced:
-            r25_trace_stage(f'{self.name.upper()}_LOCK_ACQUIRED', waited, detail=detail, emit=waited >= _R25_TRACE_SLOW_LOCK_SEC)
-        elif waited >= max(0.25, _R25_TRACE_SLOW_LOCK_SEC * 5):
-            try:
-                _line=f'LOCKTRACE name={self.name} wait={waited:.3f}s thread={threading.current_thread().name} holder={before.get("owner_thread") or before.get("owner_ident") or "-"} holder_held={before.get("held_seconds",0):.3f}s'; log_info(_line); r26_diag_trace_line(_line)
-            except Exception: pass
-        return ok
-    def release(self):
-        ident = threading.get_ident()
-        try:
-            return self._lock.release()
-        finally:
-            if self._owner_ident == ident:
-                self._owner_depth = max(0, int(self._owner_depth or 0)-1)
-                if self._owner_depth <= 0:
-                    self._owner_ident = None; self._owner_name = ''; self._owner_since = 0.0; self._owner_depth = 0
-    def __enter__(self): self.acquire(); return self
-    def __exit__(self, exc_type, exc, tb): self.release(); return False
-    def __getattr__(self, name): return getattr(self._lock, name)
-
-# R45 stuck-fix: chat locks are traced too.  The old raw RLock made the real
-# blocker invisible (DISPATCHER showed locks=none while a worker waited on chat_lock).
-chat_locks = {}
-_CHAT_LOCKS_GUARD = threading.RLock()
-data_lock = R25TracedRLock('data')
-
-def r36_lock_snapshot_text() -> str:
-    rows=[]
-    for obj_name in ('data_lock',):
-        obj=globals().get(obj_name)
-        try:
-            snap=obj.owner_snapshot() if obj is not None and hasattr(obj,'owner_snapshot') else {}
-            if snap.get('owner_ident'):
-                rows.append(f"{snap.get('name')}={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
-        except Exception: pass
-    try:
-        db=globals().get('SQLITE'); lock=getattr(db,'lock',None) if db is not None else None
-        snap=lock.owner_snapshot() if lock is not None and hasattr(lock,'owner_snapshot') else {}
-        if snap.get('owner_ident'):
-            rows.append(f"sqlite={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
-    except Exception: pass
-    # Include held chat locks.  Cap output so one diagnostic line stays bounded.
-    try:
-        with _CHAT_LOCKS_GUARD:
-            items = list(chat_locks.items())
-        for cid, lock in items:
-            try:
-                snap = lock.owner_snapshot() if hasattr(lock, 'owner_snapshot') else {}
-                if snap.get('owner_ident'):
-                    rows.append(f"chat:{cid}={snap.get('owner_thread') or snap.get('owner_ident')} held={snap.get('held_seconds',0):.3f}s depth={snap.get('depth',0)}")
-                    if len(rows) >= 8:
-                        break
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return '; '.join(rows) or 'none'
+chat_locks = defaultdict(threading.RLock)
+data_lock = threading.RLock()
 forward_map_lock = threading.RLock()
 timer_lock = threading.RLock()
 _state_context = threading.local()
 
 def chat_lock_for(chat_id: int):
-    cid = int(chat_id)
-    with _CHAT_LOCKS_GUARD:
-        lock = chat_locks.get(cid)
-        if lock is None:
-            lock = R25TracedRLock(f'chat:{cid}')
-            chat_locks[cid] = lock
-        return lock
-
-try:
-    WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS = max(3.0, min(60.0, float(os.getenv('WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS', '12') or '12')))
-except Exception:
-    WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS = 12.0
-
-@contextmanager
-def telegram_execution_chat_lock(chat_id: int, timeout: float | None=None):
-    """Bounded chat lock used only by inbound Telegram execution.
-
-    Business ordering is preserved while a healthy holder owns the lock.  A broken or
-    wedged holder can no longer consume a webhook worker forever: the update fails and
-    is replayed from the durable inbox / Telegram retry path after the holder recovers.
-    """
-    cid = int(chat_id)
-    lock = chat_lock_for(cid)
-    limit = WEBHOOK_CHAT_LOCK_TIMEOUT_SECONDS if timeout is None else max(0.1, float(timeout))
-    acquired = lock.acquire(timeout=limit)
-    if not acquired:
-        try:
-            snap = lock.owner_snapshot() if hasattr(lock, 'owner_snapshot') else {}
-            holder = snap.get('owner_thread') or snap.get('owner_ident') or '?'
-            held = float(snap.get('held_seconds') or 0.0)
-            r25_trace_stage('CHAT_LOCK_TIMEOUT', limit, f'chat={cid} holder={holder} held={held:.3f}s')
-            log_error(f'CHAT LOCK TIMEOUT chat={cid} wait={limit:.2f}s holder={holder} held={held:.2f}s')
-        except Exception:
-            pass
-        raise TimeoutError(f'chat lock timeout chat={cid} after {limit:.2f}s')
-    try:
-        yield lock
-    finally:
-        lock.release()
+    return chat_locks[int(chat_id)]
 
 @contextmanager
 def locked_chat(chat_id: int):
@@ -1435,12 +965,7 @@ def _forward_anonymous_admin_message(msg) -> bool:
     return False
 
 def _forward_sender_skip_reason(msg) -> str:
-    """R12: accept delivered messages from other bots; skip only this bot itself.
-
-    The self-sender guard prevents forwarding loops. Anonymous/send-as-chat admins and
-    genuine third-party bots are eligible for the same configured forwarding rules as
-    human senders whenever Telegram delivers the update to us.
-    """
+    """Skip our own/other real bot messages, but allow anonymous human admins."""
     try:
         sender = getattr(msg, 'from_user', None)
         if not sender or not bool(getattr(sender, 'is_bot', False)):
@@ -1449,12 +974,14 @@ def _forward_sender_skip_reason(msg) -> str:
         self_id = _current_bot_id_for_forwarding()
         if self_id and sender_id == self_id:
             return 'bot_sender'
-        return ''
+        if _forward_anonymous_admin_message(msg):
+            return ''
+        return 'other_bot_sender'
     except Exception:
         return ''
 
 def _forward_sender_skip_reason_raw(raw: dict) -> str:
-    """Raw-payload twin: third-party bots are forwardable; our own bot is not."""
+    """Raw-payload twin of _forward_sender_skip_reason for durable recovery."""
     if not isinstance(raw, dict):
         return ''
     try:
@@ -1465,7 +992,17 @@ def _forward_sender_skip_reason_raw(raw: dict) -> str:
         self_id = _current_bot_id_for_forwarding()
         if self_id and sender_id == self_id:
             return 'bot_sender'
-        return ''
+        username = str(sender.get('username') or '').lstrip('@').lower()
+        if username == 'groupanonymousbot':
+            return ''
+        sender_chat = raw.get('sender_chat') or {}
+        chat = raw.get('chat') or {}
+        if isinstance(sender_chat, dict) and isinstance(chat, dict):
+            sid = int(sender_chat.get('id') or 0)
+            cid = int(chat.get('id') or 0)
+            if sid and cid and (sid == cid):
+                return ''
+        return 'other_bot_sender'
     except Exception:
         return ''
 
@@ -1738,7 +1275,7 @@ class SQLiteState:
 
     def __init__(self, path: str):
         self.path = path
-        self.lock = R25TracedRLock('sqlite')
+        self.lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_db()
@@ -1798,22 +1335,18 @@ class SQLiteState:
 
     def save_chats(self, chats: dict):
         chats = chats or {}
-        # R36: JSON encoding can be expensive for finance history; never spend that CPU
-        # while monopolising the shared SQLite connection lock.
-        encoded = {str(chat_id): self._dump(payload) for chat_id, payload in chats.items()}
         with self.lock:
             existing = {str(r[0]) for r in self.conn.execute('SELECT chat_id FROM chats').fetchall()}
-            self.conn.executemany('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', list(encoded.items()))
-            stale = existing - set(encoded)
-            if stale:
-                self.conn.executemany('DELETE FROM chats WHERE chat_id=?', [(k,) for k in stale])
+            for chat_id, payload in chats.items():
+                self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), self._dump(payload)))
+            for stale in existing - {str(k) for k in chats.keys()}:
+                self.conn.execute('DELETE FROM chats WHERE chat_id=?', (stale,))
             self.conn.commit()
 
     def save_chat(self, chat_id, payload: dict):
         """Точечно сохраняет только один изменившийся чат."""
-        encoded = self._dump(payload or {})
         with self.lock:
-            self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), encoded))
+            self.conn.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (str(chat_id), self._dump(payload or {})))
             self.conn.commit()
 
     def delete_chat(self, chat_id):
@@ -1843,19 +1376,6 @@ class SQLiteState:
         with self.lock:
             self.conn.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', (str(chat_id), str(key), payload, stamp))
             self.conn.commit()
-
-    def set_cold_many(self, chat_id, items: dict):
-        """R24: persist all loaded cold fields of one chat in one SQLite commit."""
-        rows = []
-        stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        for key, obj in (items or {}).items():
-            rows.append((str(chat_id), str(key), self._dump(obj), stamp))
-        if not rows:
-            return 0
-        with self.lock:
-            self.conn.executemany('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', rows)
-            self.conn.commit()
-        return len(rows)
 
     def delete_cold(self, chat_id, key: str):
         with self.lock:
@@ -1907,36 +1427,20 @@ class SQLiteState:
         return sorted(set(out))
 
     def backup_to(self, target_path: str):
-        """R25 online snapshot using a separate SQLite connection.
-
-        The old implementation held the one shared SQLITE.lock for the entire backup.
-        HEAVY `/internal/split/state` fetches could therefore freeze callbacks that only
-        needed a tiny SQLite read/write. WAL + SQLite online backup allows a consistent
-        snapshot without monopolising FAST's primary connection/lock.
-        """
+        """Consistent on-disk SQLite snapshot without materializing bot state in Python RAM."""
         target_path = str(target_path)
         os.makedirs(os.path.dirname(target_path) or '.', exist_ok=True)
-        started = time.monotonic()
-        try: r25_trace_stage('SQLITE_BACKUP_START', emit=False)
-        except Exception: pass
-        source = sqlite3.connect(self.path, check_same_thread=False, timeout=0.25)
-        dest = sqlite3.connect(target_path, check_same_thread=False, timeout=0.25)
-        try:
-            try: source.execute('PRAGMA busy_timeout=250')
-            except Exception: pass
-            source.backup(dest, pages=64, sleep=0.005)
-            dest.commit()
-        finally:
-            try: dest.close()
-            except Exception: pass
-            try: source.close()
-            except Exception: pass
-        elapsed = max(0.0, time.monotonic() - started)
-        try:
-            if elapsed >= 0.25:
-                _line=f'R26 SQLITE ONLINE BACKUP path={os.path.basename(target_path)} elapsed={elapsed:.3f}s shared_lock=0'; log_info(_line); r26_diag_trace_line(_line)
-            r25_trace_stage('SQLITE_BACKUP_DONE', elapsed, emit=elapsed >= _R25_TRACE_SLOW_LOCK_SEC)
-        except Exception: pass
+        with self.lock:
+            try:
+                self.conn.execute('PRAGMA wal_checkpoint(PASSIVE)')
+            except Exception:
+                pass
+            dest = sqlite3.connect(target_path)
+            try:
+                self.conn.backup(dest, pages=128, sleep=0.01)
+                dest.commit()
+            finally:
+                dest.close()
         return target_path
 
     def replace_database(self, source_path: str):
@@ -2074,11 +1578,11 @@ def _lowram_flush_chat(chat_id: int, store: dict | None=None, evict: bool=False)
             dict.__setitem__(store, daily_key, daily)
             if isinstance(store, ColdChatStore):
                 store._cold_loaded.add(daily_key)
-    _cold_batch = {key: dict.__getitem__(store, key) for key in LOWRAM_COLD_KEYS if dict.__contains__(store, key)}
-    if _cold_batch:
-        SQLITE.set_cold_many(cid, _cold_batch)
-        with _LOWRAM_LOCK:
-            _LOWRAM_STATS['cold_saves'] += len(_cold_batch)
+    for key in LOWRAM_COLD_KEYS:
+        if dict.__contains__(store, key):
+            SQLITE.set_cold(cid, key, dict.__getitem__(store, key))
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS['cold_saves'] += 1
     if evict:
         removed = 0
         for key in list(LOWRAM_COLD_KEYS):
@@ -2113,15 +1617,11 @@ def _lowram_release_chat(chat_id):
     if not LOWRAM_ENABLED or chat_id is None:
         return
     try:
-        cid = int(chat_id)
-        # R36: never hold global data_lock while waiting on SQLite. Serialise this
-        # chat with its own lock, take the reference quickly, then persist outside.
-        with locked_chat(cid):
-            with data_lock:
-                store = (data.get('chats', {}) or {}).get(str(cid))
+        with data_lock:
+            store = (data.get('chats', {}) or {}).get(str(int(chat_id)))
             if isinstance(store, dict):
-                _lowram_flush_chat(cid, store, evict=True)
-                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
+                _lowram_flush_chat(int(chat_id), store, evict=True)
+                SQLITE.save_chat(int(chat_id), _lowram_store_meta_payload(store))
         if _lowram_memory_snapshot().get('rss_mb', 0) >= 320:
             import gc
             gc.collect()
@@ -2165,26 +1665,20 @@ def _lowram_materialize_chat_snapshot(chat_id: int, store: dict | None=None) -> 
 def _lowram_flush_all_hot(evict: bool=False):
     if not LOWRAM_ENABLED or not isinstance(data, dict):
         return
-    # R36: all-chat maintenance must never hold data_lock while cold fields or the
-    # root are written to SQLite. Otherwise one maintenance pass can freeze every UI.
-    import copy as _r36_copy
+    chats = data.get('chats', {}) or {}
     with data_lock:
-        chat_ids = list(((data.get('chats', {}) or {}).keys()))
-    meta_chats = {}
-    for cid_s in chat_ids:
-        try: cid = int(cid_s)
-        except Exception: continue
-        with locked_chat(cid):
-            with data_lock:
-                store = ((data.get('chats', {}) or {}).get(str(cid)))
+        meta_chats = {}
+        for cid_s, store in list(chats.items()):
+            try:
+                cid = int(cid_s)
+            except Exception:
+                continue
             if isinstance(store, dict):
                 _lowram_flush_chat(cid, store, evict=evict)
                 meta_chats[str(cid)] = _lowram_store_meta_payload(store)
-    with data_lock:
-        root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
-    if meta_chats:
-        SQLITE.save_chats(meta_chats)
-    SQLITE.save_root(root_snapshot)
+        if meta_chats:
+            SQLITE.save_chats(meta_chats)
+        SQLITE.save_root(_sqlite_pack_root(data))
 
 def lowram_status_text() -> str:
     mem = _lowram_memory_snapshot()
@@ -2512,7 +2006,7 @@ def journal_toggle_label() -> str:
 def is_chat_journal_enabled(chat_id: int) -> bool:
     try:
         store = get_chat_store(int(chat_id))
-        return bool(store.setdefault('settings', {}).get('journal_enabled', True))
+        return bool(store.setdefault('settings', {}).get('journal_enabled', False))
     except Exception:
         return False
 
@@ -2661,7 +2155,7 @@ def effective_ui_edit_interval() -> float:
 
 def effective_fast_telegram_gap() -> float:
     configured = float(active_bot_behavior_profile_info().get('fast_tg_gap', 0.02))
-    return max(0.32, min(0.55, float(os.getenv('FAST_TELEGRAM_CHAT_GAP', '0.36') or '0.36')))
+    return max(0.005, min(0.03, configured))
 
 def main_article_buttons_enabled(chat_id: int) -> bool:
     try:
@@ -3578,39 +3072,40 @@ def _file_job_busy_info() -> dict:
     return st
 
 def build_all_processes_toast(chat_id=None) -> str:
-    """Human-facing busy status. Internal pool names/counters stay in diagnostics only."""
+    """Compact snapshot of every active business lane for Telegram callback toast."""
+    parts = []
     try:
         busy = _file_job_busy_info()
         if busy:
-            label = str(busy.get('label') or 'файл').strip()
-            phase = str(busy.get('phase') or '').strip()
-            if phase:
-                return f'⏳ {label}: {phase}'[:190]
-            return f'⏳ {label}: обрабатываю…'[:190]
+            elapsed = _file_job_elapsed_text(float(busy.get('elapsed') or 0))
+            phase = str(busy.get('phase') or 'работаю')
+            parts.append(f"📄 {busy.get('label', 'файл')} {elapsed} · {phase}")
     except Exception:
         pass
-    active_total = 0
-    pending_total = 0
-    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
-    for pool in pools:
+    pools = (('Сообщ', WEBHOOK_TASK_POOL), ('UI', UI_TASK_POOL), ('Фин', FINANCE_TASK_POOL), ('ФинПерес', FIN_FORWARD_TASK_POOL), ('Перес', FORWARD_TASK_POOL), ('Восст', RECOVERY_TASK_POOL), ('Напом', REMINDER_TASK_POOL), ('Бэкап', BACKUP_TASK_POOL), ('MEGAΔ', DELTA_TASK_POOL), ('Экспорт', EXPORT_TASK_POOL), ('Общие', GENERAL_TASK_POOL), ('Сервис', MAINTENANCE_TASK_POOL), ('Журнал', JOURNAL_TASK_POOL), ('Таймер', DELAYED_TASK_POOL), ('Дозвон', DOZVON_TASK_POOL))
+    for label, pool in pools:
         try:
-            st = pool.stats() or {}
-            active_total += int(st.get('active', 0) or 0)
-            pending_total += int(st.get('pending', 0) or 0)
+            st = pool.stats()
+            active = int(st.get('active', 0) or 0)
+            pending = int(st.get('pending', 0) or 0)
+            if active or pending:
+                parts.append(f'{label} {active}/{pending}')
         except Exception:
             pass
     try:
         mt = globals().get('mega_task_stats')
         if callable(mt):
             st = mt() or {}
-            active_total += int(st.get('running', 0) or 0) + int(st.get('processing', 0) or 0)
-            pending_total += int(st.get('pending', 0) or 0)
+            pending = int(st.get('pending', 0) or 0)
+            running = int(st.get('running', 0) or 0) + int(st.get('processing', 0) or 0)
+            if pending or running:
+                parts.append(f'Защита {running}/{pending}')
     except Exception:
         pass
-    total = active_total + pending_total
-    if total <= 0:
-        return '✅ Готово'
-    return '⏳ Выполняю…' if total == 1 else f'⏳ Выполняю… ({total})'
+    if not parts:
+        return '✅ Активных процессов нет'
+    text = '⚙️ ' + ' · '.join(parts)
+    return text[:190]
 
 def _v177_legacy_0009_file_job_progress(phase: str, current=None, total=None, force: bool=False):
     """Update one temporary Telegram status message at a throttled rate."""
@@ -4040,9 +3535,6 @@ def _send_current_version_journal_to_owner_sync(chat_id: int, limit: int=5000):
             for ev in list(globals().get('_RUNTIME_EVENTS') or []):
                 if isinstance(ev, dict):
                     fh.write(f"{ev.get('ts', '')} | {ev.get('level', '')} | {ev.get('event', '')} | {ev.get('detail', '')}\n")
-            fh.write('\nR26 FAST TRACE CURRENT PROCESS\n')
-            for _trace_line in r26_diag_trace_snapshot(int(os.getenv('R26_TRACE_EXPORT_ROWS','4000') or '4000')):
-                fh.write(str(_trace_line) + '\n')
         _file_job_progress('отправляю журнал текущей версии', force=True)
         with open(tmp_path, 'rb') as fh:
             _tg_call_retry(bot.send_document, int(chat_id), fh, caption=f'📓 Журнал текущей версии: {VERSION}', timeout=120, purpose='current_version_journal_send')
@@ -6482,40 +5974,6 @@ def _v177_legacy_0040_probe_bot_in_chat(chat_id: int, *, deep: bool=True, persis
                 mig = globals().get('migrate_chat_id_everywhere')
                 if callable(mig) and mig(chat_id, migrate_to, 'deep probe: Telegram group upgraded'):
                     return probe_bot_in_chat(migrate_to, deep=deep, persist=persist, schedule_backup=schedule_backup, _migration_retry=True)
-
-            # Canonical membership classification belongs here in 00_core.py.
-            # The runtime contract requires probe_bot_in_chat to remain owned by
-            # this module; do not override it from a late split/runtime module.
-            try:
-                _probe_info = get_chat_store(chat_id).get('info') or {}
-                _membership = _probe_info.get('bot_membership') or {}
-                _membership_status = str(_membership.get('status') or '').strip().lower()
-                _removed_reason = ''
-                if _membership_status in {'left', 'kicked'}:
-                    _removed_reason = f'getChatMember status={_membership_status}: bot is not a member'
-                if not _removed_reason:
-                    for _warning in (_probe_info.get('probe_warnings') or []):
-                        _warning_text = str(_warning or '')
-                        _warning_low = _warning_text.casefold()
-                        if _warning_text.startswith('bot_member:') and any(_needle in _warning_low for _needle in (
-                            'bot is not a member', 'bot was kicked', 'kicked from the', 'bot removed', 'chat not found'
-                        )):
-                            _removed_reason = _warning_text[len('bot_member:'):][:260]
-                            break
-                if _removed_reason:
-                    set_chat_bot_removed(chat_id, True, _removed_reason, persist=persist, schedule_backup=schedule_backup)
-                    try:
-                        _suspend = globals().get('suspend_forward_target_v199')
-                        if callable(_suspend):
-                            _suspend(chat_id, _removed_reason, persist=persist)
-                    except Exception:
-                        pass
-                    return False
-            except Exception as _membership_exc:
-                try:
-                    log_error(f'probe membership classify {chat_id}: {_membership_exc}')
-                except Exception:
-                    pass
         changed = bool(set_chat_bot_removed(chat_id, False, '', persist=False, schedule_backup=False)) or bool(changed)
         try:
             reactivate = globals().get('reactivate_forward_target_v199')
@@ -7798,13 +7256,10 @@ _telegram_send_last_ts = {}
 _telegram_send_rate_lock = threading.RLock()
 _telegram_global_rate_lock = threading.RLock()
 _telegram_global_last_ts = 0.0
-_telegram_global_block_until = 0.0
-_telegram_guard_local = threading.local()
-
 try:
-    TELEGRAM_GLOBAL_MIN_GAP = max(0.05, float(os.getenv('TELEGRAM_GLOBAL_MIN_GAP', '0.075') or '0.075'))
+    TELEGRAM_GLOBAL_MIN_GAP = max(0.01, float(os.getenv('TELEGRAM_GLOBAL_MIN_GAP', '0.04') or '0.04'))
 except Exception:
-    TELEGRAM_GLOBAL_MIN_GAP = 0.075
+    TELEGRAM_GLOBAL_MIN_GAP = 0.04
 
 def _telegram_retry_after_seconds(err: Exception):
     """Достаёт retry_after из Telegram 429: Too Many Requests."""
@@ -7851,25 +7306,14 @@ def _telegram_rate_limit_chat(chat_id, min_gap: float=0.35):
         _telegram_send_last_ts[cid] = time.time()
 
 def _telegram_rate_limit_global():
-    """R37: single bot-token gate. Respects a shared 429 cooldown across every thread."""
+    """Общий лимитер Telegram API для всех чатов, чтобы не ловить шквал 429."""
     global _telegram_global_last_ts
     with _telegram_global_rate_lock:
         now_ts = time.time()
-        block_wait = max(0.0, float(globals().get('_telegram_global_block_until', 0.0) or 0.0) - now_ts)
-        gap_wait = TELEGRAM_GLOBAL_MIN_GAP - (now_ts - _telegram_global_last_ts)
-        wait = max(block_wait, gap_wait, 0.0)
+        wait = TELEGRAM_GLOBAL_MIN_GAP - (now_ts - _telegram_global_last_ts)
         if wait > 0:
             time.sleep(wait)
         _telegram_global_last_ts = time.time()
-
-def _telegram_register_429_cooldown(err: Exception, extra: float=0.35) -> float:
-    """R37: one 429 pauses all Telegram callers, not only the thread that was rejected."""
-    global _telegram_global_block_until
-    retry_after = _telegram_retry_after_seconds(err)
-    wait = max(1.0, float(retry_after or 1)) + max(0.1, float(extra))
-    with _telegram_global_rate_lock:
-        _telegram_global_block_until = max(float(_telegram_global_block_until or 0.0), time.time() + wait)
-    return wait
 
 def _tg_first_chat_id(args, kwargs):
     if 'chat_id' in kwargs:
@@ -7905,11 +7349,7 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                             pass
             except Exception:
                 pass
-            try:
-                _telegram_guard_local.in_retry = True
-                _res = func(*args, **kwargs)
-            finally:
-                _telegram_guard_local.in_retry = False
+            _res = func(*args, **kwargs)
             try:
                 if chat_id is not None and is_chat_bot_removed(int(chat_id)):
                     set_chat_bot_removed(int(chat_id), False, 'telegram api success')
@@ -7929,8 +7369,8 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                 except Exception:
                     pass
                 raise
-            wait = _telegram_register_429_cooldown(e, extra=0.35)
-            log_info(f'[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait:.2f}s, error={str(e)[:220]}')
+            wait = max(1, int(retry_after)) + 1
+            log_info(f'[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}')
             try:
                 bot_journal('telegram_429_retry', chat_id if 'chat_id' in locals() else None, f'{purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}', 'WARN')
             except Exception:
@@ -7941,67 +7381,6 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                 break
             time.sleep(wait)
     raise last_err
-
-
-# R37: Guard legacy direct bot.* calls too. Older modules contain direct Telegram calls
-# that used to bypass _tg_call_retry and could collectively trigger bot-wide 429s.
-_R37_TG_GUARDED_METHODS = (
-    'send_message', 'edit_message_text', 'edit_message_caption', 'edit_message_reply_markup',
-    'answer_callback_query', 'send_document', 'send_photo', 'send_video', 'send_audio',
-    'send_voice', 'send_media_group', 'delete_message', 'copy_message', 'forward_message',
-)
-_R37_TG_RAW_METHODS = {}
-
-def _r37_direct_chat_id(method_name, args, kwargs):
-    if method_name == 'answer_callback_query':
-        return None
-    if 'chat_id' in kwargs:
-        return kwargs.get('chat_id')
-    return args[0] if args else None
-
-def _r37_make_guarded_bot_method(method_name, raw):
-    def _guarded(*args, **kwargs):
-        # Calls originating from _tg_call_retry are already gated/retried there.
-        if bool(getattr(_telegram_guard_local, 'in_retry', False)):
-            return raw(*args, **kwargs)
-        cid = _r37_direct_chat_id(method_name, args, kwargs)
-        max_attempts = 2 if method_name not in {'answer_callback_query', 'delete_message'} else 1
-        last = None
-        for attempt in range(max_attempts):
-            _telegram_rate_limit_global()
-            if cid is not None:
-                _telegram_rate_limit_chat(cid, min_gap=0.36)
-            try:
-                return raw(*args, **kwargs)
-            except Exception as exc:
-                last = exc
-                if not is_telegram_429(exc):
-                    raise
-                wait = _telegram_register_429_cooldown(exc, extra=0.35)
-                try:
-                    log_info(f'[R37 TG GLOBAL 429] method={method_name} wait={wait:.2f}s cid={cid}')
-                except Exception:
-                    pass
-                if attempt + 1 >= max_attempts:
-                    raise
-                # Shared gate sleeps on the next loop; don't create independent retry storms.
-        if last is not None:
-            raise last
-    try:
-        _guarded.__name__ = getattr(raw, '__name__', method_name)
-    except Exception:
-        pass
-    return _guarded
-
-def _r37_install_botwide_telegram_guard():
-    for _name in _R37_TG_GUARDED_METHODS:
-        _raw = getattr(bot, _name, None)
-        if not callable(_raw) or _name in _R37_TG_RAW_METHODS:
-            continue
-        _R37_TG_RAW_METHODS[_name] = _raw
-        setattr(bot, _name, _r37_make_guarded_bot_method(_name, _raw))
-
-_r37_install_botwide_telegram_guard()
 
 def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwargs):
     if reply_to_message_id:

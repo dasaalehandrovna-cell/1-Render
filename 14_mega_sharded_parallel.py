@@ -483,7 +483,7 @@ def _canon_run_delta_batch__002():
         schedule_delta_backup(None, delay=1.0, reason='changes_during_upload')
     return True
 try:
-    _V234_MEGA_RUN_DELTA_BATCH = _canon_run_delta_batch__002
+    globals()['_V234_MEGA_RUN_DELTA_BATCH'] = _canon_run_delta_batch__002
 except Exception:
     pass
 

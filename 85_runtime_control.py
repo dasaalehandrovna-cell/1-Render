@@ -37,7 +37,7 @@ def v177_perf_clear() -> None:
     except Exception:
         pass
 _V176_MIGRATED_HEAVY = True
-_V176_PROCESS_DEFS = {'ui_retry': ('ui', '🔁 Повторы edit Telegram', False, 'hot', 'Внешние повторы safe_edit при 429/ошибке. Кандидат на задержку кнопок.'), 'win_diag': ('ui', '🩺 Диагностика окон', True, 'hot', 'v208: включена для полноценного локального forensic-журнала; сеть не вызывается на каждое событие.'), 'win_reg': ('ui', '🗂 Реестр окон → SQLite/MEGA', _V176_MIGRATED_HEAVY, 'hot', 'Фоновое сохранение реестра открытых окон.'), 'win_rec': ('ui', '🔄 Reconcile окон', _V176_MIGRATED_HEAVY, 'hot', 'Сверка реестра окон, включая цикл v153 каждые 600 сек.'), 'btn_chain': ('ui', '🧾 Трассировка press/result', True, 'hot', 'v208: press/result пишутся локально и уходят в MEGA только сжатым batch.'), 'btn_press': ('ui', '📝 Журнал button_pressed', True, 'hot', 'v208: исходная кнопка нужна для разбора пользовательского сценария А→Я.'), 'win_journal': ('ui', '📐 Window-журнал', True, 'hot', 'v208: подробные window_* события снова включены для диагностики окон/конструктора.'), 'fin_refresh': ('ui', '💹 Автообновление фин. окон', True, 'medium', 'Автоперерисовка зарегистрированных финансовых окон после изменений.'), 'win_cleanup': ('ui', '🧹 Очистка реестра окон', _V176_MIGRATED_HEAVY, 'medium', 'Скан/очистка устаревших окон.'), 'delta_auto': ('mega', '☁️ MEGA delta авто', True, 'critical', 'Маленькие отложенные внешние delta-сохранения изменений.'), 'delta_critical': ('mega', '🛡 MEGA delta критическая', True, 'critical', 'Синхронный внешний свидетель критичных финансовых операций.'), 'full_chat': ('mega', '📦 Full backup чата', False, 'medium', 'Авто full-backup чатов выключен как дублирующая копия; ручной backup остаётся, а данные защищают SQLite generation + delta.'), 'full_global': ('mega', '🌐 SYSTEM SQLite generation', _V176_MIGRATED_HEAVY, 'medium', 'v242: редкий полный SQLite checkpoint только каждые 6/12 часов при наличии изменений; /restore и ручной backup остаются немедленными.'), 'journal_mega': ('mega', '📓 Сжатый MEGA-журнал', True, 'medium', 'v208: полноценный journal сохраняется gzip-пакетами; не по строке. ERROR/CRITICAL и shutdown/fatal остаются немедленными.'), 'runtime_upload': ('mega', '📡 Runtime watcher upload', False, 'medium', 'Частые heartbeat-snapshots выключены; lease и часовой traffic/health checkpoint остаются, shutdown/fatal сохраняются отдельно.'), 'source_archive': ('mega', '🗃 Архив исходника', False, 'low', 'Автоархив исходника выключен: 3+ MB на каждый старт были лишним outbound; ручная выгрузка остаётся.'), 'failed_repair': ('mega', '🩹 Repair failed-задач', False, 'medium', 'Автоматический безопасный ремонт failed durable tasks.'), 'failed_diag': ('mega', '🔬 Диагностика failed-задач', False, 'medium', 'Фоновый диагностический скан failed tasks.'), 'mega_maint': ('mega', '🧰 MEGA cleanup', True, 'medium', 'Очистка runtime-артефактов только внутри единственного канонического MEGA root.'), 'mega_recover': ('mega', '♻️ Startup recovery MEGA-задач', True, 'critical', 'Восстановление pending/running durable tasks после рестарта.'), 'lease': ('mega', '🔐 Instance lease', True, 'critical', 'Проверка второго одновременно работающего экземпляра.'), 'google_auto': ('auto', '📊 Google Sheets авто', _V176_MIGRATED_HEAVY, 'medium', 'Автоматическая синхронизация после финансовых изменений; ручная остаётся.'), 'reminders': ('auto', '⏰ Напоминалки', True, 'critical', 'Планировщик и отправка напоминаний.'), 'expense_ping': ('auto', '📲 Expense ping', True, 'medium', 'Автоматическая доставка shortcut-событий расходов и recovery.'), 'lowram': ('system', '🧊 Low-RAM idle sweep', True, 'medium', 'Выгрузка холодной истории из RAM в SQLite, когда бот свободен.'), 'memory_guard': ('system', '🧠 Memory guard', True, 'critical', 'Контроль RAM, trim и защитный restart при аварийной памяти.')}
+_V176_PROCESS_DEFS = {'ui_retry': ('ui', '🔁 Повторы edit Telegram', True, 'hot', 'Внешние повторы safe_edit при 429/ошибке. Кандидат на задержку кнопок.'), 'win_diag': ('ui', '🩺 Диагностика окон', True, 'hot', 'v208: включена для полноценного локального forensic-журнала; сеть не вызывается на каждое событие.'), 'win_reg': ('ui', '🗂 Реестр окон → SQLite/MEGA', _V176_MIGRATED_HEAVY, 'hot', 'Фоновое сохранение реестра открытых окон.'), 'win_rec': ('ui', '🔄 Reconcile окон', _V176_MIGRATED_HEAVY, 'hot', 'Сверка реестра окон, включая цикл v153 каждые 600 сек.'), 'btn_chain': ('ui', '🧾 Трассировка press/result', True, 'hot', 'v208: press/result пишутся локально и уходят в MEGA только сжатым batch.'), 'btn_press': ('ui', '📝 Журнал button_pressed', True, 'hot', 'v208: исходная кнопка нужна для разбора пользовательского сценария А→Я.'), 'win_journal': ('ui', '📐 Window-журнал', True, 'hot', 'v208: подробные window_* события снова включены для диагностики окон/конструктора.'), 'fin_refresh': ('ui', '💹 Автообновление фин. окон', True, 'medium', 'Автоперерисовка зарегистрированных финансовых окон после изменений.'), 'win_cleanup': ('ui', '🧹 Очистка реестра окон', _V176_MIGRATED_HEAVY, 'medium', 'Скан/очистка устаревших окон.'), 'delta_auto': ('mega', '☁️ MEGA delta авто', True, 'critical', 'Маленькие отложенные внешние delta-сохранения изменений.'), 'delta_critical': ('mega', '🛡 MEGA delta критическая', True, 'critical', 'Синхронный внешний свидетель критичных финансовых операций.'), 'full_chat': ('mega', '📦 Full backup чата', False, 'medium', 'Авто full-backup чатов выключен как дублирующая копия; ручной backup остаётся, а данные защищают SQLite generation + delta.'), 'full_global': ('mega', '🌐 SYSTEM SQLite generation', _V176_MIGRATED_HEAVY, 'medium', 'v242: редкий полный SQLite checkpoint только каждые 6/12 часов при наличии изменений; /restore и ручной backup остаются немедленными.'), 'journal_mega': ('mega', '📓 Сжатый MEGA-журнал', True, 'medium', 'v208: полноценный journal сохраняется gzip-пакетами; не по строке. ERROR/CRITICAL и shutdown/fatal остаются немедленными.'), 'runtime_upload': ('mega', '📡 Runtime watcher upload', False, 'medium', 'Частые heartbeat-snapshots выключены; lease и часовой traffic/health checkpoint остаются, shutdown/fatal сохраняются отдельно.'), 'source_archive': ('mega', '🗃 Архив исходника', False, 'low', 'Автоархив исходника выключен: 3+ MB на каждый старт были лишним outbound; ручная выгрузка остаётся.'), 'failed_repair': ('mega', '🩹 Repair failed-задач', False, 'medium', 'Автоматический безопасный ремонт failed durable tasks.'), 'failed_diag': ('mega', '🔬 Диагностика failed-задач', False, 'medium', 'Фоновый диагностический скан failed tasks.'), 'mega_maint': ('mega', '🧰 MEGA cleanup', True, 'medium', 'Очистка runtime-артефактов только внутри единственного канонического MEGA root.'), 'mega_recover': ('mega', '♻️ Startup recovery MEGA-задач', True, 'critical', 'Восстановление pending/running durable tasks после рестарта.'), 'lease': ('mega', '🔐 Instance lease', True, 'critical', 'Проверка второго одновременно работающего экземпляра.'), 'google_auto': ('auto', '📊 Google Sheets авто', _V176_MIGRATED_HEAVY, 'medium', 'Автоматическая синхронизация после финансовых изменений; ручная остаётся.'), 'reminders': ('auto', '⏰ Напоминалки', True, 'critical', 'Планировщик и отправка напоминаний.'), 'expense_ping': ('auto', '📲 Expense ping', True, 'medium', 'Автоматическая доставка shortcut-событий расходов и recovery.'), 'lowram': ('system', '🧊 Low-RAM idle sweep', True, 'medium', 'Выгрузка холодной истории из RAM в SQLite, когда бот свободен.'), 'memory_guard': ('system', '🧠 Memory guard', True, 'critical', 'Контроль RAM, trim и защитный restart при аварийной памяти.')}
 _V176_PAGE_TITLES = {'ui': '⚡ ИНТЕРФЕЙС / КНОПКИ', 'mega': '☁️ MEGA / BACKUP', 'auto': '🔄 АВТОМАТИКА', 'system': '🧠 СИСТЕМА', 'core': '🔒 ОСНОВА БОТА'}
 _V176_LOCKED_CORE = [('🌐 Telegram webhook / приём update', 'Всегда ВКЛ — без него бот не принимает события.'), ('💰 Финансовый учёт', 'Всегда ВКЛ — основная миссия бота.'), ('💸 Финансовая пересылка', 'Всегда ВКЛ — приоритетная бизнес-линия.'), ('➡️ Обычная пересылка', 'Всегда ВКЛ — штатная бизнес-функция.'), ('🪷 SECRET', 'Всегда ВКЛ — штатная бизнес-функция.'), ('📋 Диспетчер задач', 'Всегда ВКЛ — штатная бизнес-функция.'), ('💾 SQLite', 'Всегда ВКЛ — локальное рабочее состояние; не отключается диагностикой.'), ('🌐 Web endpoint / webhook', 'Всегда ВКЛ — приём HTTP/Telegram. Self-ping и smart fallback управляются отдельно в Инфо.')]
 
@@ -163,14 +163,14 @@ def _v177_deferred_ui_retry(chat_id: int, message_id: int, text: str, reply_mark
         pass
 
 def _canon_v161_edit_retry__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='ui') -> str:
-    """R22 UI policy: enqueue latest render; callback worker never waits for Telegram RTT."""
+    """Final UI edit policy: one synchronous Telegram attempt, optional retry in background."""
     started = _v176_time.monotonic()
     try:
         result = str(fast_ui_edit_message_text(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose) or 'failed')
     except Exception:
         result = 'failed'
-    v177_perf_stage('render_enqueue', _v176_time.monotonic() - started)
-    if result == 'failed' and v176_process_enabled('ui_retry'):
+    v177_perf_stage('telegram_edit', _v176_time.monotonic() - started)
+    if result in {'rate_limited', 'failed'} and v176_process_enabled('ui_retry'):
         try:
             pool = globals().get('GENERAL_TASK_POOL')
             key = f'v177-ui-retry:{int(chat_id)}:{int(message_id)}'
@@ -505,7 +505,7 @@ def _v176_speed_text() -> str:
         lines += ['', f"Последних callback: {s['count']}", f"Медиана: {s['p50']:.3f} c · P90: {s['p90']:.3f} c · MAX: {s['max']:.3f} c", f"≥0.5 c: {s['slow05']} · ≥1.0 c: {s['slow10']}", '', 'Самые медленные действия:']
         for avg, mx, count, action in s.get('top', []):
             lines.append(f'• {action[:48]} — avg {avg:.3f} c / max {mx:.3f} c / n={count}')
-    pools = [x for x in (_v176_pool_line(n) for n in ('FAST_UI_TASK_POOL', 'UI_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'GENERAL_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL', 'JOURNAL_TASK_POOL')) if x]
+    pools = [x for x in (_v176_pool_line(n) for n in ('UI_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'GENERAL_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL', 'JOURNAL_TASK_POOL')) if x]
     if pools:
         lines += ['', 'Очереди active/pending:', ' · '.join(pools)]
     stages = list(_V177_PERF_STAGES)
@@ -1987,12 +1987,7 @@ def _canon_v220_contour_access_callback_final__001(call, resolved: str) -> bool:
         bot.answer_callback_query(call.id, 'Доступ включён' if value else 'Доступ выключен')
     except Exception:
         pass
-    _r10_kb = build_info_keyboard(cid)
-    safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)
-    try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-    except Exception:
-        pass
+    safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
     try:
         refresh_circle_menu_access_v220(level)
     except Exception as exc:
@@ -2235,12 +2230,7 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
                 bot_journal('directive_admin_toggle_v224', target, f'enabled={int(value)}; ui_first=1; targeted_refresh=1')
             except Exception:
                 pass
-            _r10_kb = _v223_directive_card_keyboard(target, page)
-            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-            except Exception:
-                pass
+            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_v223_directive_card_keyboard(target, page))
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=False)
             except Exception:
@@ -2257,12 +2247,7 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
                 bot_journal('directive_admin_mode_v224', target, f'mode={mode}; enabled={int(value)}; ui_first=1; targeted_refresh=1')
             except Exception:
                 pass
-            _r10_kb = _v223_directive_card_keyboard(target, page)
-            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-            except Exception:
-                pass
+            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_v223_directive_card_keyboard(target, page))
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=False)
             except Exception:
@@ -2274,12 +2259,7 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
             page = int(parts[5] or 0) if len(parts) > 5 else 0
             current = bool((_v223_directive_policy(target, False).get('annotations') or {}).get(kind, True))
             set_directive_annotation_v223(target, kind, not current)
-            _r10_kb = _v223_directive_card_keyboard(target, page)
-            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-            except Exception:
-                pass
+            safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_v223_directive_card_keyboard(target, page))
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=True)
             except Exception:
@@ -2396,12 +2376,7 @@ def _v226_annotation_callback_final(call, resolved: str) -> bool:
         bot.answer_callback_query(call.id, 'ВКЛ — кнопка доступна' if value else 'ВЫКЛ — кнопка скрыта и заблокирована')
     except Exception:
         pass
-    _r10_kb = build_info_keyboard(cid)
-    safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)
-    try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-    except Exception:
-        pass
+    safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
     v226_schedule_annotation_markup_refresh_all()
     try:
         bot_journal('annotation_global_toggle_v226', cid, f'kind={kind}; enabled={int(value)}; ui_first=1; async_markup_only=1')

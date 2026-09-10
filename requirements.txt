@@ -2,4 +2,3 @@ Flask>=3.0,<4
 requests>=2.31,<3
 pyTelegramBotAPI>=4.20,<5
 redis>=5.0,<6
-waitress>=3.0,<4

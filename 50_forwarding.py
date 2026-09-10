@@ -148,19 +148,17 @@ def suspend_forward_target_v199(dst_chat_id: int, reason: str, *, persist: bool=
     dst_chat_id = int(dst_chat_id)
     key = str(dst_chat_id)
     root = _v199_suspended_root()
-    existing = root.get(key) if isinstance(root.get(key), dict) else None
-    # R17: even an already-suspended target is scrubbed again from live maps.  This
-    # repairs stale R16 states where an audit row existed but a forwarding edge was
-    # later reintroduced, which otherwise could keep hitting a removed chat forever.
-    edges = list((existing or {}).get('edges') or [])
-    changed_live = False
+    if isinstance(root.get(key), dict):
+        root[key]['last_confirmed_at'] = now_local().isoformat(timespec='seconds')
+        root[key]['last_reason'] = str(reason or '')[:500]
+        return False
+    edges = []
     fr = data.setdefault('forward_rules', {})
     ff = data.setdefault('forward_finance', {})
     for src, dsts in list(fr.items()):
         if not isinstance(dsts, dict) or key not in dsts:
             continue
         mode = dsts.pop(key)
-        changed_live = True
         fin = bool((ff.get(str(src), {}) or {}).pop(key, False))
         edges.append({'src': int(src), 'mode': mode, 'finance': fin})
         if not dsts:
@@ -172,39 +170,15 @@ def suspend_forward_target_v199(dst_chat_id: int, reason: str, *, persist: bool=
         if not isinstance(dsts, dict) or key not in dsts:
             continue
         fin = bool(dsts.pop(key, False))
-        changed_live = True
         if fin and (not any((int(e.get('src')) == int(src) for e in edges))):
             edges.append({'src': int(src), 'mode': 'oneway_to', 'finance': True, 'finance_only_legacy': True})
         if not dsts:
             ff.pop(str(src), None)
-    pair_changed = bool(_v199_rewrite_pair_order_id(dst_chat_id, remove_only=True))
-    changed_live = bool(changed_live or pair_changed)
-    now_s = now_local().isoformat(timespec='seconds')
-    if isinstance(existing, dict):
-        existing['chat_id'] = dst_chat_id
-        existing['title'] = existing.get('title') or get_chat_display_name(dst_chat_id)
-        existing['reason'] = str(existing.get('reason') or reason or '')[:500]
-        existing['last_reason'] = str(reason or '')[:500]
-        existing['last_confirmed_at'] = now_s
-        existing['edges'] = edges
-        existing['auto_reactivate'] = True
-        root[key] = existing
-    else:
-        root[key] = {'chat_id': dst_chat_id, 'title': get_chat_display_name(dst_chat_id), 'reason': str(reason or '')[:500], 'suspended_at': now_s, 'last_confirmed_at': now_s, 'edges': edges, 'auto_reactivate': True}
-        changed_live = True
+    _v199_rewrite_pair_order_id(dst_chat_id, remove_only=True)
+    root[key] = {'chat_id': dst_chat_id, 'title': get_chat_display_name(dst_chat_id), 'reason': str(reason or '')[:500], 'suspended_at': now_local().isoformat(timespec='seconds'), 'last_confirmed_at': now_local().isoformat(timespec='seconds'), 'edges': edges, 'auto_reactivate': True}
     try:
         fn = globals().get('set_chat_status_v150')
-        lifecycle_fn = globals().get('_v150_lifecycle')
-        current_status = ''
-        if callable(lifecycle_fn):
-            try:
-                current_status = str((lifecycle_fn(dst_chat_id) or {}).get('status') or '')
-            except Exception:
-                current_status = ''
-        # R17: a forwarding suspension must never downgrade a confirmed terminal
-        # chat back to transient ``unreachable``.  The terminal lifecycle is the
-        # authority that stops reminders/tasks/forwarding together.
-        if callable(fn) and current_status not in {'bot_removed', 'migrated', 'archived'}:
+        if callable(fn):
             fn(dst_chat_id, 'unreachable', str(reason or '')[:500], source='forward_confirmed_unreachable')
     except Exception:
         pass
@@ -225,7 +199,7 @@ def suspend_forward_target_v199(dst_chat_id: int, reason: str, *, persist: bool=
         bot_journal('forward_target_suspended_v199', dst_chat_id, f'edges={len(edges)} reason={str(reason)[:240]}', 'WARN')
     except Exception:
         pass
-    return bool(changed_live)
+    return True
 
 def reactivate_forward_target_v199(chat_id: int, *, migrated_to: int | None=None, persist: bool=True) -> bool:
     old_id = int(chat_id)
@@ -719,19 +693,16 @@ def find_finance_record_by_uid(chat_id: int, record_uid: str):
     return None
 
 def persist_finance_chat_local_fast(chat_id: int) -> bool:
-    """Persist one finance chat without nesting data_lock -> SQLite.lock (R36)."""
+    """Persist one finance chat without rebuilding/saving the global root/forward index."""
     try:
         cid = int(chat_id)
-        # The caller already serialises finance mutations with locked_chat(cid) on the
-        # hot edit paths. get_chat_store only needs data_lock briefly; SQLite I/O must
-        # happen after that global lock is released so another UI callback can render.
         store = get_chat_store(cid)
-        if LOWRAM_ENABLED:
-            _lowram_flush_chat(cid, store, evict=False)
-            payload = _lowram_store_meta_payload(store)
-        else:
-            payload = store
-        SQLITE.save_chat(cid, payload)
+        with data_lock:
+            if LOWRAM_ENABLED:
+                _lowram_flush_chat(cid, store, evict=False)
+                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
+            else:
+                SQLITE.save_chat(cid, store)
         return True
     except Exception as exc:
         try:

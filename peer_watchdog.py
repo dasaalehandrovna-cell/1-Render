@@ -11,8 +11,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from flask import Flask, request
-from runtime_config import install_internal_runtime_config
-install_internal_runtime_config("front")
 
 app = Flask(__name__)
 VERSION = "peer_watchdog_v2"

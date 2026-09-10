@@ -2718,23 +2718,30 @@ def _v198_route_helper_message(chat_id: int, text: str):
 def _v199_service_text(text: str) -> str:
     return _v159_force_marker(str(text or ''), 'Ф233', '⏳')
 _V211_SERVICE_RUNTIME_ID = str(os.getenv('RENDER_INSTANCE_ID', '') or f'local-{os.getpid()}-{int(time.time())}')
-_V199_SERVICE_FAST_CACHE = {}  # R34: transient service ids are process-local; never take data_lock before ordinary render.
 
 def _v199_service_message_id(chat_id: int) -> int:
-    """R34 hot-path: transient F233 ownership is RAM-only.
+    """Return only a service message created by this running process.
 
-    Reading persistent chat state here used to put get_chat_store/data_lock in front
-    of Telegram editMessageText.  A service message never needs to survive a process
-    restart, so an absent RAM entry simply means "create a fresh service window".
+    Ф233 is transient UI. Persisting its Telegram message_id is useful for same-process
+    refreshes, but after deploy the old id can already be deleted.  Never probe/edit a
+    previous-runtime id: clear it locally and create a fresh Ф233 instead.
     """
-    try: return int(_V199_SERVICE_FAST_CACHE.get(int(chat_id)) or 0)
-    except Exception: return 0
+    try:
+        store = get_chat_store(int(chat_id))
+        mid = int(store.get('_v199_service_status_msg_id') or 0)
+        owner = str(store.get('_v199_service_status_runtime_id') or '')
+        if mid and owner != _V211_SERVICE_RUNTIME_ID:
+            store.pop('_v199_service_status_msg_id', None)
+            store.pop('_v199_service_status_runtime_id', None)
+            if int(store.get('_v160_file_status_msg_id') or 0) == mid:
+                store.pop('_v160_file_status_msg_id', None)
+                store.pop('_v160_file_status_created_at', None)
+            return 0
+        return mid
+    except Exception:
+        return 0
 
 def _v199_clear_service_message(chat_id: int, message_id: int) -> None:
-    try:
-        if int(_V199_SERVICE_FAST_CACHE.get(int(chat_id)) or 0) == int(message_id): _V199_SERVICE_FAST_CACHE.pop(int(chat_id), None)
-    except Exception:
-        pass
     try:
         store = get_chat_store(int(chat_id))
         if int(store.get('_v199_service_status_msg_id') or 0) == int(message_id):
@@ -2772,7 +2779,6 @@ def _v199_upsert_service_window(chat_id: int, text: str, *, parse_mode=None) -> 
     msg = bot.send_message(chat_id, marked, **kwargs)
     mid = int(getattr(msg, 'message_id', 0) or 0)
     if mid:
-        _V199_SERVICE_FAST_CACHE[chat_id] = mid
         try:
             _store = get_chat_store(chat_id)
             _store['_v199_service_status_msg_id'] = mid
@@ -2978,74 +2984,7 @@ _V160_FAST_EDIT_MIN_GAP = max(0.03, min(0.2, float(_v160_os.getenv('V160_UI_MIN_
 def _canon_callback_should_debounce__001(call, data_str: str, min_interval: float=0.12) -> bool:
     return str(data_str or '') == 'none'
 
-def _r22_render_stage(payload: dict, stage: str, elapsed: float=0.0, result: str='') -> None:
-    """Record render timings without borrowing callback-thread locals."""
-    try:
-        action = str(payload.get('_r22_action') or '')[:120]
-        rows = globals().get('_V177_PERF_STAGES')
-        if rows is not None:
-            rows.append({'ts': _v160_time.time(), 'action': action, 'stage': str(stage or '')[:80], 'elapsed': max(0.0, float(elapsed or 0.0))})
-    except Exception:
-        pass
-    if stage == 'telegram_render_done':
-        try:
-            _msg = f"FASTBTN render chat={int(payload.get('chat_id') or 0)} msg={int(payload.get('message_id') or 0)} action={str(payload.get('_r22_action') or '')[:120]} purpose={str(payload.get('purpose') or '')[:80]} queue={float(payload.get('_r22_queue_wait') or 0.0):.3f}s telegram={float(elapsed or 0.0):.3f}s result={result}"
-            log_info(_msg)
-            bot_journal('button_chain_render', int(payload.get('chat_id') or 0),
-                        f"action={str(payload.get('_r22_action') or '')[:120]}; purpose={str(payload.get('purpose') or '')[:80]}; queue_wait={float(payload.get('_r22_queue_wait') or 0.0):.3f}s; telegram={float(elapsed or 0.0):.3f}s; result={result}")
-        except Exception:
-            pass
-
-
-def _r22_execute_window_render(payload: dict) -> None:
-    """Actual Telegram network stage; R25 emits per-update render/TG timings."""
-    _r25_uid = str(payload.get('_r25_update_id') or '')
-    _r25_action = str(payload.get('_r22_action') or payload.get('_r25_action') or '')[:180]
-    try:
-        log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=RENDER_WORKER_START')
-    except Exception:
-        pass
-    try:
-        payload['_r22_queue_wait'] = max(0.0, _v160_time.monotonic() - float(payload.get('_r22_enqueued_mono') or _v160_time.monotonic()))
-        _r22_render_stage(payload, 'render_queue_wait', payload['_r22_queue_wait'])
-    except Exception:
-        pass
-    try:
-        apply_fn = globals().get('window_diag_fast_ui_apply')
-        if callable(apply_fn):
-            apply_fn(payload, delayed=bool(payload.get('_r22_queue_wait', 0.0) > 0.01))
-    except Exception:
-        pass
-    started = _v160_time.monotonic()
-    result = 'failed'
-    try:
-        try: log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_START')
-        except Exception: pass
-        result = str(_perform_fast_ui_edit(payload) or 'failed')
-    except Exception as exc:
-        result = 'failed'
-        try:
-            log_error(f'R22 WINDOW RENDER FAILED chat={payload.get("chat_id")} msg={payload.get("message_id")}: {exc}')
-        except Exception:
-            pass
-    elapsed = max(0.0, _v160_time.monotonic() - started)
-    try: log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_DONE elapsed={elapsed:.3f}s detail={result}')
-    except Exception: pass
-    _r22_render_stage(payload, 'telegram_render_done', elapsed, result)
-    # Preserve the old safe_edit recovery semantics, but recovery is also outside
-    # the callback worker. It is intentionally only for unusable Telegram messages.
-    if result in {'not_found', 'failed'} and str(payload.get('purpose') or '').startswith('safe_edit'):
-        try:
-            fallback = globals().get('_v177_safe_edit_fallback_send')
-            if callable(fallback):
-                fallback(bot, int(payload.get('chat_id')), int(payload.get('message_id')), str(payload.get('_r22_action') or ''),
-                         str(payload.get('text') or ''), payload.get('reply_markup'), payload.get('parse_mode'))
-        except Exception:
-            pass
-
-
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
-    """R28: direct v262 render path. No render queue between callback and Telegram."""
     chat_id = int(chat_id)
     message_id = int(message_id)
     try:
@@ -3095,31 +3034,7 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
                 apply_fn(payload, delayed=False)
         except Exception:
             pass
-        _uid = ''
-        _action = ''
-        try:
-            ctx_fn = globals().get('r25_trace_current')
-            ctx = ctx_fn() if callable(ctx_fn) else {}
-            _uid = str((ctx or {}).get('update_id') or '')
-            _action = str((ctx or {}).get('action') or '')[:180]
-            st = globals().get('r25_trace_stage')
-            if callable(st): st('TELEGRAM_EDIT_START')
-        except Exception:
-            pass
-        t0 = _v160_time.monotonic()
-        result = _perform_fast_ui_edit(payload)
-        elapsed = max(0.0, _v160_time.monotonic() - t0)
-        try:
-            st = globals().get('r25_trace_stage')
-            if callable(st): st('TELEGRAM_EDIT_DONE', elapsed, str(result or ''))
-            log_info(f'FASTBTN direct-render chat={chat_id} msg={message_id} action={_action} purpose={str(purpose or "")[:80]} telegram={elapsed:.3f}s result={result}')
-            rows = globals().get('_V177_PERF_STAGES')
-            if rows is not None:
-                rows.append({'ts': _v160_time.time(), 'action': _action, 'stage': 'telegram_render_done', 'elapsed': elapsed})
-        except Exception:
-            pass
-        return result
-
+        return _perform_fast_ui_edit(payload)
 _V160_CALLBACK_LOCK = _v160_threading.RLock()
 _V160_CALLBACK_IDS = {}
 
@@ -3238,7 +3153,7 @@ def _v177_legacy_0244_return_to_main_window_closing_previous(chat_id: int, day_k
             bot_journal('back_main_fast', chat_id, f'day={day_key} result={result} old={old_mid or None} current={current_mid}; parallel=1')
         except Exception:
             pass
-        if result in {'ok', 'scheduled'}:
+        if result == 'ok':
             set_active_window_id(chat_id, day_key, current_mid)
             if old_mid and old_mid != current_mid:
                 try:
@@ -3504,7 +3419,57 @@ def _v160_note_window_meta(chat_id: int, message_id: int, text: str, purpose: st
         if len(_V160_LAST_WINDOW_META) > 1200:
             for stale in list(_V160_LAST_WINDOW_META)[:200]:
                 _V160_LAST_WINDOW_META.pop(stale, None)
-# FINALIZED: v160 markup/meta logic is called by 89_callback_final.py; no bot override here.
+_V160_ORIG_SEND_MESSAGE = getattr(bot, 'send_message', None)
+_V160_ORIG_EDIT_MESSAGE_TEXT = getattr(bot, 'edit_message_text', None)
+_V160_ORIG_EDIT_MESSAGE_CAPTION = getattr(bot, 'edit_message_caption', None)
+if callable(_V160_ORIG_SEND_MESSAGE):
+
+    def _v160_send_message(chat_id, text, *args, **kwargs):
+        try:
+            kwargs['reply_markup'] = _v160_augment_markup(kwargs.get('reply_markup'), str(text or ''), chat_id)
+        except Exception:
+            pass
+        result = _V160_ORIG_SEND_MESSAGE(chat_id, text, *args, **kwargs)
+        try:
+            _v160_note_window_meta(int(chat_id), int(getattr(result, 'message_id', 0) or 0), str(text or ''), 'send_message')
+        except Exception:
+            pass
+        return result
+    bot.send_message = _v160_send_message
+if callable(_V160_ORIG_EDIT_MESSAGE_TEXT):
+
+    def _v160_edit_message_text(text, *args, **kwargs):
+        chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[0] if len(args) > 0 else None
+        message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
+        try:
+            kwargs['reply_markup'] = _v160_augment_markup(kwargs.get('reply_markup'), str(text or ''), chat_id)
+        except Exception:
+            pass
+        result = _V160_ORIG_EDIT_MESSAGE_TEXT(text, *args, **kwargs)
+        try:
+            _v160_note_window_meta(int(chat_id), int(message_id), str(text or ''), 'edit_message_text')
+        except Exception:
+            pass
+        return result
+    bot.edit_message_text = _v160_edit_message_text
+if callable(_V160_ORIG_EDIT_MESSAGE_CAPTION):
+
+    def _v160_edit_message_caption(*args, **kwargs):
+        caption = kwargs.get('caption')
+        if caption is None and args:
+            caption = args[0]
+        chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[1] if len(args) > 1 else None
+        try:
+            kwargs['reply_markup'] = _v160_augment_markup(kwargs.get('reply_markup'), str(caption or ''), chat_id)
+        except Exception:
+            pass
+        result = _V160_ORIG_EDIT_MESSAGE_CAPTION(*args, **kwargs)
+        try:
+            _v160_note_window_meta(int(kwargs.get('chat_id')), int(kwargs.get('message_id')), str(caption or ''), 'edit_message_caption')
+        except Exception:
+            pass
+        return result
+    bot.edit_message_caption = _v160_edit_message_caption
 
 def _v160_annotation_roots():
     gs = data.setdefault('_global_settings', {})
@@ -4401,9 +4366,7 @@ def _canon_restore_previous_window__001(call) -> bool:
     except Exception:
         pass
     result = _v161_edit_retry(chat_id, message_id, str(snap.get('text') or ''), reply_markup=markup, parse_mode=snap.get('parse_mode'), purpose='nav_prev_restore')
-    # R28 direct renderer normally returns 'ok'. Keep 'scheduled' accepted only for
-    # compatibility with any retained legacy delayed path; both mean navigation committed.
-    if result not in {'ok', 'scheduled'}:
+    if result != 'ok':
         try:
             bot_journal('nav_prev_not_committed', chat_id, f'msg={message_id}; result={result}; history_kept=1', 'WARN')
         except Exception:
@@ -4454,7 +4417,7 @@ def _canon_return_to_main_window_closing_previous__001(chat_id: int, day_key: st
             bot_journal('back_main_v161', chat_id, f'msg={current_mid}; old={old_mid or None}; result={result}; preserve_parallel=1')
         except Exception:
             pass
-        if result in {'ok', 'scheduled'}:
+        if result == 'ok':
             set_active_window_id(chat_id, day_key, current_mid)
             try:
                 schedule_balance_panel_refresh(chat_id, 0.05)
@@ -4574,7 +4537,7 @@ def _v161_cmd_start(msg):
     kb = build_main_keyboard(day_key, chat_id)
     for mid in _v161_known_main_candidates(chat_id, day_key):
         result = _v161_edit_retry(chat_id, mid, txt, reply_markup=kb, parse_mode='HTML', purpose='start_reuse_main')
-        if result in {'ok', 'scheduled'}:
+        if result == 'ok':
             set_active_window_id(chat_id, day_key, mid)
             try:
                 schedule_balance_panel_refresh(chat_id, 0.05)
@@ -4649,7 +4612,7 @@ def _v161_open_info(call, day_key: str) -> bool:
     text = window_mark(build_info_text(chat_id), 'Ф54')
     kb = build_info_keyboard(chat_id)
     result = _v161_edit_retry(chat_id, mid, text, reply_markup=kb, purpose='info_v161')
-    if result in {'ok', 'scheduled'}:
+    if result == 'ok':
         try:
             register_open_window(chat_id, mid, 'local_fin_view', code='info', day_key=str(day_key), params={'view_action': 'info', 'parallel_allowed': True})
         except Exception:
@@ -4735,12 +4698,6 @@ def _v161_tokenize_text(text: str, chat_id: int, message_id: int | None=None) ->
         marker = ''
     if not marker:
         return (body, '')
-    # R10: short service/progress windows keep their marker internally but do
-    # not expose Ф232/Ф233 or Wxxxxxxxx diagnostic ids to ordinary users.
-    if str(marker).upper() in {'Ф232', 'Ф233'}:
-        plain = str(body or '')
-        plain = _v161_re.sub(r'(?m)^\s*[Фф](?:232|233)(?:-\(W[A-Z0-9]{6,12}\))?(?:\s*[⏳⏰])?\s*$', '', plain, flags=_v161_re.IGNORECASE).strip()
-        return (plain or '⏳ Выполняю…', '')
     body = _v161_re.sub('(?m)^\\s*W[A-Z0-9]{6,12}\\s*\\n?', '', body)
     body = _v161_re.sub('(?m)([СФПОВсов]\\d{1,6})-\\(W[A-Z0-9]{6,12}\\)', '\\1', body, flags=_v161_re.IGNORECASE)
     cb = str(getattr(_V161_SOURCE_CONTEXT, 'callback', '') or _v161_callback_data() or '')
@@ -4768,7 +4725,52 @@ def _v161_tokenize_text(text: str, chat_id: int, message_id: int | None=None) ->
         lines[idx] = f'{code}-({token}){glyph}'
         return ('\n'.join(lines), token)
     return (body, token)
-# FINALIZED: v161 tokenization is called by 89_callback_final.py; no bot override here.
+_V161_PREV_SEND = getattr(bot, 'send_message', None)
+_V161_PREV_EDIT_TEXT = getattr(bot, 'edit_message_text', None)
+_V161_PREV_EDIT_CAPTION = getattr(bot, 'edit_message_caption', None)
+if callable(_V161_PREV_SEND):
+
+    def _v161_send_message(chat_id, text, *args, **kwargs):
+        decorated, token = _v161_tokenize_text(str(text or ''), int(chat_id), None)
+        result = _V161_PREV_SEND(chat_id, decorated, *args, **kwargs)
+        try:
+            mid = int(getattr(result, 'message_id', 0) or 0)
+            if token and mid:
+                with _V161_TOKEN_LOCK:
+                    _V161_WINDOW_TOKENS[int(chat_id), mid] = token
+        except Exception:
+            pass
+        return result
+    bot.send_message = _v161_send_message
+if callable(_V161_PREV_EDIT_TEXT):
+
+    def _v161_edit_message_text(text, *args, **kwargs):
+        chat_id = int(kwargs.get('chat_id') or 0)
+        message_id = int(kwargs.get('message_id') or 0)
+        decorated, token = _v161_tokenize_text(str(text or ''), chat_id, message_id)
+        result = _V161_PREV_EDIT_TEXT(decorated, *args, **kwargs)
+        if token and chat_id and message_id:
+            with _V161_TOKEN_LOCK:
+                _V161_WINDOW_TOKENS[chat_id, message_id] = token
+        return result
+    bot.edit_message_text = _v161_edit_message_text
+if callable(_V161_PREV_EDIT_CAPTION):
+
+    def _v161_edit_message_caption(*args, **kwargs):
+        positional = list(args)
+        caption = kwargs.get('caption')
+        if caption is None and positional:
+            caption = positional.pop(0)
+        chat_id = int(kwargs.get('chat_id') or 0)
+        message_id = int(kwargs.get('message_id') or 0)
+        decorated, token = _v161_tokenize_text(str(caption or ''), chat_id, message_id)
+        kwargs['caption'] = decorated
+        result = _V161_PREV_EDIT_CAPTION(*positional, **kwargs)
+        if token and chat_id and message_id:
+            with _V161_TOKEN_LOCK:
+                _V161_WINDOW_TOKENS[chat_id, message_id] = token
+        return result
+    bot.edit_message_caption = _v161_edit_message_caption
 _V161_PREV_SOURCE_META = _v177_legacy_0319_v160_source_meta
 
 def _canon_v160_source_meta__001(chat_id: int, message_id: int, marker: str, text: str='') -> dict:
@@ -5326,7 +5328,27 @@ def _canon_v162_force_start__001(msg) -> bool:
             except Exception:
                 pass
             return True
-# FINALIZED: /start interception is executed by the single dispatcher in 89_callback_final.py.
+_V162_ORIGINAL_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
+
+def _v162_process_new_updates(updates):
+    remaining = []
+    for update in list(updates or []):
+        msg = getattr(update, 'message', None)
+        if msg is not None and _v162_is_start_message(msg):
+            try:
+                _v162_force_start(msg)
+            except Exception as exc:
+                try:
+                    log_error(f'v162 /start interceptor: {exc}')
+                except Exception:
+                    pass
+            continue
+        remaining.append(update)
+    if remaining and callable(_V162_ORIGINAL_PROCESS_NEW_UPDATES):
+        return _V162_ORIGINAL_PROCESS_NEW_UPDATES(remaining)
+    return None
+if callable(_V162_ORIGINAL_PROCESS_NEW_UPDATES):
+    bot.process_new_updates = _v162_process_new_updates
 
 def _v177_legacy_0287_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v162_tempfile.mkdtemp(prefix='v162_restore_validate_')

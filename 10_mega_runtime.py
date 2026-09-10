@@ -160,7 +160,7 @@ def _v178_mega_gate_exit() -> None:
         _V178_MEGA_PRIORITY_ACTIVE = False
         _V178_MEGA_PRIORITY_CV.notify_all()
 
-def _mega_exec_raw(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
+def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
     """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
     gate = globals().get('external_access_allowed_v233')
     gate_category = 'mega_control' if bool(control_plane) else 'mega'
@@ -256,7 +256,10 @@ def _mega_exec_raw(cmd: str, args=None, timeout: int | None=None, check: bool=Tr
     if callable(guard):
         return guard(f'mega:{cmd}', _execute_once, attempts=2, base_delay=0.6)
     return _execute_once()
-# FINALIZED: public _mega_run is defined once in 73_state_export_runtime.py.
+try:
+    _v177_legacy_0063_mega_run.__name__ = '_mega_run'
+except Exception:
+    pass
 TRAFFIC_AUDIT_REMOTE_DIR = MEGA_BACKUP_DIR.rstrip('/') + '/runtime/traffic_audit'
 TRAFFIC_AUDIT_REMOTE_NAME = 'latest_traffic_audit.json.gz'
 
@@ -1813,7 +1816,7 @@ def enqueue_durable_finalize_background(update_id, chat_id, update_type: str, pa
             schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.0, payload=payload_copy, expected_effects=expected_copy)
         finally:
             try:
-                DELAYED_SCHEDULER.schedule(f'lowram-after-durable:{key}', 30.0, _r24_lowram_release_if_pressure, chat_id)
+                DELAYED_SCHEDULER.schedule(f'lowram-after-durable:{key}', 15.0, _lowram_release_chat, chat_id)
             except Exception:
                 pass
     return RECOVERY_TASK_POOL.submit(f'durable-finalize:{key}', _job)
@@ -2896,7 +2899,7 @@ def schedule_restored_secret_media_recovery(delay: float=60.0):
         DELAYED_SCHEDULER.schedule('secret-media-startup-recovery', max(30.0, float(seconds)), _job)
 
     def _interactive_busy() -> bool:
-        for name in ('FAST_UI_TASK_POOL', 'UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'CONTENT_TASK_POOL'):
+        for name in ('UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'CONTENT_TASK_POOL'):
             pool = globals().get(name)
             if pool is None or not hasattr(pool, 'stats'):
                 continue
@@ -3601,7 +3604,7 @@ def _submit_global_snapshot_v90(reason: str):
     if RESTORE_GUARD_ACTIVE:
         return
     try:
-        busy = any((int((pool.stats() or {}).get('active', 0) or 0) + int((pool.stats() or {}).get('pending', 0) or 0) > 0 for pool in (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL)))
+        busy = any((int((pool.stats() or {}).get('active', 0) or 0) + int((pool.stats() or {}).get('pending', 0) or 0) > 0 for pool in (WEBHOOK_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL)))
     except Exception:
         busy = False
     if busy:
@@ -4259,7 +4262,7 @@ def runtime_heartbeat_snapshot(event: str='heartbeat') -> dict:
     with _RUNTIME_LOCK:
         st = dict(_RUNTIME_STATE)
     mem = _runtime_memory_stats()
-    return {'kind': 'telegram_bot_runtime_heartbeat', 'schema_version': 2, 'bot_version': VERSION, 'captured_at': now_local().isoformat(timespec='milliseconds'), 'event': str(event or 'heartbeat'), 'state': {'phase': st.get('phase') or '', 'ready': bool(st.get('ready')), 'shutting_down': bool(st.get('shutting_down')), 'started_at': st.get('started_at') or '', 'ready_at': st.get('ready_at') or '', 'last_webhook_at': st.get('last_webhook_at') or '', 'last_webhook_update_id': st.get('last_webhook_update_id') or '', 'shutdown_started_at': st.get('shutdown_started_at') or '', 'shutdown_finished_at': st.get('shutdown_finished_at') or '', 'shutdown_signal': st.get('shutdown_signal') or '', 'fatal_main_exception': st.get('fatal_main_exception') or '', 'fatal_thread_exception': st.get('fatal_thread_exception') or '', 'last_runtime_snapshot_ok_at': st.get('last_runtime_snapshot_ok_at') or ''}, 'render': _runtime_render_env(), 'process': {'pid': os.getpid(), 'rss_mb': mem.get('rss_mb'), 'peak_rss_mb': mem.get('peak_rss_mb'), 'container_current_mb': mem.get('container_current_mb'), 'container_peak_mb': mem.get('container_peak_mb'), 'limit_mb': mem.get('limit_mb'), 'rss_percent_limit': mem.get('rss_percent_limit'), 'container_percent_limit': mem.get('container_percent_limit'), 'cgroup_events': mem.get('cgroup_events') or {}, 'threads': threading.active_count(), 'uptime_seconds': round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3)}, 'queues': {'content': WEBHOOK_TASK_POOL.stats().get('pending', 0), 'fast_ui': FAST_UI_TASK_POOL.stats().get('pending', 0), 'window_render': WINDOW_RENDER_TASK_POOL.stats().get('pending', 0), 'ui': UI_TASK_POOL.stats().get('pending', 0), 'callback_ack': CALLBACK_ACK_TASK_POOL.stats().get('pending', 0), 'recovery': RECOVERY_TASK_POOL.stats().get('pending', 0), 'reminder': REMINDER_TASK_POOL.stats().get('pending', 0), 'finance': FINANCE_TASK_POOL.stats().get('pending', 0), 'fin_forward': FIN_FORWARD_TASK_POOL.stats().get('pending', 0), 'forward': FORWARD_TASK_POOL.stats().get('pending', 0), 'delta': DELTA_TASK_POOL.stats().get('pending', 0), 'backup': BACKUP_TASK_POOL.stats().get('pending', 0), 'maintenance': MAINTENANCE_TASK_POOL.stats().get('pending', 0)}}
+    return {'kind': 'telegram_bot_runtime_heartbeat', 'schema_version': 2, 'bot_version': VERSION, 'captured_at': now_local().isoformat(timespec='milliseconds'), 'event': str(event or 'heartbeat'), 'state': {'phase': st.get('phase') or '', 'ready': bool(st.get('ready')), 'shutting_down': bool(st.get('shutting_down')), 'started_at': st.get('started_at') or '', 'ready_at': st.get('ready_at') or '', 'last_webhook_at': st.get('last_webhook_at') or '', 'last_webhook_update_id': st.get('last_webhook_update_id') or '', 'shutdown_started_at': st.get('shutdown_started_at') or '', 'shutdown_finished_at': st.get('shutdown_finished_at') or '', 'shutdown_signal': st.get('shutdown_signal') or '', 'fatal_main_exception': st.get('fatal_main_exception') or '', 'fatal_thread_exception': st.get('fatal_thread_exception') or '', 'last_runtime_snapshot_ok_at': st.get('last_runtime_snapshot_ok_at') or ''}, 'render': _runtime_render_env(), 'process': {'pid': os.getpid(), 'rss_mb': mem.get('rss_mb'), 'peak_rss_mb': mem.get('peak_rss_mb'), 'container_current_mb': mem.get('container_current_mb'), 'container_peak_mb': mem.get('container_peak_mb'), 'limit_mb': mem.get('limit_mb'), 'rss_percent_limit': mem.get('rss_percent_limit'), 'container_percent_limit': mem.get('container_percent_limit'), 'cgroup_events': mem.get('cgroup_events') or {}, 'threads': threading.active_count(), 'uptime_seconds': round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3)}, 'queues': {'content': WEBHOOK_TASK_POOL.stats().get('pending', 0), 'ui': UI_TASK_POOL.stats().get('pending', 0), 'callback_ack': CALLBACK_ACK_TASK_POOL.stats().get('pending', 0), 'recovery': RECOVERY_TASK_POOL.stats().get('pending', 0), 'reminder': REMINDER_TASK_POOL.stats().get('pending', 0), 'finance': FINANCE_TASK_POOL.stats().get('pending', 0), 'fin_forward': FIN_FORWARD_TASK_POOL.stats().get('pending', 0), 'forward': FORWARD_TASK_POOL.stats().get('pending', 0), 'delta': DELTA_TASK_POOL.stats().get('pending', 0), 'backup': BACKUP_TASK_POOL.stats().get('pending', 0), 'maintenance': MAINTENANCE_TASK_POOL.stats().get('pending', 0)}}
 
 def _runtime_disk_stats() -> dict:
     try:
@@ -4269,7 +4272,7 @@ def _runtime_disk_stats() -> dict:
         return {'total_mb': None, 'used_mb': None, 'free_mb': None}
 
 def _runtime_pool_stats() -> dict:
-    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL, BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    pools = (WEBHOOK_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL, BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
     return {p.name: p.stats() for p in pools}
 
 def runtime_snapshot(extra: dict | None=None) -> dict:
@@ -4804,7 +4807,7 @@ def _runtime_watcher_should_yield_to_critical_mega() -> bool:
 
 def _lowram_business_busy() -> bool:
     try:
-        for pool_name in ('WEBHOOK_TASK_POOL', 'FAST_UI_TASK_POOL', 'WINDOW_RENDER_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'V166_FINANCE_UI_TASK_POOL', 'START_UI_TASK_POOL', 'UI_TASK_POOL', 'RECOVERY_TASK_POOL', 'REMINDER_TASK_POOL', 'FINANCE_TASK_POOL', 'FIN_FORWARD_TASK_POOL', 'FORWARD_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL'):
+        for pool_name in ('WEBHOOK_TASK_POOL', 'UI_TASK_POOL', 'RECOVERY_TASK_POOL', 'REMINDER_TASK_POOL', 'FINANCE_TASK_POOL', 'FIN_FORWARD_TASK_POOL', 'FORWARD_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL'):
             pool = globals().get(pool_name)
             if pool is None:
                 continue
@@ -4816,25 +4819,12 @@ def _lowram_business_busy() -> bool:
     except Exception:
         return True
 
-R24_LOWRAM_EVICT_RSS_MB = max(260.0, min(450.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '340') or '340')))
-
-def _r24_lowram_release_if_pressure(chat_id):
-    try:
-        rss = float((_runtime_memory_stats() or {}).get('rss_mb', 0) or 0)
-    except Exception:
-        rss = 0.0
-    if rss >= R24_LOWRAM_EVICT_RSS_MB and not _lowram_business_busy():
-        return _lowram_release_chat(chat_id)
-    return False
-
 def _lowram_idle_sweep_job():
     """Return forgotten cold chat histories to SQLite only while the bot is idle."""
     try:
         if runtime_is_shutting_down():
             return
-        _mem_now = _runtime_memory_stats() if LOWRAM_ENABLED else {}
-        _rss_now = float((_mem_now or {}).get('rss_mb', 0) or 0)
-        if LOWRAM_ENABLED and _rss_now >= R24_LOWRAM_EVICT_RSS_MB and (not _lowram_business_busy()):
+        if LOWRAM_ENABLED and (not _lowram_business_busy()):
 
             def _loaded_fields_count():
                 total = 0
@@ -4863,7 +4853,7 @@ def _lowram_idle_sweep_job():
         runtime_event('lowram_idle_evict_error', str(e), 'WARN')
     finally:
         try:
-            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 120.0, _lowram_idle_sweep_job)
+            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 45.0, _lowram_idle_sweep_job)
         except Exception:
             pass
 
@@ -6028,7 +6018,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool=True) -> None:
         log_error(f'send_backup_to_chat({chat_id}): {e}')
 
 def default_data():
-    return {'overall_balance': 0, 'records': [], 'chats': {}, 'active_messages': {}, 'next_id': 1, 'backup_flags': {'drive': True, 'channel': True}, 'finance_active_chats': {}, 'forward_rules': {}, 'forward_finance': {}, 'forward_index': {}, 'bot_errors': [], 'csv_meta': {}, 'chat_backup_meta': {}, '_global_settings': {'bot_journal_enabled': True, 'bot_journal_verbose_telegram': False, 'buttons_current_window': True, 'forward_menu_new_style': True, 'icon_button_mode': False, 'total_secret_mask_enabled': False, 'finance_day_start_5am': False, 'finance_day_start_minute': 5, 'backup_excel_all_enabled': True, 'mega_backup_priority': True, 'bot_behavior_profile': 'v97_current', 'journal_default_off_v83_applied': True}}
+    return {'overall_balance': 0, 'records': [], 'chats': {}, 'active_messages': {}, 'next_id': 1, 'backup_flags': {'drive': True, 'channel': True}, 'finance_active_chats': {}, 'forward_rules': {}, 'forward_finance': {}, 'forward_index': {}, 'bot_errors': [], 'csv_meta': {}, 'chat_backup_meta': {}, '_global_settings': {'bot_journal_enabled': False, 'bot_journal_verbose_telegram': False, 'buttons_current_window': True, 'forward_menu_new_style': True, 'icon_button_mode': False, 'total_secret_mask_enabled': False, 'finance_day_start_5am': False, 'finance_day_start_minute': 5, 'backup_excel_all_enabled': True, 'mega_backup_priority': True, 'bot_behavior_profile': 'v97_current', 'journal_default_off_v83_applied': True}}
 _ORIGINAL_INLINE_KEYBOARD_BUTTON = types.InlineKeyboardButton
 
 def _compact_button_label(text) -> str:
@@ -6092,18 +6082,6 @@ def _apply_user_state_shadow_early_v266(d):
         payload = {}
     if not isinstance(payload, dict) or not payload:
         return d
-    # R19 process-level anti-downgrade fence. If any earlier authoritative load in
-    # this process observed a newer shadow sequence, a later stale SQLite/legacy
-    # restore is not allowed to overlay an older shadow on top of it.
-    try:
-        incoming_seq = int(payload.get('seq') or 0)
-        applied_seq = int(globals().get('_USER_STATE_APPLIED_SEQ_R19', 0) or 0)
-        if applied_seq and incoming_seq and incoming_seq < applied_seq:
-            log_error(f'USER_STATE R19 stale early shadow rejected seq={incoming_seq} < applied={applied_seq}')
-            return d
-        globals()['_USER_STATE_APPLIED_SEQ_R19'] = max(applied_seq, incoming_seq)
-    except Exception:
-        pass
     root_shadow = payload.get('root') or {}
     if isinstance(root_shadow, dict):
         for key, value in root_shadow.items():
@@ -6172,13 +6150,12 @@ except Exception:
     pass
 
 def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
-    """R36 persistence: never hold global data_lock while waiting for SQLite.
+    """Потокобезопасное сохранение.
 
-    The in-memory state is snapshotted quickly under data_lock. Potentially slow JSON
-    encoding/SQLite commits then happen outside it, so a finance write cannot freeze an
-    unrelated FAST callback that only needs to render a window.
+    В обработчике конкретного чата SQLite обновляет только этот чат. Полный
+    проход по всем чатам выполняется при старте, восстановлении и глобальном
+    бэкапе. Это убирает квадратичную нагрузку при 100 активных чатах.
     """
-    ids = set()
     with data_lock:
         d.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
         d['_state_meta']['bot_version'] = VERSION
@@ -6189,54 +6166,50 @@ def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
             _persist_forward_index_in_data(d)
         except Exception as e:
             log_error(f'save_data forward_index: {e}')
-        root_payload = copy.deepcopy(_sqlite_pack_root(d))
+        SQLITE.save_root(_sqlite_pack_root(d))
+        if root_only:
+            return
+        ids = set()
         if chat_ids is not None:
-            source_ids = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
+            if isinstance(chat_ids, (list, tuple, set)):
+                source_ids = chat_ids
+            else:
+                source_ids = [chat_ids]
             for cid in source_ids:
-                try: ids.add(int(cid))
-                except Exception: pass
+                try:
+                    ids.add(int(cid))
+                except Exception:
+                    pass
         elif not full:
             cid = current_state_chat_id()
             if cid is not None:
-                try: ids.add(int(cid))
-                except Exception: pass
-        all_chat_ids = []
-        if full or not ids:
-            for cid_s in list((d.get('chats', {}) or {}).keys()):
-                try: all_chat_ids.append(int(cid_s))
-                except Exception: pass
-    # SQLite waits start only after data_lock is released.
-    SQLITE.save_root(root_payload)
-    if root_only:
-        return
-    if ids and not full:
-        for cid in sorted(ids):
-            try:
-                with locked_chat(cid):
-                    store = get_chat_store(cid)
+                try:
+                    ids.add(int(cid))
+                except Exception:
+                    pass
+        chats = d.get('chats', {}) or {}
+        if ids and (not full):
+            for cid in ids:
+                payload = chats.get(str(cid))
+                if isinstance(payload, dict):
                     if LOWRAM_ENABLED:
-                        _lowram_flush_chat(cid, store, evict=False)
-                        payload = copy.deepcopy(_lowram_store_meta_payload(store))
+                        _lowram_flush_chat(cid, payload, evict=False)
+                        SQLITE.save_chat(cid, _lowram_store_meta_payload(payload))
                     else:
-                        payload = copy.deepcopy(dict(store))
-                SQLITE.save_chat(cid, payload)
-            except Exception as exc:
-                log_error(f'save_data chat={cid}: {exc}')
-                raise
-    else:
-        snapshots = {}
-        for cid in sorted(set(all_chat_ids)):
-            try:
-                with locked_chat(cid):
-                    store = get_chat_store(cid)
-                    if LOWRAM_ENABLED:
-                        _lowram_flush_chat(cid, store, evict=False)
-                        snapshots[str(cid)] = copy.deepcopy(_lowram_store_meta_payload(store))
-                    else:
-                        snapshots[str(cid)] = copy.deepcopy(dict(store))
-            except Exception as exc:
-                log_error(f'save_data snapshot chat={cid}: {exc}')
-        SQLITE.save_chats(snapshots)
+                        SQLITE.save_chat(cid, payload)
+        elif LOWRAM_ENABLED:
+            meta_chats = {}
+            for cid_s, payload in list(chats.items()):
+                try:
+                    cid = int(cid_s)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    _lowram_flush_chat(cid, payload, evict=False)
+                    meta_chats[str(cid)] = _lowram_store_meta_payload(payload)
+            SQLITE.save_chats(meta_chats)
+        else:
+            SQLITE.save_chats(chats)
     try:
         fn = globals().get('config_guard_note_after_save_v234')
         if callable(fn):
@@ -7075,8 +7048,9 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
     if mode not in {'old', 'new_plain', 'new_comments', 'new_notes', 'google_notes'}:
         mode = 'old'
     local_mode = 'new_notes' if mode == 'google_notes' else mode
-    # R16: ALL XLSX files are colored.  'old' now means old layout/annotation
-    # behaviour only; it no longer bypasses the canonical vys-262 palette.
+    if local_mode == 'old':
+        _write_simple_xlsx(path, rows, sheet_name=sheet_name)
+        return
     if category_layout == 'category_compact':
         styles, annotations, freeze_rows, widths = _modern_category_no_description_styles_comments(rows, compact_annotations or {})
     elif category_layout:
@@ -7085,7 +7059,7 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
         styles, annotations, freeze_rows, widths = _modern_compact_excel_styles_comments(rows, compact_annotations)
     else:
         styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
-    annotation_mode = None if local_mode in {'old', 'new_plain'} else 'comments' if local_mode == 'new_comments' else 'notes'
+    annotation_mode = None if local_mode == 'new_plain' else 'comments' if local_mode == 'new_comments' else 'notes'
     if annotation_mode is None:
         annotations = {}
     expected_annotations: dict[tuple[int, int], str] = {}

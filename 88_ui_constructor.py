@@ -1943,7 +1943,9 @@ def _canon_ui_constructor_handle_message__001(msg):
     except Exception:
         pass
     return _V212_PREV_CTOR_MESSAGE(msg)
-def _constructor_extension_callback(call, data_str: str):
+_V196_PREV_EXTENSION_CALLBACK = _canon_v149_extension_callback__001
+
+def _canon_v149_extension_callback__002(call, data_str: str):
     raw = str(data_str or '')
     try:
         if raw.startswith('v196:'):
@@ -1962,6 +1964,8 @@ def _constructor_extension_callback(call, data_str: str):
             log_error(f'v196 callback pre-route: {exc}')
         except Exception:
             pass
+    if callable(_V196_PREV_EXTENSION_CALLBACK):
+        return bool(_V196_PREV_EXTENSION_CALLBACK(call, raw))
     return False
 
 @bot.message_handler(commands=['constructor2', 'constructor'])

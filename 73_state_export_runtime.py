@@ -3,7 +3,6 @@ import json as _v150_json
 import math as _v150_math
 import re as _v150_re
 import threading as _v150_threading
-_SEND_DOCUMENT_TRANSFORM_LOCAL = _v150_threading.local()
 import time as _v150_time
 from datetime import datetime as _v150_datetime
 V150_CHAT_STATUSES = {'active', 'unreachable', 'bot_removed', 'migrated', 'archived'}
@@ -416,13 +415,8 @@ def _v150_error_class(err) -> tuple[str, str]:
         return ('bot_removed', 'telegram_confirmed_bot_removed')
     if 'migrate_to_chat_id' in low or 'group chat was upgraded' in low:
         return ('migrated', 'telegram_migration')
-    # For a chat already known to the bot, Telegram's explicit
-    # `400 Bad Request: chat not found` during a membership/probe request means
-    # the bot can no longer access that chat.  The original monolith treated
-    # this as removal; keep that behaviour so the chat immediately moves to
-    # the "Removed" menu instead of staying orange forever.
     if 'chat not found' in low:
-        return ('bot_removed', 'telegram_chat_not_found_confirmed')
+        return ('unreachable', 'telegram_chat_not_found')
     if 'not enough rights' in low or 'have no rights' in low or 'not enough permissions' in low:
         return ('unreachable', 'telegram_missing_rights')
     if 'forbidden' in low:
@@ -521,20 +515,6 @@ def set_chat_status_v150(chat_id: int, status: str, reason: str, *, source: str=
         if changed or force_history or signature != last_signature:
             row['history'].append({'at': now, 'from': previous, 'to': status, 'reason': str(reason or '')[:200], 'source': str(source or '')[:80], 'migrated_to': int(migrated_to) if migrated_to is not None else None})
             del row['history'][:-200]
-        # R17 terminal-chat fan-out.  The helper is defined by 76_tasks_runtime
-        # later in module load, so this remains dependency-safe during boot.
-        # It mutates only local canonical state here; the single save below writes
-        # chat lifecycle + root task/reminder/forward state atomically to SQLite.
-        if status in {'bot_removed', 'migrated', 'archived'}:
-            try:
-                cleanup_fn = globals().get('r17_suspend_terminal_chat_bindings')
-                if callable(cleanup_fn):
-                    cleanup_fn(chat_id, reason=str(reason or status), source=str(source or 'lifecycle'), persist=False)
-            except Exception as cleanup_exc:
-                try:
-                    bot_journal('r17_terminal_cleanup_error', chat_id, f'{type(cleanup_exc).__name__}: {str(cleanup_exc)[:240]}', 'ERROR')
-                except Exception:
-                    pass
         if persist:
             save_data(data, chat_ids=[chat_id])
             if status == 'active':
@@ -971,18 +951,17 @@ def _v151_ars_records(chat_id: int) -> list[dict]:
     ``amount == 0`` with a non-zero ``usd_amount``.  The last shape has no ARS
     monetary effect, so excluding it cannot change a real peso balance.
     """
-    # R15: immediately after an incremental finance commit the store is already
-    # consistent for rendering (records + daily_records + balance).  The debounced
-    # FINANCE_TASK_POOL finalizer performs the historical full normalize/dedupe.
-    # Skipping it here keeps the first visual repaint cheap on long histories.
+    try:
+        normalize_chat_records(int(chat_id))
+    except Exception as _v258_norm_exc:
+        try: log_error(f'v258 report normalize ARS {chat_id}: {_v258_norm_exc}')
+        except Exception: pass
+    try:
+        normalize_chat_records(int(chat_id))
+    except Exception as _v258_norm_exc:
+        try: log_error(f'v258 report normalize USD {chat_id}: {_v258_norm_exc}')
+        except Exception: pass
     store = get_chat_store(int(chat_id))
-    if not bool(store.get('_finance_hotpath_pending_normalize_r15')):
-        try:
-            normalize_chat_records(int(chat_id))
-        except Exception as _v258_norm_exc:
-            try: log_error(f'v258 report normalize ARS {chat_id}: {_v258_norm_exc}')
-            except Exception: pass
-        store = get_chat_store(int(chat_id))
     active = _v151_sync_currency_snapshots(store)
     source = store.get('records', []) if active == 'ars' else store.get('ars_records', [])
     rows = []
@@ -1530,114 +1509,6 @@ def _v151_apply_reserve_cover(chat_id: int, currency: str, rec: dict | None, rea
             pass
         return result
 
-# R11: the authoritative finance row is already committed by _finance_add_record_base.
-# Gomonk/reserve-cover is derived state and must never keep the Telegram content lane
-# busy after that commit. Queue it on the per-chat FINANCE lane and coalesce bursts.
-_V151_POSTCOMMIT_LOCK = _v151_threading.RLock()
-_V151_POSTCOMMIT_PENDING = {}
-_V151_POSTCOMMIT_RUNNING = set()
-
-def _v151_postcommit_identity(chat_id: int, rec: dict) -> dict:
-    return {
-        'uid': str((rec or {}).get('record_uid') or ''),
-        'source_msg_id': int((rec or {}).get('source_msg_id') or 0),
-        'record_id': int((rec or {}).get('id') or 0),
-        'day_key': str((rec or {}).get('day_key') or ''),
-    }
-
-def _v151_resolve_postcommit_record(chat_id: int, ident: dict):
-    uid = str((ident or {}).get('uid') or '')
-    if uid and callable(globals().get('find_finance_record_by_uid')):
-        try:
-            rec = find_finance_record_by_uid(int(chat_id), uid)
-            if isinstance(rec, dict):
-                return rec
-        except Exception:
-            pass
-    source_msg_id = int((ident or {}).get('source_msg_id') or 0)
-    if source_msg_id and callable(globals().get('find_record_by_message_id')):
-        try:
-            rec = find_record_by_message_id(int(chat_id), source_msg_id)
-            if isinstance(rec, dict):
-                return rec
-        except Exception:
-            pass
-    rid = int((ident or {}).get('record_id') or 0)
-    try:
-        for _key, rec in _finance_record_lists(get_chat_store(int(chat_id))):
-            if isinstance(rec, dict) and rid and int(rec.get('id') or 0) == rid:
-                return rec
-    except Exception:
-        pass
-    return None
-
-def _v151_postcommit_cover_job(chat_id: int):
-    cid = int(chat_id)
-    try:
-        while True:
-            with _V151_POSTCOMMIT_LOCK:
-                batch = list((_V151_POSTCOMMIT_PENDING.get(cid) or {}).values())
-                _V151_POSTCOMMIT_PENDING[cid] = {}
-            if not batch:
-                break
-            last_day = ''
-            for item in batch:
-                ident = dict(item.get('ident') or {})
-                rec = _v151_resolve_postcommit_record(cid, ident)
-                if not isinstance(rec, dict):
-                    continue
-                last_day = str(ident.get('day_key') or rec.get('day_key') or last_day)
-                for currency in tuple(item.get('currencies') or ('ars',)):
-                    try:
-                        _v151_apply_reserve_cover(cid, str(currency), rec, 'postcommit_async_r11')
-                    except Exception as exc:
-                        try: log_error(f'R11 async reserve cover chat={cid} currency={currency}: {exc}')
-                        except Exception: pass
-            # finance_changed/schedule_finalize is normally queued by the caller after
-            # add_record_to_chat returns. A tiny safety repaint is only needed when this
-            # helper was invoked from a path that did not schedule one.
-            try:
-                if last_day and callable(globals().get('schedule_financial_window_refresh')):
-                    schedule_financial_window_refresh(cid, last_day, reason='reserve_cover_r11', delay=0.02)
-            except Exception:
-                pass
-    finally:
-        rerun = False
-        with _V151_POSTCOMMIT_LOCK:
-            _V151_POSTCOMMIT_RUNNING.discard(cid)
-            rerun = bool(_V151_POSTCOMMIT_PENDING.get(cid))
-        if rerun:
-            _v151_schedule_postcommit_cover(cid, None, ())
-
-def _v151_schedule_postcommit_cover(chat_id: int, rec: dict | None, currencies) -> bool:
-    cid = int(chat_id)
-    with _V151_POSTCOMMIT_LOCK:
-        if isinstance(rec, dict):
-            ident = _v151_postcommit_identity(cid, rec)
-            key = str(ident.get('uid') or ident.get('source_msg_id') or ident.get('record_id') or id(rec))
-            row = (_V151_POSTCOMMIT_PENDING.setdefault(cid, {})).setdefault(key, {'ident': ident, 'currencies': set()})
-            row['currencies'].update(str(x) for x in (currencies or ()) if x)
-        if cid in _V151_POSTCOMMIT_RUNNING:
-            return True
-        if not _V151_POSTCOMMIT_PENDING.get(cid):
-            return True
-        _V151_POSTCOMMIT_RUNNING.add(cid)
-    pool = globals().get('FINANCE_TASK_POOL')
-    try:
-        if pool is not None and hasattr(pool, 'submit') and pool.submit(cid, _v151_postcommit_cover_job, cid):
-            return True
-    except Exception:
-        pass
-    # Never fall back to synchronous work in the Telegram/content thread.
-    try:
-        t = _v151_threading.Thread(target=_v151_postcommit_cover_job, args=(cid,), name=f'fin-cover-r11-{cid}', daemon=True)
-        t.start()
-        return True
-    except Exception:
-        with _V151_POSTCOMMIT_LOCK:
-            _V151_POSTCOMMIT_RUNNING.discard(cid)
-        return False
-
 def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str='', usd_only: bool=False, source_finance_text: str=''):
     rec = _V151_BASE_ADD_RECORD(chat_id, amount, note, owner, source_msg=source_msg, day_key=day_key, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_finance_text=source_finance_text)
     if isinstance(rec, dict):
@@ -1645,10 +1516,13 @@ def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, sourc
             ensure_finance_record_uid(int(chat_id), rec)
         except Exception:
             pass
-        currencies = ['ars']
+        _v151_apply_reserve_cover(int(chat_id), 'ars', rec)
         if usd_amount is not None:
-            currencies.append('usd')
-        _v151_schedule_postcommit_cover(int(chat_id), rec, currencies)
+            _v151_apply_reserve_cover(int(chat_id), 'usd', rec)
+        try:
+            persist_finance_chat_local_fast(int(chat_id))
+        except Exception:
+            pass
     return rec
 
 def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None=None):
@@ -1674,9 +1548,13 @@ def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, not
             ensure_finance_record_uid(int(chat_id), rec)
         except Exception:
             pass
-        _v151_schedule_postcommit_cover(int(chat_id), rec, [ledger])
+        _v151_apply_reserve_cover(int(chat_id), ledger, rec)
         try:
-            schedule_financial_window_refresh(int(chat_id), str(rec.get('day_key') or day_key or ''), reason='currency_record_add_fast_r11')
+            persist_finance_chat_local_fast(int(chat_id))
+        except Exception:
+            pass
+        try:
+            schedule_financial_window_refresh(int(chat_id), str(rec.get('day_key') or day_key or ''), reason='currency_record_add_final_v187')
         except Exception:
             pass
     return result if result is not None else rec
@@ -2349,8 +2227,6 @@ def _v152_install_command_wrappers() -> int:
         original = handler.get('function')
         if not callable(original) or getattr(original, '_v152_permission_wrapped', False):
             continue
-        if getattr(original, '__name__', '') == 'on_any_message':
-            continue
 
         @_v152_functools.wraps(original)
         def guarded(message, *args, __original=original, **kwargs):
@@ -2552,7 +2428,26 @@ try:
     _v177_legacy_0277_v152_human_download_name.__name__ = 'v152_human_download_name'
 except Exception:
     pass
-# FINALIZED: v152 download naming is applied by the single final send_document transport.
+_V152_ORIG_SEND_DOCUMENT = getattr(bot, 'send_document', None)
+
+def _v152_send_document(chat_id, document, *args, **kwargs):
+    if not callable(_V152_ORIG_SEND_DOCUMENT):
+        raise RuntimeError('send_document unavailable')
+    caption = str(kwargs.get('caption') or '')
+    purpose = str(kwargs.get('purpose') or '')
+    new_name = v152_human_download_name(int(chat_id), document, caption, purpose)
+    if new_name:
+        try:
+            if hasattr(document, 'file_name'):
+                document.file_name = new_name
+            elif hasattr(document, 'read'):
+                document = _V152NamedFileProxy(document, new_name)
+        except Exception:
+            pass
+    return _V152_ORIG_SEND_DOCUMENT(chat_id, document, *args, **kwargs)
+if callable(_V152_ORIG_SEND_DOCUMENT):
+    bot.send_document = _v152_send_document
+_V152_ORIG_EXTENSION_CALLBACK = _v177_legacy_0266_v149_extension_callback
 
 def _v152_answer(call, text: str='', alert: bool=False):
     try:
@@ -2653,7 +2548,16 @@ def _v152_handle_rights_callback(call, data_str: str) -> bool:
         return True
     return True
 
-# R47 FINALIZATION: rights callbacks are dispatched directly by the sole extension router.
+def _v177_legacy_0267_v149_extension_callback(call, data_str: str) -> bool:
+    if _v152_handle_rights_callback(call, data_str):
+        return True
+    if callable(_V152_ORIG_EXTENSION_CALLBACK):
+        return bool(_V152_ORIG_EXTENSION_CALLBACK(call, data_str))
+    return False
+try:
+    _v177_legacy_0267_v149_extension_callback.__name__ = 'v149_extension_callback'
+except Exception:
+    pass
 _V152_WRAPPED_COMMAND_HANDLERS = _v152_install_command_wrappers()
 try:
     _v177_legacy_0006_bot_journal('v152_permissions_installed', int(OWNER_ID or 0), f'command_handlers={_V152_WRAPPED_COMMAND_HANDLERS}; capabilities={len(V152_PERMISSION_KEYS)}')
@@ -2765,6 +2669,7 @@ _V153_ORIG_LOG_ERROR = _v177_legacy_0003_log_error
 _V153_ORIG_LOG_INFO = _v177_legacy_0002_log_info
 _V153_ORIG_BOT_JOURNAL = _v177_legacy_0006_bot_journal
 _V153_ORIG_ATOMIC_JSON_DUMP = _v177_legacy_0008_atomic_json_dump
+_V153_ORIG_MEGA_RUN = _v177_legacy_0063_mega_run
 _V153_ORIG_MAKE_GLOBAL_BACKUP = _v177_legacy_0077_make_global_backup_payload
 
 def _canon_log_error__001(message):
@@ -2772,16 +2677,8 @@ def _canon_log_error__001(message):
         return _V153_ORIG_LOG_ERROR(v153_redact_text(message))
 
 def _canon_log_info__001(message):
-    safe = v153_redact_text(message)
-    try:
-        text = str(safe or '')
-        if text.startswith(('BTNTRACE ', 'LOCKTRACE ', 'SPLITTRACE ', 'R26 SQLITE ONLINE BACKUP')):
-            fn = globals().get('r26_diag_trace_line')
-            if callable(fn): fn(text)
-    except Exception:
-        pass
     if callable(_V153_ORIG_LOG_INFO):
-        return _V153_ORIG_LOG_INFO(safe)
+        return _V153_ORIG_LOG_INFO(v153_redact_text(message))
 
 def _v177_legacy_0007_bot_journal(action, chat_id=None, detail='', level='INFO'):
     if callable(_V153_ORIG_BOT_JOURNAL):
@@ -2802,8 +2699,8 @@ def _canon_make_global_backup_payload__001():
     payload = _V153_ORIG_MAKE_GLOBAL_BACKUP() if callable(_V153_ORIG_MAKE_GLOBAL_BACKUP) else {}
     return v153_sanitize(payload)
 
-def _mega_run(cmd: str, args=None, timeout=None, check: bool=True, control_plane: bool=False):
-    if not callable(_mega_exec_raw):
+def _canon_mega_run__001(cmd: str, args=None, timeout=None, check: bool=True, control_plane: bool=False):
+    if not callable(_V153_ORIG_MEGA_RUN):
         raise RuntimeError('MEGA runner unavailable')
     safe_args = list(args or [])
     temp_dir = ''
@@ -2815,7 +2712,7 @@ def _mega_run(cmd: str, args=None, timeout=None, check: bool=True, control_plane
                 if safe != source:
                     safe_args[0] = safe
                     temp_dir = _v153_os.path.dirname(safe)
-        return _mega_exec_raw(cmd, safe_args, timeout=timeout, check=check, control_plane=control_plane)
+        return _V153_ORIG_MEGA_RUN(cmd, safe_args, timeout=timeout, check=check, control_plane=control_plane)
     except Exception as exc:
         raise RuntimeError(v153_redact_text(exc)) from None
     finally:
@@ -2862,7 +2759,31 @@ def v153_prepare_safe_file(path: str, hint: str='') -> str:
     except Exception:
         _v153_shutil.rmtree(folder, ignore_errors=True)
         return src
-# FINALIZED: v153 sanitization is applied by the single final send_document transport.
+_V153_ORIG_SEND_DOCUMENT = getattr(bot, 'send_document', None)
+if callable(_V153_ORIG_SEND_DOCUMENT):
+
+    def _v153_send_document(chat_id, document, *args, **kwargs):
+        temp_dir = ''
+        original_pos = None
+        try:
+            name = str(getattr(document, 'name', '') or '')
+            path = name if name and _v153_os.path.isfile(name) else ''
+            if path:
+                safe = v153_prepare_safe_file(path, f"{kwargs.get('caption', '')} {kwargs.get('purpose', '')}")
+                if safe != path:
+                    temp_dir = _v153_os.path.dirname(safe)
+                    document = open(safe, 'rb')
+            return _V153_ORIG_SEND_DOCUMENT(chat_id, document, *args, **kwargs)
+        finally:
+            try:
+                if temp_dir and hasattr(document, 'close'):
+                    document.close()
+            except Exception:
+                pass
+            if temp_dir:
+                _v153_shutil.rmtree(temp_dir, ignore_errors=True)
+                _V153_SANITIZED_TEMP.discard(temp_dir)
+    bot.send_document = _v153_send_document
 _V153_ORIG_FILE_RUNNER = _v177_legacy_0012_interactive_file_job_runner
 _V153_ORIG_FILE_SUBMIT = _v177_legacy_0016_submit_interactive_file_job
 
@@ -3005,9 +2926,10 @@ def _v153_chat_lifecycle_snapshot() -> dict:
 def _canon_send_runtime_export_zip__001(recipient_chat_id: int, start_dt=None, end_dt=None):
     if not callable(_V153_ORIG_RUNTIME_SEND):
         return False
-    previous_hook = getattr(_SEND_DOCUMENT_TRANSFORM_LOCAL, 'hook', None)
+    original_send = bot.send_document
+    captured = {'done': False}
 
-    def _runtime_zip_transform(chat_id, document, args, kwargs):
+    def _capture(chat_id, document, *args, **kwargs):
         try:
             name = str(getattr(document, 'name', '') or '')
             if name and _v153_os.path.isfile(name) and name.lower().endswith('.zip'):
@@ -3018,24 +2940,19 @@ def _canon_send_runtime_export_zip__001(recipient_chat_id: int, start_dt=None, e
                     z.writestr('chat_lifecycle_history.json', _v153_json.dumps(_v153_chat_lifecycle_snapshot(), ensure_ascii=False, indent=2))
                     z.writestr('v153_runtime_fixes.txt', _v153_runtime_audit_text())
                 safe_document = open(temp, 'rb')
-                def _cleanup():
-                    try: safe_document.close()
-                    except Exception: pass
+                try:
+                    return original_send(chat_id, safe_document, *args, **kwargs)
+                finally:
+                    safe_document.close()
                     _v153_shutil.rmtree(temp_dir, ignore_errors=True)
-                return safe_document, _cleanup
         except Exception as exc:
             log_error(f'runtime lifecycle append: {exc}')
-        return document, None
-
-    _SEND_DOCUMENT_TRANSFORM_LOCAL.hook = _runtime_zip_transform
+        return original_send(chat_id, document, *args, **kwargs)
+    bot.send_document = _capture
     try:
         return _V153_ORIG_RUNTIME_SEND(recipient_chat_id, start_dt, end_dt)
     finally:
-        if previous_hook is None:
-            try: delattr(_SEND_DOCUMENT_TRANSFORM_LOCAL, 'hook')
-            except Exception: pass
-        else:
-            _SEND_DOCUMENT_TRANSFORM_LOCAL.hook = previous_hook
+        bot.send_document = original_send
 
 def _canon_durable_normalize_expected_for_route__001(payload: dict, expected: dict | None) -> dict:
     adjusted = _V153_ORIG_NORMALIZE_EXPECTED(payload, expected) if callable(_V153_ORIG_NORMALIZE_EXPECTED) else dict(expected or {})
@@ -4023,6 +3940,9 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
         if restore_epoch:
             _v241_restore_storage_barrier_end(restore_epoch, restore_success)
     return True
+_V153_ORIG_EDIT_TEXT = getattr(bot, 'edit_message_text', None)
+_V153_ORIG_EDIT_MARKUP = getattr(bot, 'edit_message_reply_markup', None)
+_V153_ORIG_DELETE_MESSAGE = getattr(bot, 'delete_message', None)
 _V153_UI_CACHE = {}
 
 def _v153_ui_sig(kind: str, chat_id, message_id, payload, markup=None) -> str:
@@ -4047,7 +3967,58 @@ def _v153_ui_remember(sig: str, result):
     with _V153_LOCK:
         _V153_UI_CACHE[sig] = (_v153_time.monotonic(), result)
     return result
-# FINALIZED: edit/delete idempotence is executed in the single Telegram transport.
+if callable(_V153_ORIG_EDIT_TEXT):
+
+    def _v153_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs):
+        sig = _v153_ui_sig('text', chat_id, message_id, text, kwargs.get('reply_markup'))
+        cached = _v153_ui_cached(sig)
+        if cached is not None:
+            return cached
+        try:
+            return _v153_ui_remember(sig, _V153_ORIG_EDIT_TEXT(text, *args, chat_id=chat_id, message_id=message_id, **kwargs))
+        except Exception as exc:
+            low = str(exc).casefold()
+            if 'message is not modified' in low:
+                bot_journal('telegram_edit_idempotent', chat_id, f'message={message_id}')
+                return _v153_ui_remember(sig, True)
+            raise
+    bot.edit_message_text = _v153_edit_message_text
+if callable(_V153_ORIG_EDIT_MARKUP):
+
+    def _v153_edit_message_reply_markup(chat_id=None, message_id=None, *args, **kwargs):
+        sig = _v153_ui_sig('markup', chat_id, message_id, '', kwargs.get('reply_markup'))
+        cached = _v153_ui_cached(sig)
+        if cached is not None:
+            return cached
+        try:
+            return _v153_ui_remember(sig, _V153_ORIG_EDIT_MARKUP(*args, chat_id=chat_id, message_id=message_id, **kwargs))
+        except Exception as exc:
+            if 'message is not modified' in str(exc).casefold():
+                bot_journal('telegram_markup_idempotent', chat_id, f'message={message_id}')
+                return _v153_ui_remember(sig, True)
+            raise
+    bot.edit_message_reply_markup = _v153_edit_message_reply_markup
+if callable(_V153_ORIG_DELETE_MESSAGE):
+
+    def _v153_delete_message(chat_id, message_id, *args, **kwargs):
+        try:
+            result = _V153_ORIG_DELETE_MESSAGE(chat_id, message_id, *args, **kwargs)
+            try:
+                unregister_open_window(int(chat_id), int(message_id))
+            except Exception:
+                pass
+            return result
+        except Exception as exc:
+            low = str(exc).casefold()
+            if any((x in low for x in ('message to delete not found', "message can't be deleted", 'message identifier is not specified'))):
+                try:
+                    unregister_open_window(int(chat_id), int(message_id))
+                except Exception:
+                    pass
+                bot_journal('telegram_delete_already_gone', chat_id, f'message={message_id}')
+                return True
+            raise
+    bot.delete_message = _v153_delete_message
 
 def _v179_base_reconcile_windows() -> dict:
     result = cleanup_open_window_registry('v153_periodic') if 'cleanup_open_window_registry' in globals() else {}
@@ -4079,7 +4050,7 @@ def _v153_runtime_audit_text() -> str:
     a = _v153_handler_audit()
     stats = mega_task_registry_stats()
     migration = _v153_migration_store()
-    lines = ['ГЛУБОКИЙ АУДИТ v153', f'Создан: {_v153_now()}', '', f"Slash-команд: {a['commands']}; дублей: {', '.join(a['duplicate_commands']) or 'нет'}.", f"Message handlers: {a['message_handlers']}; callback handlers: {a['callback_handlers']}.", 'Команды /json_full, /restore и /full_audit имеют отдельные обработчики и проверку прав.', 'Callback подтверждения защищены одноразовыми token и actor check.', 'Повторная выгрузка не создаёт очередь: одно INFO-сообщение становится кнопкой скачивания.', 'Telegram message is not modified считается идемпотентным результатом, а не ошибкой бизнеса.', 'Явный chat not found для известного чата означает bot_removed; timeout/429/сетевая ошибка остаются unreachable; lifecycle active/unreachable/bot_removed/migrated/archived сохраняется в runtime ZIP.', 'Runtime ZIP скачивает slots/events; устаревшие candidate/staged остаются только в индексе и очищаются до 2 файлов.', f"Durable failed: {stats.get('failed', 0)}; details: {len(stats.get('failed_details') or [])}; pending_detail_refresh={bool(stats.get('failed_details_pending'))}.", 'Reminder witnesses принимаются только при явном EDITREM/EDITREMINT, поэтому финансовая задача не требует reminder_edit.', 'Секреты очищаются перед журналом, snapshot, ZIP/TXT/JSON export и отправкой документа.', f"MEGA root v238: один canonical {globals().get('MEGA_BACKUP_DIR')}; legacy migration state удалён."]
+    lines = ['ГЛУБОКИЙ АУДИТ v153', f'Создан: {_v153_now()}', '', f"Slash-команд: {a['commands']}; дублей: {', '.join(a['duplicate_commands']) or 'нет'}.", f"Message handlers: {a['message_handlers']}; callback handlers: {a['callback_handlers']}.", 'Команды /json_full, /restore и /full_audit имеют отдельные обработчики и проверку прав.', 'Callback подтверждения защищены одноразовыми token и actor check.', 'Повторная выгрузка не создаёт очередь: одно INFO-сообщение становится кнопкой скачивания.', 'Telegram message is not modified считается идемпотентным результатом, а не ошибкой бизнеса.', 'Временные chat not found/timeout не удаляют чат; lifecycle active/unreachable/bot_removed/migrated/archived сохраняется в runtime ZIP.', 'Runtime ZIP скачивает slots/events; устаревшие candidate/staged остаются только в индексе и очищаются до 2 файлов.', f"Durable failed: {stats.get('failed', 0)}; details: {len(stats.get('failed_details') or [])}; pending_detail_refresh={bool(stats.get('failed_details_pending'))}.", 'Reminder witnesses принимаются только при явном EDITREM/EDITREMINT, поэтому финансовая задача не требует reminder_edit.', 'Секреты очищаются перед журналом, snapshot, ZIP/TXT/JSON export и отправкой документа.', f"MEGA root v238: один canonical {globals().get('MEGA_BACKUP_DIR')}; legacy migration state удалён."]
     return '\n'.join(lines)
 
 def v153_cmd_full_audit(msg):
@@ -4107,13 +4078,15 @@ def _v153_callback_once(call, key: str) -> bool:
             return False
         _V153_CALLBACK_RECEIPTS[receipt] = now
     return True
-def _v153_extension_callback(call, data_str: str) -> bool:
+_V153_ORIG_EXTENSION_CALLBACK = _v177_legacy_0267_v149_extension_callback
+
+def _v177_legacy_0268_v149_extension_callback(call, data_str: str) -> bool:
     data_str = str(data_str or '')
     if data_str == 'runtime_watcher':
         uid = _v153_actor_id(call)
         chat_id = int(call.message.chat.id)
         if not _v153_platform_owner(uid):
-            return False
+            return bool(_V153_ORIG_EXTENSION_CALLBACK(call, data_str)) if callable(_V153_ORIG_EXTENSION_CALLBACK) else False
         kbw = types.InlineKeyboardMarkup()
         kbw.row(IB('🔄 Обновить', callback_data='runtime_watcher'), IB('📜 События', callback_data='runtime_events'))
         kbw.row(IB('☁️ Снимок Watcher в MEGA', callback_data='runtime_snapshot_now'))
@@ -4209,7 +4182,13 @@ def _v153_extension_callback(call, data_str: str) -> bool:
                 return True
             if action == 'replace':
                 return _v153_execute_restore(token, 'replace', call)
+    if callable(_V153_ORIG_EXTENSION_CALLBACK):
+        return bool(_V153_ORIG_EXTENSION_CALLBACK(call, data_str))
     return False
+try:
+    _v177_legacy_0268_v149_extension_callback.__name__ = 'v149_extension_callback'
+except Exception:
+    pass
 
 def _v153_prune_restore_pending() -> None:
     now = _v153_time.time()

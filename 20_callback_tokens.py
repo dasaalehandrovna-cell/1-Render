@@ -3,77 +3,7 @@ _short_callback_lock = threading.RLock()
 _short_callback_store = {}
 _short_callback_counter = 0
 SHORT_CALLBACK_TTL_SECONDS = 6 * 60 * 60
-SHORT_CALLBACK_LOCAL_HOT_MAX_V248 = max(512, min(20000, int(os.getenv('SHORT_CALLBACK_LOCAL_HOT_MAX', '4096') or '4096')))
-
-
-# R24: keyboard construction is RAM-only. Redis is optional restart continuity and
-# is mirrored as a background batch. No callback waits for Redis and no Redis result
-# changes the live button semantics.
-_SHORT_CALLBACK_MIRROR_LOCK_R24 = threading.RLock()
-_SHORT_CALLBACK_MIRROR_PENDING_R24 = {}
-_SHORT_CALLBACK_MIRROR_SCHEDULED_R24 = False
-_SHORT_CALLBACK_MIRROR_BATCH_R24 = 160
-_SHORT_CALLBACK_MIRROR_MAX_PENDING_R24 = 8000
-
-def _flush_short_callback_mirrors_r24():
-    global _SHORT_CALLBACK_MIRROR_SCHEDULED_R24
-    while True:
-        with _SHORT_CALLBACK_MIRROR_LOCK_R24:
-            if not _SHORT_CALLBACK_MIRROR_PENDING_R24:
-                _SHORT_CALLBACK_MIRROR_SCHEDULED_R24 = False
-                return
-            keys = list(_SHORT_CALLBACK_MIRROR_PENDING_R24.keys())[:_SHORT_CALLBACK_MIRROR_BATCH_R24]
-            batch = [(k, _SHORT_CALLBACK_MIRROR_PENDING_R24.pop(k)) for k in keys]
-        try:
-            if not bool(globals().get('key_value_configured_v248', lambda: False)()):
-                with _SHORT_CALLBACK_MIRROR_LOCK_R24:
-                    _SHORT_CALLBACK_MIRROR_SCHEDULED_R24 = False
-                return
-            client = globals().get('KEY_VALUE_CLIENT_V248')
-            key_fn = globals().get('_kv_key_v248')
-            if client is None or not callable(key_fn):
-                raise RuntimeError('KV client unavailable')
-            commands = [('SET', key_fn(f'cb:{token}'), str(value), 'EX', int(SHORT_CALLBACK_TTL_SECONDS)) for token, value in batch]
-            client.pipeline(commands)
-        except Exception:
-            # RAM remains authoritative. Retry later, never in the callback thread.
-            with _SHORT_CALLBACK_MIRROR_LOCK_R24:
-                for token, value in batch:
-                    if len(_SHORT_CALLBACK_MIRROR_PENDING_R24) < _SHORT_CALLBACK_MIRROR_MAX_PENDING_R24:
-                        _SHORT_CALLBACK_MIRROR_PENDING_R24[token] = value
-                _SHORT_CALLBACK_MIRROR_SCHEDULED_R24 = False
-            try:
-                sched = globals().get('DELAYED_SCHEDULER')
-                if sched is not None:
-                    sched.schedule('r24-short-callback-mirror-retry', 2.0, _schedule_short_callback_mirror_flush_r24)
-            except Exception:
-                pass
-            return
-
-def _schedule_short_callback_mirror_flush_r24():
-    global _SHORT_CALLBACK_MIRROR_SCHEDULED_R24
-    with _SHORT_CALLBACK_MIRROR_LOCK_R24:
-        if _SHORT_CALLBACK_MIRROR_SCHEDULED_R24 or not _SHORT_CALLBACK_MIRROR_PENDING_R24:
-            return True
-        _SHORT_CALLBACK_MIRROR_SCHEDULED_R24 = True
-    try:
-        pool = globals().get('GENERAL_TASK_POOL') or globals().get('UI_CLEANUP_TASK_POOL')
-        if pool is not None and hasattr(pool, 'submit_unique'):
-            if pool.submit_unique('r24-short-callback-mirror', _flush_short_callback_mirrors_r24):
-                return True
-    except Exception:
-        pass
-    with _SHORT_CALLBACK_MIRROR_LOCK_R24:
-        _SHORT_CALLBACK_MIRROR_SCHEDULED_R24 = False
-    return False
-
-def _queue_short_callback_mirror_r24(token: str, data_str: str) -> bool:
-    with _SHORT_CALLBACK_MIRROR_LOCK_R24:
-        if len(_SHORT_CALLBACK_MIRROR_PENDING_R24) >= _SHORT_CALLBACK_MIRROR_MAX_PENDING_R24:
-            try: _SHORT_CALLBACK_MIRROR_PENDING_R24.pop(next(iter(_SHORT_CALLBACK_MIRROR_PENDING_R24)), None)
-            except Exception: pass
-        _SHORT_CALLBACK_MIRROR_PENDING_R24[str(token)] = str(data_str)
-    return _schedule_short_callback_mirror_flush_r24()
+SHORT_CALLBACK_LOCAL_HOT_MAX_V248 = max(64, min(1000, int(os.getenv('SHORT_CALLBACK_LOCAL_HOT_MAX', '256') or '256')))
 
 def base36(num: int) -> str:
     try:
@@ -110,16 +40,22 @@ def make_short_callback(data_str: str, prefix: str | None=None) -> str:
         _short_callback_counter += 1
         token = base36(_short_callback_counter) + base36(int(time.time() * 1000) % 46656)
         _short_callback_store[token] = {'data': data_str, 'ts': time.time()}
-    _queue_short_callback_mirror_r24(token, data_str)
+    mirrored = False
+    mirror_fn = globals().get('kv_callback_store_v248')
+    if callable(mirror_fn):
+        try:
+            mirrored = bool(mirror_fn(token, data_str))
+        except Exception:
+            mirrored = False
     with _short_callback_lock:
-        max_local = SHORT_CALLBACK_LOCAL_HOT_MAX_V248
+        max_local = SHORT_CALLBACK_LOCAL_HOT_MAX_V248 if mirrored else 2000
         if len(_short_callback_store) > max_local:
             cutoff = time.time() - SHORT_CALLBACK_TTL_SECONDS
             for k in list(_short_callback_store.keys()):
                 if len(_short_callback_store) <= max_local:
                     break
                 row = _short_callback_store.get(k) or {}
-                if float(row.get('ts', 0) or 0) < cutoff or len(_short_callback_store) > max_local:
+                if mirrored or float(row.get('ts', 0) or 0) < cutoff:
                     _short_callback_store.pop(k, None)
     return f'{prefix}:{token}'
 

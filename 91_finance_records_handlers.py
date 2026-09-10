@@ -203,36 +203,14 @@ def rebuild_month_short_ids(chat_id: int):
     store['records'] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, [])]
 
 def calc_day_balance(store: dict, day_key: str) -> float:
-    """R16 fast closing balance: O(1) for the latest day, cached for history."""
-    day_key = str(day_key or '')[:10]
-    daily = store.get('daily_records', {}) or {}
-    if not daily:
-        return 0.0
-    try:
-        latest = max(str(k)[:10] for k in daily.keys())
-        if day_key >= latest:
-            return float(store.get('balance', 0) or 0)
-    except Exception:
-        pass
-    gen = int(store.get('_finance_fast_generation_r16', 0) or 0)
-    cache = store.setdefault('_finance_day_balance_cache_r16', {})
-    cached = cache.get(day_key) if isinstance(cache, dict) else None
-    if isinstance(cached, dict) and int(cached.get('generation', -1)) == gen:
-        try: return float(cached.get('value', 0) or 0)
-        except Exception: pass
     total = 0.0
+    daily = store.get('daily_records', {}) or {}
     for dk in sorted(daily.keys()):
-        if str(dk)[:10] > day_key:
+        if dk > day_key:
             break
         for r in daily.get(dk, []) or []:
             total += float(r.get('amount', 0) or 0)
-    try:
-        cache[day_key] = {'generation': gen, 'value': float(total)}
-        if len(cache) > 64:
-            for key in list(cache)[:-64]: cache.pop(key, None)
-    except Exception:
-        pass
-    return float(total)
+    return total
 
 def rebuild_global_records():
     """Быстрый общий итог без копирования всех записей всех чатов при каждом сообщении."""
@@ -393,7 +371,7 @@ def _run_full_chat_backup(chat_id: int, expected_epoch: int | None=None):
                 _backup_dirty_chats.discard(chat_id)
                 _backup_timers.pop(chat_id, None)
             try:
-                _r24_lowram_release_if_pressure(chat_id)
+                _lowram_release_chat(chat_id)
             except Exception as _lr_exc:
                 log_error(f'LOWRAM full-backup release {chat_id}: {_lr_exc}')
 
@@ -681,7 +659,7 @@ def _v177_legacy_0242_return_to_main_window_closing_previous(chat_id: int, day_k
     if current_message_id is not None:
         result = fast_ui_edit_message_text(chat_id, current_message_id, txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_instant')
         bot_journal('back_main_fast', chat_id, f'day={day_key} result={result} old={old_mid} current={current_message_id}')
-        if result in {'ok', 'scheduled'}:
+        if result == 'ok':
             set_active_window_id(chat_id, day_key, current_message_id)
             if old_mid and old_mid != current_message_id:
 
@@ -1867,7 +1845,7 @@ def build_diag_text() -> str:
     except Exception:
         pass
     errors = get_recent_errors(5)
-    lines = ['🧪 Диагностика бота', f'Версия: {VERSION}', f'SQLite: {DB_FILE}', f'Чатов в базе: {len(chats)}', f'Фин-чатов: {len(finance_ids)}', f'Скрытых фин-чатов: {len(hidden)}', f'Быстрый остаток включён: {len(quick_on)}', f'Связей пересылки: {forward_pairs}', f'Активных окон: {active_windows_count}', f'Dirty-бэкапов в очереди: {dirty_count}', f"Очередь content: {WEBHOOK_TASK_POOL.stats()['pending']}", f"Очередь FAST UI: {FAST_UI_TASK_POOL.stats()['pending']}", f"Очередь UI: {UI_TASK_POOL.stats()['pending']}", f"Очередь callback ACK: {CALLBACK_ACK_TASK_POOL.stats()['pending']}", f"Очередь recovery: {RECOVERY_TASK_POOL.stats()['pending']}", f"Очередь напоминалок: {REMINDER_TASK_POOL.stats()['pending']}", f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}", f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}", f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}", f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}", f"Очередь maintenance: {MAINTENANCE_TASK_POOL.stats()['pending']}", f"BACKUP_CHAT_ID: {('есть' if BACKUP_CHAT_ID else 'нет')}", f"Бэкап в канал: {('✅ ВКЛ' if backup_flags.get('channel', True) else '⬜ ВЫКЛ')}", f"MEGA: {('✅ ВКЛ' if MEGA_ENABLED else '⬜ ВЫКЛ')} / {('настроено' if mega_is_configured() else 'не настроено')}", f'MEGA dir: {MEGA_BACKUP_DIR}', f'MEGA delta dir: {mega_delta_remote_root()}', f'Delta pending: {len(_delta_pending_chats)} / last events: {_delta_last_event_count}', f"Global full pending: {('да' if _global_snapshot_pending else 'нет')}", f'Ошибок в журнале: {len(get_recent_errors(80))}']
+    lines = ['🧪 Диагностика бота', f'Версия: {VERSION}', f'SQLite: {DB_FILE}', f'Чатов в базе: {len(chats)}', f'Фин-чатов: {len(finance_ids)}', f'Скрытых фин-чатов: {len(hidden)}', f'Быстрый остаток включён: {len(quick_on)}', f'Связей пересылки: {forward_pairs}', f'Активных окон: {active_windows_count}', f'Dirty-бэкапов в очереди: {dirty_count}', f"Очередь content: {WEBHOOK_TASK_POOL.stats()['pending']}", f"Очередь UI: {UI_TASK_POOL.stats()['pending']}", f"Очередь callback ACK: {CALLBACK_ACK_TASK_POOL.stats()['pending']}", f"Очередь recovery: {RECOVERY_TASK_POOL.stats()['pending']}", f"Очередь напоминалок: {REMINDER_TASK_POOL.stats()['pending']}", f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}", f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}", f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}", f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}", f"Очередь maintenance: {MAINTENANCE_TASK_POOL.stats()['pending']}", f"BACKUP_CHAT_ID: {('есть' if BACKUP_CHAT_ID else 'нет')}", f"Бэкап в канал: {('✅ ВКЛ' if backup_flags.get('channel', True) else '⬜ ВЫКЛ')}", f"MEGA: {('✅ ВКЛ' if MEGA_ENABLED else '⬜ ВЫКЛ')} / {('настроено' if mega_is_configured() else 'не настроено')}", f'MEGA dir: {MEGA_BACKUP_DIR}', f'MEGA delta dir: {mega_delta_remote_root()}', f'Delta pending: {len(_delta_pending_chats)} / last events: {_delta_last_event_count}', f"Global full pending: {('да' if _global_snapshot_pending else 'нет')}", f'Ошибок в журнале: {len(get_recent_errors(80))}']
     if errors:
         lines.append('')
         lines.append('Последние ошибки:')

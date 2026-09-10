@@ -114,12 +114,10 @@ def task_dispatcher_enabled(chat_id: int) -> bool:
         return False
 
 def _v172_persist(chat_id: int, reason: str='task_change') -> None:
-    """Persist root state without holding data_lock during SQLite I/O (R36)."""
+    """Persist root state locally immediately and schedule compact MEGA delta."""
     try:
-        import copy as _r36_copy
         with data_lock:
-            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
-        SQLITE.save_root(root_snapshot)
+            SQLITE.save_root(_sqlite_pack_root(data))
     except Exception as exc:
         try:
             log_error(f'v172 task SQLite root save: {exc}')
@@ -705,7 +703,30 @@ def _canon_v172_task_message_input__001(msg) -> bool:
         pass
     return True
 
-# R47 FINALIZATION: _v172_install_message_input_wrapper removed; hook is inline in on_any_message.
+def _v172_install_message_input_wrapper() -> int:
+    for row in list(getattr(bot, 'message_handlers', []) or []):
+        if not isinstance(row, dict):
+            continue
+        fn = row.get('function')
+        if not callable(fn) or getattr(fn, '_v172_task_input', False):
+            continue
+        if getattr(fn, '__name__', '') != 'on_any_message':
+            continue
+
+        def _wrapped(msg, _original=fn):
+            try:
+                if _v172_task_message_input(msg):
+                    return
+            except Exception as exc:
+                try:
+                    log_error(f'v172 task input: {exc}')
+                except Exception:
+                    pass
+            return _original(msg)
+        _wrapped._v172_task_input = True
+        row['function'] = _wrapped
+        return 1
+    return 0
 
 def _v172_command_text(msg) -> str:
     raw = str(getattr(msg, 'text', '') or '')
@@ -1082,7 +1103,7 @@ if callable(_V172_PREV_RUNTIME_MARK_READY):
         except Exception:
             pass
         return result
-_V172_MESSAGE_WRAPPERS = 0
+_V172_MESSAGE_WRAPPERS = _v172_install_message_input_wrapper()
 _V172_CALLBACK_HANDLERS = 0
 try:
     _v177_legacy_0007_bot_journal('v172_installed', int(OWNER_ID or 0), f'task_dispatcher=1; callback={_V172_CALLBACK_HANDLERS}; message_wrap={_V172_MESSAGE_WRAPPERS}; root_delta_maps=3')
@@ -1122,21 +1143,6 @@ def _canon_v149_reminder_chat_allowed__001(cfg: dict, chat_id: int) -> bool:
         return False
     if cid not in _v173_reminder_selected_chat_ids(cfg):
         return False
-    # R17: one final lifecycle authority for every reminder path.  A confirmed
-    # removed/migrated/archived chat is terminal and must never be retried by the
-    # scheduler, even if its old id is still present in a stale reminder snapshot.
-    try:
-        lifecycle_fn = globals().get('_v150_lifecycle')
-        status = str((lifecycle_fn(cid) or {}).get('status') or '') if callable(lifecycle_fn) else ''
-        if status in {'bot_removed', 'migrated', 'archived'}:
-            return False
-    except Exception:
-        try:
-            removed_fn = globals().get('is_chat_bot_removed')
-            if callable(removed_fn) and bool(removed_fn(cid)):
-                return False
-        except Exception:
-            pass
     platform_id = str(globals().get('TENANT_PLATFORM_ID') or 'platform')
     try:
         tid = str(_v149_reminder_cfg_tenant(cfg) or platform_id)
@@ -1851,7 +1857,38 @@ def _v212_legacy__v174_handle_own_input(msg) -> bool:
                 pass
     return True
 
-# R47 FINALIZATION: _v174_install_message_wrapper removed; hook is inline in on_any_message.
+def _v174_install_message_wrapper() -> int:
+    for row in list(getattr(bot, 'message_handlers', []) or []):
+        if not isinstance(row, dict):
+            continue
+        fn = row.get('function')
+        if not callable(fn) or getattr(fn, '_v174_task_auto', False):
+            continue
+        if not (getattr(fn, '_v172_task_input', False) or getattr(fn, '__name__', '') == 'on_any_message'):
+            continue
+
+        def _wrapped_v174(msg, _original=fn):
+            try:
+                if _v174_handle_own_input(msg):
+                    return
+            except Exception as exc:
+                try:
+                    log_error(f'v174 keyword input: {exc}')
+                except Exception:
+                    pass
+            try:
+                _v174_auto_process(msg)
+            except Exception as exc:
+                try:
+                    log_error(f'v174 auto process: {exc}')
+                except Exception:
+                    pass
+            return _original(msg)
+        _wrapped_v174._v174_task_auto = True
+        _wrapped_v174._v172_task_input = True
+        row['function'] = _wrapped_v174
+        return 1
+    return 0
 
 def _v174_command_tasks(msg):
     cid = int(msg.chat.id)
@@ -2293,12 +2330,7 @@ def task_reconcile_source_message(chat_id: int, message_id: int, text: str, *, o
     if not body or body.startswith('/'):
         return None
     if sender_is_bot and (not trusted_forwarding_copy):
-        # R29: third-party bot messages are valid source data when enabled for this contour.
-        try:
-            if not bool(globals().get('r29_input_source_enabled', lambda _c, _k: True)(cid, 'other_bots')):
-                return None
-        except Exception:
-            return None
+        return None
     if _v212_task_service_text(body) and (not trusted_forwarding_copy):
         return None
     classification = _v212_match_classification(cid, body)
@@ -2774,7 +2806,7 @@ def _canon_build_main_keyboard__001(day_key: str, chat_id=None):
     except Exception:
         pass
     return kb
-_V174_MESSAGE_WRAP = 0
+_V174_MESSAGE_WRAP = _v174_install_message_wrapper()
 _V174_COMMAND_REPLACED = _v174_replace_command_handlers()
 _V174_CALLBACK = 0
 _V174_LEGACY_CALLBACK = 0
@@ -2899,7 +2931,7 @@ def _v213_show_task_home(chat_id: int, user_id: int=0, current_message_id: int=0
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_tasks_v213')
-            if result in {'ok', 'scheduled'}:
+            if result == 'ok':
                 try:
                     register_open_window(cid, mid, 'tasks', code='Ф248', params={'task_dispatcher': True, 'contour_home': True})
                 except Exception:
@@ -2926,7 +2958,7 @@ def _canon_v213_show_neutral_home__001(chat_id: int, current_message_id: int=0) 
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_neutral_v213')
-            if result in {'ok', 'scheduled'}:
+            if result == 'ok':
                 _v213_clear_finance_active_pointer(cid)
                 return mid
         except Exception:
@@ -4156,7 +4188,7 @@ def _v215_edit_or_send(chat_id: int, message_id: int, text: str, kb, purpose: st
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose=purpose)
-            if result in {'ok', 'scheduled', 'not_modified'}:
+            if result in {'ok', 'not_modified'}:
                 return mid
         except Exception:
             pass
@@ -4318,10 +4350,6 @@ def v215_contour_mode_callback(call, resolved: str) -> bool:
                 pass
             text, kb = build_contour_mode_control(cid, uid, mode)
             _v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=mid, reply_markup=kb)
-            except Exception:
-                pass
         except PermissionError:
             try:
                 bot.answer_callback_query(call.id, 'Недостаточно прав для изменения режима.', show_alert=True)
@@ -4384,12 +4412,6 @@ _V215_PREV_REMINDER_GROUP_SEND = _canon_reminder_group_send_job__001
 
 def _canon_reminder_group_send_job__002(target_chat_id: int, day_key: str, force: bool=False) -> None:
     cid = int(target_chat_id)
-    try:
-        lifecycle_fn = globals().get('_v150_lifecycle')
-        if callable(lifecycle_fn) and str((lifecycle_fn(cid) or {}).get('status') or '') in {'bot_removed', 'migrated', 'archived'}:
-            return
-    except Exception:
-        pass
     if _v215_circle_business_chat(cid) and (not contour_reminders_mode_enabled(cid)):
         return
     return _V215_PREV_REMINDER_GROUP_SEND(cid, day_key, force)
@@ -4934,7 +4956,27 @@ def _v217_complete_command(msg) -> bool:
     ok, answer = _v149_complete_reminder(int(rid), cid, uid, _v149_actor_label(msg))
     send_and_auto_delete(cid, answer, 12)
     return True
-# FINALIZED: v217 interception is executed inline by the single dispatcher in 89_callback_final.py.
+_V217_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
+
+def _v217_process_new_updates(updates):
+    remaining = []
+    for update in list(updates or []):
+        msg = getattr(update, 'message', None)
+        if msg is not None:
+            try:
+                if _v217_complete_command(msg):
+                    continue
+            except Exception as exc:
+                try:
+                    log_error(f'v217 reminder complete command: {exc}')
+                except Exception:
+                    pass
+        remaining.append(update)
+    if remaining and callable(_V217_PREV_PROCESS_NEW_UPDATES):
+        return _V217_PREV_PROCESS_NEW_UPDATES(remaining)
+    return None
+if callable(_V217_PREV_PROCESS_NEW_UPDATES):
+    bot.process_new_updates = _v217_process_new_updates
 _V217_PREV_GO_MODE = _canon_v215_go_mode__001
 
 def _v217_go_mode(call, mode: str) -> bool:
@@ -5257,7 +5299,27 @@ def _canon_v218_complete_command__001(msg) -> bool:
     ok, answer = _v149_complete_reminder(int(rid), cid, uid, _v149_actor_label(msg))
     send_and_auto_delete(cid, answer, 12)
     return True
-# FINALIZED: v218 interception is executed inline by the single dispatcher in 89_callback_final.py.
+_V218_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
+
+def _v218_process_new_updates(updates):
+    remaining = []
+    for update in list(updates or []):
+        msg = getattr(update, 'message', None)
+        if msg is not None:
+            try:
+                if _v218_complete_command(msg):
+                    continue
+            except Exception as exc:
+                try:
+                    log_error(f'v218 reminder completion command: {exc}')
+                except Exception:
+                    pass
+        remaining.append(update)
+    if remaining and callable(_V218_PREV_PROCESS_NEW_UPDATES):
+        return _V218_PREV_PROCESS_NEW_UPDATES(remaining)
+    return None
+if callable(_V218_PREV_PROCESS_NEW_UPDATES):
+    bot.process_new_updates = _v218_process_new_updates
 
 def _v218_demo_title(mode: str) -> str:
     return {'finance': '💰 ФИНАНСЫ', 'forward': '🔁 ПЕРЕСЫЛКА', 'reminders': '⏰ НАПОМИНАНИЯ', 'tasks': '📋 ЗАДАЧИ'}.get(str(mode), 'РЕЖИМ')
@@ -5311,15 +5373,12 @@ def _v218_go_mode(call, mode: str) -> bool:
         return _V218_PREV_GO_MODE(call, mode)
     if _v215_circle_business_chat(cid) and (not _v215_mode_enabled(cid, mode)):
         try:
-            bot.answer_callback_query(call.id, 'Этот режим сейчас выключен. Возвращаю в меню режимов.')
+            bot.answer_callback_query(call.id)
         except Exception:
             pass
+        _v218_show_demo(call, str(mode), 'root')
         try:
-            show_contour_start_modes(cid, int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0), int(call.message.message_id))
-        except Exception:
-            pass
-        try:
-            bot_journal('contour_disabled_mode_redirect_r10', cid, f'mode={mode}; source=go')
+            bot_journal('contour_demo_open_v218', cid, f'mode={mode}; readonly=1')
         except Exception:
             pass
         return True
@@ -5530,12 +5589,7 @@ def _v219_task_ingest_message(msg, *, is_edit: bool=False, source_kind: str='mes
     if not is_edit and _v219_task_pending_for_sender(cid, sender_id):
         return None
     if sender_is_bot:
-        # R29: accept delivered third-party bot messages when the local source switch is ON.
-        try:
-            if not bool(globals().get('r29_input_source_enabled', lambda _c, _k: True)(cid, 'other_bots')):
-                return None
-        except Exception:
-            return None
+        return None
     if _v212_task_service_text(body):
         return None
     target = _v219_status_target_from_message(msg, body)
@@ -5564,7 +5618,30 @@ def _v219_task_auto_process(msg) -> None:
         except Exception:
             pass
         return None
-# FINALIZED: v219 interception is executed inline by the single dispatcher in 89_callback_final.py.
+_V219_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
+
+def _v219_process_new_updates(updates):
+    for update in list(updates or []):
+        for attr, edited in (('message', False), ('edited_message', True), ('channel_post', False), ('edited_channel_post', True)):
+            msg = getattr(update, attr, None)
+            if msg is None:
+                continue
+            try:
+                _v219_task_ingest_message(msg, is_edit=edited, source_kind=attr)
+                try:
+                    setattr(msg, '_v219_task_ingested', True)
+                except Exception:
+                    pass
+            except Exception as exc:
+                try:
+                    log_error(f'v219 task ingest {attr}: {exc}')
+                except Exception:
+                    pass
+    if callable(_V219_PREV_PROCESS_NEW_UPDATES):
+        return _V219_PREV_PROCESS_NEW_UPDATES(updates)
+    return None
+if callable(_V219_PREV_PROCESS_NEW_UPDATES):
+    bot.process_new_updates = _v219_process_new_updates
 
 def _v219_task_text_prompt_keyboard(chat_id: int, sid: str, task: dict, message_id: int=0):
     kb = _v214_task_prompt_markup(int(chat_id), 'task', sid, 'text', '', str(task.get('uid') or ''), False)
@@ -5840,7 +5917,7 @@ def _v220_show_neutral_home(chat_id: int, current_message_id: int=0) -> int:
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_neutral_v220')
-            if result in {'ok', 'scheduled'}:
+            if result == 'ok':
                 _v213_clear_finance_active_pointer(cid)
                 return mid
         except Exception:
@@ -6316,7 +6393,7 @@ def show_contour_menu_closed_v221(chat_id: int, user_id: int=0, message_id: int=
     if mid:
         try:
             result = fast_ui_edit_message_text(cid, mid, V221_MENU_CLOSED_TEXT, reply_markup=kb, purpose='contour_menu_closed_v221')
-            if result in {'ok', 'scheduled'}:
+            if result == 'ok':
                 try:
                     register_open_window(cid, mid, 'contour_menu_closed', code=V221_MENU_CLOSED_MARKER, params={'parallel_allowed': True})
                 except Exception:
@@ -6744,7 +6821,27 @@ def _v221_capture_owner_message(msg) -> bool:
     except Exception:
         pass
     return True
-# FINALIZED: v221 interception is executed inline by the single dispatcher in 89_callback_final.py.
+_V221_PREV_PROCESS_NEW_UPDATES = getattr(bot, 'process_new_updates', None)
+
+def _v221_process_new_updates(updates):
+    remaining = []
+    for update in list(updates or []):
+        msg = getattr(update, 'message', None)
+        if msg is not None:
+            try:
+                if _v221_capture_owner_message(msg):
+                    continue
+            except Exception as exc:
+                try:
+                    log_error(f'v221 owner-message capture: {exc}')
+                except Exception:
+                    pass
+        remaining.append(update)
+    if remaining and callable(_V221_PREV_PROCESS_NEW_UPDATES):
+        return _V221_PREV_PROCESS_NEW_UPDATES(remaining)
+    return None
+if callable(_V221_PREV_PROCESS_NEW_UPDATES):
+    bot.process_new_updates = _v221_process_new_updates
 
 def v221_owner_message_callback_final(call, resolved: str) -> bool:
     raw = str(resolved or '')
@@ -7237,28 +7334,6 @@ def _v223_contour_callback_guard(call, resolved: str) -> bool:
         uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
     except Exception:
         return bool(_V223_PREV_CONTOUR_GUARD(call, raw))
-    # R10: stale buttons from a business mode must never reopen a mode that the
-    # owner has disabled for contour 1/2. Mode-management callbacks themselves
-    # remain allowed so an authorized user can enable a mode from the menu.
-    try:
-        if _v215_circle_business_chat(cid) and (not raw.startswith('v215:mode:')):
-            mode_now = _v223_directive_mode_from_callback(raw)
-            if mode_now and (not _v215_mode_enabled(cid, mode_now)):
-                try:
-                    bot.answer_callback_query(call.id, 'Этот режим выключен. Возвращаю в меню режимов.')
-                except Exception:
-                    pass
-                try:
-                    show_contour_start_modes(cid, uid, int(call.message.message_id))
-                except Exception:
-                    pass
-                try:
-                    bot_journal('contour_disabled_mode_redirect_r10', cid, f'mode={mode_now}; action={raw}; user={uid}')
-                except Exception:
-                    pass
-                return True
-    except Exception:
-        pass
     if directive_chat_enabled_v223(cid):
         if _v223_is_mode_mutation_callback(raw):
             try:
@@ -7724,284 +7799,4 @@ try:
     _v177_legacy_0007_bot_journal('v229_tasks_single_window_ready', int(OWNER_ID or 0), f'enabled={int(tasks_single_window_enabled_v229())}; annotation_source_gate=1')
 except Exception:
     pass
-
-# ---------------------------------------------------------------------------
-# R17 terminal chat lifecycle coordinator.
-# Confirmed terminal Telegram state is propagated once to every feature that can
-# otherwise keep scheduling work for a dead chat.  No network request is added to
-# normal button/message hot paths; this runs only on a terminal transition or boot
-# reconciliation.
-# ---------------------------------------------------------------------------
-_R17_TERMINAL_CHAT_STATUSES = {'bot_removed', 'migrated', 'archived'}
-_R17_TERMINAL_LOCK = _v172_threading.RLock()
-
-def _r17_terminal_status(chat_id: int) -> str:
-    try:
-        fn = globals().get('_v150_lifecycle')
-        if callable(fn):
-            return str((fn(int(chat_id)) or {}).get('status') or '')
-    except Exception:
-        pass
-    try:
-        fn = globals().get('is_chat_bot_removed')
-        if callable(fn) and bool(fn(int(chat_id))):
-            return 'bot_removed'
-    except Exception:
-        pass
-    return ''
-
-def _r17_drop_chat_keyed_runtime(root, chat_id: int) -> int:
-    """Remove RAM-only rows keyed by (chat_id, user_id) without touching others."""
-    if not isinstance(root, dict):
-        return 0
-    cid = int(chat_id); removed = 0
-    for key, value in list(root.items()):
-        hit = False
-        try:
-            if isinstance(key, tuple) and key and int(key[0]) == cid:
-                hit = True
-            elif isinstance(value, dict) and int(value.get('chat_id', 0) or 0) == cid:
-                hit = True
-        except Exception:
-            hit = False
-        if hit:
-            root.pop(key, None); removed += 1
-    return removed
-
-def _r17_move_chat_keyed_runtime(root, old_chat_id: int, new_chat_id: int) -> int:
-    """Move RAM rows keyed by (chat_id, user_id) during Telegram chat migration."""
-    if not isinstance(root, dict):
-        return 0
-    old = int(old_chat_id); new = int(new_chat_id); moved = 0
-    for key, value in list(root.items()):
-        new_key = None
-        try:
-            if isinstance(key, tuple) and key and int(key[0]) == old:
-                new_key = (new,) + tuple(key[1:])
-            elif isinstance(value, dict) and int(value.get('chat_id', 0) or 0) == old:
-                value['chat_id'] = new
-                moved += 1
-                continue
-        except Exception:
-            new_key = None
-        if new_key is not None:
-            row = root.pop(key, None)
-            if row is not None:
-                root[new_key] = row; moved += 1
-    return moved
-
-def r17_suspend_terminal_chat_bindings(chat_id: int, reason: str='', *, source: str='lifecycle', persist: bool=True) -> dict:
-    """Stop all active work targeting a confirmed terminal chat, preserving audit.
-
-    Forwarding edges are moved to the existing reversible suspended registry.
-    Reminder target ids are removed; a reminder with no remaining recipients is
-    disabled.  Active task records are retained but marked cancelled and the chat
-    task dispatcher is disabled.  This prevents endless scheduler retries while
-    preserving enough state for owner diagnostics.
-    """
-    cid = int(chat_id)
-    status = _r17_terminal_status(cid)
-    if status not in _R17_TERMINAL_CHAT_STATUSES:
-        return {'changed': False, 'chat_id': cid, 'status': status, 'reason': 'not_terminal'}
-    report = {'changed': False, 'chat_id': cid, 'status': status, 'forwarding': 0, 'reminders_pruned': 0, 'reminders_disabled': 0, 'tasks_cancelled': 0, 'tasks_migrated': 0, 'runtime_rows_cleared': 0, 'runtime_rows_migrated': 0}
-    why = str(reason or status)[:500]
-    migrated_to = 0
-    if status == 'migrated':
-        try:
-            migrated_to = int((_v150_lifecycle(cid) or {}).get('migrated_to') or 0)
-        except Exception:
-            migrated_to = 0
-        if migrated_to == cid:
-            migrated_to = 0
-    report['migrated_to'] = migrated_to
-    with _R17_TERMINAL_LOCK:
-        # Forwarding: preserve edges in the v199 suspended registry so an explicit
-        # successful probe/re-add can restore them, but remove them from live routing.
-        try:
-            if status == 'migrated' and migrated_to:
-                fn = globals().get('reactivate_forward_target_v199')
-                if callable(fn) and bool(fn(cid, migrated_to=migrated_to, persist=False)):
-                    report['forwarding'] = 1; report['changed'] = True
-            else:
-                fn = globals().get('suspend_forward_target_v199')
-                if callable(fn) and bool(fn(cid, f'R17 terminal {status}: {why}', persist=False)):
-                    report['forwarding'] = 1; report['changed'] = True
-        except Exception as exc:
-            report['forwarding_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
-
-        # Reminders: physically prune the dead target so due cycles have no stale
-        # recipient left to revisit forever.  Keep a bounded audit on each config.
-        try:
-            for rid, cfg in list(_v149_reminder_all_rows(include_completed=True)):
-                if not isinstance(cfg, dict):
-                    continue
-                selected = _v149_reminder_chat_ids(cfg)
-                if cid not in selected:
-                    continue
-                if status == 'migrated' and migrated_to:
-                    replacement = []
-                    for value in selected:
-                        value = migrated_to if int(value) == cid else int(value)
-                        if value not in replacement:
-                            replacement.append(value)
-                    cfg['chat_ids'] = replacement
-                else:
-                    cfg['chat_ids'] = [int(x) for x in selected if int(x) != cid]
-                if isinstance(cfg.get('last_message_ids'), dict):
-                    cfg['last_message_ids'].pop(str(cid), None)
-                acked = []
-                for raw in cfg.get('delivery_acked_chats_v245') or []:
-                    try:
-                        value = int(raw)
-                        if value != cid and value not in acked:
-                            acked.append(value)
-                    except Exception:
-                        pass
-                cfg['delivery_acked_chats_v245'] = acked
-                audit = cfg.setdefault('removed_targets_r17', [])
-                if isinstance(audit, list):
-                    audit.append({'chat_id': cid, 'status': status, 'migrated_to': migrated_to or None, 'at': _v172_iso(), 'reason': why[:240], 'source': str(source or '')[:80]})
-                    del audit[:-40]
-                cfg['terminal_target_pruned_at_r17'] = _v172_iso()
-                try:
-                    _reminder_touch(cfg)
-                except Exception:
-                    cfg['updated_at'] = _v172_iso()
-                report['reminders_pruned'] += 1; report['changed'] = True
-                if not _v149_reminder_chat_ids(cfg):
-                    cfg['enabled'] = False
-                    cfg['next_run_at'] = ''
-                    cfg['delivery_cycle_v245'] = ''
-                    cfg['delivery_acked_chats_v245'] = []
-                    cfg['suspended_terminal_chat_r17'] = True
-                    cfg['suspended_terminal_chat_reason_r17'] = why[:300]
-                    report['reminders_disabled'] += 1
-            try:
-                state_root = _v149_group_state_root()
-                if isinstance(state_root, dict) and state_root.pop(str(cid), None) is not None:
-                    report['changed'] = True
-            except Exception:
-                pass
-        except Exception as exc:
-            report['reminders_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
-
-        # Tasks: removed/archived chats cancel unfinished work.  Telegram migration
-        # is different: move the dispatcher/task state to the successor chat so a
-        # supergroup upgrade is invisible to users instead of destroying tasks.
-        try:
-            settings = _v172_chat_settings(cid)
-            if status == 'migrated' and migrated_to:
-                new_settings = _v172_chat_settings(migrated_to)
-                old_enabled = bool(settings.get('enabled', False))
-                for key, value in list(settings.items()):
-                    if key in {'enabled', 'disabled_terminal_chat_r17', 'disabled_terminal_chat_status_r17', 'disabled_terminal_chat_at_r17', 'disabled_terminal_chat_reason_r17'}:
-                        continue
-                    if key == 'next_number':
-                        try:
-                            new_settings[key] = max(int(new_settings.get(key) or 1), int(value or 1))
-                        except Exception:
-                            pass
-                    elif key not in new_settings:
-                        new_settings[key] = value
-                if old_enabled and not bool(new_settings.get('enabled', False)):
-                    new_settings['enabled'] = True
-                settings['enabled'] = False
-                settings['migrated_to_r17'] = migrated_to
-                settings['migrated_at_r17'] = _v172_iso()
-                for task in _v172_tasks_for_chat(cid, include_deleted=True):
-                    if not isinstance(task, dict):
-                        continue
-                    task['chat_id'] = migrated_to
-                    task['updated_at'] = _v172_iso()
-                    _v172_history(task, 'chat_migrated_r17', 0, 'system', f'{cid} -> {migrated_to}: {why[:360]}')
-                    report['tasks_migrated'] += 1; report['changed'] = True
-                try:
-                    src_root = _v172_source_root()
-                    for key, value in list(src_root.items()):
-                        prefix = f'{cid}:'
-                        if str(key).startswith(prefix):
-                            src_root[f'{migrated_to}:{str(key)[len(prefix):]}'] = value
-                            src_root.pop(key, None)
-                            report['changed'] = True
-                except Exception:
-                    pass
-                for name in ('_V172_INPUT_WAIT', '_V174_INPUT_WAIT', '_V172_SEARCH_CACHE'):
-                    report['runtime_rows_migrated'] += _r17_move_chat_keyed_runtime(globals().get(name), cid, migrated_to)
-                report['changed'] = True
-            else:
-                if bool(settings.get('enabled', False)):
-                    settings['enabled'] = False; report['changed'] = True
-                old_marker = (settings.get('disabled_terminal_chat_r17'), settings.get('disabled_terminal_chat_status_r17'))
-                settings['disabled_terminal_chat_r17'] = True
-                settings['disabled_terminal_chat_status_r17'] = status
-                settings['disabled_terminal_chat_at_r17'] = _v172_iso()
-                settings['disabled_terminal_chat_reason_r17'] = why[:300]
-                if old_marker != (True, status):
-                    report['changed'] = True
-                for task in _v172_tasks_for_chat(cid, include_deleted=True):
-                    if not isinstance(task, dict) or bool(task.get('deleted', False)) or _v172_is_complete(task):
-                        continue
-                    task['status'] = 'cancelled'
-                    task['updated_at'] = _v172_iso()
-                    task['completed_at'] = task.get('completed_at') or _v172_iso()
-                    task['cancel_reason_r17'] = f'terminal_chat:{status}'
-                    _v172_history(task, 'cancelled_chat_removed_r17', 0, 'system', f'{status}: {why[:400]}')
-                    report['tasks_cancelled'] += 1; report['changed'] = True
-                for name in ('_V172_INPUT_WAIT', '_V174_INPUT_WAIT', '_V172_SEARCH_CACHE'):
-                    report['runtime_rows_cleared'] += _r17_drop_chat_keyed_runtime(globals().get(name), cid)
-        except Exception as exc:
-            report['tasks_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
-
-        if persist and report['changed']:
-            try:
-                save_data(data, chat_ids=[cid])
-            except Exception as exc:
-                report['persist_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
-            try:
-                schedule_config_backup_for_chats(cid, int(OWNER_ID or 0), delay=0.25)
-            except Exception:
-                pass
-        try:
-            bot_journal('r17_terminal_chat_suspended', cid, f"status={status}; forward={report['forwarding']}; reminders={report['reminders_pruned']}; disabled={report['reminders_disabled']}; tasks_cancelled={report['tasks_cancelled']}; tasks_migrated={report['tasks_migrated']}; source={source}; reason={why[:180]}", 'WARN')
-        except Exception:
-            pass
-    return report
-
-def r17_reconcile_terminal_chats_on_boot() -> dict:
-    """Repair stale R16 bindings for chats already terminal before R17 boot."""
-    total = {'chats': 0, 'changed': 0, 'reminders': 0, 'tasks': 0, 'forwarding': 0}
-    try:
-        keys = list(((data or {}).get('chats') or {}).keys())
-    except Exception:
-        keys = []
-    for raw in keys:
-        try:
-            cid = int(raw)
-        except Exception:
-            continue
-        if _r17_terminal_status(cid) not in _R17_TERMINAL_CHAT_STATUSES:
-            continue
-        total['chats'] += 1
-        rep = r17_suspend_terminal_chat_bindings(cid, reason='R17 boot reconciliation', source='r17_boot', persist=False)
-        if rep.get('changed'):
-            total['changed'] += 1
-        total['reminders'] += int(rep.get('reminders_pruned') or 0)
-        total['tasks'] += int(rep.get('tasks_cancelled') or 0)
-        total['forwarding'] += int(rep.get('forwarding') or 0)
-    if total['changed']:
-        try:
-            save_data(data, root_only=True)
-        except Exception:
-            pass
-    try:
-        bot_journal('r17_terminal_boot_reconcile', int(OWNER_ID or 0), f"terminal={total['chats']}; changed={total['changed']}; reminders={total['reminders']}; tasks={total['tasks']}; forwarding={total['forwarding']}")
-    except Exception:
-        pass
-    return total
-
-try:
-    _R17_TERMINAL_BOOT_REPORT = r17_reconcile_terminal_chats_on_boot()
-except Exception as _r17_boot_exc:
-    _R17_TERMINAL_BOOT_REPORT = {'error': f'{type(_r17_boot_exc).__name__}: {str(_r17_boot_exc)[:180]}'}
-
 # v262

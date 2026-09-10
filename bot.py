@@ -1,11 +1,9 @@
 # v262
 from pathlib import Path
 import hashlib, json, os, inspect
-from runtime_config import install_internal_runtime_config
-install_internal_runtime_config("front")
 MODULAR_VERSION = "vys_262"
 MODULE_FILE_VERSION = "v262"
-MODULAR_SOURCE_PARTS = ['01_core_data.py', '02_transport_safety.py', '03_diagnostics_memory.py', '04_messages_features.py', '05_finance_ui.py', '06_commands_callbacks.py', '07_state_web.py', '08_reliability_tasks.py', '09_final_transport.py', '10_split_policy_offload.py']
+MODULAR_SOURCE_PARTS = ['00_core.py', '05_key_value_runtime.py', '10_mega_runtime.py', '11_data_constitution.py', '12_telegram_durable.py', '13_telegram_stable_slots.py', '14_mega_sharded_parallel.py', '15_operation_safety.py', '16_window_diagnostics.py', '17_memory_runtime.py', '20_callback_tokens.py', '30_secret.py', '35_reminders.py', '40_message_router.py', '50_forwarding.py', '60_finance_currency.py', '61_forwarding_ui.py', '62_finance_ui.py', '63_google_sheets.py', '70_fast_ui.py', '80_callback_router.py', '90_commands_exports.py', '91_finance_records_handlers.py', '72_multitenant_runtime.py', '99_web_runtime.py', '73_state_export_runtime.py', '74_ui_reliability_runtime.py', '75_platform_features_runtime.py', '76_tasks_runtime.py', '85_runtime_control.py', '88_ui_constructor.py', '89_callback_final.py', '92_v262_linked_finance_speed.py', '98_split_front.py']
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
 _MANIFEST_PATH = _MODULAR_ROOT / "modules_manifest.json"
@@ -47,16 +45,16 @@ def _modular_merged_source_path() -> str:
 
 def _runtime_contract_gate_v222() -> None:
     contracts = {
-        "probe_bot_in_chat": ({"chat_id", "deep", "persist", "schedule_backup", "_migration_retry"}, "01_core_data.py"),
-        "update_chat_info_from_chat_object": ({"chat_obj", "persist", "schedule_backup"}, "07_state_web.py"),
-        "set_chat_bot_removed": ({"chat_id", "removed", "reason", "persist", "schedule_backup"}, "07_state_web.py"),
-        "set_chat_status_v150": ({"chat_id", "status", "reason", "source", "migrated_to", "force_history", "persist", "schedule_backup"}, "07_state_web.py"),
-        "collect_probe_chat_ids_v200": ({"include_owner"}, "01_core_data.py"),
-        "migrate_chat_id_everywhere": ({"old_chat_id", "new_chat_id", "reason"}, "07_state_web.py"),
-        "resolve_forward_targets": ({"source_chat_id"}, "07_state_web.py"),
-        "send_and_auto_delete": ({"chat_id", "text", "delay"}, "08_reliability_tasks.py"),
-        "send_html_and_auto_delete": ({"chat_id", "html_text", "delay"}, "08_reliability_tasks.py"),
-        "submit_interactive_file_job": ({"chat_id", "kind", "label", "func"}, "10_split_policy_offload.py"),
+        "probe_bot_in_chat": ({"chat_id", "deep", "persist", "schedule_backup", "_migration_retry"}, "00_core.py"),
+        "update_chat_info_from_chat_object": ({"chat_obj", "persist", "schedule_backup"}, "73_state_export_runtime.py"),
+        "set_chat_bot_removed": ({"chat_id", "removed", "reason", "persist", "schedule_backup"}, "73_state_export_runtime.py"),
+        "set_chat_status_v150": ({"chat_id", "status", "reason", "source", "migrated_to", "force_history", "persist", "schedule_backup"}, "73_state_export_runtime.py"),
+        "collect_probe_chat_ids_v200": ({"include_owner"}, "00_core.py"),
+        "migrate_chat_id_everywhere": ({"old_chat_id", "new_chat_id", "reason"}, "73_state_export_runtime.py"),
+        "resolve_forward_targets": ({"source_chat_id"}, "72_multitenant_runtime.py"),
+        "send_and_auto_delete": ({"chat_id", "text", "delay"}, "74_ui_reliability_runtime.py"),
+        "send_html_and_auto_delete": ({"chat_id", "html_text", "delay"}, "74_ui_reliability_runtime.py"),
+        "submit_interactive_file_job": ({"chat_id", "kind", "label", "func"}, "74_ui_reliability_runtime.py"),
     }
     problems=[]
     for name,(required,owner_file) in contracts.items():

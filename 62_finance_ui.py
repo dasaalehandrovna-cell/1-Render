@@ -273,7 +273,6 @@ def delete_selected_usd_records(chat_id: int, day_key: str) -> int:
             return 0
         deleted = 0
         remove_ids = set()
-        _r16_deleted_usd_total = 0.0
         for rec in store.get('records', []) or []:
             try:
                 rid = int(rec.get('id', -1))
@@ -282,8 +281,6 @@ def delete_selected_usd_records(chat_id: int, day_key: str) -> int:
             if rid not in selected or not float(rec.get('usd_amount', 0) or 0):
                 continue
             deleted += 1
-            try: _r16_deleted_usd_total += float(rec.get('usd_amount', 0) or 0)
-            except Exception: pass
             if abs(float(rec.get('amount', 0) or 0)) <= 0 and bool(rec.get('usd_only', False)):
                 remove_ids.add(rid)
             else:
@@ -312,14 +309,12 @@ def delete_selected_usd_records(chat_id: int, day_key: str) -> int:
             else:
                 store['daily_records'].pop(dk, None)
         store.setdefault('usd_edit_delete_selected', {}).pop(str(day_key), None)
-        # R16: removing a USD component does not require a full ARS history normalize.
-        # Pure-USD rows carry zero ARS amount, so ARS balance is unchanged.
-        store['_finance_hotpath_pending_normalize_r16'] = True
-        store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
-        store.pop('_finance_day_balance_cache_r16', None)
-        if '_usd_balance_cache_r16' in store:
-            try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) - float(_r16_deleted_usd_total)
-            except Exception: store.pop('_usd_balance_cache_r16', None)
+        normalize_chat_records(chat_id)
+        store = get_chat_store(chat_id)
+        store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
+        helper = globals().get('_r7_rebuild_month_short_ids_after_normalize')
+        if callable(helper): helper(chat_id, store)
+        else: rebuild_month_short_ids(chat_id)
         if 'persist_finance_chat_local_fast' in globals():
             persist_finance_chat_local_fast(chat_id)
         else:
@@ -478,15 +473,9 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
                 daily.pop(dk, None)
         deleted = before - len(store.get('records', []) or [])
         all_sel.pop(day_key, None)
-        # R16: stable IDs; update only the aggregate affected by the deleted rows.
-        try: store['balance'] = float(store.get('balance', 0) or 0) - sum(float(r.get('amount', 0) or 0) for r in deleted_snapshot)
-        except Exception: pass
-        store['_finance_hotpath_pending_normalize_r16'] = True
-        store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
-        store.pop('_finance_day_balance_cache_r16', None)
-        if '_usd_balance_cache_r16' in store:
-            try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) - sum(float(r.get('usd_amount', 0) or 0) for r in deleted_snapshot)
-            except Exception: store.pop('_usd_balance_cache_r16', None)
+        renumber_chat_records(chat_id)
+        store = get_chat_store(chat_id)
+        store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
         if 'persist_finance_chat_local_fast' in globals():
             persist_finance_chat_local_fast(chat_id)
         else:

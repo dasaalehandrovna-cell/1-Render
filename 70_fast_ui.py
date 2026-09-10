@@ -4,8 +4,6 @@ _ui_edit_lock = threading.RLock()
 _ui_edit_last_ts = {}
 _ui_edit_pending = {}
 _ui_edit_timers = {}
-_ui_edit_last_fingerprint = {}
-_ui_edit_last_fingerprint_ts = {}
 
 def _ui_edit_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
@@ -99,18 +97,6 @@ def _v177_legacy_0211_fast_ui_edit_message_text(chat_id: int, message_id: int, t
             payload = diag_prepare(payload) or payload
     except Exception:
         pass
-    # R37: suppress identical renders of the same Telegram message. Multiple background
-    # refreshers used to repaint the exact same window and consume bot-token quota.
-    try:
-        _fp = hashlib.sha1((str(text) + '\n' + repr(reply_markup) + '\n' + str(parse_mode or '')).encode('utf-8', 'replace')).hexdigest()
-        _now_fp = time.time()
-        with _ui_edit_lock:
-            if _ui_edit_last_fingerprint.get(key) == _fp and (_now_fp - float(_ui_edit_last_fingerprint_ts.get(key, 0) or 0)) < 2.0:
-                return 'deduped'
-            _ui_edit_last_fingerprint[key] = _fp
-            _ui_edit_last_fingerprint_ts[key] = _now_fp
-    except Exception:
-        pass
     force_immediate = str(purpose or '') == 'back_main_instant'
     if force_immediate:
         cancel_fast_ui_edit(chat_id, message_id)
@@ -187,18 +173,12 @@ def v177_delete_message_async(chat_id: int, message_id: int, purpose: str='ui_cl
             except Exception:
                 pass
     try:
-        pool = globals().get('UI_DELETE_TASK_POOL')
+        pool = globals().get('GENERAL_TASK_POOL')
         if pool is not None:
-            return bool(pool.submit_unique(f'r26-ui-delete:{cid}:{mid}', _job))
+            return bool(pool.submit_unique(f'v177-ui-delete:{cid}:{mid}', _job))
     except Exception:
         pass
-    # R26: never fall back to a shared GENERAL worker from a callback. If the
-    # dedicated pool is unavailable, a tiny daemon owns this best-effort delete.
-    try:
-        threading.Thread(target=_job, name=f'r26-ui-delete-{cid}-{mid}', daemon=True).start()
-        return True
-    except Exception:
-        return False
+    return False
 
 def cancel_fast_ui_edit(chat_id: int, message_id: int):
     key = _ui_edit_key(chat_id, message_id)
@@ -252,19 +232,27 @@ def _deserialize_inline_keyboard(rows_data):
             kb.row(*buttons)
     return kb
 
-_R22_NAV_REMOTE_HAS = {}
-_R22_NAV_REMOTE_PREFETCH = set()
-
 def _window_nav_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
 
 def _nav_history_push_v248(key, snap: dict) -> bool:
-    """R22 hot path: RAM first, KV durability later.
-
-    Navigation history is UI continuity, so Redis/Key Value RTT must never be in
-    front of a button.  The in-memory stack is authoritative for the live process;
-    the remote copy is mirrored on the cleanup lane.
-    """
+    # If this key already fell back locally during a KV outage, keep one coherent stack.
+    with _WINDOW_NAV_HISTORY_LOCK:
+        stack = _WINDOW_NAV_HISTORY.get(key)
+        if stack:
+            if stack[-1].get('text') == snap.get('text') and stack[-1].get('markup') == snap.get('markup'):
+                return True
+            stack.append(snap)
+            if len(stack) > _WINDOW_NAV_HISTORY_LIMIT:
+                del stack[:-_WINDOW_NAV_HISTORY_LIMIT]
+            return True
+    push = globals().get('kv_nav_push_v248')
+    if callable(push):
+        try:
+            if push(int(key[0]), int(key[1]), snap, _WINDOW_NAV_HISTORY_LIMIT):
+                return True
+        except Exception:
+            pass
     with _WINDOW_NAV_HISTORY_LOCK:
         stack = _WINDOW_NAV_HISTORY[key]
         if stack and stack[-1].get('text') == snap.get('text') and stack[-1].get('markup') == snap.get('markup'):
@@ -272,24 +260,6 @@ def _nav_history_push_v248(key, snap: dict) -> bool:
         stack.append(snap)
         if len(stack) > _WINDOW_NAV_HISTORY_LIMIT:
             del stack[:-_WINDOW_NAV_HISTORY_LIMIT]
-    try:
-        _R22_NAV_REMOTE_HAS[key] = True
-    except Exception:
-        pass
-
-    def _mirror():
-        push = globals().get('kv_nav_push_v248')
-        if callable(push):
-            try:
-                push(int(key[0]), int(key[1]), dict(snap), _WINDOW_NAV_HISTORY_LIMIT)
-            except Exception:
-                pass
-    try:
-        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        if pool is not None:
-            pool.submit(f'r22-nav-mirror:{int(key[0])}:{int(key[1])}', _mirror)
-    except Exception:
-        pass
     return True
 
 def _nav_history_peek_v248(key):
@@ -326,67 +296,12 @@ def _nav_history_clear_v248(chat_id: int, message_id: int) -> None:
     key = _window_nav_key(chat_id, message_id)
     with _WINDOW_NAV_HISTORY_LOCK:
         _WINDOW_NAV_HISTORY.pop(key, None)
-    _R22_NAV_REMOTE_HAS.pop(key, None)
     fn = globals().get('kv_nav_clear_v248')
     if callable(fn):
         try:
             fn(int(chat_id), int(message_id))
         except Exception:
             pass
-
-def r27_callback_is_back_navigation(call, data_str: str) -> bool:
-    """True for a user-visible Back button (not backup operations).
-
-    We inspect both callback token and the text of the clicked button. This lets old
-    windows keep their historical callback names while R27 gives all Back buttons the
-    same navigation semantics: previous window first, legacy fallback second.
-    """
-    raw = str(data_str or '').strip()
-    low = raw.casefold()
-    if 'backup' in low:
-        return False
-    if low == 'nav_prev' or low.endswith(':back_main'):
-        return True
-    normalized = low.replace(':', '_').replace('-', '_')
-    parts = [x for x in normalized.split('_') if x]
-    if 'back' in parts or low.startswith('back_') or low.endswith('_back'):
-        return True
-    try:
-        markup = getattr(getattr(call, 'message', None), 'reply_markup', None)
-        for row in list(getattr(markup, 'keyboard', None) or []):
-            for btn in row or []:
-                if str(getattr(btn, 'callback_data', '') or '') != raw:
-                    continue
-                label = str(getattr(btn, 'text', '') or '').casefold()
-                if 'назад' in label:
-                    return True
-    except Exception:
-        pass
-    return False
-
-def r27_cleanup_after_history_back(call):
-    try:
-        cid = int(call.message.chat.id)
-    except Exception:
-        return False
-    def _job():
-        try:
-            fn = globals().get('cancel_pending_window_commands')
-            if callable(fn): fn(cid, delete_prompt=False)
-        except Exception:
-            pass
-        try:
-            fn = globals().get('_v214_cancel_pending_before_navigation')
-            if callable(fn): fn(call, 'nav_prev')
-        except Exception:
-            pass
-    try:
-        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        if pool is not None and pool.submit_unique(f'r27-back-clean:{cid}', _job):
-            return True
-    except Exception:
-        pass
-    return False
 
 def remember_previous_window(call):
     try:
@@ -402,32 +317,16 @@ def remember_previous_window(call):
         return False
 
 def window_has_previous(chat_id: int, message_id: int) -> bool:
-    """Non-blocking R22 check. Never contacts Redis on the render hot path."""
     key = _window_nav_key(chat_id, message_id)
     with _WINDOW_NAV_HISTORY_LOCK:
         if bool(_WINDOW_NAV_HISTORY.get(key)):
             return True
-    if bool(_R22_NAV_REMOTE_HAS.get(key, False)):
-        return True
-    # One background prefetch is allowed for post-restart continuity. Its result
-    # can affect the next render, never the current button latency.
-    if key not in _R22_NAV_REMOTE_PREFETCH:
-        _R22_NAV_REMOTE_PREFETCH.add(key)
-        def _prefetch():
-            try:
-                fn = globals().get('kv_nav_has_v248')
-                if callable(fn):
-                    _R22_NAV_REMOTE_HAS[key] = bool(fn(int(key[0]), int(key[1])))
-            except Exception:
-                pass
-            finally:
-                _R22_NAV_REMOTE_PREFETCH.discard(key)
+    fn = globals().get('kv_nav_has_v248')
+    if callable(fn):
         try:
-            pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-            if pool is not None:
-                pool.submit_unique(f'r22-nav-has:{int(key[0])}:{int(key[1])}', _prefetch)
+            return bool(fn(int(chat_id), int(message_id)))
         except Exception:
-            _R22_NAV_REMOTE_PREFETCH.discard(key)
+            pass
     return False
 
 def ensure_previous_back_nav_keyboard(reply_markup, chat_id: int, message_id: int):
@@ -837,7 +736,7 @@ def build_owner_instruction_keyboard(chat_id: int):
     return kb
 
 def all_task_pool_stats() -> list[dict]:
-    return [WEBHOOK_TASK_POOL.stats(), FAST_UI_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
+    return [WEBHOOK_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(), RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(), DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(), MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats()]
 
 def build_queue_status_text() -> str:
     lines = ['🚦 Очереди и нагрузка', '']
@@ -2310,24 +2209,7 @@ try:
     CALLBACK_RECEIPT_ACK_DELAY_SECONDS = max(0.03, min(0.10, float(os.getenv('CALLBACK_RECEIPT_ACK_DELAY_SECONDS', '0.06') or '0.06')))
 except Exception:
     CALLBACK_RECEIPT_ACK_DELAY_SECONDS = 0.06
-_NATIVE_BOT_ANSWER_CALLBACK_QUERY = telebot.TeleBot.answer_callback_query
-_R25_CALLBACK_TRACE_LOCK = threading.RLock()
-_R25_CALLBACK_TRACE_MAP = {}
-
-def r25_register_callback_update(callback_id: str, update_id=None, chat_id=None, action=''):
-    callback_id = str(callback_id or '')
-    if not callback_id:
-        return
-    with _R25_CALLBACK_TRACE_LOCK:
-        _R25_CALLBACK_TRACE_MAP[callback_id] = {'update_id': str(update_id or ''), 'chat_id': chat_id, 'action': str(action or '')[:180], 'ts': time.time()}
-        now = time.time()
-        for key, row in list(_R25_CALLBACK_TRACE_MAP.items()):
-            if now - float((row or {}).get('ts') or now) > 300:
-                _R25_CALLBACK_TRACE_MAP.pop(key, None)
-
-def _r25_callback_trace_row(callback_id: str):
-    with _R25_CALLBACK_TRACE_LOCK:
-        return dict(_R25_CALLBACK_TRACE_MAP.get(str(callback_id or '')) or {})
+_ORIGINAL_BOT_ANSWER_CALLBACK_QUERY = bot.answer_callback_query
 
 def _callback_ack_prune_locked(now_ts=None):
     now_ts = float(now_ts or time.time())
@@ -2351,37 +2233,25 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         _callback_ack_prune_locked()
         row = _CALLBACK_ACK_STATE.setdefault(callback_id, {'ts': time.time()})
         row['ts'] = time.time()
-        # R18: an empty ACK must stay empty.  R17 converted every silent receipt ACK
-        # into the visible Telegram toast "⏳ Выполняю…", which made navigation feel
-        # delayed even when the actual window render was fast.  Long jobs must request
-        # an explicit progress text themselves.
+        if not str(text or '').strip() and (not bool(kwargs.get('show_alert', False))):
+            process_text = build_all_processes_toast(row.get('chat_id'))
+            if args:
+                args = (process_text,) + tuple(args[1:])
+                kwargs.pop('text', None)
+            else:
+                kwargs['text'] = process_text
+            text = process_text
         if row.get('answered'):
-            # R18: the receipt ACK wins immediately.  A later ordinary toast from a
-            # handler must not create a new Telegram message (R17 could turn every
-            # navigation click into extra chat noise).  Preserve only explicit alert
-            # semantics, which are normally permission/error messages.
             chat_id = row.get('chat_id')
-            if bool(kwargs.get('show_alert')) and str(text or '').strip() and (not row.get('late_notice_sent')):
+            if str(text or '').strip() and (not row.get('late_notice_sent')):
                 row['late_notice_sent'] = True
-                # Keep the dedicated ACK pool pure: late permission/error feedback is
-                # ordinary background Telegram work and must never queue ahead of ACKs.
-                _late_pool = globals().get('GENERAL_TASK_POOL')
-                if _late_pool is not None:
-                    _late_pool.submit_unique(f'callback-late-alert:{callback_id}', _late_callback_notice, chat_id, text)
-                else:
-                    threading.Thread(target=_late_callback_notice, args=(chat_id, text), name=f'r18-late-alert-{callback_id}', daemon=True).start()
+                CALLBACK_ACK_TASK_POOL.submit(f'callback-late-notice:{callback_id}', _late_callback_notice, chat_id, text)
             return True
         if row.get('inflight'):
             return True
         row['inflight'] = True
     try:
-        _r25_ack_row = _r25_callback_trace_row(callback_id)
-        _r25_ack_started = time.monotonic()
-        try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_START')
-        except Exception: pass
-        result = _NATIVE_BOT_ANSWER_CALLBACK_QUERY(bot, callback_query_id, *args, **kwargs)
-        try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_DONE elapsed={time.monotonic()-_r25_ack_started:.3f}s')
-        except Exception: pass
+        result = _ORIGINAL_BOT_ANSWER_CALLBACK_QUERY(callback_query_id, *args, **kwargs)
         with _CALLBACK_ACK_LOCK:
             row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
             row.update({'answered': True, 'inflight': False, 'ts': time.time()})
@@ -2396,13 +2266,16 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
             row['inflight'] = False
             row['ts'] = time.time()
         raise
-# FINALIZED: callback ACK is bound once in 89_callback_final.py.
+bot.answer_callback_query = _tracked_answer_callback_query
 
 def _answer_callback_query_quiet(callback_id: str, chat_id=None):
     try:
-        bot.answer_callback_query(callback_id, show_alert=False)
+        bot.answer_callback_query(callback_id, text=build_all_processes_toast(chat_id), show_alert=False)
     except Exception:
-        pass
+        try:
+            bot.answer_callback_query(callback_id)
+        except Exception:
+            pass
 
 def answer_callback_query_background(callback_id: str):
     """Immediate ACK from a callback handler, isolated from GENERAL/MEGA work."""

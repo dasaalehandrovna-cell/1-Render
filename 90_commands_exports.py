@@ -96,38 +96,10 @@ def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int,
             rec['usd_only'] = bool(usd_only)
         if source_finance_text:
             rec['source_finance_text'] = str(source_finance_text)
-        # R15 hot path: do not run the historical full-ledger normalizer/dedupe
-        # synchronously for every new message.  Exact-once guards above already protect
-        # this Telegram effect.  Update the two authoritative in-memory indexes
-        # incrementally, commit this chat, and let the debounced finance finalize do the
-        # full normalize/reconcile in FINANCE_TASK_POOL.
-        records = store.setdefault('records', [])
-        _needs_sort = bool(records and record_sort_key(rec) < record_sort_key(records[-1]))
-        records.append(rec)
-        if _needs_sort:
-            try: records.sort(key=record_sort_key)
-            except Exception: pass
-        daily = store.setdefault('daily_records', {})
-        day_rows = daily.setdefault(str(day_key), [])
-        _day_needs_sort = bool(day_rows and record_sort_key(rec) < record_sort_key(day_rows[-1]))
-        day_rows.append(rec)
-        if _day_needs_sort:
-            try: day_rows.sort(key=record_sort_key)
-            except Exception: pass
-        try:
-            store['next_id'] = max(int(store.get('next_id', 1) or 1), int(rid) + 1)
-        except Exception:
-            store['next_id'] = int(rid) + 1
-        try:
-            store['balance'] = float(store.get('balance', 0) or 0) + float(amount or 0)
-        except Exception:
-            store['balance'] = sum((float(r.get('amount', 0) or 0) for r in records if isinstance(r, dict)))
-        store['_finance_hotpath_pending_normalize_r16'] = True
-        store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
-        store.pop('_finance_day_balance_cache_r16', None)
-        if usd_amount is not None and '_usd_balance_cache_r16' in store:
-            try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) + float(usd_amount or 0)
-            except Exception: store.pop('_usd_balance_cache_r16', None)
+        store.setdefault('records', []).append(rec)
+        normalize_chat_records(chat_id)
+        store['next_id'] = max([int(r.get('id', 0) or 0) for r in store.get('records', [])] + [0]) + 1
+        store['balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get('records', [])))
         # R7: the durable record itself is committed immediately below.  Month short-id
         # renumbering and global aggregate rebuild are derived data and are rebuilt once
         # by the debounced finance finalize path before any finance window repaint.
@@ -163,23 +135,15 @@ def delete_record_in_chat(chat_id: int, rid: int):
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
         deleted_record = next((copy.deepcopy(x) for x in store.get('records', []) if int(x.get('id', -1)) == int(rid)), None)
-        store['records'] = [x for x in store['records'] if int(x.get('id', -1)) != int(rid)]
+        store['records'] = [x for x in store['records'] if x['id'] != rid]
         for day, arr in list(store.get('daily_records', {}).items()):
-            arr2 = [x for x in arr if int(x.get('id', -1)) != int(rid)]
+            arr2 = [x for x in arr if x['id'] != rid]
             if arr2:
                 store['daily_records'][day] = arr2
             else:
                 del store['daily_records'][day]
-        # R16: record IDs are stable. Do not renumber the whole history on deletion.
-        # Adjust only the affected aggregate and leave full normalize/self-check to background.
-        try: store['balance'] = float(store.get('balance', 0) or 0) - float((deleted_record or {}).get('amount', 0) or 0)
-        except Exception: pass
-        store['_finance_hotpath_pending_normalize_r16'] = True
-        store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
-        store.pop('_finance_day_balance_cache_r16', None)
-        if isinstance(deleted_record, dict) and '_usd_balance_cache_r16' in store:
-            try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) - float(deleted_record.get('usd_amount', 0) or 0)
-            except Exception: store.pop('_usd_balance_cache_r16', None)
+        renumber_chat_records(chat_id)
+        store['balance'] = sum((float(x.get('amount', 0) or 0) for x in store.get('records', []) or []))
         try:
             if 'persist_finance_chat_local_fast' in globals():
                 persist_finance_chat_local_fast(int(chat_id))
@@ -616,22 +580,6 @@ def cmd_ok(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    # R10: /ok (and /поехали) is owner/legacy finance activation only.
-    # Contours 1/2 must use their explicit business-mode menu so a command
-    # cannot bypass the owner's mode policy.
-    try:
-        if bool(globals().get('_v215_circle_business_chat', lambda _c: False)(int(chat_id))):
-            try:
-                send_and_auto_delete(chat_id, '🔒 /ok недоступна в контурах 1/2. Используйте «☰ Меню режимов».', 10)
-            except Exception:
-                pass
-            try:
-                globals().get('show_contour_start_modes', lambda *_a, **_k: None)(int(chat_id), int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0), 0)
-            except Exception:
-                pass
-            return
-    except Exception:
-        pass
     set_total_secret_mode(chat_id, False)
     if is_finance_output_suppressed(chat_id):
         return
