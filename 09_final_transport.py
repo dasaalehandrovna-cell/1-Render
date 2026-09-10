@@ -507,7 +507,7 @@ def _v176_speed_text() -> str:
         lines += ['', f"Последних callback: {s['count']}", f"Медиана: {s['p50']:.3f} c · P90: {s['p90']:.3f} c · MAX: {s['max']:.3f} c", f"≥0.5 c: {s['slow05']} · ≥1.0 c: {s['slow10']}", '', 'Самые медленные действия:']
         for avg, mx, count, action in s.get('top', []):
             lines.append(f'• {action[:48]} — avg {avg:.3f} c / max {mx:.3f} c / n={count}')
-    pools = [x for x in (_v176_pool_line(n) for n in ('FAST_UI_TASK_POOL', 'NAV_UI_TASK_POOL', 'WINDOW_RENDER_TASK_POOL', 'SERVICE_UI_TASK_POOL', 'UI_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'GENERAL_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL', 'JOURNAL_TASK_POOL')) if x]
+    pools = [x for x in (_v176_pool_line(n) for n in ('FAST_UI_TASK_POOL', 'UI_TASK_POOL', 'V166_WINDOW_UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'GENERAL_TASK_POOL', 'DELTA_TASK_POOL', 'BACKUP_TASK_POOL', 'JOURNAL_TASK_POOL')) if x]
     if pools:
         lines += ['', 'Очереди active/pending:', ' · '.join(pools)]
     stages = list(_V177_PERF_STAGES)
@@ -5759,10 +5759,6 @@ def _native_telegram(method, *args, **kwargs):
 
 def _final_send_message(chat_id, text, *args, **kwargs):
     cid = int(chat_id)
-    if r50_ui_context_stale(cid, None):
-        try: bot_journal('r50_stale_send_skipped', cid, 'safe navigation superseded')
-        except Exception: pass
-        return None
     source_markup = kwargs.get('reply_markup')
     decorated, token = _v161_tokenize_text(str(text or ''), cid, None)
     prepared = _final_prepare_markup(cid, source_markup, decorated)
@@ -5784,10 +5780,6 @@ def _final_edit_message_text(text, *args, **kwargs):
     chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[0] if len(args) > 0 else None
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
-    if r50_ui_context_stale(cid, mid):
-        try: bot_journal('r50_stale_edit_skipped', cid, f'message={mid}')
-        except Exception: pass
-        return True
     decorated, token = _v161_tokenize_text(str(text or ''), cid, mid)
     source_markup = kwargs.get('reply_markup')
     prepared = _final_prepare_markup(cid, source_markup, decorated)
@@ -5825,7 +5817,6 @@ def _final_edit_message_caption(*args, **kwargs):
     chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else positional[0] if len(positional) > 0 else None
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
-    if r50_ui_context_stale(cid, mid): return True
     decorated, token = _v161_tokenize_text(str(caption or ''), cid, mid)
     source_markup = kwargs.get('reply_markup')
     prepared = _final_prepare_markup(cid, source_markup, decorated)
@@ -5848,7 +5839,6 @@ def _final_edit_message_reply_markup(*args, **kwargs):
     chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else positional[0] if len(positional) > 0 else None
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
-    if r50_ui_context_stale(cid, mid): return True
     source_markup = kwargs.get('reply_markup') if 'reply_markup' in kwargs else positional[2] if len(positional) > 2 else None
     prepared = _final_filter_markup(cid, source_markup)
     if 'reply_markup' in kwargs:
@@ -5875,7 +5865,6 @@ def _final_edit_message_reply_markup(*args, **kwargs):
 
 def _final_delete_message(chat_id, message_id, *args, **kwargs):
     cid = int(chat_id); mid = int(message_id)
-    if r50_ui_context_stale(cid, mid): return True
     try:
         result = _native_telegram(_FINAL_NATIVE_DELETE, cid, mid, *args, **kwargs)
     except Exception as exc:

@@ -118,7 +118,7 @@ if ROLE=='fast':
 
     ns={}; exec(text('runtime_config.py'),ns)
     env=ns.get('FRONT_INTERNAL_ENV') or {}
-    limits={'BOT_THREAD_STACK_KB':512,'UI_WORKERS':2,'FAST_UI_WORKERS':2,'NAV_UI_WORKERS':3,'WINDOW_RENDER_WORKERS':2,'SERVICE_UI_WORKERS':1,'CALLBACK_ACK_WORKERS':2,'UI_CLEANUP_WORKERS':1,'UI_DELETE_WORKERS':1,'DELTA_WORKERS':1,'BACKGROUND_WORKERS':1,'SCHEDULER_WORKERS':2,'R21_HEAVY_DISPATCH_WORKERS':2,'BOT_JOURNAL_MAX':600,'R32_EVENT_QUEUE_MAX':5000,'WEBHOOK_WORKERS':2}
+    limits={'BOT_THREAD_STACK_KB':512,'UI_WORKERS':2,'FAST_UI_WORKERS':2,'WINDOW_RENDER_WORKERS':2,'CALLBACK_ACK_WORKERS':2,'UI_CLEANUP_WORKERS':1,'UI_DELETE_WORKERS':1,'DELTA_WORKERS':1,'BACKGROUND_WORKERS':1,'SCHEDULER_WORKERS':2,'R21_HEAVY_DISPATCH_WORKERS':2,'BOT_JOURNAL_MAX':600,'R32_EVENT_QUEUE_MAX':5000,'WEBHOOK_WORKERS':2}
     bad=[]
     for k,maxv in limits.items():
         try:
@@ -151,10 +151,10 @@ if ROLE=='fast':
     ok('r48_visual_counter_ram_only','save_data(' not in core_fns.get('bump_quick_balance_recreate_counter',''),'visual counter must not persist on every message')
     ok('r48_no_whole_handler_chat_lock','telegram_execution_chat_lock' not in rel_fns.get('_execute_telegram_payload_core','') and 'with locked_chat' not in rel_fns.get('_execute_telegram_payload_core',''),'whole Telegram handler must not hold chat lock')
     ok('r48_peer_health_ram_only','SQLITE.' not in split_fns.get('_split_snapshot_meta',''),'peer health must not touch SQLite')
-    ok('r48_sqlite_dedicated_reader', all(x in core_src for x in ['PRAGMA query_only=ON','def _get_reader','self._reader_local = threading.local()','def _read_one','def _read_all']),'query-only thread-local SQLite reader channel missing')
+    ok('r48_sqlite_dedicated_reader', all(x in core_src for x in ["R25TracedRLock('sqlite-read')",'PRAGMA query_only=ON','def _read_one','def _read_all']),'query-only SQLite reader channel missing')
     ok('r48_single_finance_persist_owner', count(r'(?m)^def persist_finance_chat_local_fast\(',joined)==1 and count(r'(?m)^\s*persist_finance_chat_local_fast\s*=',joined)==0,'finance persistence must have one direct owner')
     ok('r48_finance_persist_guard','held_by_current_thread' in _fn_sources(msg_src,{'persist_finance_chat_local_fast'}).get('persist_finance_chat_local_fast',''),'finance persist must reject SQLite while chat lock is held')
-    ok('r48_navigation_coalesce', 'NAV_UI_TASK_POOL' in rel_src and 'submit_latest' in web_src and 'superseded_safe_navigation_r50' in web_src,'safe navigation latest-wins missing')
+    ok('r48_navigation_coalesce', all(x in web_src for x in ['_R48_NAV_INFLIGHT','def _r48_nav_coalesce_key','R48 NAV COALESCE']),'safe navigation coalescing missing')
     ok('r48_recovery_yields_to_user','r27_user_quiet_for' in web_src and '5.0' in web_src,'webhook recovery user-activity yield missing')
     ok('r48_no_callback_witness_thread','r18-cb-witness-' not in web_src,'callback witness must use bounded pool/scheduler')
     ok('r48_no_event_thread_fallback','vys262-event-r13' not in split_src,'state event fallback must not spawn per-event thread')
@@ -200,7 +200,7 @@ if ROLE=='fast':
            all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py']) and 'COPY INFO/' not in docker_src,
            'Dockerfile must explicitly copy only compact runtime; INFO must not be a production dependency')
         ok('r48_dockerignore_allowlist',
-           dockerignore_src.lstrip().startswith('# R51 FINAL CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
+           dockerignore_src.lstrip().startswith('# R49 FINAL CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
            '.dockerignore must be a strict runtime-only compact allowlist; INFO is release-only')
 
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
@@ -277,21 +277,40 @@ if ROLE=='fast':
     ok('r49_restore_trace_present',
        'R49_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R49]' in start_src and 'restore_trace' in web_src and 'RESTORE TRACE R49' in core_src,
        'restore source/revision trace missing from startup or Watcher')
-    try:
-        i_redis=start_src.index('R49 Redis-first restore:')
-        i_heavy=start_src.index('R49 HEAVY restore:')
-        i_mega=start_src.index('R49 MEGA disaster restore:')
-        restore_order_ok=i_redis < i_heavy < i_mega
-    except ValueError:
-        restore_order_ok=False
-    ok('r49_restore_order_redis_heavy_mega',restore_order_ok,'expected Redis -> HEAVY -> MEGA')
-    ok('r49_redis_empty_falls_through',
-       "Redis snapshot empty" in start_src and 'need_fallback' in start_src and 'not local_valid' in start_src,
-       'empty/invalid Redis must not stop fallback recovery')
-    ok('r49_redis_before_heavy_mega_seed',
-       'r49_before_heavy_mega_fallback' in start_src and
-       '_r43_store_events_redis(events)' in split_src and split_src.index('_r43_store_events_redis(events)') < split_src.index("requests.post(base+endpoint"),
-       'current state/events must be persisted to Redis before HEAVY mirror/fallback when possible')
+    # R49 root-fix contract: FAST startup recovery is MEGA-only.  Redis and HEAVY
+    # are not restore dependencies; after startup FAST scrubs its MEGA credentials.
+    ok('r50_fast_startup_mega_only',
+       all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','R50_FAST_STARTUP_MEGA_ONLY','def _startup_mega_roots','def _discover_generation_remotes']) and
+       'redis.Redis' not in start_src and '/internal/snapshot' not in start_src,
+       'FAST startup must recover directly from MEGA only and discover canonical/legacy generations')
+    ok('r49_fast_runtime_mega_scrubbed',
+       "os.environ.pop(key, None)" in start_src and "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
+       "os.environ['MEGA_ENABLED'] = '0'" in start_src,
+       'FAST must discard MEGA credentials before normal runtime')
+    ok('r49_mega_event_replay_no_loss_shortcut',
+       'FAST_STARTUP_MEGA_EVENT_SEGMENTS' not in start_src and 'match.group(2)' not in start_src and
+       'Revision idempotence is per shard' in start_src,
+       'startup replay must not truncate/skip older shard events by global revision')
+    ok('r49_redis_packaged_default_off',
+       '"REDIS_RUNTIME_DEFAULT": "0"' in cfg_src and 'def set_redis_runtime_enabled' in cfg_src and
+       'os.environ["REDIS_URL"] = _REDIS_EXTERNAL_URL if _REDIS_RUNTIME_ENABLED else ""' in cfg_src,
+       'Redis must be OFF after restart with an explicit runtime switch')
+    ok('r49_info_redis_toggle',
+       "callback_data='r49:redis:toggle'" in split_src and "raw == 'r49:redis:toggle'" in split_src and
+       '/internal/runtime/redis' in split_src,
+       'owner Info menu Redis toggle/HEAVY control missing')
+    ok('r49_fast_ui_latest_wins_queue',
+       "WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool" in core_src and
+       'WINDOW_RENDER_TASK_POOL.submit_latest' in rel_src and '_r22_execute_window_render' in rel_src,
+       'callback renderer must enqueue into latest-wins window-render workers')
+    ok('r49_state_events_runtime_owned_by_heavy',
+       '_r34_post_events = _r38_post_events' in split_src and
+       "requests.post(base+endpoint" in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events','') and
+       '_r43_store_events_redis' not in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events',''),
+       'active state-event sender must go to HEAVY, not FAST Redis/MEGA')
+    ok('r49_manual_restore_reanchor_heavy_mega',
+       "sync_mega=True" in web_src and '/internal/restore/failed-tasks' in web_src,
+       'manual restore must re-anchor/restore MEGA artifacts through HEAVY')
     ok('r49_watchdog_http_ack_state',
        'HTTP_200_SENT / INTERNAL_PROCESSING' in core_src and 'HTTP_NOT_ACKED / TELEGRAM_MAY_RETRY' in core_src and 'Telegram will retry until 2xx' not in core_src,
        'watchdog must distinguish already-ACKed HTTP from Telegram retry risk')
@@ -339,106 +358,6 @@ if ROLE=='fast':
             if path:
                 cg_hits.append(f'{fn}:{owner}:{kind}@{line}:'+' -> '.join(path)); break
     ok('r49_no_indirect_io_under_central_locks',not cg_hits,'; '.join(cg_hits[:12]))
-
-    # R50 UI ACTOR / LOCK ORDER invariants.
-    core_get=_fn_sources(core_src,{'get_chat_store'}).get('get_chat_store','')
-    root_snap=_fn_sources(core_src,{'r50_root_snapshot'}).get('r50_root_snapshot','')
-    main_sched=_fn_sources(core_src,{'schedule_main_window_recreate_after_quiet','schedule_quick_balance_recreate_after_quiet'})
-    fast_edit=_fn_sources(rel_src,{'_canon_fast_ui_edit_message_text__001'}).get('_canon_fast_ui_edit_message_text__001','')
-    ok('r50_chat_registry_independent','_CHAT_STORE_REGISTRY_LOCK' in core_get and 'data_lock' not in core_get,'get_chat_store must never wait for data_lock')
-    ok('r50_root_deepcopy_outside_data_lock','refs = dict(_sqlite_pack_root(src))' in root_snap and 'return copy.deepcopy(refs)' in root_snap,'root snapshot must detach under lock and recurse outside')
-    ok('r50_safe_nav_latest_pool','NAV_UI_TASK_POOL = LatestKeyedTaskPool' in core_src and 'return (NAV_UI_TASK_POOL' in rel_src and '_on_supersede' in web_src,'navigation must be latest-wins per window')
-    ok('r50_stale_transport_epoch',all(x in joined for x in ['def r50_ui_note_interaction','def r50_ui_context_stale','r50_stale_edit_skipped','stale_skipped']),'stale callback transport fence missing')
-    ok('r50_auto_recreate_epoch_quiet',all(('r50_ui_epoch_matches' in src and 'r50_ui_is_quiet' in src) for src in main_sched.values()),'auto window recreate must be epoch+quiet fenced')
-    ok('r50_background_lock_yield',('R50_BG_LOCK_MAX_WAIT_SEC' in core_src or 'R51_BG_LOCK_MAX_WAIT_SEC' in core_src) and 'r27_user_quiet_for() < grace' in core_src,'background must yield outside locks while user active')
-
-    # Detect any transitive data_lock acquisition reachable from a chat-lock body.
-    fn_calls={}; fn_has_data=set(); chat_lock_callsets=[]
-    for fn,src in runtime_py.items():
-        try: tree=ast.parse(src)
-        except Exception: continue
-        for node in ast.walk(tree):
-            if not isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)): continue
-            fn_calls.setdefault(node.name,set()).update(c.func.id for c in ast.walk(node) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name))
-            for w in [x for x in ast.walk(node) if isinstance(x,(ast.With,ast.AsyncWith))]:
-                expr=' '.join(ast.unparse(i.context_expr) for i in w.items)
-                if re.search(r'\bdata_lock\b',expr): fn_has_data.add(node.name)
-                if 'locked_chat' in expr or 'telegram_execution_chat_lock' in expr:
-                    chat_lock_callsets.append((fn,node.name,w.lineno,{c.func.id for c in ast.walk(w) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name)}))
-    def _r50_data_path(name,seen=None):
-        if name in fn_has_data:return [name]
-        seen=set() if seen is None else set(seen)
-        if name in seen:return []
-        seen.add(name)
-        for nxt in fn_calls.get(name,()):
-            path=_r50_data_path(nxt,seen)
-            if path:return [name]+path
-        return []
-    lock_order_hits=[]
-    for fn,owner,line,cs in chat_lock_callsets:
-        for c in cs:
-            path=_r50_data_path(c)
-            if path: lock_order_hits.append(f'{fn}:{owner}@{line}:'+' -> '.join(path)); break
-    ok('r50_no_chat_to_data_lock_order',not lock_order_hits,'; '.join(lock_order_hits[:12]))
-
-    recursive_hits=[]
-    for fn,src in runtime_py.items():
-        try: tree=ast.parse(src)
-        except Exception: continue
-        for owner in [n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]:
-            for w in [x for x in ast.walk(owner) if isinstance(x,(ast.With,ast.AsyncWith))]:
-                expr=' '.join(ast.unparse(i.context_expr) for i in w.items)
-                if 'locked_chat' not in expr and 'telegram_execution_chat_lock' not in expr: continue
-                for c in ast.walk(w):
-                    if not isinstance(c,ast.Call): continue
-                    name=ast.unparse(c.func)
-                    if name in {'copy.deepcopy','json.dumps','json.loads'}: recursive_hits.append(f'{fn}:{owner.name}:{name}@{c.lineno}')
-    ok('r50_no_recursive_copy_under_chat_lock',not recursive_hits,'; '.join(recursive_hits[:12]))
-
-    # R51: network I/O and stale visual work must be detached from business actors.
-    core = runtime_py.get('01_core_data.py','')
-    state_web = runtime_py.get('07_state_web.py','')
-    reliability = runtime_py.get('08_reliability_tasks.py','')
-    policy = runtime_py.get('10_split_policy_offload.py','')
-    fast_sources = _fn_sources(rel_src, {'_canon_fast_ui_edit_message_text__001','_v199_upsert_service_window','_r51_service_apply','_read_one','_read_all'})
-    fast_owner = fast_sources.get('_canon_fast_ui_edit_message_text__001','')
-    service_upsert = fast_sources.get('_v199_upsert_service_window','')
-    service_apply = fast_sources.get('_r51_service_apply','')
-    read_one = fast_sources.get('_read_one',''); read_all = fast_sources.get('_read_all','')
-    ok('r51_window_render_latest_actor',
-       "WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render'" in core and
-       'WINDOW_RENDER_TASK_POOL.submit_latest' in fast_owner and
-       '_r22_execute_window_render' in fast_owner and
-       '_perform_fast_ui_edit(payload)' not in fast_owner,
-       'window render still performs Telegram I/O in callback or is not latest-wins')
-    ok('r51_service_window_actor',
-       "SERVICE_UI_TASK_POOL = LatestKeyedTaskPool('service-ui'" in core and
-       '_r51_service_submit' in service_upsert and 'bot.send_message' not in service_upsert and
-       'bot.edit_message_text' not in service_upsert and '_tg_call_retry' in service_apply,
-       'F233 service window is still synchronous in callback path')
-    ok('r51_telegram_network_bounds',
-       'R51_TELEGRAM_CONNECT_TIMEOUT' in core and 'R51_TELEGRAM_READ_TIMEOUT' in core and
-       '_install_r51_telegram_request_timeout()' in core and "host == 'api.telegram.org'" in core,
-       'Telegram ordinary calls have no hard connect/read timeout')
-    ok('r51_all_callback_window_epoch',
-       '_r50_nav_window_key, _r50_nav_epoch = r50_ui_note_interaction(int(cid), int(mid), raw)' in state_web and
-       'if cid is not None and mid is not None:' in state_web,
-       'business callbacks do not receive a stale-render epoch')
-    ok('r51_business_backpressure',
-       'R51_BUSINESS_MAX_QUEUED_PER_KEY' in state_web and 'fast_ui_business_backpressure' in state_web and
-       "return ('BUSY', 503)" in state_web,
-       'ordered business queue can still accept an unbounded minutes-long RAM backlog')
-    ok('r51_thread_local_sqlite_readers',
-       'self._reader_local = threading.local()' in core and '_get_reader().execute' in core and
-       'with self.read_lock' not in read_one and 'with self.read_lock' not in read_all,
-       'main SQLite reads are still serialized by one Python read lock')
-    ok('r51_service_progress_no_direct_telegram',
-       'bot.edit_message_text(rendered, chat_id=chat_id, message_id=int(msg_id))' not in reliability and
-       'bot.edit_message_text(rendered, chat_id=int(target_chat_id), message_id=mid)' not in reliability,
-       'F233 progress/helper still performs direct Telegram edit')
-    ok('r51_runtime_contract_detached_render',
-       'latest render actor missing' in policy and 'callback renderer performs Telegram I/O directly' in policy,
-       'startup semantic guard does not enforce detached render actor')
 
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot

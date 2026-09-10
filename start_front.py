@@ -1,7 +1,15 @@
 # v262
 #!/usr/bin/env python3
-"""Render #1 launcher: fast Telegram front + worker restore + emergency MEGA restore."""
+"""Render #1 launcher: restore its SQLite directly from MEGA, then run FAST.
+
+R50 root-fix policy:
+- startup/restart recovery belongs to FAST and contacts MEGA directly;
+- Redis and HEAVY are not part of startup recovery;
+- after startup, FAST logs out of MEGA and removes MEGA credentials from its process;
+- all normal runtime MEGA work is therefore delegated to Render #2 / HEAVY.
+"""
 from __future__ import annotations
+
 import gzip
 import json
 import os
@@ -14,32 +22,30 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import requests
+
 from runtime_config import install_internal_runtime_config, CONFIG_VERSION as INTERNAL_CONFIG_VERSION
+
 install_internal_runtime_config("front")
-try:
-    import redis as _redis
-except Exception:
-    _redis = None
 
 
 class _BootHealthHandler(BaseHTTPRequestHandler):
     def _reply(self, status: int, body: bool):
-        raw = b'{"ok":true,"role":"front","phase":"restoring"}' if body else b''
+        raw = b'{"ok":true,"role":"front","phase":"restoring_from_mega"}' if body else b''
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(raw)))
         self.end_headers()
         if raw:
             self.wfile.write(raw)
+
     def do_GET(self): self._reply(200, True)
     def do_HEAD(self): self._reply(200, False)
     def do_POST(self): self._reply(503, True)
     def log_message(self, fmt, *args): return
 
 
-def _bool(name: str, default=False):
-    return str(os.getenv(name, '1' if default else '0') or '').strip().lower() in {'1','true','yes','on','да'}
+def _bool(name: str, default=False) -> bool:
+    return str(os.getenv(name, '1' if default else '0') or '').strip().lower() in {'1', 'true', 'yes', 'on', 'да'}
 
 
 def _start_boot_port():
@@ -58,11 +64,11 @@ def _stop_boot_port(server):
     except Exception: pass
 
 
-def _db_path():
+def _db_path() -> Path:
     return Path(os.getenv('DB_FILE', 'bot_state.sqlite3') or 'bot_state.sqlite3').resolve()
 
 
-def _db_valid(path: Path):
+def _db_valid(path: Path) -> bool:
     if not path.exists() or path.stat().st_size < 4096:
         return False
     try:
@@ -74,7 +80,6 @@ def _db_valid(path: Path):
             con.close()
     except Exception:
         return False
-
 
 
 def _db_revision(path: Path) -> float:
@@ -92,15 +97,14 @@ def _db_revision(path: Path) -> float:
                         rev = max(rev, float(obj.get('saved_at') or 0.0))
                     except Exception:
                         pass
-            # legacy/fallback monotonic-ish timestamp if continuity metadata predates R4.
             row = con.execute("SELECT v FROM kv WHERE k='root'").fetchone()
-            if row:
+            if row and rev <= 0.0:
                 try:
                     root = json.loads(row[0]) or {}
                     stamp = str((root.get('_state_meta') or {}).get('last_saved_at') or '')
-                    if stamp and rev <= 0.0:
+                    if stamp:
                         from datetime import datetime
-                        rev = datetime.fromisoformat(stamp.replace('Z','+00:00')).timestamp()
+                        rev = datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
                 except Exception:
                     pass
             return float(rev or 0.0)
@@ -109,240 +113,47 @@ def _db_revision(path: Path) -> float:
     except Exception:
         return 0.0
 
-def _install_gzip_db(gz_path: Path, target: Path):
+
+def _install_gzip_db(gz_path: Path, target: Path) -> tuple[bool, str]:
     tmp = target.with_suffix(target.suffix + '.restore.tmp')
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(gz_path, 'rb') as src, open(tmp, 'wb') as dst:
             shutil.copyfileobj(src, dst, length=1024 * 1024)
         if not _db_valid(tmp):
-            return False
+            return False, 'downloaded gzip does not contain a valid SQLite DB'
         incoming_revision = _db_revision(tmp)
-        current_revision = _db_revision(target) if target.exists() else 0.0
-        # Never roll back a newer local user state to a delayed worker/MEGA image.
-        if _db_valid(target) and current_revision > 0.0 and (incoming_revision <= 0.0 or incoming_revision < current_revision):
-            print(f'[SPLIT FRONT] stale restore rejected incoming={incoming_revision} local={current_revision}', flush=True)
-            return False
+        current_revision = _db_revision(target) if _db_valid(target) else 0.0
+        if current_revision > 0.0 and (incoming_revision <= 0.0 or incoming_revision < current_revision):
+            detail = f'stale MEGA restore rejected incoming={incoming_revision} local={current_revision}'
+            print('[SPLIT FRONT]', detail, flush=True)
+            return False, detail
         os.replace(tmp, target)
         for suffix in ('-wal', '-shm'):
             try: Path(str(target) + suffix).unlink(missing_ok=True)
             except Exception: pass
-        return True
+        return True, f'installed revision={incoming_revision}'
     finally:
         try: tmp.unlink(missing_ok=True)
         except Exception: pass
 
 
-def _peer_base():
-    raw = str(os.getenv('PEER_PRIVATE_URL', '') or '').strip().rstrip('/')
-    private = bool(raw)
-    if not raw:
-        raw = str(os.getenv('PEER_SERVICE_URL', '') or '').strip().rstrip('/')
-    if raw and not raw.startswith(('http://','https://')):
-        looks_private = private or raw.endswith('.internal') or '.internal:' in raw or (raw.startswith('render-') and ':' in raw)
-        raw = ('http://' if looks_private else 'https://') + raw
-    return raw
+def _run(args, timeout=120):
+    return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
 
 
-def _secret():
-    return str(os.getenv('PEER_SHARED_SECRET', '') or '').strip()
-
-
-def _redis_snapshot_revision_r18(client=None):
-    """Return shared Redis snapshot revision without replacing anything."""
-    if _redis is None:
-        return 0.0
-    url = str(os.getenv('REDIS_URL', '') or '').strip()
-    if not url:
-        return 0.0
-    key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
-    try:
-        client = client or _redis.Redis.from_url(url, socket_connect_timeout=1.0, socket_timeout=2.0, health_check_interval=30)
-        raw = client.get(key + ':meta')
-        if not raw:
-            return 0.0
-        if isinstance(raw, (bytes, bytearray)):
-            raw = raw.decode('utf-8', 'replace')
-        meta = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        return float((meta or {}).get('revision') or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _restore_from_redis_direct_r18(target: Path):
-    """R49 Redis-first restore.
-
-    A valid payload is enough on a fresh container even when the metadata key is
-    missing.  Metadata revision is used for fast arbitration when available; the
-    SQLite image itself is always quick-checked before install.
-    """
-    if _redis is None:
-        return False, 'redis package unavailable'
-    url = str(os.getenv('REDIS_URL', '') or '').strip()
-    if not url:
-        return False, 'REDIS_URL empty'
-    key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
-    tmpdir = Path(tempfile.mkdtemp(prefix='r49_redis_restore_'))
-    try:
-        client = _redis.Redis.from_url(url, socket_connect_timeout=1.5, socket_timeout=4.0, health_check_interval=30)
-        payload = client.get(key)
-        if not payload:
-            return False, 'Redis snapshot empty'
-        remote_rev = _redis_snapshot_revision_r18(client)
-        local_rev = _db_revision(target) if _db_valid(target) else 0.0
-        if remote_rev > 0.0 and _db_valid(target) and remote_rev <= local_rev + 0.000001:
-            return False, f'Redis not newer remote={remote_rev} local={local_rev}'
-        gz = tmpdir / 'latest.sqlite3.gz'
-        gz.write_bytes(payload)
-        if _install_gzip_db(gz, target):
-            installed_rev = _db_revision(target)
-            return True, f'Redis snapshot installed revision={installed_rev or remote_rev}; meta_revision={remote_rev}'
-        return False, f'Redis snapshot rejected/invalid meta_revision={remote_rev}'
-    except Exception as exc:
-        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-def _restore_from_worker(target: Path):
-    base, secret = _peer_base(), _secret()
-    if not base or not secret:
-        return False, 'worker URL/secret not configured'
-    attempts = max(1, min(8, int(os.getenv('SPLIT_BOOT_WORKER_ATTEMPTS', '3') or '3')))
-    timeout = max(5.0, min(120.0, float(os.getenv('SPLIT_BOOT_WORKER_TIMEOUT', '12') or '12')))
-    detail = 'worker unavailable'
-    for attempt in range(1, attempts + 1):
-        tmpdir = Path(tempfile.mkdtemp(prefix='v262_worker_restore_'))
-        try:
-            r = requests.get(base + '/internal/restore/latest', headers={'X-Peer-Secret': secret, 'User-Agent':'vys-262-front-restore'}, timeout=timeout, stream=True)
-            if r.status_code == 200:
-                gz = tmpdir / 'latest.sqlite3.gz'
-                with open(gz, 'wb') as fh:
-                    for chunk in r.iter_content(1024 * 1024):
-                        if chunk: fh.write(chunk)
-                if _install_gzip_db(gz, target):
-                    return True, f'worker restore OK attempt={attempt}'
-            detail = f'worker HTTP {r.status_code}: {r.text[:180] if not r.ok else "invalid DB"}'
-        except Exception as exc:
-            detail = f'worker {type(exc).__name__}: {str(exc)[:180]}'
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-        if attempt < attempts:
-            time.sleep(min(2.0 * attempt, 5.0))
-    return False, detail
-
-
-
-def _worker_cache_revision():
-    base, secret = _peer_base(), _secret()
-    if not base or not secret:
-        return 0.0
-    try:
-        r = requests.get(base + '/internal/status', headers={'X-Peer-Secret':secret, 'User-Agent':'vys-262-front-handoff'}, timeout=5)
-        if r.status_code != 200:
-            return 0.0
-        body = r.json() or {}
-        return float(((body.get('state') or {}).get('cache_revision')) or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _preboot_capture_old_front_r18_legacy():
-    """Ask HEAVY to capture the still-live old FAST before Render cuts traffic over.
-
-    During a rolling deploy the public FAST URL normally still points at the old
-    instance while the new instance is in preboot.  This closes the R17->R18 bridge:
-    even if the old process later gets a short SIGTERM grace period, HEAVY has already
-    pulled its live SQLite state.  Failure is harmless; normal Worker/Redis restore
-    follows immediately.
-    """
-    base, secret = _peer_base(), _secret()
-    if not base or not secret:
-        return False, 'worker URL/secret not configured'
-    started = time.time()
-    try:
-        before_rev = _worker_cache_revision()
-        body = {'type':'sync_state', 'reason':'preboot_capture_old_front_r18', 'state_token':f'preboot:{int(started*1000)}'}
-        r = requests.post(base + '/internal/job', json=body, headers={'X-Peer-Secret':secret, 'User-Agent':'vys-262-front-r18-preboot-capture'}, timeout=2.5)
-        if r.status_code not in (200, 202):
-            return False, f'worker preboot queue HTTP {r.status_code}: {r.text[:160]}'
-        try:
-            wait = max(0.0, min(8.0, float(os.getenv('SPLIT_PREBOOT_CAPTURE_WAIT_SEC','4.0') or '4.0')))
-        except Exception:
-            wait = 4.0
-        deadline = time.time() + wait
-        last_detail = f'queued HTTP {r.status_code}'
-        while time.time() < deadline:
-            try:
-                st = requests.get(base + '/internal/status', headers={'X-Peer-Secret':secret, 'User-Agent':'vys-262-front-r18-preboot-status'}, timeout=2.0)
-                if st.status_code == 200:
-                    row = (st.json() or {}).get('state') or {}
-                    rev = float(row.get('cache_revision') or 0.0)
-                    snap_at = float(row.get('last_snapshot_at') or 0.0)
-                    done_at = float(row.get('job_last_done') or 0.0)
-                    reason = str(row.get('job_last_reason') or '')
-                    err = str(row.get('job_last_error') or '')
-                    if snap_at >= started - 0.5 or rev > before_rev + 0.000001:
-                        return True, f'old FAST captured cache_revision={rev}'
-                    if done_at >= started - 0.5 and 'preboot_capture_old_front_r18' in reason:
-                        return (not bool(err)), (f'preboot capture finished revision={rev}' if not err else f'preboot capture failed: {err[:160]}')
-                    last_detail = f'waiting worker revision={rev} reason={reason[:60]}'
-            except Exception as exc:
-                last_detail = f'poll {type(exc).__name__}: {str(exc)[:120]}'
-            time.sleep(0.25)
-        return False, 'preboot capture wait expired; ' + last_detail
-    except Exception as exc:
-        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
-
-
-def _settle_worker_handoff(target: Path):
-    """Catch the old front's final SIGTERM snapshot during a rolling deploy."""
-    try:
-        grace = max(0.0, min(30.0, float(os.getenv('SPLIT_BOOT_HANDOFF_GRACE_SEC', '10') or '10')))
-    except Exception:
-        grace = 10.0
-    if grace <= 0:
-        return
-    deadline = time.time() + grace
-    local_rev = _db_revision(target)
-    highest = local_rev
-    while time.time() < deadline:
-        worker_rev = _worker_cache_revision()
-        redis_rev = _redis_snapshot_revision_r18()
-        remote_rev = max(worker_rev, redis_rev)
-        if remote_rev > highest + 0.000001:
-            if redis_rev >= worker_rev and redis_rev > highest + 0.000001:
-                ok, detail = _restore_from_redis_direct_r18(target)
-                print('[SPLIT FRONT] rolling handoff newer Redis snapshot:', ok, detail, 'remote_revision=', redis_rev, flush=True)
-            else:
-                ok, detail = _restore_from_worker(target)
-                print('[SPLIT FRONT] rolling handoff newer Worker snapshot:', ok, detail, 'remote_revision=', worker_rev, flush=True)
-            if ok:
-                highest = max(highest, _db_revision(target), remote_rev)
-        time.sleep(0.75)
-
-
-def _run(cmd, timeout=60):
-    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout, check=False)
-
-
-def _mega_login(timeout):
-    try:
-        who = _run(['mega-whoami'], timeout=min(20, timeout))
-        if who.returncode == 0:
-            return True, 'existing session'
-    except Exception:
-        pass
+def _mega_login(timeout: int) -> tuple[bool, str]:
     session = str(os.getenv('MEGA_SESSION', '') or '').strip()
     email = str(os.getenv('MEGA_EMAIL', '') or '').strip()
-    password = str(os.getenv('MEGA_PASSWORD', '') or '').strip()
-    if not session and (not email or not password):
-        return False, 'MEGA credentials/session missing'
+    password = str(os.getenv('MEGA_PASSWORD', '') or '')
+    if not session and not (email and password):
+        return False, 'MEGA credentials are not configured on FAST startup'
     cmd = ['mega-login', session] if session else ['mega-login', email, password]
     for attempt in (1, 2):
         if attempt == 2:
             try: _run(['mega-logout'], timeout=20)
             except Exception: pass
-            time.sleep(.6)
+            time.sleep(0.6)
         try:
             p = _run(cmd, timeout=timeout)
             if p.returncode == 0:
@@ -352,450 +163,406 @@ def _mega_login(timeout):
         except FileNotFoundError:
             return False, 'MEGAcmd is not installed'
         except Exception as exc:
-            return False, f'mega-login {type(exc).__name__}'
+            return False, f'mega-login {type(exc).__name__}: {str(exc)[:160]}'
     return False, 'mega-login rejected'
 
 
-def _restore_from_mega_emergency(target: Path):
-    if not _bool('SPLIT_EMERGENCY_MEGA', True):
-        return False, 'emergency MEGA disabled'
-    root = '/' + str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups2-2') or 'TelegramBotBackups2-2').strip('/')
-    legacy_raw = str(os.getenv('MEGA_LEGACY_BACKUP_DIRS', '/TelegramBotBackups-2T,/TelegramBotBackups') or '')
-    roots = [root]
-    for item in legacy_raw.split(','):
-        p = '/' + str(item or '').strip().strip('/')
-        if p != '/' and p not in roots:
-            roots.append(p)
+def _canonical_mega_root() -> str:
+    return '/' + str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups2-2') or 'TelegramBotBackups2-2').strip('/')
+
+
+def _startup_mega_roots() -> list[str]:
+    """MEGA roots allowed only during FAST startup recovery.
+
+    R50 keeps the configured root authoritative, but can bootstrap it from the
+    historical roots that HEAVY itself already understands. This closes the
+    empty-new-root race without re-enabling runtime MEGA access in FAST.
+    """
+    out: list[str] = []
+    for raw in [_canonical_mega_root(), *str(os.getenv(
+        'MEGA_LEGACY_BACKUP_DIRS',
+        '/TelegramBotBackups-2T,/TelegramBotBackups',
+    ) or '').split(',')]:
+        root = '/' + str(raw or '').strip().strip('/')
+        if root != '/' and root not in out:
+            out.append(root)
+    return out
+
+
+def _mega_missing(detail: str) -> bool:
+    low = str(detail or '').casefold()
+    return any(x in low for x in ('not found', 'no such', 'does not exist', "couldn't find", 'couldn\'t find'))
+
+
+def _manifest_generation_remote(root: str, tmpdir: Path, mega_timeout: int) -> tuple[str, str]:
+    """Return manifest-selected immutable generation, if one exists."""
+    manifest_remote = root.rstrip('/') + '/database/current_manifest.json'
+    md = tmpdir / ('manifest_' + str(abs(hash(root))))
+    md.mkdir(exist_ok=True)
+    try:
+        mg = _run(['mega-get', manifest_remote, str(md)], timeout=mega_timeout)
+    except Exception as exc:
+        return '', f'{manifest_remote}: {type(exc).__name__}'
+    if mg.returncode != 0:
+        detail = (mg.stderr or mg.stdout or 'mega-get failed').strip()
+        return '', f'{manifest_remote}: {detail[:180]}'
+    rows = list(md.rglob('current_manifest.json')) + list(md.rglob('*.json'))
+    if not rows:
+        return '', f'{manifest_remote}: downloaded manifest missing'
+    try:
+        payload = json.loads(rows[0].read_text(encoding='utf-8')) or {}
+    except Exception as exc:
+        return '', f'{manifest_remote}: invalid JSON {type(exc).__name__}'
+    generation_remote = str(payload.get('remote_generation') or '').strip()
+    if generation_remote and not generation_remote.startswith('/'):
+        generation_remote = root.rstrip('/') + '/database/generations/' + generation_remote.rsplit('/', 1)[-1]
+    if not generation_remote and payload.get('generation'):
+        generation_remote = root.rstrip('/') + '/database/generations/' + str(payload.get('generation')).rsplit('/', 1)[-1]
+    if not generation_remote:
+        return '', f'{manifest_remote}: no generation pointer'
+    return generation_remote, f'{manifest_remote}: generation={generation_remote.rsplit("/",1)[-1]}'
+
+
+def _discover_generation_remotes(root: str, mega_timeout: int, limit: int = 3) -> tuple[list[str], str]:
+    """Find newest immutable generations when current_manifest is absent/stale."""
+    generations = root.rstrip('/') + '/database/generations'
+    try:
+        found = _run(['mega-find', generations, '--pattern=generation_*.sqlite3.gz', '--type=f'], timeout=mega_timeout)
+    except Exception as exc:
+        return [], f'{generations}: {type(exc).__name__}'
+    if found.returncode != 0:
+        detail = (found.stderr or found.stdout or 'mega-find failed').strip()
+        return [], f'{generations}: {detail[:180]}'
+    rows = sorted({x.strip() for x in (found.stdout or '').splitlines() if x.strip().endswith('.sqlite3.gz')}, reverse=True)
+    return rows[:max(1, int(limit))], f'{generations}: found={len(rows)}'
+
+
+def _r32_event_valid(ev: object) -> bool:
+    if not isinstance(ev, dict) or int(ev.get('schema') or 0) != 32:
+        return False
+    if not str(ev.get('event_id') or '') or int(ev.get('revision') or 0) <= 0:
+        return False
+    return str(ev.get('kind') or '') in {'set_kv','save_chat','prune_chats','delete_chat','set_meta','set_cold','set_cold_many','delete_cold'}
+
+
+def _r32_max_revision(path: Path) -> int:
+    if not _db_valid(path):
+        return 0
+    try:
+        con = sqlite3.connect(str(path))
+        try:
+            row = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='r32_state_revisions'").fetchone()
+            if not row:
+                return 0
+            val = con.execute('SELECT MAX(revision) FROM r32_state_revisions').fetchone()
+            return int((val or [0])[0] or 0)
+        finally:
+            con.close()
+    except Exception:
+        return 0
+
+
+def _apply_r32_events(path: Path, events: list[dict]) -> tuple[int, int]:
+    if not events:
+        return 0, 0
+    con = sqlite3.connect(str(path), timeout=30)
+    applied = stale = 0
+    try:
+        con.execute('PRAGMA journal_mode=WAL')
+        con.execute('PRAGMA synchronous=FULL')
+        con.execute('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)')
+        con.execute('CREATE TABLE IF NOT EXISTS chats (chat_id TEXT PRIMARY KEY, v TEXT NOT NULL)')
+        con.execute('CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind,k))')
+        con.execute("CREATE TABLE IF NOT EXISTS cold_fields (chat_id TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(chat_id,k))")
+        con.execute('CREATE TABLE IF NOT EXISTS r32_state_revisions (shard_key TEXT PRIMARY KEY, revision INTEGER NOT NULL, event_id TEXT NOT NULL, updated_at REAL NOT NULL)')
+        con.execute('BEGIN IMMEDIATE')
+        for ev in sorted(events, key=lambda x: int(x.get('revision') or 0)):
+            if not _r32_event_valid(ev):
+                continue
+            kind = str(ev.get('kind') or '')
+            key = str(ev.get('key') or '')[:220]
+            rev = int(ev.get('revision') or 0)
+            eid = str(ev.get('event_id') or '')
+            payload = ev.get('payload') if isinstance(ev.get('payload'), dict) else {}
+            row = con.execute('SELECT revision FROM r32_state_revisions WHERE shard_key=?', (key,)).fetchone()
+            if row and int(row[0] or 0) >= rev:
+                stale += 1
+                continue
+            if kind == 'set_kv':
+                k = str(payload.get('k') or '')
+                con.execute('INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', (k, json.dumps(payload.get('v'), ensure_ascii=False, separators=(',',':'), default=str)))
+            elif kind == 'save_chat':
+                cid = str(payload.get('chat_id') or '')
+                con.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v', (cid, json.dumps(payload.get('v') or {}, ensure_ascii=False, separators=(',',':'), default=str)))
+            elif kind == 'prune_chats':
+                keep = {str(x) for x in (payload.get('keep') or [])}
+                for r in con.execute('SELECT chat_id FROM chats').fetchall():
+                    if str(r[0]) not in keep:
+                        con.execute('DELETE FROM chats WHERE chat_id=?', (str(r[0]),))
+            elif kind == 'delete_chat':
+                cid = str(payload.get('chat_id') or '')
+                con.execute('DELETE FROM chats WHERE chat_id=?', (cid,))
+                con.execute('DELETE FROM cold_fields WHERE chat_id=?', (cid,))
+            elif kind == 'set_meta':
+                mk = str(payload.get('kind') or ''); kk = str(payload.get('k') or '')
+                con.execute('INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v', (mk, kk, json.dumps(payload.get('v'), ensure_ascii=False, separators=(',',':'), default=str)))
+            elif kind == 'set_cold':
+                cid = str(payload.get('chat_id') or ''); kk = str(payload.get('k') or '')
+                stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                con.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', (cid, kk, json.dumps(payload.get('v'), ensure_ascii=False, separators=(',',':'), default=str), stamp))
+            elif kind == 'set_cold_many':
+                cid = str(payload.get('chat_id') or ''); stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                for kk, vv in (payload.get('items') or {}).items():
+                    con.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at', (cid, str(kk), json.dumps(vv, ensure_ascii=False, separators=(',',':'), default=str), stamp))
+            elif kind == 'delete_cold':
+                con.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?', (str(payload.get('chat_id') or ''), str(payload.get('k') or '')))
+            con.execute('INSERT INTO r32_state_revisions(shard_key,revision,event_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(shard_key) DO UPDATE SET revision=excluded.revision,event_id=excluded.event_id,updated_at=excluded.updated_at', (key, rev, eid, time.time()))
+            applied += 1
+        con.commit()
+        try: con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        except Exception: pass
+    except Exception:
+        try: con.rollback()
+        except Exception: pass
+        raise
+    finally:
+        con.close()
+    return applied, stale
+
+
+def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> tuple[bool, str]:
+    """Replay compact post-checkpoint state events directly from MEGA onto startup DB."""
+    event_root = root.rstrip('/') + '/events_r32'
+    try:
+        found = _run(['mega-find', event_root, '--pattern=events_*.json.gz', '--type=f'], timeout=mega_timeout)
+    except Exception as exc:
+        return False, f'MEGA event listing {type(exc).__name__}: {str(exc)[:180]}'
+    if found.returncode != 0:
+        detail = (found.stderr or found.stdout or '').strip()
+        low = detail.casefold()
+        if any(x in low for x in ('not found', 'no such', 'does not exist', 'couldn')):
+            return True, 'no MEGA event archive yet'
+        return False, 'MEGA event listing failed: ' + detail[:220]
+    rows = sorted({x.strip() for x in (found.stdout or '').splitlines() if x.strip().endswith('.json.gz')})
+    if not rows:
+        return True, 'no MEGA event segments'
+    # Correctness first: never truncate or globally skip archived event segments.
+    # Revision idempotence is per shard inside _apply_r32_events(). A global max
+    # can be ahead for shard A while shard B still needs an older segment.
+    current_max = _r32_max_revision(target)
+    work = Path(tempfile.mkdtemp(prefix='v262_fast_mega_events_'))
+    segments = applied = stale = 0
+    try:
+        for idx, remote in enumerate(rows):
+            name = remote.rsplit('/', 1)[-1]
+            dl = work / f'e{idx}'
+            dl.mkdir(exist_ok=True)
+            get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
+            if get.returncode != 0:
+                return False, f'MEGA event download failed {name}: {(get.stderr or get.stdout or "")[:180]}'
+            files = list(dl.rglob(name)) or list(dl.rglob('events_*.json.gz')) or list(dl.rglob('*.json.gz'))
+            if not files:
+                return False, f'MEGA event file missing after download: {name}'
+            try:
+                obj = json.loads(gzip.decompress(files[0].read_bytes()).decode('utf-8'))
+                events = [ev for ev in ((obj or {}).get('events') or []) if _r32_event_valid(ev)]
+            except Exception as exc:
+                return False, f'MEGA event decode failed {name}: {type(exc).__name__}: {str(exc)[:150]}'
+            if not events:
+                return False, f'MEGA event segment has no valid events: {name}'
+            a, st = _apply_r32_events(target, events)
+            applied += a; stale += st; segments += 1
+            current_max = max(current_max, max(int(ev.get('revision') or 0) for ev in events))
+            shutil.rmtree(dl, ignore_errors=True)
+        if not _db_valid(target):
+            return False, 'SQLite invalid after MEGA event replay'
+        return True, f'MEGA event replay segments={segments} applied={applied} stale={stale} max_revision={current_max}'
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
+    """Restore FAST from MEGA once per process start, then leave MEGA completely.
+
+    R50 read order per root:
+      current_manifest -> immutable generation -> latest -> newest generation fallback.
+    Root order:
+      configured canonical root -> explicitly configured legacy roots.
+    """
+    roots = _startup_mega_roots()
+    canonical_root = roots[0]
     mega_timeout = max(45, min(900, int(os.getenv('MEGA_TIMEOUT', '120') or '120')))
     login_timeout = max(45, min(300, int(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120')))
     logged, detail = _mega_login(login_timeout)
     if not logged:
         return False, detail
-    tmpdir = Path(tempfile.mkdtemp(prefix='v262_emergency_mega_'))
+    tmpdir = Path(tempfile.mkdtemp(prefix='v262_fast_startup_mega_'))
     try:
-        for idx, candidate_root in enumerate(roots):
-            attempt = tmpdir / f'r{idx}'
-            attempt.mkdir(parents=True, exist_ok=True)
-            remotes = [candidate_root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz']
-            manifest_dir = attempt / 'manifest'
-            manifest_dir.mkdir(exist_ok=True)
+        candidates: list[tuple[str, str, str]] = []
+        discovery: list[str] = []
+        seen: set[str] = set()
+
+        def add(root: str, remote: str, source: str) -> None:
+            remote = str(remote or '').strip()
+            if remote and remote not in seen:
+                seen.add(remote)
+                candidates.append((root, remote, source))
+
+        for root in roots:
+            generation_remote, manifest_detail = _manifest_generation_remote(root, tmpdir, mega_timeout)
+            discovery.append(manifest_detail)
+            if generation_remote:
+                add(root, generation_remote, 'manifest')
+
+            # HEAVY R50 still publishes this compact canonical pointer. It is a
+            # compatibility READ only; FAST never writes it at runtime.
+            add(root, root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz', 'latest')
+
+            # A manifest can be missing after a partial/manual migration while an
+            # immutable generation is still perfectly valid. Discover it once at
+            # startup instead of polling one missing filename forever.
+            generations, find_detail = _discover_generation_remotes(root, mega_timeout)
+            discovery.append(find_detail)
+            for remote in generations:
+                add(root, remote, 'generation-scan')
+
+        errors: list[str] = []
+        for idx, (source_root, remote, source_kind) in enumerate(candidates):
+            dl = tmpdir / f'd{idx}'
+            dl.mkdir(exist_ok=True)
             try:
-                mg = _run(['mega-get', candidate_root.rstrip('/') + '/database/current_manifest.json', str(manifest_dir)], timeout=mega_timeout)
-            except Exception:
-                mg = None
-            if mg is not None and mg.returncode == 0:
-                rows = list(manifest_dir.rglob('current_manifest.json')) + list(manifest_dir.rglob('*.json'))
-                if rows:
-                    try: payload = json.loads(rows[0].read_text(encoding='utf-8')) or {}
-                    except Exception: payload = {}
-                    generation_remote = str(payload.get('remote_generation') or '').strip()
-                    if not generation_remote and payload.get('generation'):
-                        generation_remote = candidate_root.rstrip('/') + '/database/generations/' + str(payload.get('generation'))
-                    if generation_remote:
-                        remotes.append(generation_remote)
-            for ridx, remote in enumerate(remotes):
-                dl = attempt / f'd{ridx}'
-                dl.mkdir(exist_ok=True)
-                try: get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
-                except Exception: continue
-                if get.returncode != 0:
+                get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
+            except Exception as exc:
+                errors.append(f'{remote}: {type(exc).__name__}')
+                continue
+            if get.returncode != 0:
+                detail = (get.stderr or get.stdout or 'mega-get failed').strip()
+                errors.append(f'{remote}: {detail[:180]}')
+                continue
+            candidates_local = list(dl.rglob('*.sqlite3.gz')) + [p for p in dl.rglob('*.gz') if p.name != 'latest_bot_state.sqlite3.gz']
+            if not candidates_local:
+                errors.append(f'{remote}: download contains no SQLite gzip')
+                continue
+            for gz_path in candidates_local:
+                ok, install_detail = _install_gzip_db(gz_path, target)
+                if not ok:
+                    errors.append(f'{remote}: {install_detail}')
                     continue
-                candidates = list(dl.rglob('*.sqlite3.gz')) + list(dl.rglob('*.gz'))
-                for gz in candidates:
-                    if _install_gzip_db(gz, target):
-                        return True, f'emergency MEGA restore OK from {candidate_root}'
-        return False, 'MEGA snapshot not available in current or legacy roots'
+
+                # Event streams may span a migration boundary. Replaying all known
+                # startup roots is safe because idempotence is tracked per shard.
+                replay_parts: list[str] = []
+                replay_failed = False
+                ordered_event_roots = [source_root]
+                if canonical_root != source_root:
+                    ordered_event_roots.append(canonical_root)
+                for event_root in ordered_event_roots:
+                    replay_ok, replay_detail = _replay_mega_event_segments(target, event_root, mega_timeout)
+                    replay_parts.append(f'{event_root}: {replay_detail}')
+                    if not replay_ok:
+                        replay_failed = True
+                        errors.append(f'{remote}: base installed but event replay failed at {event_root}: {replay_detail}')
+                        break
+                if replay_failed:
+                    continue
+                source_note = 'canonical' if source_root == canonical_root else 'legacy-bootstrap'
+                return True, (
+                    f'MEGA startup restore OK source={source_note}/{source_kind} root={source_root} '
+                    f'remote={remote}; {install_detail}; ' + '; '.join(replay_parts)
+                )[:1200]
+
+        useful_discovery = [x for x in discovery if x and not _mega_missing(x)]
+        tail = errors[-6:] + useful_discovery[-3:]
+        return False, ('; '.join(tail) or 'no valid MEGA snapshot/generation found in configured or legacy roots')[:1200]
     finally:
+        # Runtime boundary: FAST must not keep an authenticated MEGAcmd session.
+        try: _run(['mega-logout'], timeout=20)
+        except Exception: pass
         try: _run(['mega-quit'], timeout=12)
         except Exception: pass
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _scrub_fast_runtime_mega_credentials() -> None:
+    for key in ('MEGA_SESSION', 'MEGA_EMAIL', 'MEGA_PASSWORD'):
+        os.environ.pop(key, None)
+    os.environ['MEGA_ENABLED'] = '0'
+    os.environ['MEGA_AUTORESTORE'] = '0'
+    os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'
 
-
-def _r20_capsule_key():
-    return str(os.getenv('WORKER_REDIS_CAPSULE_KEY','vys262:durable_capsule:r20') or 'vys262:durable_capsule:r20').strip()
-
-def _r20_sqlite_meta_get(con, kind, key='latest'):
-    try:
-        row=con.execute('SELECT v FROM meta WHERE kind=? AND k=?',(kind,key)).fetchone()
-        return json.loads(row[0]) if row and row[0] else {}
-    except Exception:
-        return {}
-
-def _r20_sqlite_meta_set(con, kind, key, obj):
-    con.execute('CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind,k))')
-    con.execute('INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v',
-                (str(kind),str(key),json.dumps(obj,ensure_ascii=False,separators=(',',':'),default=str)))
-
-def _r20_apply_capsule_to_db(target: Path, capsule: dict):
-    if not _db_valid(target) or not isinstance(capsule,dict):
-        return False, 'invalid DB/capsule'
-    us=capsule.get('user_state') or {}; cp=capsule.get('config_checkpoint') or {}; rev=capsule.get('state_revision') or {}
-    in_seq=int((us or {}).get('seq') or capsule.get('user_state_seq') or 0)
-    in_gen=int((cp or {}).get('generation') or capsule.get('config_generation') or 0)
-    con=sqlite3.connect(str(target))
-    try:
-        cur_us=_r20_sqlite_meta_get(con,'user_state_shadow_v265','latest') or {}
-        cur_cp=_r20_sqlite_meta_get(con,'config_guard_v234','latest') or {}
-        cur_seq=int((cur_us or {}).get('seq') or 0); cur_gen=int((cur_cp or {}).get('generation') or 0)
-        applied=[]
-        if isinstance(us,dict) and us and in_seq >= cur_seq:
-            _r20_sqlite_meta_set(con,'user_state_shadow_v265','latest',us); applied.append(f'user_state {cur_seq}->{in_seq}')
-        if isinstance(cp,dict) and cp and in_gen >= cur_gen:
-            _r20_sqlite_meta_set(con,'config_guard_v234','latest',cp)
-            _r20_sqlite_meta_set(con,'config_guard_v234','generation',in_gen)
-            _r20_sqlite_meta_set(con,'config_guard_v234','last_signature',str(cp.get('config_hash') or ''))
-            _r20_sqlite_meta_set(con,'config_guard_v234','synced_hash',str(cp.get('config_hash') or ''))
-            applied.append(f'config {cur_gen}->{in_gen}')
-        if isinstance(rev,dict) and rev:
-            cur_rev=_r20_sqlite_meta_get(con,'split_state_revision_r18','latest') or {}
-            if float(rev.get('saved_at') or 0.0) >= float(cur_rev.get('saved_at') or 0.0):
-                _r20_sqlite_meta_set(con,'split_state_revision_r18','latest',rev)
-        con.commit()
-        return bool(applied), ', '.join(applied) if applied else f'capsule not newer seq={in_seq}/{cur_seq} gen={in_gen}/{cur_gen}'
-    finally:
-        con.close()
-
-def _r20_merge_capsules(*rows):
-    candidates=[x for x in rows if isinstance(x,dict) and x]
-    if not candidates:
-        return {}
-    base=dict(max(candidates,key=lambda x: float(x.get('saved_at') or 0.0)))
-    best_us=max(candidates,key=lambda x: int((x.get('user_state') or {}).get('seq') or x.get('user_state_seq') or 0))
-    best_cp=max(candidates,key=lambda x: int((x.get('config_checkpoint') or {}).get('generation') or x.get('config_generation') or 0))
-    base['user_state']=best_us.get('user_state') or {}
-    base['user_state_seq']=int((base['user_state'] or {}).get('seq') or best_us.get('user_state_seq') or 0)
-    base['config_checkpoint']=best_cp.get('config_checkpoint') or {}
-    base['config_generation']=int((base['config_checkpoint'] or {}).get('generation') or best_cp.get('config_generation') or 0)
-    try:
-        best_rev=max(candidates,key=lambda x: float(((x.get('state_revision') or {}).get('saved_at') or 0.0)))
-        base['state_revision']=best_rev.get('state_revision') or {}
-    except Exception:
-        pass
-    base['saved_at']=max(float(x.get('saved_at') or 0.0) for x in candidates)
-    base['kind']='vys262_durable_capsule_r20'; base['schema']=1
-    return base
-
-def _r20_load_capsule_from_redis():
-    if _redis is None: return {}, 'redis package unavailable'
-    url=str(os.getenv('REDIS_URL','') or '').strip()
-    if not url: return {}, 'REDIS_URL empty'
-    try:
-        client=_redis.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=2.5,health_check_interval=30)
-        raw=client.get(_r20_capsule_key())
-        if not raw: return {}, 'capsule missing in Redis'
-        payload=json.loads(gzip.decompress(raw).decode('utf-8'))
-        return (payload if isinstance(payload,dict) else {}), 'Redis capsule OK'
-    except Exception as exc:
-        return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
-
-def _r20_load_capsule_from_worker():
-    base,secret=_peer_base(),_secret()
-    if not base or not secret: return {}, 'worker URL/secret not configured'
-    try:
-        r=requests.get(base+'/internal/capsule/latest?deep=1',headers={'X-Peer-Secret':secret,'User-Agent':'vys-262-front-capsule-restore-r20'},timeout=max(5.0,min(30.0,float(os.getenv('SPLIT_CAPSULE_BOOT_TIMEOUT','15') or '15'))))
-        if r.status_code!=200: return {}, f'worker HTTP {r.status_code}'
-        raw=r.content
-        if str(r.headers.get('Content-Encoding') or '').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
-            raw=gzip.decompress(raw)
-        payload=json.loads(raw.decode('utf-8'))
-        return (payload if isinstance(payload,dict) else {}), 'Worker capsule OK'
-    except Exception as exc:
-        return {}, f'{type(exc).__name__}: {str(exc)[:180]}'
-
-def _r20_restore_capsule(target: Path):
-    """R49: capsule is supplementary and must never force a HEAVY boot round-trip.
-
-    If Redis has it, merge it. If Redis is empty, the already-restored full SQLite is
-    sufficient; HEAVY is reserved for full-base emergency restore, not capsule lookup.
-    """
-    redis_payload, redis_detail = _r20_load_capsule_from_redis()
-    if not redis_payload:
-        return False, 'redis=' + redis_detail + '; skipped HEAVY capsule lookup (R49 Redis-first)'
-    try:
-        _ok, apply_detail = _r20_apply_capsule_to_db(target, redis_payload)
-        return True, 'redis=' + redis_detail + '; ' + apply_detail
-    except Exception as exc:
-        return False, f'capsule apply {type(exc).__name__}: {str(exc)[:180]}'
-
-_R43_EVENT_STREAM_KEY='per:r43:front:state_events'
-
-def _r43_replay_redis_events(target: Path):
-    """Replay the append-only FAST Redis event stream over the restored SQLite image.
-
-    Every operation is idempotent (set/delete/prune), so replaying events already
-    included in the base snapshot is safe and yields the newest known state.
-    """
-    if _redis is None or not _db_valid(target):
-        return False,'redis unavailable or DB invalid'
-    url=str(os.getenv('REDIS_URL','') or '').strip()
-    if not url: return False,'REDIS_URL empty'
-    try:
-        client=_redis.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=4.0,health_check_interval=30)
-        rows=client.xrange(_R43_EVENT_STREAM_KEY,min='-',max='+',count=50000) or []
-        events=[]
-        for _sid, fields in rows:
-            try:
-                raw=fields.get(b'e') if isinstance(fields,dict) else None
-                if raw is None and isinstance(fields,dict): raw=fields.get('e')
-                if isinstance(raw,(bytes,bytearray)): raw=raw.decode('utf-8')
-                ev=json.loads(str(raw or ''))
-                if isinstance(ev,dict) and ev.get('kind'): events.append(ev)
-            except Exception: pass
-        if not events: return True,'no R43 Redis events'
-        events.sort(key=lambda x:(int(x.get('revision') or 0),str(x.get('event_id') or '')))
-        con=sqlite3.connect(str(target),timeout=20)
-        applied=0
-        try:
-            for ev in events:
-                kind=str(ev.get('kind') or ''); pld=ev.get('payload') if isinstance(ev.get('payload'),dict) else {}
-                if kind=='set_kv':
-                    con.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",(str(pld.get('k') or ''),json.dumps(pld.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
-                elif kind=='save_chat':
-                    con.execute("INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v",(str(pld.get('chat_id') or ''),json.dumps(pld.get('v') or {},ensure_ascii=False,separators=(',',':'),default=str)))
-                elif kind=='prune_chats':
-                    keep=[str(x) for x in (pld.get('keep') or [])]
-                    if keep:
-                        qs=','.join('?' for _ in keep); con.execute(f'DELETE FROM chats WHERE chat_id NOT IN ({qs})',tuple(keep))
-                    else: con.execute('DELETE FROM chats')
-                elif kind=='delete_chat':
-                    con.execute('DELETE FROM chats WHERE chat_id=?',(str(pld.get('chat_id') or ''),))
-                elif kind=='set_meta':
-                    con.execute("INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v",(str(pld.get('kind') or ''),str(pld.get('k') or ''),json.dumps(pld.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
-                elif kind=='set_cold':
-                    con.execute("INSERT INTO cold_fields(chat_id,k,v) VALUES(?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v",(str(pld.get('chat_id') or ''),str(pld.get('k') or ''),json.dumps(pld.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
-                elif kind=='set_cold_many':
-                    cid=str(pld.get('chat_id') or ''); items=pld.get('items') if isinstance(pld.get('items'),dict) else {}
-                    for kk,vv in items.items():
-                        con.execute("INSERT INTO cold_fields(chat_id,k,v) VALUES(?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v",(cid,str(kk),json.dumps(vv,ensure_ascii=False,separators=(',',':'),default=str)))
-                elif kind=='delete_cold':
-                    con.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?',(str(pld.get('chat_id') or ''),str(pld.get('k') or '')))
-                else:
-                    continue
-                applied+=1
-            con.commit()
-        finally:
-            con.close()
-        return True,f'R43 Redis events replayed={applied} stream_rows={len(rows)}'
-    except Exception as exc:
-        return False,f'{type(exc).__name__}: {str(exc)[:180]}'
-
-def _redis_seed_current_db(target: Path, reason='front_boot'):
-    """Best-effort seed of shared durable snapshot before worker can be redeployed."""
-    if _redis is None or not _db_valid(target):
-        return False, 'redis unavailable or DB invalid'
-    url = str(os.getenv('REDIS_URL', '') or '').strip()
-    if not url:
-        return False, 'REDIS_URL empty'
-    key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
-    tmpdir = Path(tempfile.mkdtemp(prefix='v266_front_seed_'))
-    try:
-        gz = tmpdir / 'latest.sqlite3.gz'
-        # DB has already been installed/restored and is not open by the bot yet.
-        with open(target, 'rb') as src, gzip.open(gz, 'wb', compresslevel=9) as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
-        payload = gz.read_bytes()
-        max_mb = max(1, min(128, int(os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16')))
-        if len(payload) > max_mb * 1024 * 1024:
-            return False, f'snapshot too large for Redis: {len(payload)}'
-        revision = 0.0
-        try:
-            con = sqlite3.connect(str(target))
-            try:
-                for kind in ('split_state_revision_r18', 'user_state_shadow_v265', 'runtime_continuity_v263'):
-                    row = con.execute("SELECT v FROM meta WHERE kind=? AND k='latest'", (kind,)).fetchone()
-                    if row:
-                        obj = json.loads(row[0])
-                        revision = max(revision, float((obj or {}).get('saved_at') or 0.0))
-            finally:
-                con.close()
-        except Exception:
-            pass
-        client = _redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=8, health_check_interval=30)
-        existing_revision = _redis_snapshot_revision_r18(client)
-        if existing_revision > revision + 0.000001:
-            return True, f'Redis newer state kept existing={existing_revision} incoming={revision}'
-        meta = {'revision':revision, 'size':len(payload), 'saved_at':time.time(), 'reason':str(reason or '')[:120], 'source':'front-start-r18'}
-        pipe = client.pipeline(transaction=True)
-        pipe.set(key, payload)
-        pipe.set(key + ':meta', json.dumps(meta, separators=(',', ':')))
-        pipe.execute()
-        return True, f'Redis durable seed OK size={len(payload)} revision={revision}'
-    except Exception as exc:
-        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-
-def _r32_seed_marker_client():
-    if _redis is None:
-        return None
-    url=str(os.getenv('REDIS_URL','') or '').strip()
-    if not url:
-        return None
-    return _redis.Redis.from_url(url,socket_connect_timeout=1.5,socket_timeout=3,health_check_interval=30)
-
-def _r32_migration_seeded():
-    # R34 primary marker lives on the running HEAVY process, so Redis is optional.
-    try:
-        base=_peer_base(); secret=_secret()
-        if base and secret:
-            r=requests.get(base+'/internal/r34/seed-status',headers={'X-Peer-Secret':secret,'User-Agent':'per-r34-seed-status'},timeout=4)
-            payload=r.json() if r.content else {}
-            if 200<=r.status_code<300 and payload.get('ok') and payload.get('seeded'): return True
-    except Exception:
-        pass
-    try:
-        c=_r32_seed_marker_client()
-        if c is None: return False
-        return bool(c.get('vys262:state_events:r34:migration_seeded'))
-    except Exception:
-        return False
-
-def _r32_mark_migration_seeded():
-    try:
-        c=_r32_seed_marker_client();
-        if c is None: return False
-        c.set('vys262:state_events:r34:migration_seeded','1')
-        return True
-    except Exception:
-        return False
-
-def _preboot_capture_old_front_r18():
-    # R43 compute mode does not use HEAVY as the primary state authority. Avoid a
-    # boot-time dependency on HEAVY just to check an old migration marker.
-    if _bool('R43_FAST_AUTHORITY', True):
-        return True, 'R43 FAST-authority mode; old-front/HEAVY migration seed probe skipped'
-    # R34 needs one exact migration seed from the old R33 instance to close any R33 413 gap. After that,
-    # HEAVY is rebuilt from immutable row events and no full preboot capture is sent.
-    if _bool('R32_EVENT_STREAM_ENABLED', True) and _r32_migration_seeded():
-        return True, 'R34 event stream already seeded; full preboot capture skipped'
-    ok,detail=_preboot_capture_old_front_r18_legacy()
-    if ok and _bool('R32_EVENT_STREAM_ENABLED', True):
-        _r32_mark_migration_seeded()
-        detail=str(detail)+'; R34 migration seed marked'
-    return ok,detail
 
 def main():
     server = _start_boot_port()
     target = _db_path()
+    started = time.time()
     trace = {
-        'schema': 1, 'policy': 'R49_REDIS_FIRST', 'started_at': time.time(),
-        'local_found': target.exists(), 'local_valid': False, 'local_revision': 0.0,
-        'redis_full_attempted': False, 'redis_full_ok': False, 'redis_full_detail': '',
-        'redis_events_ok': False, 'redis_events_detail': '',
-        'redis_capsule_ok': False, 'redis_capsule_detail': '',
-        'heavy_contacted': False, 'heavy_ok': False, 'heavy_detail': '',
-        'mega_contacted': False, 'mega_ok': False, 'mega_detail': '',
-        'base_source': '', 'base_revision': 0.0, 'final_revision': 0.0, 'elapsed_ms': 0.0,
+        'schema': 2,
+        'policy': 'R50_FAST_STARTUP_MEGA_ONLY',
+        'started_at': started,
+        'internal_config': INTERNAL_CONFIG_VERSION,
+        'local_found': target.exists(),
+        'local_valid_before': _db_valid(target),
+        'local_revision_before': _db_revision(target),
+        'mega_contacted': True,
+        'mega_ok': False,
+        'mega_detail': '',
+        'redis_contacted': False,
+        'heavy_contacted': False,
+        'base_source': '',
     }
     try:
-        force = _bool('SPLIT_FORCE_BOOT_RESTORE', False)
-        always_remote = _bool('SPLIT_BOOT_ALWAYS_RESTORE', False)
-        local_valid = _db_valid(target)
-        trace['local_valid'] = bool(local_valid)
-        trace['local_revision'] = _db_revision(target) if local_valid else 0.0
-        if local_valid and not force:
-            trace['base_source'] = 'LOCAL_SQLITE'
-            trace['base_revision'] = trace['local_revision']
+        had_valid_local_before_restore = bool(trace['local_valid_before'])
+        max_attempts = max(1, min(12, int(os.getenv('SPLIT_RESTORE_BOOT_ATTEMPTS', '3') or '3')))
+        retry_sec = max(2, min(60, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '5') or '5')))
+        last_detail = ''
+        for attempt in range(1, max_attempts + 1):
+            ok, detail = _restore_from_mega_startup(target)
+            last_detail = str(detail)
+            trace['mega_ok'] = bool(ok)
+            trace['mega_detail'] = last_detail[:700]
+            trace['mega_attempt'] = attempt
+            trace['mega_attempts_max'] = max_attempts
+            print(f'[SPLIT FRONT] R50 FAST MEGA startup restore attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
+            if ok:
+                trace['base_source'] = 'MEGA'
+                break
+            if had_valid_local_before_restore and _db_valid(target):
+                trace['base_source'] = 'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE'
+                print('[SPLIT FRONT] keeping pre-existing valid local SQLite after MEGA attempt:', detail, flush=True)
+                break
+            if _bool('SPLIT_ALLOW_EMPTY_BOOT', False):
+                trace['base_source'] = 'EMPTY_INIT'
+                print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
+                break
+            if attempt < max_attempts:
+                time.sleep(retry_sec)
+        else:
+            # Never remain a healthy-looking web service that does no bot work. A
+            # fresh container without a valid MEGA recovery source must fail fast;
+            # Render can restart it and a later HEAVY checkpoint can then be picked up.
+            trace['base_source'] = 'MEGA_RESTORE_FAILED'
+            trace['local_valid_after'] = _db_valid(target)
+            print('[SPLIT FRONT] R50 FATAL: no valid MEGA startup snapshot after bounded attempts:', last_detail, flush=True)
+            raise RuntimeError('R50 MEGA startup restore failed: ' + last_detail[:700])
 
-        # R49 hard order: Redis is checked before HEAVY/MEGA. On a fresh Render
-        # container a valid Redis snapshot immediately becomes the base.
-        if not force:
-            trace['redis_full_attempted'] = True
-            try:
-                rok, rdetail = _restore_from_redis_direct_r18(target)
-            except Exception as exc:
-                rok, rdetail = False, f'{type(exc).__name__}: {str(exc)[:180]}'
-            trace['redis_full_ok'] = bool(rok)
-            trace['redis_full_detail'] = str(rdetail)[:300]
-            print('[SPLIT FRONT] R49 Redis-first restore:', rok, rdetail, flush=True)
-            if rok:
-                local_valid = _db_valid(target)
-                trace['base_source'] = 'REDIS_FULL'
-                trace['base_revision'] = _db_revision(target)
-
-        # Only an absent/invalid base proceeds to the second bot and then MEGA.
-        # R49 policy requested by owner: whenever we still have a valid local base
-        # but Redis was empty/unusable, seed that current base to Redis *before*
-        # contacting HEAVY/MEGA. On a fresh container with no valid local DB there
-        # is naturally nothing to seed, so fallback proceeds immediately.
-        need_fallback = bool(force or always_remote or not local_valid)
-        if need_fallback and local_valid and not trace.get('redis_full_ok'):
-            try:
-                pre_ok, pre_detail = _redis_seed_current_db(target, reason='r49_before_heavy_mega_fallback')
-            except Exception as exc:
-                pre_ok, pre_detail = False, f'{type(exc).__name__}: {str(exc)[:180]}'
-            trace['redis_pre_fallback_seed_ok'] = bool(pre_ok)
-            trace['redis_pre_fallback_seed_detail'] = str(pre_detail)[:300]
-            print('[SPLIT FRONT] R49 Redis pre-fallback seed:', pre_ok, pre_detail, flush=True)
-        if need_fallback:
-            # Optional rolling capture is deliberately after Redis, never before it.
-            try:
-                cap_ok, cap_detail = _preboot_capture_old_front_r18_legacy()
-                print('[SPLIT FRONT] R49 fallback preboot HEAVY capture:', cap_ok, cap_detail, flush=True)
-            except Exception as exc:
-                print('[SPLIT FRONT] R49 fallback preboot HEAVY capture: False', type(exc).__name__, str(exc)[:160], flush=True)
-            while True:
-                trace['heavy_contacted'] = True
-                ok, detail = _restore_from_worker(target)
-                trace['heavy_ok'] = bool(ok); trace['heavy_detail'] = str(detail)[:300]
-                print('[SPLIT FRONT] R49 HEAVY restore:', ok, detail, flush=True)
-                if ok:
-                    local_valid = _db_valid(target)
-                    trace['base_source'] = 'HEAVY'
-                    trace['base_revision'] = _db_revision(target)
-                    break
-                if local_valid and not force:
-                    print('[SPLIT FRONT] HEAVY unavailable; keeping valid local SQLite:', detail, flush=True)
-                    break
-                trace['mega_contacted'] = True
-                ok, detail = _restore_from_mega_emergency(target)
-                trace['mega_ok'] = bool(ok); trace['mega_detail'] = str(detail)[:300]
-                print('[SPLIT FRONT] R49 MEGA disaster restore:', ok, detail, flush=True)
-                if ok:
-                    local_valid = _db_valid(target)
-                    trace['base_source'] = 'MEGA'
-                    trace['base_revision'] = _db_revision(target)
-                    break
-                if _bool('SPLIT_ALLOW_EMPTY_BOOT', False):
-                    print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
-                    trace['base_source'] = 'EMPTY_INIT'
-                    break
-                time.sleep(max(5, min(120, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '20') or '20'))))
-
-        if _db_valid(target) and _bool('R43_FAST_AUTHORITY', True):
-            ev_ok, ev_detail = _r43_replay_redis_events(target)
-            trace['redis_events_ok'] = bool(ev_ok); trace['redis_events_detail'] = str(ev_detail)[:300]
-            print('[SPLIT FRONT] R49 Redis event replay:', ev_ok, ev_detail, flush=True)
-
-        if _db_valid(target):
-            cap_ok, cap_detail = _r20_restore_capsule(target)
-            trace['redis_capsule_ok'] = bool(cap_ok); trace['redis_capsule_detail'] = str(cap_detail)[:300]
-            print('[SPLIT FRONT] R49 Redis capsule restore:', cap_ok, cap_detail, flush=True)
-
+        # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
         os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)
-
-        # Re-seed Redis with the final assembled DB.  This keeps Free Redis as the
-        # fastest latest-state cache; HEAVY/MEGA remain independent fallbacks.
-        if _db_valid(target):
-            redis_ok, redis_detail = _redis_seed_current_db(target, reason='r49_front_boot_final_state')
-            print('[SPLIT FRONT] R49 Redis final seed:', redis_ok, redis_detail, flush=True)
+        _scrub_fast_runtime_mega_credentials()
 
         if _db_valid(target):
-            final_revision = _db_revision(target)
-            trace['final_revision'] = final_revision
-            if not trace.get('base_source'):
-                trace['base_source'] = 'LOCAL_SQLITE'
-                trace['base_revision'] = final_revision
+            revision = _db_revision(target)
+            trace['final_revision'] = revision
+            trace['local_valid_after'] = True
             os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
-            os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(final_revision)
-            print(f'[SPLIT FRONT] R49 authoritative preboot DB revision={final_revision}', flush=True)
+            os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(revision)
+        else:
+            trace['final_revision'] = 0.0
+            trace['local_valid_after'] = False
 
-        trace['elapsed_ms'] = round((time.time() - float(trace['started_at'])) * 1000.0, 1)
+        trace['runtime_mega_credentials_scrubbed'] = True
+        trace['redis_runtime_enabled'] = bool(os.getenv('REDIS_URL'))
+        trace['elapsed_ms'] = round((time.time() - started) * 1000.0, 1)
         trace['finished_at'] = time.time()
         trace_json = json.dumps(trace, ensure_ascii=False, separators=(',', ':'))
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json

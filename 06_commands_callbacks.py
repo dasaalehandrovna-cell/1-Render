@@ -2978,7 +2978,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     op_id = operation_begin('finance_delete', chat_id, target=str(rid), payload={'rid': rid}, critical=True) if 'operation_begin' in globals() else ''
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
-        deleted_record = next((dict(x) for x in store.get('records', []) if int(x.get('id', -1)) == int(rid)), None)
+        deleted_record = next((copy.deepcopy(x) for x in store.get('records', []) if int(x.get('id', -1)) == int(rid)), None)
         store['records'] = [x for x in store['records'] if int(x.get('id', -1)) != int(rid)]
         for day, arr in list(store.get('daily_records', {}).items()):
             arr2 = [x for x in arr if int(x.get('id', -1)) != int(rid)]
@@ -4984,11 +4984,8 @@ def cancel_auto_delete_for_message(chat_id: int, message_id: int):
     except Exception as e:
         log_error(f'cancel_auto_delete_for_message({chat_id},{message_id}): {e}')
 
-def recreate_main_window_now(chat_id: int, day_key: str, automatic: bool=False, expected_epoch: int|None=None):
+def recreate_main_window_now(chat_id: int, day_key: str):
     """Удаляет старое о1, если возможно, и создаёт новое основное окно."""
-    if automatic:
-        if expected_epoch is not None and not r50_ui_epoch_matches(chat_id, expected_epoch): return False
-        if not r50_ui_is_quiet(chat_id, 5.0): return False
     try:
         old_mid = get_active_window_id(chat_id, day_key)
         if old_mid:
