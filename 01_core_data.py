@@ -1673,8 +1673,13 @@ BOT_TOKEN = os.getenv('B_T', '').strip()
 OWNER_ID = os.getenv('ID', '').strip()
 RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', '').strip()
 _RENDER_HOST_URL = f'https://{RENDER_EXTERNAL_HOSTNAME}' if RENDER_EXTERNAL_HOSTNAME else ''
-APP_URL = os.getenv('APP_URL', '').strip() or os.getenv('RENDER_EXTERNAL_URL', '').strip() or _RENDER_HOST_URL
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '').strip() or APP_URL
+_RENDER_EXTERNAL_URL = os.getenv('RENDER_EXTERNAL_URL', '').strip()
+APP_URL = os.getenv('APP_URL', '').strip() or _RENDER_EXTERNAL_URL or _RENDER_HOST_URL
+# R53: on Render, Telegram must target the currently running FAST service.  Old
+# WEBHOOK_URL/APP_URL values can survive redeploys and silently redirect every
+# callback to another/obsolete service while this process still looks healthy.
+# Prefer Render's own public hostname whenever it is available.
+WEBHOOK_URL = (_RENDER_HOST_URL or _RENDER_EXTERNAL_URL or os.getenv('WEBHOOK_URL', '').strip() or APP_URL)
 try:
     PORT = int(os.getenv('PORT', '5000'))
 except Exception:

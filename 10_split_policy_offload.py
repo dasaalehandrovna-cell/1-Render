@@ -5568,7 +5568,7 @@ def _r34_post_events(events, wire, large=False):
     base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
     if not base or not secret: raise RuntimeError('R34 peer URL/secret not configured')
     endpoint='/internal/state/event-large' if large else '/internal/state/events'
-    r=requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r34-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(30.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','8') or '8'))))
+    r=requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r34-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(120.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','90') or '90'))))
     if r.status_code==413 and not large:
         if len(events)>1:
             mid=max(1,len(events)//2)

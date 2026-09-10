@@ -3159,6 +3159,14 @@ def _v149_send_or_edit_group(chat_id: int, text: str, old_message_id: int=0, rep
         return (True, new_id)
     except Exception as exc:
         log_error(f'v149 reminder group send {chat_id}: {exc}')
+        # R53: Telegram 400 chat-not-found is terminal.  Persist lifecycle once so
+        # the existing reminder target filter stops retrying this dead chat forever.
+        try:
+            if _v150_error_class(exc)[0] == 'bot_removed':
+                set_chat_status_v150(int(chat_id), 'bot_removed', str(exc), source='reminder_group_send', persist=True, schedule_backup=True)
+                log_error(f'R53 reminder target suspended chat={int(chat_id)} reason=telegram_chat_not_found')
+        except Exception as lifecycle_exc:
+            log_error(f'R53 reminder lifecycle update failed chat={chat_id}: {lifecycle_exc}')
         return (False, int(old_message_id or 0))
 
 def _v149_send_individual(chat_id: int, reminder_id: int, cfg: dict, active_count: int) -> tuple[bool, int]:
@@ -3171,6 +3179,14 @@ def _v149_send_individual(chat_id: int, reminder_id: int, cfg: dict, active_coun
         return (True, new_mid)
     except Exception as exc:
         log_error(f'v149 reminder {reminder_id} send {chat_id}: {exc}')
+        # R53: do not let an unreachable historic target generate a send every
+        # scheduler tick.  The canonical lifecycle filter will exclude it next tick.
+        try:
+            if _v150_error_class(exc)[0] == 'bot_removed':
+                set_chat_status_v150(int(chat_id), 'bot_removed', str(exc), source='reminder_individual_send', persist=True, schedule_backup=True)
+                log_error(f'R53 reminder target suspended chat={int(chat_id)} reminder={int(reminder_id)} reason=telegram_chat_not_found')
+        except Exception as lifecycle_exc:
+            log_error(f'R53 reminder lifecycle update failed chat={chat_id}: {lifecycle_exc}')
         return (False, old_mid)
 
 def _v149_cleanup_legacy_group_state_once() -> bool:
@@ -4559,6 +4575,18 @@ def telegram_webhook():
     if WEBHOOK_HEADER_SECRET_ENABLED:
         supplied = str(request.headers.get('X-Telegram-Bot-Api-Secret-Token', '') or '')
         if supplied != WEBHOOK_HEADER_SECRET:
+            # R53: a secret mismatch used to be completely silent and therefore
+            # looked exactly like a dead callback dispatcher.  Never print either
+            # secret; log only request metadata and whether a header was present.
+            try:
+                log_error(
+                    'R53 WEBHOOK FORBIDDEN: secret header mismatch; '
+                    f'present={int(bool(supplied))} content_length={request.content_length or 0} '
+                    f'remote={str(request.headers.get("X-Forwarded-For") or request.remote_addr or "")[:120]}'
+                )
+                r52_diag('WEBHOOK_FORBIDDEN', header_present=int(bool(supplied)), content_length=request.content_length or 0, remote=str(request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:120])
+            except Exception:
+                pass
             return ('FORBIDDEN', 403)
     try:
         keepalive_note_inbound_activity('telegram_webhook')
@@ -4816,28 +4844,175 @@ def telegram_webhook():
         log_error(f'WEBHOOK: enqueue/update dispatcher error: {e}')
         return ('ERROR', 500)
 
-def _v177_legacy_0269_set_webhook():
+import urllib.parse as _r53_urlparse
+_R53_WEBHOOK_WATCHDOG_STARTED = False
+_R53_WEBHOOK_WATCHDOG_LOCK = threading.RLock()
+_R53_WEBHOOK_WATCHDOG_LAST = ''
+
+
+def _r53_expected_webhook_url() -> str:
+    return str(WEBHOOK_URL or '').rstrip('/') + str(WEBHOOK_ROUTE_PATH or '')
+
+
+def _r53_normalize_url(url: str) -> str:
+    return str(url or '').strip().rstrip('/')
+
+
+def _r53_safe_webhook_url(url: str) -> str:
+    """Log a webhook endpoint without leaking its secret path."""
+    try:
+        u = _r53_urlparse.urlsplit(str(url or ''))
+        if not u.scheme or not u.netloc:
+            return '<empty>' if not url else '<invalid-url>'
+        return f'{u.scheme}://{u.netloc}/tg/<redacted>'
+    except Exception:
+        return '<invalid-url>'
+
+
+def _r53_webhook_info_snapshot() -> dict:
+    info = bot.get_webhook_info()
+    actual = str(getattr(info, 'url', '') or '')
+    return {
+        'url': actual,
+        'safe_url': _r53_safe_webhook_url(actual),
+        'pending': int(getattr(info, 'pending_update_count', 0) or 0),
+        'ip': str(getattr(info, 'ip_address', '') or '')[:80],
+        'last_error_date': int(getattr(info, 'last_error_date', 0) or 0),
+        'last_error_message': str(getattr(info, 'last_error_message', '') or '')[:500],
+        'last_sync_error_date': int(getattr(info, 'last_synchronization_error_date', 0) or 0),
+        'max_connections': int(getattr(info, 'max_connections', 0) or 0),
+        'allowed_updates': list(getattr(info, 'allowed_updates', None) or []),
+    }
+
+
+def _r53_log_webhook_info(reason: str, snap: dict, expected: str) -> None:
+    try:
+        log_info(
+            'R53 WEBHOOK INFO '
+            f'reason={reason} expected={_r53_safe_webhook_url(expected)} actual={snap.get("safe_url")} '
+            f'match={int(_r53_normalize_url(snap.get("url")) == _r53_normalize_url(expected))} '
+            f'pending={snap.get("pending", 0)} ip={snap.get("ip") or "-"} '
+            f'max_conn={snap.get("max_connections", 0)} last_error_date={snap.get("last_error_date", 0)} '
+            f'last_error={str(snap.get("last_error_message") or "-")[:300]}'
+        )
+        r52_diag(
+            'WEBHOOK_INFO', reason=reason,
+            expected=_r53_safe_webhook_url(expected), actual=snap.get('safe_url'),
+            match=int(_r53_normalize_url(snap.get('url')) == _r53_normalize_url(expected)),
+            pending=snap.get('pending', 0), ip=snap.get('ip'), max_connections=snap.get('max_connections', 0),
+            last_error_date=snap.get('last_error_date', 0), last_error_message=snap.get('last_error_message', ''),
+            allowed_updates=snap.get('allowed_updates', [])
+        )
+    except Exception:
+        pass
+
+
+def _r53_install_webhook_transport(reason: str='startup'):
+    """Install and verify the one Telegram webhook owned by this FAST service."""
     global WEBHOOK_HEADER_SECRET_ENABLED
-    if not WEBHOOK_URL:
-        log_info('WEBHOOK_URL / APP_URL / RENDER_EXTERNAL_URL не указаны — webhook не установлен.')
-        return
-    wh_url = WEBHOOK_URL.rstrip('/') + WEBHOOK_ROUTE_PATH
-    force_reset = str(os.getenv('WEBHOOK_FORCE_RESET', '0') or '0').strip().casefold() in {'1', 'true', 'yes', 'on'}
-    if force_reset:
-        bot.remove_webhook()
-        time.sleep(0.5)
+    expected = _r53_expected_webhook_url()
+    if not WEBHOOK_URL or not expected:
+        raise RuntimeError('WEBHOOK_URL / Render public hostname is not available')
     try:
         webhook_connections = max(1, min(20, int(os.getenv('WEBHOOK_MAX_CONNECTIONS', '8') or '8')))
     except Exception:
         webhook_connections = 8
-    kwargs = dict(url=wh_url, max_connections=webhook_connections, allowed_updates=['message', 'edited_message', 'callback_query', 'channel_post', 'edited_channel_post', 'deleted_business_messages'])
-    try:
-        bot.set_webhook(secret_token=WEBHOOK_HEADER_SECRET, **kwargs)
-        WEBHOOK_HEADER_SECRET_ENABLED = True
-    except TypeError:
-        bot.set_webhook(**kwargs)
-        WEBHOOK_HEADER_SECRET_ENABLED = False
-    log_info(f'Webhook установлен: /tg/<secret> (max_connections={webhook_connections}; force_reset={force_reset}; secret_header={WEBHOOK_HEADER_SECRET_ENABLED})')
+    kwargs = dict(
+        url=expected,
+        max_connections=webhook_connections,
+        allowed_updates=['message', 'edited_message', 'callback_query', 'channel_post', 'edited_channel_post', 'deleted_business_messages'],
+    )
+
+    def _set_once():
+        global WEBHOOK_HEADER_SECRET_ENABLED
+        try:
+            result = bot.set_webhook(secret_token=WEBHOOK_HEADER_SECRET, **kwargs)
+            WEBHOOK_HEADER_SECRET_ENABLED = True
+            return result
+        except TypeError:
+            result = bot.set_webhook(**kwargs)
+            WEBHOOK_HEADER_SECRET_ENABLED = False
+            return result
+
+    force_reset = str(os.getenv('WEBHOOK_FORCE_RESET', '0') or '0').strip().casefold() in {'1', 'true', 'yes', 'on'}
+    if force_reset:
+        bot.remove_webhook()
+        time.sleep(0.35)
+    _set_once()
+    time.sleep(0.15)
+    snap = _r53_webhook_info_snapshot()
+    _r53_log_webhook_info(reason + ':verify1', snap, expected)
+    if _r53_normalize_url(snap.get('url')) != _r53_normalize_url(expected):
+        log_error(
+            'R53 WEBHOOK URL MISMATCH: Telegram points elsewhere; repairing. '
+            f'expected={_r53_safe_webhook_url(expected)} actual={snap.get("safe_url")}'
+        )
+        bot.remove_webhook()
+        time.sleep(0.35)
+        _set_once()
+        time.sleep(0.2)
+        snap = _r53_webhook_info_snapshot()
+        _r53_log_webhook_info(reason + ':verify2', snap, expected)
+        if _r53_normalize_url(snap.get('url')) != _r53_normalize_url(expected):
+            raise RuntimeError(
+                'Telegram webhook verification failed: expected current FAST Render URL, Telegram reports another URL'
+            )
+    log_info(
+        f'Webhook установлен и проверен: {_r53_safe_webhook_url(expected)} '
+        f'(max_connections={webhook_connections}; force_reset={force_reset}; secret_header={WEBHOOK_HEADER_SECRET_ENABLED})'
+    )
+    return True
+
+
+def _v177_legacy_0269_set_webhook():
+    return _r53_install_webhook_transport('startup')
+
+
+def _r53_webhook_watchdog_loop():
+    global _R53_WEBHOOK_WATCHDOG_LAST
+    interval = max(30.0, min(300.0, float(os.getenv('WEBHOOK_WATCHDOG_SEC', '60') or '60')))
+    while not runtime_is_shutting_down():
+        time.sleep(interval)
+        if not runtime_is_ready():
+            continue
+        expected = _r53_expected_webhook_url()
+        try:
+            snap = _r53_webhook_info_snapshot()
+            mismatch = _r53_normalize_url(snap.get('url')) != _r53_normalize_url(expected)
+            fingerprint = '|'.join([
+                str(snap.get('safe_url') or ''), str(snap.get('pending') or 0),
+                str(snap.get('last_error_date') or 0), str(snap.get('last_error_message') or '')[:180]
+            ])
+            if mismatch:
+                log_error(
+                    'R53 WEBHOOK WATCHDOG mismatch detected; self-healing. '
+                    f'expected={_r53_safe_webhook_url(expected)} actual={snap.get("safe_url")}'
+                )
+                _r53_log_webhook_info('watchdog:mismatch', snap, expected)
+                _r53_install_webhook_transport('watchdog-repair')
+                _R53_WEBHOOK_WATCHDOG_LAST = ''
+            elif fingerprint != _R53_WEBHOOK_WATCHDOG_LAST and (
+                int(snap.get('pending') or 0) > 0 or int(snap.get('last_error_date') or 0) > 0
+            ):
+                _r53_log_webhook_info('watchdog:notice', snap, expected)
+                _R53_WEBHOOK_WATCHDOG_LAST = fingerprint
+        except Exception as exc:
+            try:
+                log_error(f'R53 WEBHOOK WATCHDOG error: {type(exc).__name__}: {str(exc)[:500]}')
+                r52_diag('WEBHOOK_WATCHDOG_ERROR', error=f'{type(exc).__name__}:{str(exc)[:800]}')
+            except Exception:
+                pass
+
+
+def _r53_start_webhook_watchdog_once() -> bool:
+    global _R53_WEBHOOK_WATCHDOG_STARTED
+    with _R53_WEBHOOK_WATCHDOG_LOCK:
+        if _R53_WEBHOOK_WATCHDOG_STARTED:
+            return True
+        _R53_WEBHOOK_WATCHDOG_STARTED = True
+        threading.Thread(target=_r53_webhook_watchdog_loop, name='r53-webhook-watchdog', daemon=True).start()
+    return True
+
 try:
     _v177_legacy_0269_set_webhook.__name__ = 'set_webhook'
 except Exception:
@@ -4927,6 +5102,10 @@ def _v211_start_post_ready_runtime():
         start_keep_alive_thread()
     except Exception as e:
         log_error(f'keepalive start: {e}')
+    try:
+        _r53_start_webhook_watchdog_once()
+    except Exception as e:
+        log_error(f'R53 webhook watchdog start: {e}')
     try:
         start_reminder_scheduler()
     except Exception as e:

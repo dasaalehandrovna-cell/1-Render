@@ -14,16 +14,16 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "8c9827a2512c5ddbb7f693137dfd4de0f1a7f9b38b4cd913315e13b0f91651f8",
+    "01_core_data.py": "a79dca8d4e25bdb9ddc695746c437b2e5c842d98d4670628294e3d1823cf3046",
     "02_transport_safety.py": "e8487fa51b3d9f04085ad5bd66cbaaa3447906b9338ed2a7582c8f71609d2d84",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
     "06_commands_callbacks.py": "67de7d23d0fe3ba6a60f1f9148bf200fdf244ba24d30c398605c8e4724acd720",
-    "07_state_web.py": "0b12aae85da06c8e5077d9888aee937539fcd3b78a492c3d468752d8933df7b7",
+    "07_state_web.py": "785504ccbbb4845ebf6f93243f1248f202026fdd370cb379f0348c96dd78caac",
     "08_reliability_tasks.py": "a7b72891e3f10b0dc7ff820c1f5c83c2811ed0b830433b2a0c55c515a1e69881",
     "09_final_transport.py": "5f2a2aeadf74fc4b0859db0fc631f76c700c1e8eb6b48ff4be8ef0bcfecb5457",
-    "10_split_policy_offload.py": "823440f350471156451a206bd7da51e74a2d0f3274b090722817f370e9e68991"
+    "10_split_policy_offload.py": "1ae8fd0532c2bffcffed9dd53d6b11bda1fd422171a6b8dbabc662af25424082"
   },
   "release": "Пер-R52-FORENSIC-BUTTON-TRACE",
   "release_features": [

@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r50-mega-bootstrap-rootfix"
+CONFIG_VERSION = "vys-262-r53-webhook-rootfix"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -60,7 +60,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R32_EVENT_BATCH_MAX": "192",
     "R34_EVENT_TARGET_WIRE_KB": "768",
     "R34_EVENT_LARGE_WIRE_KB": "32768",
-    "R32_EVENT_POST_TIMEOUT_SEC": "8",
+    "R32_EVENT_POST_TIMEOUT_SEC": "90",
     "R32_SHUTDOWN_EVENT_FLUSH_SEC": "8",
     "R36_FILE_SUBMIT_ATTEMPTS": "4",
     "R36_FILE_SUBMIT_TIMEOUT_SEC": "45",
