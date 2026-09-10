@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "1ab5c768268454855785696ee897fd6f825249e0d31e9b3712e56db3bfaa37c2",
+    "01_core_data.py": "8c9827a2512c5ddbb7f693137dfd4de0f1a7f9b38b4cd913315e13b0f91651f8",
     "02_transport_safety.py": "e8487fa51b3d9f04085ad5bd66cbaaa3447906b9338ed2a7582c8f71609d2d84",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
-    "05_finance_ui.py": "92d5461809f6f9093fed055f2b3e10876c6af50b92cfe732925529909a5c35d3",
-    "06_commands_callbacks.py": "f92d7a2d9281f84cc24b8f9c3f1c5a88340a64a389824bf5f58b0d0f86068cab",
-    "07_state_web.py": "4db6728e36fd2b7edea372b221a4fbf8ae17bb8f5f314ba69e5d986e71bc3d1a",
-    "08_reliability_tasks.py": "ac7876acca71bb8dd1919b62a3bd200cf4c23eda5820471aa405703ff74146ff",
-    "09_final_transport.py": "8c4aab746ee4c47c3872c40bc8bb35a7daff4dcb88a5577060287b7c94fee11f",
+    "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
+    "06_commands_callbacks.py": "67de7d23d0fe3ba6a60f1f9148bf200fdf244ba24d30c398605c8e4724acd720",
+    "07_state_web.py": "0b12aae85da06c8e5077d9888aee937539fcd3b78a492c3d468752d8933df7b7",
+    "08_reliability_tasks.py": "a7b72891e3f10b0dc7ff820c1f5c83c2811ed0b830433b2a0c55c515a1e69881",
+    "09_final_transport.py": "5f2a2aeadf74fc4b0859db0fc631f76c700c1e8eb6b48ff4be8ef0bcfecb5457",
     "10_split_policy_offload.py": "823440f350471156451a206bd7da51e74a2d0f3274b090722817f370e9e68991"
   },
-  "release": "Пер-R51-FINAL-TAIL-MIRROR",
+  "release": "Пер-R52-FORENSIC-BUTTON-TRACE",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -188,6 +188,12 @@
     "r49_failed_tasks_restore_via_heavy",
     "r51_current_journal_scoped_by_render_instance",
     "r51_shutdown_final_snapshot_sync_mega",
-    "r51_heavy_revision_mirror_reuse_no_full_snapshot"
+    "r51_heavy_revision_mirror_reuse_no_full_snapshot",
+    "r52_forensic_callback_end_to_end_trace",
+    "r52_pool_running_task_introspection",
+    "r52_telegram_rate_wait_trace",
+    "r52_ack_error_trace",
+    "r52_render_error_trace",
+    "r52_hot_path_heartbeat"
   ]
 }

@@ -3844,6 +3844,9 @@ def _perform_fast_ui_edit(payload: dict) -> str:
     reply_markup = payload.get('reply_markup')
     parse_mode = payload.get('parse_mode')
     purpose = payload.get('purpose') or 'fast_ui_edit'
+    try:
+        r52_diag('TG_EDIT_ENTER', chat=chat_id, msg=message_id, purpose=purpose, text_len=len(str(text or '')), markup=int(reply_markup is not None), parse_mode=parse_mode or '', window_render=globals().get('WINDOW_RENDER_TASK_POOL').stats() if globals().get('WINDOW_RENDER_TASK_POOL') is not None else {})
+    except Exception: pass
 
     def _call_with_window_context(method, *args, **kwargs):
         diag_context = globals().get('window_diag_context')
@@ -3853,9 +3856,14 @@ def _perform_fast_ui_edit(payload: dict) -> str:
                 return _tg_call_retry(method, *args, **kwargs)
         return _tg_call_retry(method, *args, **kwargs)
     try:
+        _r52_tg_started=time.monotonic()
         _call_with_window_context(bot.edit_message_text, text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup, parse_mode=parse_mode, attempts=1, purpose=purpose + '_text')
+        try: r52_diag('TG_EDIT_TEXT_OK', chat=chat_id, msg=message_id, purpose=purpose, elapsed=time.monotonic()-_r52_tg_started)
+        except Exception: pass
         return 'ok'
     except Exception as e1:
+        try: r52_diag('TG_EDIT_TEXT_ERROR', chat=chat_id, msg=message_id, purpose=purpose, elapsed=time.monotonic()-locals().get('_r52_tg_started',time.monotonic()), error=f'{type(e1).__name__}:{str(e1)[:600]}')
+        except Exception: pass
         low = str(e1).lower()
         if 'message is not modified' in low:
             return 'ok'
@@ -3868,9 +3876,14 @@ def _perform_fast_ui_edit(payload: dict) -> str:
         if 'message to edit not found' in low or "message can't be edited" in low:
             return 'not_found'
         try:
+            _r52_cap_started=time.monotonic()
             _call_with_window_context(bot.edit_message_caption, chat_id=chat_id, message_id=message_id, caption=text, reply_markup=reply_markup, parse_mode=parse_mode, attempts=1, purpose=purpose + '_caption')
+            try: r52_diag('TG_EDIT_CAPTION_OK', chat=chat_id, msg=message_id, purpose=purpose, elapsed=time.monotonic()-_r52_cap_started)
+            except Exception: pass
             return 'ok'
         except Exception as e2:
+            try: r52_diag('TG_EDIT_CAPTION_ERROR', chat=chat_id, msg=message_id, purpose=purpose, elapsed=time.monotonic()-locals().get('_r52_cap_started',time.monotonic()), error=f'{type(e2).__name__}:{str(e2)[:600]}', text_error=f'{type(e1).__name__}:{str(e1)[:300]}')
+            except Exception: pass
             low2 = str(e2).lower()
             if 'message is not modified' in low2:
                 return 'ok'
@@ -6206,6 +6219,8 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         _r25_ack_started = time.monotonic()
         try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_START')
         except Exception: pass
+        try: r52_diag('ACK_NATIVE_START', update=_r25_ack_row.get('update_id') or '-', chat=_r25_ack_row.get('chat_id'), action=str(_r25_ack_row.get('action') or '')[:180], callback_id=callback_id, text=str(text or '')[:180], show_alert=int(bool(kwargs.get('show_alert'))), ack_pool=CALLBACK_ACK_TASK_POOL.stats())
+        except Exception: pass
         result = _NATIVE_BOT_ANSWER_CALLBACK_QUERY(bot, callback_query_id, *args, **kwargs)
         try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_DONE elapsed={time.monotonic()-_r25_ack_started:.3f}s')
         except Exception: pass
@@ -6217,7 +6232,9 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         except Exception:
             pass
         return result
-    except Exception:
+    except Exception as _r52_ack_exc:
+        try: r52_diag('ACK_NATIVE_ERROR', update=locals().get('_r25_ack_row',{}).get('update_id') or '-', chat=locals().get('_r25_ack_row',{}).get('chat_id'), callback_id=callback_id, elapsed=time.monotonic()-locals().get('_r25_ack_started',time.monotonic()), error=f'{type(_r52_ack_exc).__name__}:{str(_r52_ack_exc)[:800]}')
+        except Exception: pass
         with _CALLBACK_ACK_LOCK:
             row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
             row['inflight'] = False
@@ -6227,9 +6244,15 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
 
 def _answer_callback_query_quiet(callback_id: str, chat_id=None):
     try:
+        r52_diag('ACK_QUIET_WORKER_ENTER', callback_id=callback_id, chat=chat_id, ack_pool=CALLBACK_ACK_TASK_POOL.stats())
+    except Exception: pass
+    try:
         bot.answer_callback_query(callback_id, show_alert=False)
-    except Exception:
-        pass
+        try: r52_diag('ACK_QUIET_WORKER_DONE', callback_id=callback_id, chat=chat_id)
+        except Exception: pass
+    except Exception as exc:
+        try: r52_diag('ACK_QUIET_WORKER_ERROR', callback_id=callback_id, chat=chat_id, error=f'{type(exc).__name__}:{str(exc)[:800]}')
+        except Exception: pass
 
 def answer_callback_query_background(callback_id: str):
     """Immediate ACK from a callback handler, isolated from GENERAL/MEGA work."""

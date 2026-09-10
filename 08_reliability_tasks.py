@@ -2997,6 +2997,7 @@ def _r22_execute_window_render(payload: dict) -> None:
     _r25_action = str(payload.get('_r22_action') or payload.get('_r25_action') or '')[:180]
     try:
         log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=RENDER_WORKER_START')
+        r52_diag('RENDER_WORKER_ENTER', update=_r25_uid or '-', chat=payload.get('chat_id'), msg=payload.get('message_id'), action=_r25_action, purpose=payload.get('purpose'), render_pool=WINDOW_RENDER_TASK_POOL.stats())
     except Exception:
         pass
     try:
@@ -3023,7 +3024,9 @@ def _r22_execute_window_render(payload: dict) -> None:
         except Exception:
             pass
     elapsed = max(0.0, _v160_time.monotonic() - started)
-    try: log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_DONE elapsed={elapsed:.3f}s detail={result}')
+    try:
+        log_info(f'BTNTRACE update={_r25_uid or "-"} chat={payload.get("chat_id")} action={_r25_action} stage=TELEGRAM_EDIT_DONE elapsed={elapsed:.3f}s detail={result}')
+        r52_diag('RENDER_WORKER_EXIT', update=_r25_uid or '-', chat=payload.get('chat_id'), msg=payload.get('message_id'), action=_r25_action, purpose=payload.get('purpose'), elapsed=elapsed, result=result, queue_wait=float(payload.get('_r22_queue_wait') or 0.0), render_pool=WINDOW_RENDER_TASK_POOL.stats())
     except Exception: pass
     _r22_render_stage(payload, 'telegram_render_done', elapsed, result)
     # Preserve the old safe_edit recovery semantics, but recovery is also outside
@@ -3082,7 +3085,9 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
     payload['_r22_enqueued_mono'] = _v160_time.monotonic()
     key = f'{chat_id}:{message_id}'
     try:
+        r52_diag('RENDER_SUBMIT_START', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, action=payload.get('_r22_action') or '', purpose=purpose, key=key, text_len=len(str(text or '')), render_pool=WINDOW_RENDER_TASK_POOL.stats())
         seq = WINDOW_RENDER_TASK_POOL.submit_latest(key, _r22_execute_window_render, payload)
+        r52_diag('RENDER_SUBMIT_DONE', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, action=payload.get('_r22_action') or '', purpose=purpose, key=key, seq=seq, render_pool=WINDOW_RENDER_TASK_POOL.stats())
     except Exception as exc:
         try: log_error(f'R49 WINDOW RENDER ENQUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
         except Exception: pass
@@ -7231,8 +7236,13 @@ def _execute_telegram_payload_core(payload: dict, update_id=None, update_chat_id
     _TELEGRAM_UPDATE_CONTEXT.value = {'update_id': update_id, 'chat_id': update_chat_id, 'update_type': str(update_type or 'other'), 'callback_data': callback_data, 'message_id': source_message_id, 'user_id': source_user_id, 'critical_callback': critical_callback_target is not None, 'critical_callback_target': critical_callback_target, 'deferred_quick_chats': set()}
     execution_ctx = {}
     try:
+        try: r52_diag('TELEBOT_PROCESS_ENTER', update=update_id, chat=update_chat_id, type=update_type, action=callback_data[:240], msg=source_message_id, user=source_user_id, callback_handlers=len(getattr(bot,'callback_query_handlers',[]) or []), message_handlers=len(getattr(bot,'message_handlers',[]) or []), threaded=getattr(bot,'threaded',None))
+        except Exception: pass
+        _r52_process_started=time.monotonic()
         with state_chat_context(update_chat_id):
             bot.process_new_updates([update])
+        try: r52_diag('TELEBOT_PROCESS_EXIT', update=update_id, chat=update_chat_id, type=update_type, action=callback_data[:240], elapsed=time.monotonic()-_r52_process_started, pools=r52_hot_pool_snapshot())
+        except Exception: pass
         execution_ctx = _durable_execution_context_snapshot()
         try:
             fn = globals().get('_v150_store_receipt')
@@ -7264,7 +7274,10 @@ def _canon_schedule_callback_receipt_ack__001(callback_id: str, chat_id=None, de
             row['ts'] = time.time()
             if row.get('answered') or row.get('inflight'):
                 return True
-        return bool(CALLBACK_ACK_TASK_POOL.submit_unique(f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id))
+        _r52_ack_ok=bool(CALLBACK_ACK_TASK_POOL.submit_unique(f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id))
+        try: r52_diag('ACK_POOL_ADMISSION', callback_id=callback_id, chat=chat_id, queued=int(_r52_ack_ok), ack_pool=CALLBACK_ACK_TASK_POOL.stats())
+        except Exception: pass
+        return _r52_ack_ok
     except Exception:
         if callable(_V166_PREV_ACK):
             return _V166_PREV_ACK(callback_id, chat_id, 0.03)

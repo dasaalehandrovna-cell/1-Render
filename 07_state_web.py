@@ -4417,6 +4417,10 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
     durable, so deploy/crash safety is retained while the visible UI can already run.
     """
     claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, 'callback_query')
+    try:
+        _cq0=(payload or {}).get('callback_query') or {}; _m0=_cq0.get('message') or {}
+        r52_note_callback_activity(); r52_diag('CALLBACK_CLAIM', update=update_id, chat=update_chat_id, msg=_m0.get('message_id'), user=((_cq0.get('from') or {}).get('id') if isinstance(_cq0.get('from'),dict) else None), action=str(_cq0.get('data') or '')[:240], claim=claim_state, dispatcher=UPDATE_DISPATCHER.stats(), pools=r52_hot_pool_snapshot())
+    except Exception: pass
     _r48_coalesce_key = _r48_nav_coalesce_key(payload) if claim_state == 'new' else None
     if claim_state == 'new' and _r48_coalesce_key:
         with _R48_NAV_COALESCE_LOCK:
@@ -4435,6 +4439,8 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             started = time.time()
             wait = started - update_enqueued_at
             UPDATE_DISPATCHER.mark_started(update_id)
+            try: r52_diag('CALLBACK_WORKER_ENTER', update=update_id, chat=update_chat_id, wait=wait, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240], dispatcher=UPDATE_DISPATCHER.stats(), pools=r52_hot_pool_snapshot())
+            except Exception: pass
             try:
                 _cq = payload.get('callback_query') or {}
                 r25_trace_begin(update_id, update_chat_id, 'callback_query', str(_cq.get('data') or ''))
@@ -4451,7 +4457,11 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             try:
                 try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_START')
                 except Exception: pass
+                try: r52_diag('EXECUTE_PAYLOAD_START', update=update_id, chat=update_chat_id, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240], pools=r52_hot_pool_snapshot())
+                except Exception: pass
                 _execute_telegram_payload(payload, update_id, update_chat_id, 'callback_query')
+                try: r52_diag('EXECUTE_PAYLOAD_DONE', update=update_id, chat=update_chat_id, elapsed=time.time()-started, pools=r52_hot_pool_snapshot())
+                except Exception: pass
                 try: r25_trace_stage('EXECUTE_TELEGRAM_PAYLOAD_DONE')
                 except Exception: pass
                 success = True
@@ -4473,6 +4483,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                     pass
                 try:
                     log_error(f'R22 CALLBACK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}')
+                    r52_diag('CALLBACK_WORKER_ERROR', update=update_id, chat=update_chat_id, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240], elapsed=time.time()-started, error=f'{type(exc).__name__}:{str(exc)[:1200]}', traceback=''.join(traceback.format_exc())[-6000:], pools=r52_hot_pool_snapshot())
                 except Exception:
                     pass
                 raise
@@ -4480,6 +4491,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                 try:
                     r25_trace_stage('HANDLER_DONE', time.time()-started, str(error_text or '')[:160])
                     log_info(f'FASTBTN handler update={update_id} chat={update_chat_id} wait={wait:.3f}s process={time.time()-started:.3f}s success={int(bool(success))} error={str(error_text or "")[:120]}')
+                    r52_diag('CALLBACK_WORKER_EXIT', update=update_id, chat=update_chat_id, wait=wait, elapsed=time.time()-started, success=int(bool(success)), error=str(error_text or '')[:800], dispatcher=UPDATE_DISPATCHER.stats(), pools=r52_hot_pool_snapshot())
                 except Exception:
                     pass
                 UPDATE_DISPATCHER.finish(update_id, success, error_text)
@@ -4496,7 +4508,12 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             selected_pool, selected_key = selector(payload, 'callback_query', update_key)
         else:
             selected_pool, selected_key = (FAST_UI_TASK_POOL, f'fast-callback:{update_key}')
-        if not selected_pool.submit(selected_key, _process_callback):
+        try: r52_diag('CALLBACK_LANE_SELECTED', update=update_id, chat=update_chat_id, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240], pool=getattr(selected_pool,'name','?'), key=selected_key, pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {})
+        except Exception: pass
+        _r52_enqueued = selected_pool.submit(selected_key, _process_callback)
+        try: r52_diag('CALLBACK_ENQUEUE_RESULT', update=update_id, chat=update_chat_id, pool=getattr(selected_pool,'name','?'), key=selected_key, queued=int(bool(_r52_enqueued)), pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {}, dispatcher=UPDATE_DISPATCHER.stats())
+        except Exception: pass
+        if not _r52_enqueued:
             if _r48_coalesce_key:
                 try:
                     with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
@@ -4532,6 +4549,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
         UPDATE_DISPATCHER.mark_http_acked(update_id)
         _cq = payload.get('callback_query') or {}
         log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={str(_cq.get("data") or "")[:180]} stage=FAST_ENQUEUED_HTTP200')
+        r52_diag('CALLBACK_HTTP200', update=update_id, chat=update_chat_id, action=str(_cq.get('data') or '')[:240], dispatcher=UPDATE_DISPATCHER.stats(), pools=r52_hot_pool_snapshot())
     except Exception:
         pass
     return ('OK', 200)
@@ -4570,6 +4588,7 @@ def telegram_webhook():
             _r25_cq = payload.get('callback_query') or {}
             _r25_msg = _r25_cq.get('message') or {}; _r25_chat = _r25_msg.get('chat') or {}
             log_info(f'BTNTRACE update={payload.get("update_id")} chat={_r25_chat.get("id")} action={str(_r25_cq.get("data") or "")[:180]} stage=RECEIVE')
+            r52_note_callback_activity(); r52_diag('WEBHOOK_RECEIVE', update=payload.get('update_id'), callback_id=str(_r25_cq.get('id') or ''), chat=_r25_chat.get('id'), msg=_r25_msg.get('message_id'), user=((_r25_cq.get('from') or {}).get('id') if isinstance(_r25_cq.get('from'),dict) else None), action=str(_r25_cq.get('data') or '')[:240], content_length=request.content_length or 0, remote=str(request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:120], dispatcher=UPDATE_DISPATCHER.stats(), pools=r52_hot_pool_snapshot())
         except Exception:
             pass
     # R18 absolute UI hot path: start Telegram callback ACK immediately after the
@@ -4587,9 +4606,13 @@ def telegram_webhook():
                 if callable(_r25_reg): _r25_reg(str(_r18_cq.get('id') or ''), payload.get('update_id'), _r18_cid, str(_r18_cq.get('data') or ''))
             except Exception:
                 pass
-            schedule_callback_receipt_ack(str(_r18_cq.get('id') or ''), _r18_cid, delay=0.0)
+            _r52_ack_scheduled=schedule_callback_receipt_ack(str(_r18_cq.get('id') or ''), _r18_cid, delay=0.0)
+            try: r52_diag('ACK_SCHEDULE_RESULT', update=payload.get('update_id'), callback_id=str(_r18_cq.get('id') or ''), chat=_r18_cid, action=str(_r18_cq.get('data') or '')[:240], scheduled=int(bool(_r52_ack_scheduled)), ack_pool=CALLBACK_ACK_TASK_POOL.stats())
+            except Exception: pass
         except Exception as ack_exc:
             log_error(f'CALLBACK IMMEDIATE ACK: {ack_exc}')
+            try: r52_diag('ACK_SCHEDULE_ERROR', update=(payload or {}).get('update_id'), error=f'{type(ack_exc).__name__}:{str(ack_exc)[:800]}', pools=r52_hot_pool_snapshot())
+            except Exception: pass
     try:
         if isinstance(payload, dict):
             if 'edited_message' in payload:

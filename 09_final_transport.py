@@ -5590,6 +5590,10 @@ def final_callback_router(call):
     started = clock.monotonic()
     raw, resolved = _v179_resolve_callback(call)
     try:
+        _r52_cid=int(getattr(getattr(call,'message',None).chat,'id',0) or 0); _r52_mid=int(getattr(getattr(call,'message',None),'message_id',0) or 0); _r52_uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
+        r52_diag('FINAL_ROUTER_ENTER', callback_id=str(getattr(call,'id','') or ''), chat=_r52_cid, msg=_r52_mid, user=_r52_uid, raw=str(raw or '')[:240], resolved=str(resolved or '')[:240], handlers=len(getattr(bot,'callback_query_handlers',[]) or []), pools=r52_hot_pool_snapshot())
+    except Exception: pass
+    try:
         _V177_PERF_LOCAL.action = resolved[:120]
     except Exception:
         pass
@@ -5608,11 +5612,15 @@ def final_callback_router(call):
         except Exception:
             pass
     try:
-        return _v179_dispatch_callback(call, raw, resolved)
+        _r52_result=_v179_dispatch_callback(call, raw, resolved)
+        try: r52_diag('FINAL_ROUTER_RETURN', chat=cid, raw=str(raw or '')[:240], resolved=str(resolved or '')[:240], result=repr(_r52_result)[:240], elapsed=clock.monotonic()-started, pools=r52_hot_pool_snapshot())
+        except Exception: pass
+        return _r52_result
     except Exception as exc:
         err = f'{type(exc).__name__}: {exc}'
         try:
             log_error(f'FINAL_CALLBACK_ERROR action={resolved} chat={cid}: {exc}')
+            r52_diag('FINAL_ROUTER_ERROR', chat=cid, raw=str(raw or '')[:240], resolved=str(resolved or '')[:240], elapsed=clock.monotonic()-started, error=f'{type(exc).__name__}:{str(exc)[:1200]}', traceback=''.join(traceback.format_exc())[-6000:], pools=r52_hot_pool_snapshot())
         except Exception:
             pass
         try:
@@ -5704,7 +5712,12 @@ def _final_process_new_updates(updates):
         if not _final_dispatch_non_callback_once(update):
             native_rows.append(update)
     if callbacks:
+        try: r52_diag('FINAL_PROCESS_CALLBACKS_ENTER', count=len(callbacks), update_ids=[getattr(x,'update_id',None) for x in callbacks], handlers=len(getattr(bot,'callback_query_handlers',[]) or []))
+        except Exception: pass
+        _r52_cb_started=time.monotonic()
         _FINAL_NATIVE_PROCESS_NEW_UPDATES(bot, callbacks)
+        try: r52_diag('FINAL_PROCESS_CALLBACKS_EXIT', count=len(callbacks), elapsed=time.monotonic()-_r52_cb_started)
+        except Exception: pass
     if native_rows:
         return _FINAL_NATIVE_PROCESS_NEW_UPDATES(bot, native_rows)
     return None

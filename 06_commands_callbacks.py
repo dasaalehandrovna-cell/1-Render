@@ -51,6 +51,8 @@ def on_callback(call):
         raw_data_str = call.data or ''
         data_str = resolve_short_callback(raw_data_str)
         chat_id = call.message.chat.id
+        try: r52_diag('ON_CALLBACK_ENTER', callback_id=str(getattr(call,'id','') or ''), chat=chat_id, msg=getattr(call.message,'message_id',None), user=getattr(getattr(call,'from_user',None),'id',None), raw=str(raw_data_str or '')[:240], resolved=str(data_str or '')[:240])
+        except Exception: pass
         try:
             _r25_action_fn = globals().get('r25_trace_set_action')
             if callable(_r25_action_fn) and data_str is not None:
@@ -58,6 +60,8 @@ def on_callback(call):
         except Exception:
             pass
         if data_str is None:
+            try: r52_diag('ON_CALLBACK_ROUTE', chat=chat_id, raw=str(raw_data_str or '')[:240], route='stale_short_callback')
+            except Exception: pass
             try:
                 bot.answer_callback_query(call.id, 'Кнопка устарела. Открой меню заново.', show_alert=True)
             except Exception:
@@ -69,6 +73,8 @@ def on_callback(call):
             _r27_back_fn = globals().get('r27_callback_is_back_navigation')
             if callable(_r27_back_fn) and data_str != 'nav_prev' and _r27_back_fn(call, data_str):
                 if restore_previous_window(call):
+                    try: r52_diag('ON_CALLBACK_ROUTE', chat=chat_id, resolved=str(data_str)[:240], route='history_back', result='handled')
+                    except Exception: pass
                     try:
                         _r27_clean = globals().get('r27_cleanup_after_history_back')
                         if callable(_r27_clean): _r27_clean(call)
@@ -79,8 +85,12 @@ def on_callback(call):
             pass
         try:
             _v149_callback = globals().get('v149_extension_callback')
-            if callable(_v149_callback) and _v149_callback(call, data_str):
-                return
+            if callable(_v149_callback):
+                _r52_ext_handled=bool(_v149_callback(call, data_str))
+                try: r52_diag('ON_CALLBACK_EXTENSION', chat=chat_id, resolved=str(data_str)[:240], handled=int(_r52_ext_handled))
+                except Exception: pass
+                if _r52_ext_handled:
+                    return
         except Exception as e:
             log_error(f'v149 extension callback: {e}')
         try:
@@ -93,6 +103,8 @@ def on_callback(call):
         try:
             user_id = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
             if 'safety_permission_allowed' in globals() and (not safety_permission_allowed(user_id, chat_id, data_str)):
+                try: r52_diag('ON_CALLBACK_ROUTE', chat=chat_id, user=user_id, resolved=str(data_str)[:240], route='permission_denied')
+                except Exception: pass
                 bot.answer_callback_query(call.id, 'Недостаточно прав для этого действия.', show_alert=True)
                 bot_journal('permission_denied', chat_id, f'user={user_id} action={data_str}', 'WARN')
                 return
@@ -114,6 +126,8 @@ def on_callback(call):
             pass
         try:
             if 'tenant_handle_callback' in globals() and tenant_handle_callback(call, data_str):
+                try: r52_diag('ON_CALLBACK_ROUTE', chat=chat_id, resolved=str(data_str)[:240], route='tenant_handle_callback', result='handled')
+                except Exception: pass
                 return
         except Exception as tenant_exc:
             log_error(f'tenant callback {data_str}: {tenant_exc}')
@@ -127,7 +141,11 @@ def on_callback(call):
         except Exception:
             pass
         if _callback_should_debounce(call, data_str):
+            try: r52_diag('ON_CALLBACK_ROUTE', chat=chat_id, resolved=str(data_str)[:240], route='debounce', result='dropped')
+            except Exception: pass
             return
+        try: r52_diag('ON_CALLBACK_CORE_CONTINUE', chat=chat_id, resolved=str(data_str)[:240])
+        except Exception: pass
         # R27 universal Back: every visible Back action first restores the actual
         # previous snapshot. If history is unavailable (e.g. after an old deploy),
         # the legacy callback continues below as a safe fallback.

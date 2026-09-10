@@ -389,6 +389,12 @@ def _install_requests_traffic_audit():
     def wrapped(self, method, url, *args, **kwargs):
         fallback = _traffic_request_fallback_size(url, kwargs)
         category, operation = _traffic_classify_http(url, str(method))
+        _r52_http_started=time.monotonic()
+        if category in {'telegram','peer_http','self_http'}:
+            try:
+                _diag=globals().get('r52_diag')
+                if callable(_diag): _diag('HTTP_OUT_START', category=category, operation=operation, method=str(method).upper(), outbound_est=fallback, timeout=kwargs.get('timeout'), stream=int(bool(kwargs.get('stream',False))))
+            except Exception: pass
         err = False
         response = None
         gate = globals().get('external_access_allowed_v233')
@@ -428,6 +434,11 @@ def _install_requests_traffic_audit():
             except Exception:
                 pass
             traffic_audit_record(category, operation, out, inbound, err)
+            if category in {'telegram','peer_http','self_http'}:
+                try:
+                    _diag=globals().get('r52_diag')
+                    if callable(_diag): _diag('HTTP_OUT_DONE', category=category, operation=operation, method=str(method).upper(), status=getattr(response,'status_code',0) if response is not None else 0, elapsed=time.monotonic()-_r52_http_started, outbound=out, inbound=inbound, error=int(bool(err)))
+                except Exception: pass
     wrapped._bot_traffic_audit_v205 = True
     wrapped._bot_traffic_audit_original = original
     requests.sessions.Session.request = wrapped
@@ -439,6 +450,57 @@ try:
 except Exception:
     _BOT_THREAD_STACK_KB = 0
 window_locks = defaultdict(threading.Lock)
+
+# R52 forensic button diagnostics.  This is intentionally log-only: it does not
+# touch SQLite/Redis/MEGA and therefore cannot become another correctness dependency.
+R52_FORENSIC_BUTTON_LOG = str(os.getenv('R52_FORENSIC_BUTTON_LOG', '1') or '1').strip().lower() not in {'0','false','no','off'}
+R52_FORENSIC_HEARTBEAT_SECONDS = max(1.0, min(10.0, float(os.getenv('R52_FORENSIC_HEARTBEAT_SECONDS', '2') or '2')))
+_R52_LAST_CALLBACK_MONO = 0.0
+_R52_DIAG_LOCK = threading.RLock()
+_R52_SECRET_FIELD_WORDS = ('token','secret','password','authorization','cookie','session','credential','private_key')
+
+def _r52_safe_diag_value(name, value, limit=700):
+    try:
+        low = str(name or '').casefold()
+        if any(word in low for word in _R52_SECRET_FIELD_WORDS):
+            return '<redacted>'
+        if isinstance(value, float):
+            return f'{value:.3f}'
+        if isinstance(value, (dict,list,tuple,set)):
+            value = json.dumps(value, ensure_ascii=False, separators=(',',':'), default=str)
+        text = str(value if value is not None else '')
+        text = text.replace('\n','\\n').replace('\r','\\r')
+        return text[:max(40,int(limit))]
+    except Exception:
+        return '<unprintable>'
+
+def r52_diag(event: str, **fields):
+    if not R52_FORENSIC_BUTTON_LOG:
+        return
+    try:
+        base = [f'R52DIAG event={str(event or "?")[:80]}', f'mono={time.monotonic():.3f}',
+                f'thread={threading.current_thread().name}', f'tid={threading.get_ident()}']
+        for key, value in fields.items():
+            base.append(f'{str(key)[:64]}={_r52_safe_diag_value(key,value)}')
+        line = ' '.join(base)
+        fn = globals().get('log_info')
+        if callable(fn): fn(line)
+        else: logging.info(line)
+        ring = globals().get('r26_diag_trace_line')
+        if callable(ring): ring(line)
+    except Exception:
+        pass
+
+def r52_note_callback_activity():
+    global _R52_LAST_CALLBACK_MONO
+    try: _R52_LAST_CALLBACK_MONO = time.monotonic()
+    except Exception: pass
+
+def _r52_pool_key_interesting(key) -> bool:
+    if str(os.getenv('R52_FORENSIC_POOL_ALL','0') or '0').strip().lower() in {'1','true','yes','on'}:
+        return True
+    low = str(key or '').casefold()
+    return any(x in low for x in ('callback','fast-window','fast-pair','finance-ui','window-render','r22-','r25-','r48-','start:','restore'))
 
 class KeyedTaskPool:
 
@@ -458,6 +520,7 @@ class KeyedTaskPool:
         self._rejected = 0
         self._max_wait = 0.0
         self._last_error = ''
+        self._running = {}
         for idx in range(self.workers):
             t = threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True)
             t.start()
@@ -474,6 +537,9 @@ class KeyedTaskPool:
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
+            _r52_snap = (self._pending, self._active_workers, len(self._active_keys), len(self._by_key.get(key) or ()))
+        if _r52_pool_key_interesting(key):
+            r52_diag('POOL_SUBMIT', pool=self.name, key=key, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], key_queued=_r52_snap[3], func=getattr(func,'__name__',type(func).__name__))
         return True
 
     def submit_unique(self, key, func, *args, **kwargs) -> bool:
@@ -495,6 +561,9 @@ class KeyedTaskPool:
             self._submitted += 1
             self._active_keys.add(key)
             self._ready.put(key)
+            _r52_snap = (self._pending, self._active_workers, len(self._active_keys))
+        if _r52_pool_key_interesting(key):
+            r52_diag('POOL_SUBMIT_UNIQUE', pool=self.name, key=key, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], func=getattr(func,'__name__',type(func).__name__))
         return True
 
     def key_status(self, key) -> dict:
@@ -523,6 +592,11 @@ class KeyedTaskPool:
             wait = max(0.0, time.time() - enqueued_at)
             with self._lock:
                 self._max_wait = max(self._max_wait, wait)
+                _r52_tid = threading.get_ident()
+                self._running[_r52_tid] = {'key':key,'func':getattr(func,'__name__',type(func).__name__),'thread':threading.current_thread().name,'started_mono':time.monotonic(),'wait':wait}
+            _r52_started = time.monotonic()
+            if _r52_pool_key_interesting(key):
+                r52_diag('POOL_WORKER_START', pool=self.name, key=key, wait=wait, func=getattr(func,'__name__',type(func).__name__), pending=self._pending, active=self._active_workers)
             try:
                 func(*args, **kwargs)
                 with self._lock:
@@ -536,7 +610,9 @@ class KeyedTaskPool:
                 except Exception:
                     logging.exception('POOL %s', self.name)
             finally:
+                _r52_elapsed = max(0.0, time.monotonic() - _r52_started)
                 with self._lock:
+                    self._running.pop(threading.get_ident(), None)
                     self._pending = max(0, self._pending - 1)
                     self._active_workers = max(0, self._active_workers - 1)
                     q = self._by_key.get(key)
@@ -545,6 +621,9 @@ class KeyedTaskPool:
                     else:
                         self._by_key.pop(key, None)
                         self._active_keys.discard(key)
+                    _r52_after = (self._pending, self._active_workers, len(self._active_keys))
+                if _r52_pool_key_interesting(key):
+                    r52_diag('POOL_WORKER_DONE', pool=self.name, key=key, elapsed=_r52_elapsed, pending=_r52_after[0], active=_r52_after[1], keys=_r52_after[2])
                 task = func = args = kwargs = None
                 self._ready.task_done()
 
@@ -568,7 +647,9 @@ class KeyedTaskPool:
 
     def stats(self) -> dict:
         with self._lock:
-            return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error}
+            _now_m = time.monotonic()
+            _running = [dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
+            return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running}
 
 
 class LatestKeyedTaskPool:
@@ -596,6 +677,7 @@ class LatestKeyedTaskPool:
         self._rejected = 0
         self._max_wait = 0.0
         self._last_error = ''
+        self._running = {}
         for idx in range(self.workers):
             threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True).start()
 
@@ -615,7 +697,9 @@ class LatestKeyedTaskPool:
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
-            return seq
+            _r52_snap = (len(self._latest), self._active_workers, len(self._active_keys), self._replaced)
+        r52_diag('LATEST_SUBMIT', pool=self.name, key=key, seq=seq, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], replaced=_r52_snap[3], func=getattr(func,'__name__',type(func).__name__))
+        return seq
 
     def is_latest(self, key, seq: int) -> bool:
         key = str(key)
@@ -639,6 +723,9 @@ class LatestKeyedTaskPool:
             wait = max(0.0, time.monotonic() - enqueued_mono)
             with self._lock:
                 self._max_wait = max(self._max_wait, wait)
+                self._running[threading.get_ident()] = {'key':key,'seq':seq,'func':getattr(func,'__name__',type(func).__name__),'thread':threading.current_thread().name,'started_mono':time.monotonic(),'wait':wait}
+            _r52_started = time.monotonic()
+            r52_diag('LATEST_WORKER_START', pool=self.name, key=key, seq=seq, wait=wait, func=getattr(func,'__name__',type(func).__name__), pending=len(self._latest), active=self._active_workers, is_latest=int(self.is_latest(key,seq)))
             try:
                 # If a newer render arrived before this task actually got CPU time,
                 # discard this stale task without touching Telegram.
@@ -655,24 +742,30 @@ class LatestKeyedTaskPool:
                 except Exception:
                     logging.exception('POOL %s', self.name)
             finally:
+                _r52_elapsed = max(0.0, time.monotonic() - _r52_started)
                 with self._lock:
+                    self._running.pop(threading.get_ident(), None)
                     self._active_workers = max(0, self._active_workers - 1)
                     if key in self._latest:
                         self._ready.put(key)
                     else:
                         self._active_keys.discard(key)
+                    _r52_after=(len(self._latest),self._active_workers,len(self._active_keys))
+                r52_diag('LATEST_WORKER_DONE', pool=self.name, key=key, seq=seq, elapsed=_r52_elapsed, pending=_r52_after[0], active=_r52_after[1], keys=_r52_after[2])
                 task = func = args = kwargs = None
                 self._ready.task_done()
 
     def stats(self) -> dict:
         with self._lock:
+            _now_m=time.monotonic()
+            _running=[dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
             return {
                 'name': self.name, 'workers': self.workers, 'active': self._active_workers,
                 'pending': len(self._latest), 'keys': len(self._active_keys),
                 'submitted': self._submitted, 'replaced': self._replaced,
                 'completed': self._completed, 'failed': self._failed,
                 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3),
-                'last_error': self._last_error,
+                'last_error': self._last_error, 'running': _running,
             }
 
 class DelayedTaskScheduler:
@@ -1134,6 +1227,33 @@ def r25_trace_end():
         for name in ('update_id','chat_id','update_type','action','started_mono'):
             if hasattr(_R25_TRACE_LOCAL, name): delattr(_R25_TRACE_LOCAL, name)
     except Exception: pass
+
+def r52_hot_pool_snapshot():
+    rows={}
+    for nm in ('FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
+        try:
+            pool=globals().get(nm)
+            if pool is not None and hasattr(pool,'stats'): rows[nm]=pool.stats()
+        except Exception as exc:
+            rows[nm]={'error':f'{type(exc).__name__}:{str(exc)[:120]}'}
+    return rows
+
+def _r52_forensic_watchdog():
+    while True:
+        try:
+            time.sleep(R52_FORENSIC_HEARTBEAT_SECONDS)
+            if not R52_FORENSIC_BUTTON_LOG: continue
+            age=max(0.0,time.monotonic()-float(_R52_LAST_CALLBACK_MONO or 0.0)) if _R52_LAST_CALLBACK_MONO else 999999.0
+            disp=UPDATE_DISPATCHER.stats()
+            pools=r52_hot_pool_snapshot()
+            hot=any((int((x or {}).get('active') or 0)>0 or int((x or {}).get('pending') or 0)>0) for x in pools.values() if isinstance(x,dict))
+            if age <= 30.0 or hot or int(disp.get('pending') or 0)>0:
+                r52_diag('HEARTBEAT', callback_age=age, dispatcher=disp, pools=pools, threads=threading.active_count())
+        except Exception as exc:
+            try: r52_diag('HEARTBEAT_ERROR', error=f'{type(exc).__name__}:{exc}')
+            except Exception: pass
+
+threading.Thread(target=_r52_forensic_watchdog, name='r52-forensic-watchdog', daemon=True).start()
 
 # R27: human input has priority over housekeeping on FAST.
 _R27_LAST_USER_ACTIVITY_MONO = 0.0
@@ -7986,6 +8106,8 @@ def _telegram_rate_limit_chat(chat_id, min_gap: float=0.35):
         prev_ts = float(_telegram_send_last_ts.get(cid, 0) or 0)
         wait = float(min_gap) - (now_ts - prev_ts)
         if wait > 0:
+            try: r52_diag('TELEGRAM_CHAT_RATE_WAIT', chat=cid, wait=wait, min_gap=min_gap)
+            except Exception: pass
             time.sleep(wait)
         _telegram_send_last_ts[cid] = time.time()
 
@@ -7998,6 +8120,8 @@ def _telegram_rate_limit_global():
         gap_wait = TELEGRAM_GLOBAL_MIN_GAP - (now_ts - _telegram_global_last_ts)
         wait = max(block_wait, gap_wait, 0.0)
         if wait > 0:
+            try: r52_diag('TELEGRAM_GLOBAL_RATE_WAIT', wait=wait, block_wait=block_wait, gap_wait=gap_wait, min_gap=TELEGRAM_GLOBAL_MIN_GAP)
+            except Exception: pass
             time.sleep(wait)
         _telegram_global_last_ts = time.time()
 
@@ -8023,9 +8147,14 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
     Это нужно, чтобы пересылка не терялась, а доставлялась позже.
     """
     last_err = None
+    _r52_tg_call_started=time.monotonic()
+    try: r52_diag('TG_CALL_ENTER', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempts=attempts, chat=_tg_first_chat_id(args,kwargs))
+    except Exception: pass
     for attempt in range(1, int(attempts) + 1):
         try:
             chat_id = _tg_first_chat_id(args, kwargs)
+            try: r52_diag('TG_CALL_ATTEMPT', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempt=attempt, attempts=attempts, chat=chat_id)
+            except Exception: pass
             _telegram_rate_limit_global()
             if chat_id is not None:
                 ui_gap = effective_fast_telegram_gap() if _is_fast_ui_purpose(purpose) else 0.35
@@ -8051,11 +8180,15 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                 _telegram_guard_local.in_retry = False
             # R48: success is a pure transport hot path. Incoming updates and explicit
             # probes refresh lifecycle; every send/edit must not acquire data_lock.
+            try: r52_diag('TG_CALL_OK', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempt=attempt, chat=chat_id, elapsed=time.monotonic()-_r52_tg_call_started)
+            except Exception: pass
             return _res
         except TypeError:
             raise
         except Exception as e:
             last_err = e
+            try: r52_diag('TG_CALL_ERROR', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempt=attempt, chat=locals().get('chat_id'), elapsed=time.monotonic()-_r52_tg_call_started, error=f'{type(e).__name__}:{str(e)[:1000]}')
+            except Exception: pass
             retry_after = _telegram_retry_after_seconds(e)
             if retry_after is None:
                 try:
