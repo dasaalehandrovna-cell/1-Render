@@ -14708,6 +14708,19 @@ def _v213_replace_start_handler() -> int:
 _V213_PREV_STARTUP_WINDOWS = _canon_schedule_startup_main_windows__001
 
 def _canon_schedule_startup_main_windows__002(delay: float=3.0):
+    # R61: deploy/restart must not resurrect a stack of historical Telegram windows.
+    # The owner asked for one compact startup message only. Reopening can be opted in
+    # explicitly from Render for legacy behavior.
+    try:
+        enabled = str(__import__('os').getenv('STARTUP_REOPEN_WINDOWS','0') or '0').strip().lower() in {'1','true','yes','on','да'}
+    except Exception:
+        enabled = False
+    if not enabled:
+        try:
+            bot_journal('startup_windows_skipped_r61', int(OWNER_ID or 0), 'STARTUP_REOPEN_WINDOWS=0')
+        except Exception:
+            pass
+        return
 
     def _job():
         ids = set()

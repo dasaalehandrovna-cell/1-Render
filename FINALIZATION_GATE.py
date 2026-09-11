@@ -297,24 +297,25 @@ if ROLE=='fast':
        'if upper is None' in replay_src and '_apply_r32_events(target, events)' in replay_src and
        'current_max' not in replay_src.split('needed: list[str]')[0],
        'startup may skip only segments provably older than the full-checkpoint timestamp; unknown names must replay')
-    ok('r60_redis_render_enabled_is_restart_default',
-       '_apply_redis_runtime_state(_REDIS_RENDER_ENABLED)' in cfg_src and
-       'os.environ["REDIS_MODE"] = "cache" if _REDIS_RUNTIME_ENABLED else "off"' in cfg_src and
-       '"restart_enabled": bool(_REDIS_RENDER_ENABLED)' in cfg_src and
-       '_REDIS_START_ENABLED' not in cfg_src,
-       'REDIS_ENABLED must be the single logical restart default; REDIS_START_ENABLED must not control runtime')
-    ok('r60_info_redis_explicit_modes_and_inspector',
+    ok('r61_redis_render_owned_master_and_start',
+       '_REDIS_START_ENABLED = _render_flag("REDIS_START_ENABLED", False)' in cfg_src and
+       '_apply_redis_runtime_state(_REDIS_RENDER_ENABLED and _REDIS_START_ENABLED)' in cfg_src and
+       'def redis_effective_url' in cfg_src and 'def redis_render_url' in cfg_src and
+       'os.environ["REDIS_ENABLED"]' not in cfg_src and 'os.environ["REDIS_URL"]' not in cfg_src,
+       'Redis master/start/URL must remain Render-owned; runtime menu may change only in-memory state')
+    ok('r61_info_redis_explicit_modes_and_direct_inspector',
        "callback_data='r60:redis:menu'" in split_src and "callback_data='r60:redis:on'" in split_src and
        "callback_data='r60:redis:off'" in split_src and "callback_data='r60:redis:inspect:0'" in split_src and
-       '/internal/runtime/redis/inspect' in split_src and "raw.startswith('r60:redis:')" in split_src,
-       'owner Info menu must expose explicit Redis ON/OFF modes and bounded Redis inspector')
+       'def _r61_fetch_redis_inspect_direct' in split_src and "raw.startswith('r60:redis:')" in split_src and
+       'STARTUP_REOPEN_WINDOWS' in rel_src,
+       'Info must expose explicit Redis modes/direct inspector and deploy must not reopen windows by default')
     ok('r59_info_env_views',
        'def render_env_snapshot' in cfg_src and "callback_data='r59:vars:render:0'" in split_src and
        "callback_data='r59:vars:code:0'" in split_src and "raw.startswith('r59:vars:')" in split_src,
        'Render ENV / code runtime Info views missing')
     ok('r59_redis_runtime_refresh',
        'def key_value_refresh_runtime_v248' in core_src and 'def _r59_fast_redis_probe' in split_src and
-       'vys-262-r60-redis-control' in split_src and 'PING=PONG' in split_src,
+       'vys-262-r61-render-owned-redis-control' in split_src and 'PING=PONG' in split_src,
        'runtime Redis refresh / PING verification missing')
     ok('r49_fast_ui_latest_wins_queue',
        "WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool" in core_src and

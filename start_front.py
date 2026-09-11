@@ -770,7 +770,12 @@ def main():
             trace['local_valid_after'] = False
 
         trace['runtime_mega_credentials_scrubbed'] = True
-        trace['redis_runtime_enabled'] = bool(os.getenv('REDIS_URL'))
+        
+        try:
+            from runtime_config import redis_runtime_state
+            trace['redis_runtime_enabled'] = bool((redis_runtime_state() or {}).get('enabled'))
+        except Exception:
+            trace['redis_runtime_enabled'] = False
         trace['elapsed_ms'] = round((time.time() - started) * 1000.0, 1)
         trace['finished_at'] = time.time()
         trace_json = json.dumps(trace, ensure_ascii=False, separators=(',', ':'))

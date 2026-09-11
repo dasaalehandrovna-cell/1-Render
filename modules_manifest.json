@@ -14,16 +14,16 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "cb6efc5401d45568dac7ef6a6c8906305c2436f0dd04b4303777fe0a6f92ab66",
+    "01_core_data.py": "6bf0d98ae0a1df7abc776644ed5ef705e7c30ee22a6e4213513d10b935bce3b9",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
     "06_commands_callbacks.py": "5fe18651b36ad586e96cb8763c0fd48610d70dc5b579d1c39e1bac6f11b56691",
-    "07_state_web.py": "a36564f760edab3d4a7adeeaa8d63d994b06d2974ea6502048e477e34e3a5120",
-    "08_reliability_tasks.py": "61ff13237858c57171d8c0ba63ee6a4b55ab63945bb66464f1c1a199dd200b01",
+    "07_state_web.py": "8cc05a1bc7b18bb139a9e35121e5394669bc76afead19f54a3bbd814cf2739de",
+    "08_reliability_tasks.py": "af03ebdfa4868439dd9b6e565a4c18e66f2d307f904236f7c1dd269ba2cdc59f",
     "09_final_transport.py": "b303ec75367799099fe9a436a6bdfdf32e4f1ec5e6092268bea2e3034e943639",
-    "10_split_policy_offload.py": "95849da1f4fd52e1277fbacec99580e6390f3d052cf79f2fd166b62817878c80"
+    "10_split_policy_offload.py": "76ebdfbf6be9014792d11445d530ce93d1d15b18b52c937a286e117ab346564b"
   },
   "release": "Пер-R60-REDIS-LOGICAL-MODES-INSPECTOR",
   "release_features": [

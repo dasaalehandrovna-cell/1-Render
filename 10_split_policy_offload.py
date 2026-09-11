@@ -1119,6 +1119,21 @@ _SPLIT_EVENT_PENDING_MIRROR = _split_collections.OrderedDict()
 def _split_event_prefix_v268():
     return str(_split_os.getenv('WORKER_REDIS_EVENT_PREFIX','vys262:tg_events:v1') or 'vys262:tg_events:v1').strip()
 
+def _r61_effective_redis_url():
+    """R61: operational Redis URL from runtime_config; Render env is never mutated."""
+    try:
+        from runtime_config import redis_effective_url
+        return str(redis_effective_url() or '').strip()
+    except Exception:
+        return ''
+
+def _r61_render_redis_url():
+    try:
+        from runtime_config import redis_render_url
+        return str(redis_render_url() or '').strip()
+    except Exception:
+        return ''
+
 def _split_event_id_v268(update_id):
     return str(update_id)
 
@@ -1136,7 +1151,7 @@ def _split_event_row_v268(update_id, payload, chat_id=None, update_type='other')
 def _split_event_redis_write_v268(row, state=None, error=''):
     if _split_redis is None:
         return False, 'redis package unavailable'
-    url=str(_split_os.getenv('REDIS_URL','') or '').strip()
+    url=_r61_effective_redis_url()
     if not url:
         return False, 'REDIS_URL empty'
     try:
@@ -1257,7 +1272,7 @@ def _split_ack_mirrored_events_v268(event_ids):
 def _split_remote_pending_rows_v268(limit=100):
     # R16: query the authoritative Redis event journal first; Worker is a fallback.
     if _split_redis is not None:
-        url=str(_split_os.getenv('REDIS_URL','') or '').strip()
+        url=_r61_effective_redis_url()
         if url:
             try:
                 client=_split_redis.Redis.from_url(url,socket_connect_timeout=1.5,socket_timeout=3)
@@ -1512,7 +1527,7 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
     if _split_redis is None:
         _SPLIT_STATE['redis_fallback_last_error'] = 'redis package unavailable'
         return False
-    url = str(_split_os.getenv('REDIS_URL', '') or '').strip()
+    url = _r61_effective_redis_url()
     if not url:
         _SPLIT_STATE['redis_fallback_last_error'] = 'REDIS_URL empty'
         return False
@@ -2517,7 +2532,7 @@ def _r20_capsule_redis_key():
 def _r20_capsule_store_redis(payload: dict, packed: bytes):
     if _split_redis is None:
         return False, 'redis package unavailable'
-    url = str(_split_os.getenv('REDIS_URL', '') or '').strip()
+    url = _r61_effective_redis_url()
     if not url:
         return False, 'REDIS_URL empty'
     try:
@@ -4576,10 +4591,9 @@ def _r59_code_runtime_rows():
             f'CONFIG_VERSION={getattr(rc,"CONFIG_VERSION","?")}',
             f'MEGA_ENABLED(effective)={str(_split_os.getenv("MEGA_ENABLED","") or "")}',
             f'MEGA_BACKUP_DIR(effective)={str(_split_os.getenv("MEGA_BACKUP_DIR","") or "")}',
-            f'REDIS render={int(bool(st.get("master_enabled")))} configured={int(bool(st.get("configured")))} runtime={int(bool(st.get("enabled")))} mode={str(st.get("mode") or "?")}',
-            f'REDIS restart_default={"ON" if bool(st.get("restart_enabled")) else "OFF"} · role={str(st.get("role") or "background-cache-outbox")}',
-            f'REDIS_URL(effective)={"<active>" if str(_split_os.getenv("REDIS_URL","") or "").strip() else "<empty>"}',
-            'REDIS_START_ENABLED=ignored in R60',
+            f'REDIS master(Render)={int(bool(st.get("master_enabled")))} start(Render)={int(bool(st.get("start_enabled")))} configured={int(bool(st.get("configured")))}',
+            f'REDIS runtime={int(bool(st.get("enabled")))} mode={str(st.get("mode") or "?")} · restart={"ON" if bool(st.get("restart_enabled")) else "OFF"}',
+            f'REDIS effective URL={"<active>" if _r61_effective_redis_url() else "<inactive>"} · source=Render only',
             f'REDIS last_switch={str(_R49_REDIS_CONTROL.get("detail") or "-")[:180]}',
             f'TELEGRAM_BACKUP_ENABLED(effective)={str(_split_os.getenv("TELEGRAM_BACKUP_ENABLED","") or "")}',
             '--- packaged FRONT_INTERNAL_ENV ---',
@@ -4596,7 +4610,7 @@ def _r59_vars_text(kind, page=0):
     size=_R59_ENV_PAGE_SIZE; pages=max(1,(len(rows)+size-1)//size); page=max(0,min(int(page or 0),pages-1))
     chunk=rows[page*size:(page+1)*size]
     title='🌐 RENDER ENV · FAST (#1)' if kind=='render' else '🧩 ПЕРЕМЕННЫЕ КОДА / RUNTIME · FAST (#1)'
-    note='Снимок до изменений runtime_config. Секреты замаскированы. REDIS_START_ENABLED в R60 игнорируется.' if kind=='render' else 'Эффективное состояние + встроенные FRONT_INTERNAL_ENV.'
+    note='Снимок Render ENV до runtime. Секреты замаскированы; REDIS_ENABLED/REDIS_START_ENABLED/REDIS_URL принадлежат только Render.' if kind=='render' else 'Эффективное runtime-состояние. Redis master/start/url не создаются кодом.'
     return window_mark(title+f'\nСтраница {page+1}/{pages}\n{note}\n\n'+'\n'.join(chunk), 'Ф89'), pages, page
 
 def _r59_vars_keyboard(kind, page=0):
@@ -4611,7 +4625,7 @@ def _r59_vars_keyboard(kind, page=0):
     return text,kb
 
 def _r59_fast_redis_probe():
-    url=str(_split_os.getenv('REDIS_URL','') or '').strip()
+    url=_r61_effective_redis_url()
     if not url: return False,'FAST REDIS_URL empty'
     if _split_redis is None: return False,'FAST redis package unavailable'
     client=None
@@ -4666,7 +4680,7 @@ def _r60_redis_menu_text(extra=''):
     st=_r49_redis_runtime_state()
     enabled=bool(st.get('enabled'))
     lines=[
-        '🧱 REDIS · R60',
+        '🧱 REDIS · R61',
         '',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
@@ -4675,17 +4689,16 @@ def _r60_redis_menu_text(extra=''):
         'Роль=фон/кэш/outbox; SQLite остаётся основной базой',
         '',
         'Логика после рестарта:',
-        '• REDIS_ENABLED=1 → Redis стартует ВКЛ',
+        '• REDIS_ENABLED=1 → Redis разрешён',
         '• REDIS_ENABLED=0 → Redis жёстко ВЫКЛ',
-        '• кнопки ниже меняют состояние только до следующего рестарта',
-        '• REDIS_START_ENABLED в R60 не используется',
+        '• REDIS_START_ENABLED=1 → после deploy runtime стартует ON',
+        '• REDIS_START_ENABLED=0 → после deploy runtime стартует OFF',
+        '• кнопки ниже меняют только runtime до следующего рестарта',
     ]
     detail=str(st.get('detail') or '')[:260]
     if detail:
         lines += ['', 'Последнее переключение: '+detail]
-    legacy=str(st.get('legacy_redis_start_enabled_ignored') or '').strip()
-    if legacy:
-        lines += [f'Render REDIS_START_ENABLED={legacy} (игнорируется)']
+    lines += [f'Render REDIS_START_ENABLED={1 if st.get("start_enabled") else 0}']
     if extra:
         lines += ['', str(extra)[:700]]
     return window_mark('\n'.join(lines),'Ф89')
@@ -4725,6 +4738,9 @@ def _r60_redis_inspect_text(payload, error=''):
         f'Клиенты={int(stats.get("connected_clients") or 0)} · hits={int(stats.get("keyspace_hits") or 0)} · misses={int(stats.get("keyspace_misses") or 0)}',
         f'evicted={int(stats.get("evicted_keys") or 0)} · expired={int(stats.get("expired_keys") or 0)}',
         '',
+        'Готовность к восстановлению:',
+        f'• full SQLite={"✅" if (payload.get("recovery") or {}).get("full_snapshot") else "❌"} · deltas={int((payload.get("recovery") or {}).get("deltas") or 0)} · capsule={"✅" if (payload.get("recovery") or {}).get("capsule") else "❌"} · events≈{int((payload.get("recovery") or {}).get("events") or 0)}',
+        '',
         'Группы ключей:',
     ]
     prefs=list(payload.get('prefixes') or [])
@@ -4762,19 +4778,127 @@ def _r60_redis_inspect_keyboard(page=0,pages=1):
     return kb
 
 
+def _r61_redis_preview(value, key='', limit=220):
+    name=str(key or '').casefold()
+    if any(tok in name for tok in ('token','password','passwd','secret','session','credential','authorization','cookie','private_key')):
+        return '<masked>'
+    if value is None:
+        return ''
+    if isinstance(value,(bytes,bytearray)):
+        raw=bytes(value)
+        # Full SQLite/gzip/blob data is never dumped into Telegram.
+        if len(raw)>256 or any(b < 9 or (13 < b < 32) for b in raw[:80]):
+            return f'<binary {len(raw)} B>'
+        text=raw.decode('utf-8',errors='replace')
+    else:
+        text=str(value)
+    import re as _re
+    text=text.replace('\x00','').replace('\r',' ').replace('\n',' ')
+    text=_re.sub(r'(?i)(redis|rediss)://[^@\s]+@',r'\1://***@',text)
+    text=_re.sub(r'\b\d{6,12}:[A-Za-z0-9_-]{20,}\b','<bot-token>',text)
+    text=_re.sub(r'(?i)(password|passwd|secret|token|authorization|cookie)["\'\s:=]+[^,}\]\s]{4,}',r'\1=<masked>',text)
+    return text[:max(40,int(limit))]
+
+
+def _r61_redis_key_row_local(client, raw_key):
+    name=raw_key.decode('utf-8',errors='replace') if isinstance(raw_key,(bytes,bytearray)) else str(raw_key)
+    try:
+        typ=client.type(raw_key)
+        if isinstance(typ,(bytes,bytearray)): typ=typ.decode('utf-8',errors='replace')
+        typ=str(typ or '?')
+    except Exception: typ='?'
+    try: ttl=int(client.pttl(raw_key))
+    except Exception: ttl=-2
+    try: mem=int(client.memory_usage(raw_key) or 0)
+    except Exception: mem=0
+    count=None; preview=''
+    try:
+        if typ=='string':
+            val=client.get(raw_key); count=len(val) if isinstance(val,(bytes,bytearray,str)) else None
+            preview=_r61_redis_preview(val,name)
+        elif typ=='hash':
+            count=int(client.hlen(raw_key) or 0); vals=client.hscan(raw_key,count=4)[1] or {}
+            preview=_r61_redis_preview({(_r61_redis_preview(k,name,60)): _r61_redis_preview(v,name,100) for k,v in list(vals.items())[:4]},name)
+        elif typ=='list':
+            count=int(client.llen(raw_key) or 0); preview=_r61_redis_preview(client.lrange(raw_key,0,3),name)
+        elif typ=='set':
+            count=int(client.scard(raw_key) or 0); preview=_r61_redis_preview(list(client.sscan(raw_key,count=4)[1] or [])[:4],name)
+        elif typ=='zset':
+            count=int(client.zcard(raw_key) or 0); preview=_r61_redis_preview(client.zrange(raw_key,0,3,withscores=True),name)
+        elif typ=='stream':
+            info=client.xinfo_stream(raw_key); count=int(info.get('length') or 0) if isinstance(info,dict) else None
+            preview=_r61_redis_preview(client.xrevrange(raw_key,count=2),name)
+    except Exception as exc:
+        preview=f'<preview error {type(exc).__name__}>'
+    return {'key':name[:220],'type':typ,'ttl_ms':ttl,'bytes':mem,'count':count,'preview':preview}
+
+
+def _r61_redis_prefix_local(name):
+    parts=str(name or '').split(':')
+    if not parts: return '(empty)'
+    if parts[0]=='vysbot' and len(parts)>=3: return ':'.join(parts[:3])+':*'
+    if parts[0]=='vys262' and len(parts)>=2: return ':'.join(parts[:2])+':*'
+    if parts[0]=='per' and len(parts)>=4: return ':'.join(parts[:4])+':*'
+    return ':'.join(parts[:min(3,len(parts))])+(':*' if len(parts)>3 else '')
+
+
+def _r61_fetch_redis_inspect_direct(page=0):
+    url=_r61_effective_redis_url()
+    if not url:
+        raise RuntimeError('Redis runtime is OFF or REDIS_URL is not configured in Render')
+    try:
+        import redis as _redis_pkg
+    except Exception as exc:
+        raise RuntimeError('redis package unavailable') from exc
+    client=None
+    try:
+        page=max(0,min(99,int(page or 0))); page_size=10
+        client=_redis_pkg.Redis.from_url(url,socket_connect_timeout=0.9,socket_timeout=1.5,health_check_interval=30)
+        pong=bool(client.ping())
+        info_mem=client.info('memory') or {}; info_stats=client.info('stats') or {}; info_clients=client.info('clients') or {}
+        try: dbsize=int(client.dbsize() or 0)
+        except Exception: dbsize=0
+        keys=[]; truncated=False
+        for raw in client.scan_iter(match='*',count=200):
+            keys.append(raw)
+            if len(keys)>=500: truncated=True; break
+        keys.sort(key=lambda x: x.decode('utf-8',errors='replace') if isinstance(x,(bytes,bytearray)) else str(x))
+        decoded=[]; prefix_counts={}
+        for raw in keys:
+            name=raw.decode('utf-8',errors='replace') if isinstance(raw,(bytes,bytearray)) else str(raw)
+            decoded.append((name,raw)); pref=_r61_redis_prefix_local(name); prefix_counts[pref]=prefix_counts.get(pref,0)+1
+        pages=max(1,(len(decoded)+page_size-1)//page_size); page=max(0,min(page,pages-1))
+        chosen=decoded[page*page_size:(page+1)*page_size]
+        # R61 recovery readiness: these are the durable state primitives already
+        # produced by HEAVY. This is diagnostic only; FAST startup policy is unchanged.
+        try: full_snapshot=bool(client.exists('vys262:bot_state:latest_gz'))
+        except Exception: full_snapshot=False
+        try: deltas=int(client.llen('vys262:bot_state:latest_gz:deltas_v1') or 0)
+        except Exception: deltas=0
+        try: capsule=bool(client.exists('vys262:durable_capsule:r20'))
+        except Exception: capsule=False
+        try:
+            events=sum(1 for _ in client.scan_iter(match='vys262:tg_events:v1:event:*',count=200))
+        except Exception: events=0
+        return {
+            'ok':True,'role':'fast-direct','source':'FAST direct Redis','ping':'PONG' if pong else 'FAIL',
+            'recovery':{'full_snapshot':full_snapshot,'deltas':deltas,'capsule':capsule,'events':events},
+            'dbsize':dbsize,'scanned':len(decoded),'truncated':truncated,'page':page,'pages':pages,'page_size':page_size,
+            'entries':[_r61_redis_key_row_local(client,raw) for _,raw in chosen],
+            'prefixes':[{'prefix':k,'count':v} for k,v in sorted(prefix_counts.items(),key=lambda kv:(-kv[1],kv[0]))[:12]],
+            'memory':{'used_memory':int(info_mem.get('used_memory') or 0),'used_memory_human':str(info_mem.get('used_memory_human') or ''),'maxmemory':int(info_mem.get('maxmemory') or 0),'maxmemory_human':str(info_mem.get('maxmemory_human') or '')},
+            'stats':{'keyspace_hits':int(info_stats.get('keyspace_hits') or 0),'keyspace_misses':int(info_stats.get('keyspace_misses') or 0),'evicted_keys':int(info_stats.get('evicted_keys') or 0),'expired_keys':int(info_stats.get('expired_keys') or 0),'connected_clients':int(info_clients.get('connected_clients') or 0)},
+        }
+    finally:
+        try:
+            if client is not None: client.close()
+        except Exception: pass
+
+
 def _r60_fetch_redis_inspect(page=0):
-    base=globals().get('_split_peer_base',lambda:'')()
-    secret=globals().get('_split_secret',lambda:'')()
-    if not base or not secret:
-        raise RuntimeError('Render #2 peer не настроен')
-    headers_fn=globals().get('_split_headers')
-    headers=dict(headers_fn('vys-262-r60-redis-inspect') or {}) if callable(headers_fn) else {'X-Peer-Secret':secret}
-    r=__import__('requests').get(base.rstrip('/')+'/internal/runtime/redis/inspect',params={'page':int(page or 0),'page_size':10},headers=headers,timeout=(1.5,4.0))
-    try: payload=r.json() if r.content else {}
-    except Exception: payload={}
-    if not (200 <= int(r.status_code) < 300 and bool(payload.get('ok'))):
-        raise RuntimeError(str(payload.get('error') or r.text or f'HTTP {r.status_code}')[:500])
-    return payload
+    # R61: inspect Redis directly from FAST. This removes dependency on a matching
+    # HEAVY HTTP route and fixes the R60 404 when HEAVY was still on an older build.
+    return _r61_fetch_redis_inspect_direct(page)
 
 
 def _r60_render_redis_menu(chat_id,message_id,extra=''):
@@ -4843,7 +4967,7 @@ def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -
         if not base or not secret:
             raise RuntimeError('Render #2 peer is not configured')
         headers_fn = globals().get('_split_headers')
-        headers = dict(headers_fn('vys-262-r60-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
+        headers = dict(headers_fn('vys-262-r61-render-owned-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
 
         # HEAVY first.  Its endpoint now validates its own Render master switch,
         # configured URL and an actual short PING before reporting enabled=True.
@@ -4916,7 +5040,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     if mode == R31_MENU_MODE_THIRD:
         return _r31_third_info_text(cid)
     return window_mark(
-        'ℹ️ ИНФО · R60\n\n'
+        'ℹ️ ИНФО · R61\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
         '⚡ FAST UI: callback не ждёт Telegram; рендер идёт отдельной latest-wins очередью.\n'
@@ -5847,7 +5971,7 @@ _R43_EVENT_STREAM_KEY='per:r43:front:state_events'
 
 def _r43_event_redis_client():
     if _r43_redis is None: return None
-    url=str(_r32_os.getenv('REDIS_URL','') or '').strip()
+    url=_r61_effective_redis_url()
     if not url: return None
     try:
         return _r43_redis.Redis.from_url(url,socket_connect_timeout=0.6,socket_timeout=1.5,health_check_interval=30)
@@ -6329,7 +6453,7 @@ def _r36_delivery_local_get(jid):
 def _r35_delivery_redis_client():
     try:
         pkg=globals().get('_split_redis')
-        url=str(__import__('os').getenv('REDIS_URL','') or '').strip()
+        url=_r61_effective_redis_url()
         if pkg is None or not url: return None
         return pkg.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=2.0,health_check_interval=30)
     except Exception:
@@ -7625,7 +7749,7 @@ def _r44_front_redis():
             except Exception: pass
     try:
         import redis as _r44_redis
-        url=str(_r44_os.getenv('REDIS_URL','') or '').strip()
+        url=_r61_effective_redis_url()
         if not url:return None
         c=_r44_redis.Redis.from_url(url,decode_responses=False,socket_connect_timeout=2,socket_timeout=3)
         if c.ping(): return c

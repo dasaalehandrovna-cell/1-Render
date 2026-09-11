@@ -8652,7 +8652,7 @@ needed by the bot.  The store is optional.  If no URL is configured or the servi
 briefly unavailable, callers fall back to the existing local/SQLite behaviour.
 """
 
-KEY_VALUE_URL = str(os.getenv('REDIS_URL') or '').strip()
+KEY_VALUE_URL = ''
 KEY_VALUE_ENABLED = str(os.getenv('KEY_VALUE_ENABLED', '1') or '1').strip().casefold() not in {'0', 'false', 'no', 'off'}
 KEY_VALUE_PREFIX = str(os.getenv('KEY_VALUE_PREFIX', 'vysbot:kv1') or 'vysbot:kv1').strip(': ') or 'vysbot:kv1'
 KEY_VALUE_CONNECT_TIMEOUT = max(0.05, min(1.0, float(os.getenv('KEY_VALUE_CONNECT_TIMEOUT_SECONDS', '0.18') or '0.18')))
@@ -8663,10 +8663,13 @@ KEY_VALUE_CALLBACK_TTL_SECONDS = max(900, min(86400, int(os.getenv('KEY_VALUE_CA
 
 
 def _key_value_env_url_v248() -> str:
-    # R59: Redis can be enabled/disabled at runtime from Info.  Never rely on the
-    # URL captured once at module import; runtime_config intentionally changes
-    # REDIS_URL when the owner toggles Redis.
-    return str(os.getenv('REDIS_URL') or '').strip()
+    # R61: Redis configuration stays owned by Render; runtime state is in-memory.
+    # Never mutate/read REDIS_URL as an ON/OFF flag.
+    try:
+        from runtime_config import redis_effective_url
+        return str(redis_effective_url() or '').strip()
+    except Exception:
+        return ''
 
 def key_value_refresh_runtime_v248() -> bool:
     global KEY_VALUE_URL, KEY_VALUE_CLIENT_V248
