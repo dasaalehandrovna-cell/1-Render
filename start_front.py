@@ -470,7 +470,7 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
             if upper is None:
                 unknown += 1
     print(
-        f'[SPLIT FRONT] R55 MEGA event plan root={event_root} total={len(rows)} '
+        f'[SPLIT FRONT] R56 MEGA event plan root={event_root} total={len(rows)} '
         f'skipped_checkpoint={skipped} replay={len(needed)} unknown={unknown} '
         f'checkpoint_ts={checkpoint_ts:.6f} margin={margin_sec:.1f}s',
         flush=True,
@@ -500,7 +500,7 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
 
     downloaded: dict[int, Path] = {}
     try:
-        print(f'[SPLIT FRONT] R55 MEGA event tail download start count={len(needed)} workers={download_workers}', flush=True)
+        print(f'[SPLIT FRONT] R56 MEGA event tail download start count={len(needed)} workers={download_workers}', flush=True)
         if download_workers == 1 or len(needed) == 1:
             results = [_download_one(x) for x in enumerate(needed)]
         else:
@@ -516,7 +516,7 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
                 return False, f'MEGA event download failed {remote.rsplit("/",1)[-1]}: {err}'
             downloaded[int(idx)] = path
         print(
-            f'[SPLIT FRONT] R55 MEGA event tail download done count={len(downloaded)} '
+            f'[SPLIT FRONT] R56 MEGA event tail download done count={len(downloaded)} '
             f'slowest={slowest:.2f}s elapsed={time.monotonic()-started:.2f}s', flush=True,
         )
 
@@ -560,9 +560,9 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
     canonical_root = roots[0]
     mega_timeout = max(45, min(900, int(os.getenv('MEGA_TIMEOUT', '120') or '120')))
     login_timeout = max(45, min(300, int(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120')))
-    print(f'[SPLIT FRONT] R55 MEGA login start roots={len(roots)} timeout={login_timeout}s', flush=True)
+    print(f'[SPLIT FRONT] R56 MEGA login start roots={len(roots)} timeout={login_timeout}s', flush=True)
     logged, detail = _mega_login(login_timeout)
-    print(f'[SPLIT FRONT] R55 MEGA login done ok={int(bool(logged))} detail={detail[:220]}', flush=True)
+    print(f'[SPLIT FRONT] R56 MEGA login done ok={int(bool(logged))} detail={detail[:220]}', flush=True)
     if not logged:
         return False, detail
     tmpdir = Path(tempfile.mkdtemp(prefix='v262_fast_startup_mega_'))
@@ -576,20 +576,20 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
         idx = candidate_index
         dl = tmpdir / f'd{idx}'
         dl.mkdir(exist_ok=True)
-        print(f'[SPLIT FRONT] R55 MEGA candidate start idx={idx} kind={source_kind} remote={remote}', flush=True)
+        print(f'[SPLIT FRONT] R56 MEGA candidate start idx={idx} kind={source_kind} remote={remote}', flush=True)
         t0 = time.monotonic()
         try:
             get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
         except Exception as exc:
             err = f'{remote}: {type(exc).__name__}: {str(exc)[:160]}'
             errors.append(err)
-            print(f'[SPLIT FRONT] R55 MEGA candidate fail idx={idx} elapsed={time.monotonic()-t0:.2f}s {err}', flush=True)
+            print(f'[SPLIT FRONT] R56 MEGA candidate fail idx={idx} elapsed={time.monotonic()-t0:.2f}s {err}', flush=True)
             return False, err
         if get.returncode != 0:
             detail2 = (get.stderr or get.stdout or 'mega-get failed').strip()
             err = f'{remote}: {detail2[:180]}'
             errors.append(err)
-            print(f'[SPLIT FRONT] R55 MEGA candidate miss idx={idx} elapsed={time.monotonic()-t0:.2f}s detail={detail2[:220]}', flush=True)
+            print(f'[SPLIT FRONT] R56 MEGA candidate miss idx={idx} elapsed={time.monotonic()-t0:.2f}s detail={detail2[:220]}', flush=True)
             return False, err
         candidates_local = list(dl.rglob('*.sqlite3.gz')) + [x for x in dl.rglob('*.gz') if x.name != 'latest_bot_state.sqlite3.gz']
         if not candidates_local:
@@ -606,10 +606,10 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
             if canonical_root != source_root:
                 ordered_event_roots.append(canonical_root)
             for event_root in ordered_event_roots:
-                print(f'[SPLIT FRONT] R55 MEGA event replay start root={event_root}', flush=True)
+                print(f'[SPLIT FRONT] R56 MEGA event replay start root={event_root}', flush=True)
                 replay_ok, replay_detail = _replay_mega_event_segments(target, event_root, mega_timeout)
                 replay_parts.append(f'{event_root}: {replay_detail}')
-                print(f'[SPLIT FRONT] R55 MEGA event replay done root={event_root} ok={int(bool(replay_ok))} detail={replay_detail[:260]}', flush=True)
+                print(f'[SPLIT FRONT] R56 MEGA event replay done root={event_root} ok={int(bool(replay_ok))} detail={replay_detail[:260]}', flush=True)
                 if not replay_ok:
                     errors.append(f'{remote}: base installed but event replay failed at {event_root}: {replay_detail}')
                     return False, errors[-1]
@@ -618,13 +618,13 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
                 f'MEGA startup restore OK source={source_note}/{source_kind} root={source_root} '
                 f'remote={remote}; {install_detail}; ' + '; '.join(replay_parts)
             )[:1200]
-            print(f'[SPLIT FRONT] R55 MEGA candidate success idx={idx} elapsed={time.monotonic()-t0:.2f}s', flush=True)
+            print(f'[SPLIT FRONT] R56 MEGA candidate success idx={idx} elapsed={time.monotonic()-t0:.2f}s', flush=True)
             return True, detail3
         return False, errors[-1] if errors else f'{remote}: invalid downloaded snapshot'
 
     try:
         for root_no, root in enumerate(roots, 1):
-            print(f'[SPLIT FRONT] R55 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
+            print(f'[SPLIT FRONT] R56 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
 
             # HEAVY's active runtime checkpoint writer promotes this object on every
             # successful full snapshot.  It is therefore the freshest control file
@@ -679,7 +679,7 @@ def main():
             legacy_value = str(os.getenv(legacy_key, '') or '').strip().rstrip('/')
             if legacy_value and legacy_value != render_base:
                 print(
-                    f'[SPLIT FRONT] R55 ENV WARN {legacy_key} points to another host; '
+                    f'[SPLIT FRONT] R56 ENV WARN {legacy_key} points to another host; '
                     f'ignoring legacy value in favor of Render host={render_base}',
                     flush=True,
                 )
@@ -687,13 +687,13 @@ def main():
     started = time.time()
     trace = {
         'schema': 2,
-        'policy': 'R50_FAST_STARTUP_MEGA_ONLY',
+        'policy': 'R56_RENDER_MASTER_SWITCHES',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
         'local_valid_before': _db_valid(target),
         'local_revision_before': _db_revision(target),
-        'mega_contacted': True,
+        'mega_contacted': False,
         'mega_ok': False,
         'mega_detail': '',
         'redis_contacted': False,
@@ -702,38 +702,45 @@ def main():
     }
     try:
         had_valid_local_before_restore = bool(trace['local_valid_before'])
-        max_attempts = max(1, min(12, int(os.getenv('SPLIT_RESTORE_BOOT_ATTEMPTS', '3') or '3')))
-        retry_sec = max(2, min(60, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '5') or '5')))
-        last_detail = ''
-        for attempt in range(1, max_attempts + 1):
-            ok, detail = _restore_from_mega_startup(target)
-            last_detail = str(detail)
-            trace['mega_ok'] = bool(ok)
-            trace['mega_detail'] = last_detail[:700]
-            trace['mega_attempt'] = attempt
-            trace['mega_attempts_max'] = max_attempts
-            print(f'[SPLIT FRONT] R50 FAST MEGA startup restore attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
-            if ok:
-                trace['base_source'] = 'MEGA'
-                break
-            if had_valid_local_before_restore and _db_valid(target):
-                trace['base_source'] = 'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE'
-                print('[SPLIT FRONT] keeping pre-existing valid local SQLite after MEGA attempt:', detail, flush=True)
-                break
-            if _bool('SPLIT_ALLOW_EMPTY_BOOT', False):
-                trace['base_source'] = 'EMPTY_INIT'
-                print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
-                break
-            if attempt < max_attempts:
-                time.sleep(retry_sec)
+        mega_master_enabled = _bool('MEGA_ENABLED', True)
+        trace['mega_master_enabled'] = bool(mega_master_enabled)
+        if not mega_master_enabled:
+            trace['mega_contacted'] = False
+            trace['mega_ok'] = False
+            trace['mega_detail'] = 'MEGA disabled by Render MEGA_ENABLED=0'
+            trace['base_source'] = 'LOCAL_SQLITE' if had_valid_local_before_restore else 'EMPTY_INIT_MEGA_DISABLED'
+            print('[SPLIT FRONT] R56 MEGA disabled by MEGA_ENABLED=0; startup restore skipped', flush=True)
         else:
-            # Never remain a healthy-looking web service that does no bot work. A
-            # fresh container without a valid MEGA recovery source must fail fast;
-            # Render can restart it and a later HEAVY checkpoint can then be picked up.
-            trace['base_source'] = 'MEGA_RESTORE_FAILED'
-            trace['local_valid_after'] = _db_valid(target)
-            print('[SPLIT FRONT] R50 FATAL: no valid MEGA startup snapshot after bounded attempts:', last_detail, flush=True)
-            raise RuntimeError('R50 MEGA startup restore failed: ' + last_detail[:700])
+            trace['mega_contacted'] = True
+            max_attempts = max(1, min(12, int(os.getenv('SPLIT_RESTORE_BOOT_ATTEMPTS', '3') or '3')))
+            retry_sec = max(2, min(60, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '5') or '5')))
+            last_detail = ''
+            for attempt in range(1, max_attempts + 1):
+                ok, detail = _restore_from_mega_startup(target)
+                last_detail = str(detail)
+                trace['mega_ok'] = bool(ok)
+                trace['mega_detail'] = last_detail[:700]
+                trace['mega_attempt'] = attempt
+                trace['mega_attempts_max'] = max_attempts
+                print(f'[SPLIT FRONT] R56 FAST MEGA startup restore attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
+                if ok:
+                    trace['base_source'] = 'MEGA'
+                    break
+                if had_valid_local_before_restore and _db_valid(target):
+                    trace['base_source'] = 'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE'
+                    print('[SPLIT FRONT] keeping pre-existing valid local SQLite after MEGA attempt:', detail, flush=True)
+                    break
+                if _bool('SPLIT_ALLOW_EMPTY_BOOT', False):
+                    trace['base_source'] = 'EMPTY_INIT'
+                    print('[SPLIT FRONT] empty boot explicitly allowed', flush=True)
+                    break
+                if attempt < max_attempts:
+                    time.sleep(retry_sec)
+            else:
+                trace['base_source'] = 'MEGA_RESTORE_FAILED'
+                trace['local_valid_after'] = _db_valid(target)
+                print('[SPLIT FRONT] R56 FATAL: no valid MEGA startup snapshot after bounded attempts:', last_detail, flush=True)
+                raise RuntimeError('R56 MEGA startup restore failed: ' + last_detail[:700])
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -769,7 +776,7 @@ def main():
         runtime_main = runtime_ns.get('main')
         if not callable(runtime_main):
             raise RuntimeError('R54 bot runtime loaded without callable main()')
-        print(f'[SPLIT FRONT] R55 runtime imported; switching preboot -> Waitress; captured={_PREBOOT_CAPTURED}', flush=True)
+        print(f'[SPLIT FRONT] R56 runtime imported; switching preboot -> Waitress; captured={_PREBOOT_CAPTURED}', flush=True)
         _stop_boot_port(server)
         time.sleep(0.05)
         runtime_main()

@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r54-preboot-handoff-rootfix"
+CONFIG_VERSION = "vys-262-r56-render-master-switches"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -191,6 +191,15 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
 
 
 
+# R56: Render master switches are captured before packaged tuning is installed.
+# MEGA_ENABLED=0 disables every MEGA path; REDIS_ENABLED=0 disables every Redis path.
+def _render_flag(name: str, default: bool) -> bool:
+    raw = str(os.environ.get(name, "1" if default else "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "да"}
+
+_MEGA_RENDER_ENABLED = _render_flag("MEGA_ENABLED", True)
+_REDIS_RENDER_ENABLED = _render_flag("REDIS_ENABLED", False)
+
 # R49 root-fix: keep the externally supplied Redis URL private while runtime Redis
 # is OFF by default.  The owner can enable it explicitly from Info without a
 # restart; a restart always returns to the packaged OFF default.
@@ -201,29 +210,32 @@ _REDIS_RUNTIME_INITIALIZED = False
 def _apply_redis_runtime_state(enabled: bool) -> None:
     global _REDIS_RUNTIME_ENABLED
     requested = bool(enabled)
-    _REDIS_RUNTIME_ENABLED = bool(requested and _REDIS_EXTERNAL_URL)
+    _REDIS_RUNTIME_ENABLED = bool(requested and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL)
     os.environ["REDIS_URL"] = _REDIS_EXTERNAL_URL if _REDIS_RUNTIME_ENABLED else ""
     os.environ["REDIS_RUNTIME_ENABLED"] = "1" if _REDIS_RUNTIME_ENABLED else "0"
 
 def redis_runtime_state() -> Dict[str, object]:
     return {
         "configured": bool(_REDIS_EXTERNAL_URL),
-        "enabled": bool(_REDIS_RUNTIME_ENABLED and _REDIS_EXTERNAL_URL),
-        "default_enabled": False,
+        "master_enabled": bool(_REDIS_RENDER_ENABLED),
+        "enabled": bool(_REDIS_RUNTIME_ENABLED and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL),
+        "default_enabled": bool(_REDIS_RENDER_ENABLED),
     }
 
 def set_redis_runtime_enabled(enabled: bool) -> Dict[str, object]:
     _apply_redis_runtime_state(bool(enabled))
     state = redis_runtime_state()
-    if bool(enabled) and not state["configured"]:
+    if bool(enabled) and not state["master_enabled"]:
+        state["error"] = "REDIS_ENABLED=0 in Render"
+    elif bool(enabled) and not state["configured"]:
         state["error"] = "REDIS_URL is not configured in Render"
     return state
 
 def _init_redis_runtime_default() -> None:
     global _REDIS_RUNTIME_INITIALIZED
     if not _REDIS_RUNTIME_INITIALIZED:
-        default_enabled = str(os.environ.get("REDIS_RUNTIME_DEFAULT", "0") or "0").strip().lower() in {"1", "true", "yes", "on", "да"}
-        _apply_redis_runtime_state(default_enabled)
+        # Render master switch is authoritative on every restart: 1=ON, 0=OFF.
+        _apply_redis_runtime_state(_REDIS_RENDER_ENABLED)
         _REDIS_RUNTIME_INITIALIZED = True
     else:
         _apply_redis_runtime_state(_REDIS_RUNTIME_ENABLED)
@@ -233,7 +245,17 @@ def install_internal_runtime_config(role: str) -> Dict[str, str]:
     role = str(role or "").strip().lower()
     values = FRONT_INTERNAL_ENV if role == "front" else WORKER_INTERNAL_ENV if role == "worker" else {}
     for key, value in values.items():
+        # External master switches must never be overwritten by packaged defaults.
+        if str(key) in {"MEGA_ENABLED", "REDIS_ENABLED"}:
+            continue
         os.environ[str(key)] = str(value)
+    fast_runtime_mega_disabled = role == "front" and str(os.environ.get("FAST_RUNTIME_MEGA_DISABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    os.environ["MEGA_ENABLED"] = "1" if (_MEGA_RENDER_ENABLED and not fast_runtime_mega_disabled) else "0"
+    os.environ["REDIS_ENABLED"] = "1" if _REDIS_RENDER_ENABLED else "0"
+    if not _MEGA_RENDER_ENABLED:
+        os.environ["MEGA_AUTORESTORE"] = "0"
+        os.environ["SPLIT_EMERGENCY_MEGA"] = "0"
+        os.environ["WORKER_CAPSULE_MEGA_ENABLED"] = "0"
     _init_redis_runtime_default()
     os.environ["VYS262_INTERNAL_CONFIG_VERSION"] = CONFIG_VERSION
     return dict(values)

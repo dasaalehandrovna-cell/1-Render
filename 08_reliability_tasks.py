@@ -2397,6 +2397,8 @@ except Exception:
     pass
 _V160_TIMER_LOCK = _v160_threading.RLock()
 _V160_TIMERS = {}
+_V160_CALLBACK_LOCK = _v160_threading.RLock()
+_V160_CALLBACK_IDS = {}
 
 def _v160_cancel_timer(key: str) -> None:
     key = str(key)
