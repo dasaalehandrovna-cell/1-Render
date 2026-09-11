@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "cb6efc5401d45568dac7ef6a6c8906305c2436f0dd04b4303777fe0a6f92ab66",
+    "01_core_data.py": "fcffab31ad3d49f6ebc7310a153d855c6233f0011badc7ab549073a4ec9e55ca",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
     "06_commands_callbacks.py": "5fe18651b36ad586e96cb8763c0fd48610d70dc5b579d1c39e1bac6f11b56691",
-    "07_state_web.py": "1c9d01f5b73c0d72add40ecb243bd0f53d42ebe9bf505ea6a7ef62fdfe2aa182",
+    "07_state_web.py": "ff34ea98f423036801d71aab0d18b231375851a40468f9446de932e7082bf6ac",
     "08_reliability_tasks.py": "61ff13237858c57171d8c0ba63ee6a4b55ab63945bb66464f1c1a199dd200b01",
     "09_final_transport.py": "b303ec75367799099fe9a436a6bdfdf32e4f1ec5e6092268bea2e3034e943639",
-    "10_split_policy_offload.py": "17518151ca355c1ce1a3c83178c97888ba7c9c99ffdf6a98bec86f6a37152cfb"
+    "10_split_policy_offload.py": "dc90e993261113eaffbbe3811e2fab7cc06b8b2f646015802493f778e49aef7e"
   },
-  "release": "Пер-R59-REDIS-ENV-INSPECTOR",
+  "release": "Пер-R58-STRICT-MEGA-ROOT",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -202,9 +202,6 @@
     "r57_redis_removed_from_fast_telegram_hotpath",
     "r58_strict_render_mega_root",
     "r58_no_legacy_mega_roots",
-    "r58_reject_external_manifest_pointer",
-    "r59_redis_runtime_refresh_ping",
-    "r59_info_render_env_view",
-    "r59_info_code_runtime_view"
+    "r58_reject_external_manifest_pointer"
   ]
 }
