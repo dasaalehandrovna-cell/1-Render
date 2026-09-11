@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r59-redis-env-inspector"
+CONFIG_VERSION = "vys-262-r60-redis-logical-modes-inspector"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -87,7 +87,6 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "QUICK_EXPENSE_REMINDER_MINUTES": "60",
 
     # Shared Redis layout (names/limits are implementation details, not secrets)
-    "REDIS_RUNTIME_DEFAULT": "0",
     "WORKER_REDIS_SNAPSHOT_KEY": "vys262:bot_state:latest_gz",
     "WORKER_REDIS_SNAPSHOT_MAX_MB": "16",
     "WORKER_REDIS_EVENT_PREFIX": "vys262:tg_events:v1",
@@ -144,7 +143,6 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
     "PEER_PING_INTERVAL_SEC": "120",
 
     # Redis keys / retention
-    "REDIS_RUNTIME_DEFAULT": "0",
     "WORKER_REDIS_SNAPSHOT_KEY": "vys262:bot_state:latest_gz",
     "WORKER_REDIS_SNAPSHOT_MAX_MB": "16",
     "WORKER_REDIS_DELTA_KEY": "vys262:bot_state:latest_gz:deltas_v1",
@@ -208,12 +206,10 @@ def _render_flag(name: str, default: bool) -> bool:
 
 _MEGA_RENDER_ENABLED = _render_flag("MEGA_ENABLED", True)
 _REDIS_RENDER_ENABLED = _render_flag("REDIS_ENABLED", False)
-_REDIS_START_ENABLED = _render_flag("REDIS_START_ENABLED", False)
 _TELEGRAM_BACKUP_RENDER_ENABLED = _render_flag("TELEGRAM_BACKUP_ENABLED", True)
 
-# R49 root-fix: keep the externally supplied Redis URL private while runtime Redis
-# is OFF by default.  The owner can enable it explicitly from Info without a
-# restart; a restart always returns to the packaged OFF default.
+# R60: keep the externally supplied Redis URL private when runtime Redis is
+# temporarily OFF. REDIS_ENABLED is the only restart default: 1 starts ON, 0 hard OFF.
 _REDIS_EXTERNAL_URL = str(
     os.environ.get("REDIS_URL")
     or os.environ.get("RENDER_KEY_VALUE_URL")
@@ -230,16 +226,31 @@ def _apply_redis_runtime_state(enabled: bool) -> None:
     _REDIS_RUNTIME_ENABLED = bool(requested and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL)
     os.environ["REDIS_URL"] = _REDIS_EXTERNAL_URL if _REDIS_RUNTIME_ENABLED else ""
     os.environ["REDIS_RUNTIME_ENABLED"] = "1" if _REDIS_RUNTIME_ENABLED else "0"
+    os.environ["REDIS_MODE"] = "cache" if _REDIS_RUNTIME_ENABLED else "off"
 
 def redis_runtime_state() -> Dict[str, object]:
+    enabled = bool(_REDIS_RUNTIME_ENABLED and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL)
+    if not _REDIS_RENDER_ENABLED:
+        mode = "locked_off"
+    elif enabled:
+        mode = "cache_on"
+    else:
+        mode = "runtime_off"
     return {
         "configured": bool(_REDIS_EXTERNAL_URL),
         "master_enabled": bool(_REDIS_RENDER_ENABLED),
-        "enabled": bool(_REDIS_RUNTIME_ENABLED and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL),
-        "default_enabled": bool(_REDIS_START_ENABLED and _REDIS_RENDER_ENABLED),
-        "start_enabled": bool(_REDIS_START_ENABLED),
+        "enabled": enabled,
+        # R60 semantics are intentionally simple:
+        # REDIS_ENABLED=1 => Redis starts ON after deploy; 0 => hard OFF.
+        # The Info menu may temporarily switch runtime OFF/ON until the next restart.
+        "default_enabled": bool(_REDIS_RENDER_ENABLED),
+        "restart_enabled": bool(_REDIS_RENDER_ENABLED),
+        "mode": mode,
+        "role": "background-cache-outbox",
+        "source_of_truth": "sqlite",
         "url_source_present": bool(_REDIS_EXTERNAL_URL),
         "runtime_env_present": bool(str(os.environ.get("REDIS_URL", "") or "").strip()),
+        "legacy_redis_start_enabled_ignored": str(_RENDER_ENV_AT_IMPORT.get("REDIS_START_ENABLED", "") or ""),
     }
 
 def set_redis_runtime_enabled(enabled: bool) -> Dict[str, object]:
@@ -254,10 +265,10 @@ def set_redis_runtime_enabled(enabled: bool) -> Dict[str, object]:
 def _init_redis_runtime_default() -> None:
     global _REDIS_RUNTIME_INITIALIZED
     if not _REDIS_RUNTIME_INITIALIZED:
-        # REDIS_ENABLED is a master permission only. Runtime remains OFF after restart
-        # unless REDIS_START_ENABLED=1 is explicitly requested. This keeps Redis out
-        # of the Telegram hot path by default while still allowing the Info toggle.
-        _apply_redis_runtime_state(_REDIS_RENDER_ENABLED and _REDIS_START_ENABLED)
+        # R60: one logical Render switch only. REDIS_ENABLED=1 means ON after
+        # deploy; REDIS_ENABLED=0 means hard OFF. Menu changes are runtime-only
+        # and reset to the Render value after the next restart.
+        _apply_redis_runtime_state(_REDIS_RENDER_ENABLED)
         _REDIS_RUNTIME_INITIALIZED = True
     else:
         _apply_redis_runtime_state(_REDIS_RUNTIME_ENABLED)
@@ -274,7 +285,6 @@ def install_internal_runtime_config(role: str) -> Dict[str, str]:
     fast_runtime_mega_disabled = role == "front" and str(os.environ.get("FAST_RUNTIME_MEGA_DISABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
     os.environ["MEGA_ENABLED"] = "1" if (_MEGA_RENDER_ENABLED and not fast_runtime_mega_disabled) else "0"
     os.environ["REDIS_ENABLED"] = "1" if _REDIS_RENDER_ENABLED else "0"
-    os.environ["REDIS_START_ENABLED"] = "1" if _REDIS_START_ENABLED else "0"
     os.environ["TELEGRAM_BACKUP_ENABLED"] = "1" if _TELEGRAM_BACKUP_RENDER_ENABLED else "0"
     os.environ["MEGA_STRICT_ROOT"] = "1"
     os.environ["MEGA_LEGACY_BACKUP_DIRS"] = ""

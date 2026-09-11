@@ -4576,8 +4576,10 @@ def _r59_code_runtime_rows():
             f'CONFIG_VERSION={getattr(rc,"CONFIG_VERSION","?")}',
             f'MEGA_ENABLED(effective)={str(_split_os.getenv("MEGA_ENABLED","") or "")}',
             f'MEGA_BACKUP_DIR(effective)={str(_split_os.getenv("MEGA_BACKUP_DIR","") or "")}',
-            f'REDIS master={int(bool(st.get("master_enabled")))} configured={int(bool(st.get("configured")))} runtime={int(bool(st.get("enabled")))} start={int(bool(st.get("start_enabled")))}',
+            f'REDIS render={int(bool(st.get("master_enabled")))} configured={int(bool(st.get("configured")))} runtime={int(bool(st.get("enabled")))} mode={str(st.get("mode") or "?")}',
+            f'REDIS restart_default={"ON" if bool(st.get("restart_enabled")) else "OFF"} · role={str(st.get("role") or "background-cache-outbox")}',
             f'REDIS_URL(effective)={"<active>" if str(_split_os.getenv("REDIS_URL","") or "").strip() else "<empty>"}',
+            'REDIS_START_ENABLED=ignored in R60',
             f'REDIS last_switch={str(_R49_REDIS_CONTROL.get("detail") or "-")[:180]}',
             f'TELEGRAM_BACKUP_ENABLED(effective)={str(_split_os.getenv("TELEGRAM_BACKUP_ENABLED","") or "")}',
             '--- packaged FRONT_INTERNAL_ENV ---',
@@ -4594,7 +4596,7 @@ def _r59_vars_text(kind, page=0):
     size=_R59_ENV_PAGE_SIZE; pages=max(1,(len(rows)+size-1)//size); page=max(0,min(int(page or 0),pages-1))
     chunk=rows[page*size:(page+1)*size]
     title='🌐 RENDER ENV · FAST (#1)' if kind=='render' else '🧩 ПЕРЕМЕННЫЕ КОДА / RUNTIME · FAST (#1)'
-    note='Снимок до изменений runtime_config. Секреты замаскированы.' if kind=='render' else 'Эффективное состояние + встроенные FRONT_INTERNAL_ENV.'
+    note='Снимок до изменений runtime_config. Секреты замаскированы. REDIS_START_ENABLED в R60 игнорируется.' if kind=='render' else 'Эффективное состояние + встроенные FRONT_INTERNAL_ENV.'
     return window_mark(title+f'\nСтраница {page+1}/{pages}\n{note}\n\n'+'\n'.join(chunk), 'Ф89'), pages, page
 
 def _r59_vars_keyboard(kind, page=0):
@@ -4643,21 +4645,156 @@ def _r49_redis_runtime_state() -> dict:
         row['detail'] = str(_R49_REDIS_CONTROL.get('detail') or '')[:180]
     return row
 
-def _r49_redis_button():
-    st = _r49_redis_runtime_state()
+def _r60_redis_mode_label(st):
+    if not st.get('master_enabled'):
+        return '⛔ HARD OFF (Render)'
+    if not st.get('configured'):
+        return '⚠️ URL НЕ НАСТРОЕН'
     if st.get('switching'):
-        label = '⏳ Redis: ' + ('ВКЛЮЧАЮ…' if st.get('target') else 'ВЫКЛЮЧАЮ…')
-    elif not st.get('master_enabled'):
-        label = '🧱 Redis: ⛔ REDIS_ENABLED=0'
-    elif not st.get('configured'):
-        label = '🧱 Redis: ⛔ НЕТ REDIS_URL'
-    elif st.get('enabled'):
-        label = '🧱 Redis: 🟢 ВКЛ'
-    elif st.get('peer_ok') is False and st.get('detail'):
-        label = '🧱 Redis: ⚠️ НЕ ВКЛ'
-    else:
-        label = '🧱 Redis: ⚪ ВЫКЛ'
-    return IB(label, callback_data='r49:redis:toggle')
+        return '⏳ ПЕРЕКЛЮЧЕНИЕ'
+    if st.get('enabled'):
+        return '🟢 CACHE ON'
+    return '⚪ RUNTIME OFF'
+
+
+def _r49_redis_button():
+    st=_r49_redis_runtime_state()
+    return IB('🧱 Redis: '+_r60_redis_mode_label(st), callback_data='r60:redis:menu')
+
+
+def _r60_redis_menu_text(extra=''):
+    st=_r49_redis_runtime_state()
+    enabled=bool(st.get('enabled'))
+    lines=[
+        '🧱 REDIS · R60',
+        '',
+        f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
+        f'URL={"настроен" if st.get("configured") else "не настроен"}',
+        f'FAST runtime={"ON" if enabled else "OFF"}',
+        f'Режим={_r60_redis_mode_label(st)}',
+        'Роль=фон/кэш/outbox; SQLite остаётся основной базой',
+        '',
+        'Логика после рестарта:',
+        '• REDIS_ENABLED=1 → Redis стартует ВКЛ',
+        '• REDIS_ENABLED=0 → Redis жёстко ВЫКЛ',
+        '• кнопки ниже меняют состояние только до следующего рестарта',
+        '• REDIS_START_ENABLED в R60 не используется',
+    ]
+    detail=str(st.get('detail') or '')[:260]
+    if detail:
+        lines += ['', 'Последнее переключение: '+detail]
+    legacy=str(st.get('legacy_redis_start_enabled_ignored') or '').strip()
+    if legacy:
+        lines += [f'Render REDIS_START_ENABLED={legacy} (игнорируется)']
+    if extra:
+        lines += ['', str(extra)[:700]]
+    return window_mark('\n'.join(lines),'Ф89')
+
+
+def _r60_redis_menu_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB('🟢 Включить сейчас',callback_data='r60:redis:on'),IB('⚪ Выключить сейчас',callback_data='r60:redis:off'))
+    kb.row(IB('🧠 Что внутри Redis',callback_data='r60:redis:inspect:0'),IB('🔄 Обновить',callback_data='r60:redis:menu'))
+    kb.row(IB('🔙 В Инфо',callback_data='r29:info:main'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+
+def _r60_redis_ttl_text(ttl_ms):
+    try: ttl=int(ttl_ms)
+    except Exception: return '?'
+    if ttl == -1: return '∞'
+    if ttl < 0: return '-'
+    sec=max(0,ttl//1000)
+    if sec < 60: return f'{sec}с'
+    if sec < 3600: return f'{sec//60}м'
+    if sec < 86400: return f'{sec//3600}ч'
+    return f'{sec//86400}д'
+
+
+def _r60_redis_inspect_text(payload, error=''):
+    if error:
+        return window_mark('🧠 REDIS · СОДЕРЖИМОЕ\n\n❌ '+str(error)[:700], 'Ф89')
+    mem=dict(payload.get('memory') or {}); stats=dict(payload.get('stats') or {})
+    page=int(payload.get('page') or 0); pages=max(1,int(payload.get('pages') or 1))
+    lines=[
+        '🧠 REDIS · СОДЕРЖИМОЕ',
+        '',
+        f'PING={payload.get("ping") or "?"}',
+        f'Ключей в DB={int(payload.get("dbsize") or 0)} · просканировано={int(payload.get("scanned") or 0)}'+(' (лимит 500)' if payload.get('truncated') else ''),
+        f'Память={mem.get("used_memory_human") or mem.get("used_memory") or 0} · max={mem.get("maxmemory_human") or mem.get("maxmemory") or 0}',
+        f'Клиенты={int(stats.get("connected_clients") or 0)} · hits={int(stats.get("keyspace_hits") or 0)} · misses={int(stats.get("keyspace_misses") or 0)}',
+        f'evicted={int(stats.get("evicted_keys") or 0)} · expired={int(stats.get("expired_keys") or 0)}',
+        '',
+        'Группы ключей:',
+    ]
+    prefs=list(payload.get('prefixes') or [])
+    if prefs:
+        for row in prefs[:10]: lines.append(f'• {row.get("prefix")}: {int(row.get("count") or 0)}')
+    else: lines.append('• пусто')
+    lines += ['', f'Ключи · страница {page+1}/{pages}:']
+    entries=list(payload.get('entries') or [])
+    if not entries: lines.append('• Redis пуст')
+    for row in entries:
+        key=str(row.get('key') or '')
+        typ=str(row.get('type') or '?')
+        ttl=_r60_redis_ttl_text(row.get('ttl_ms'))
+        mem_bytes=int(row.get('bytes') or 0)
+        count=row.get('count')
+        meta=f'{typ} · TTL {ttl} · {mem_bytes} B'
+        if count is not None: meta += f' · n={count}'
+        lines.append('• '+key[:170])
+        lines.append('  '+meta)
+        prev=str(row.get('preview') or '').strip()
+        if prev: lines.append('  ↳ '+prev[:190])
+    lines += ['', 'Значения с признаками token/password/secret/session маскируются автоматически.']
+    return window_mark('\n'.join(lines),'Ф89')
+
+
+def _r60_redis_inspect_keyboard(page=0,pages=1):
+    page=max(0,int(page or 0)); pages=max(1,int(pages or 1))
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    nav=[]
+    if page>0: nav.append(IB('◀️',callback_data=f'r60:redis:inspect:{page-1}'))
+    if page+1<pages: nav.append(IB('▶️',callback_data=f'r60:redis:inspect:{page+1}'))
+    if nav: kb.row(*nav)
+    kb.row(IB('🔄 Обновить',callback_data=f'r60:redis:inspect:{page}'),IB('🧱 Redis режим',callback_data='r60:redis:menu'))
+    kb.row(IB('🔙 В Инфо',callback_data='r29:info:main'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+
+def _r60_fetch_redis_inspect(page=0):
+    base=globals().get('_split_peer_base',lambda:'')()
+    secret=globals().get('_split_secret',lambda:'')()
+    if not base or not secret:
+        raise RuntimeError('Render #2 peer не настроен')
+    headers_fn=globals().get('_split_headers')
+    headers=dict(headers_fn('vys-262-r60-redis-inspect') or {}) if callable(headers_fn) else {'X-Peer-Secret':secret}
+    r=__import__('requests').get(base.rstrip('/')+'/internal/runtime/redis/inspect',params={'page':int(page or 0),'page_size':10},headers=headers,timeout=(1.5,4.0))
+    try: payload=r.json() if r.content else {}
+    except Exception: payload={}
+    if not (200 <= int(r.status_code) < 300 and bool(payload.get('ok'))):
+        raise RuntimeError(str(payload.get('error') or r.text or f'HTTP {r.status_code}')[:500])
+    return payload
+
+
+def _r60_render_redis_menu(chat_id,message_id,extra=''):
+    try:
+        fast_ui_edit_message_text(int(chat_id),int(message_id),_r60_redis_menu_text(extra),reply_markup=_r60_redis_menu_keyboard(),purpose='safe_edit:r60_redis_menu')
+    except Exception: pass
+
+
+def _r60_redis_inspect_job(page,chat_id,message_id):
+    try:
+        payload=_r60_fetch_redis_inspect(page)
+        text=_r60_redis_inspect_text(payload)
+        kb=_r60_redis_inspect_keyboard(payload.get('page',0),payload.get('pages',1))
+    except Exception as exc:
+        text=_r60_redis_inspect_text({},f'{type(exc).__name__}: {str(exc)[:520]}')
+        kb=_r60_redis_inspect_keyboard(0,1)
+    try:
+        fast_ui_edit_message_text(int(chat_id),int(message_id),text,reply_markup=kb,purpose='safe_edit:r60_redis_inspect')
+    except Exception: pass
+
 
 def _r49_info_inject_redis_toggle(kb, chat_id: int):
     if int(chat_id) != int(OWNER_ID or 0):
@@ -4666,31 +4803,28 @@ def _r49_info_inject_redis_toggle(kb, chat_id: int):
         rows_fn = globals().get('_v177_info_rows')
         set_fn = globals().get('_v177_info_set_rows')
         rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or [])
-        rows = [list(row or []) for row in rows if not any(_r29_button_callback(b) in {'r49:redis:toggle','r59:vars:render:0','r59:vars:code:0'} for b in (row or []))]
+        remove_callbacks={'r49:redis:toggle','r60:redis:menu','r60:redis:inspect:0','r59:vars:render:0','r59:vars:code:0'}
+        rows = [list(row or []) for row in rows if not any(_r29_button_callback(b) in remove_callbacks for b in (row or []))]
         insert_at = len(rows)
         for i, row in enumerate(rows):
             if any((_r29_button_callback(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in _r29_button_text(b).casefold()) for b in (row or [])):
                 insert_at = i
                 break
         rows.insert(insert_at, [IB('🌐 Render ENV', callback_data='r59:vars:render:0'), IB('🧩 Код/runtime', callback_data='r59:vars:code:0')])
-        rows.insert(insert_at + 1, [_r49_redis_button()])
+        rows.insert(insert_at + 1, [_r49_redis_button(),IB('🧠 Redis: содержимое',callback_data='r60:redis:inspect:0')])
         if callable(set_fn):
             return set_fn(kb, rows)
         setattr(kb, 'keyboard', rows)
     except Exception:
         try:
             kb.row(IB('🌐 Render ENV', callback_data='r59:vars:render:0'), IB('🧩 Код/runtime', callback_data='r59:vars:code:0'))
-            kb.row(_r49_redis_button())
+            kb.row(_r49_redis_button(),IB('🧠 Redis: содержимое',callback_data='r60:redis:inspect:0'))
         except Exception: pass
     return kb
 
+
 def _r49_render_info_after_redis(chat_id: int, message_id: int):
-    try:
-        fast_ui_edit_message_text(int(chat_id), int(message_id), _r29_build_info_text(int(chat_id)),
-                                  reply_markup=_r29_build_info_keyboard(int(chat_id)),
-                                  purpose='safe_edit:r49_redis_runtime')
-    except Exception:
-        pass
+    _r60_render_redis_menu(chat_id,message_id)
 
 def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -> None:
     """R59 transactional Redis switch with real connectivity verification.
@@ -4709,7 +4843,7 @@ def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -
         if not base or not secret:
             raise RuntimeError('Render #2 peer is not configured')
         headers_fn = globals().get('_split_headers')
-        headers = dict(headers_fn('vys-262-r59-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
+        headers = dict(headers_fn('vys-262-r60-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
 
         # HEAVY first.  Its endpoint now validates its own Render master switch,
         # configured URL and an actual short PING before reporting enabled=True.
@@ -4739,9 +4873,9 @@ def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -
             kv_ping = globals().get('key_value_ping_v248')
             if callable(kv_ping) and not bool(kv_ping(force=True)):
                 raise RuntimeError('FAST KeyValue PING failed after runtime refresh')
-            detail = 'FAST + HEAVY: Redis enabled; PING=PONG'
+            detail = 'FAST + HEAVY: Redis CACHE ON; PING=PONG'
         else:
-            detail = 'FAST + HEAVY: Redis disabled'
+            detail = 'FAST + HEAVY: Redis runtime OFF'
         ok = True
     except Exception as exc:
         detail = f'{type(exc).__name__}: {str(exc)[:280]}'
@@ -4782,7 +4916,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     if mode == R31_MENU_MODE_THIRD:
         return _r31_third_info_text(cid)
     return window_mark(
-        'ℹ️ ИНФО · R59\n\n'
+        'ℹ️ ИНФО · R60\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
         '⚡ FAST UI: callback не ждёт Telegram; рендер идёт отдельной latest-wins очередью.\n'
@@ -5149,46 +5283,83 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
         safe_edit(bot, call, text, reply_markup=kb)
         return True
 
-    if raw == 'r49:redis:toggle':
+    if raw.startswith('r60:redis:'):
         if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
-            try: bot.answer_callback_query(call.id, 'Только владелец может переключать Redis.', show_alert=True)
+            try: bot.answer_callback_query(call.id, 'Только владелец может управлять Redis.', show_alert=True)
             except Exception: pass
             return True
-        state = _r49_redis_runtime_state()
-        if state.get('switching'):
-            try: bot.answer_callback_query(call.id, 'Переключение Redis уже выполняется.')
+
+        if raw == 'r60:redis:menu':
+            try: bot.answer_callback_query(call.id)
             except Exception: pass
+            safe_edit(bot, call, _r60_redis_menu_text(), reply_markup=_r60_redis_menu_keyboard())
             return True
-        target = not bool(state.get('enabled'))
-        if target and not bool(state.get('master_enabled')):
-            try: bot.answer_callback_query(call.id, 'REDIS_ENABLED=0 в Render. Сначала разрешите Redis переменной Render.', show_alert=True)
+
+        if raw.startswith('r60:redis:inspect:'):
+            try: page=max(0,int(raw.rsplit(':',1)[-1] or 0))
+            except Exception: page=0
+            state=_r49_redis_runtime_state()
+            if not state.get('master_enabled'):
+                try: bot.answer_callback_query(call.id,'REDIS_ENABLED=0 в Render.',show_alert=True)
+                except Exception: pass
+                safe_edit(bot,call,_r60_redis_menu_text('Redis заблокирован переменной Render.'),reply_markup=_r60_redis_menu_keyboard())
+                return True
+            if not state.get('enabled'):
+                try: bot.answer_callback_query(call.id,'Redis сейчас выключен. Включите его на странице режима.',show_alert=True)
+                except Exception: pass
+                safe_edit(bot,call,_r60_redis_menu_text('Для просмотра содержимого включите Redis.'),reply_markup=_r60_redis_menu_keyboard())
+                return True
+            try: bot.answer_callback_query(call.id,'Читаю Redis…')
             except Exception: pass
+            safe_edit(bot,call,window_mark('🧠 REDIS · СОДЕРЖИМОЕ\n\n⏳ Читаю ключи и статистику…','Ф89'),reply_markup=_r60_redis_inspect_keyboard(page,1))
+            pool=globals().get('GENERAL_TASK_POOL')
+            queued=bool(pool and pool.submit_unique(f'r60-redis-inspect:{cid}:{mid}',_r60_redis_inspect_job,page,cid,mid))
+            if not queued:
+                safe_edit(bot,call,_r60_redis_inspect_text({},'Очередь диагностики занята. Повторите через несколько секунд.'),reply_markup=_r60_redis_inspect_keyboard(page,1))
             return True
-        if target and not bool(state.get('configured')):
-            try: bot.answer_callback_query(call.id, 'REDIS_URL не настроен в Render. Redis остаётся выключен.', show_alert=True)
-            except Exception: pass
-            return True
-        # OFF is fail-safe: disable FAST immediately. ON becomes active only after
-        # HEAVY confirms the same state in the detached control job.
-        if not target:
-            try:
-                import runtime_config as _r49_runtime_config
-                _r49_runtime_config.set_redis_runtime_enabled(False)
-                _r59_refresh_fast_redis_consumers()
-            except Exception:
-                pass
-        with _R49_REDIS_CONTROL_LOCK:
-            _R49_REDIS_CONTROL.update({'switching': True, 'target': target, 'peer_ok': None, 'detail': ''})
-        try: bot.answer_callback_query(call.id, 'Redis: ' + ('включаю…' if target else 'выключаю…'))
-        except Exception: pass
-        safe_edit(bot, call, _r29_build_info_text(cid), reply_markup=_r29_build_info_keyboard(cid))
-        pool = globals().get('GENERAL_TASK_POOL')
-        queued = bool(pool and pool.submit_unique('r49-redis-runtime-control', _r49_apply_redis_runtime_job, target, cid, mid))
-        if not queued:
+
+        if raw in {'r60:redis:on','r60:redis:off'}:
+            target=(raw=='r60:redis:on')
+            state=_r49_redis_runtime_state()
+            if state.get('switching'):
+                try: bot.answer_callback_query(call.id,'Переключение Redis уже выполняется.')
+                except Exception: pass
+                return True
+            if target and not bool(state.get('master_enabled')):
+                try: bot.answer_callback_query(call.id,'REDIS_ENABLED=0 в Render. Это жёсткий OFF.',show_alert=True)
+                except Exception: pass
+                return True
+            if target and not bool(state.get('configured')):
+                try: bot.answer_callback_query(call.id,'REDIS_URL не настроен в Render.',show_alert=True)
+                except Exception: pass
+                return True
+            if bool(state.get('enabled')) == target:
+                try: bot.answer_callback_query(call.id,'Redis уже '+('включён.' if target else 'выключен.'))
+                except Exception: pass
+                safe_edit(bot,call,_r60_redis_menu_text(),reply_markup=_r60_redis_menu_keyboard())
+                return True
+
+            # OFF is fail-safe and immediate on FAST. ON is committed only after
+            # HEAVY and FAST both pass a real PING in the detached control job.
+            if not target:
+                try:
+                    import runtime_config as _r49_runtime_config
+                    _r49_runtime_config.set_redis_runtime_enabled(False)
+                    _r59_refresh_fast_redis_consumers()
+                except Exception: pass
             with _R49_REDIS_CONTROL_LOCK:
-                _R49_REDIS_CONTROL.update({'switching': False, 'peer_ok': False, 'detail': 'control queue busy'})
-            safe_edit(bot, call, _r29_build_info_text(cid), reply_markup=_r29_build_info_keyboard(cid))
-        return True
+                _R49_REDIS_CONTROL.update({'switching':True,'target':target,'peer_ok':None,'detail':''})
+            try: bot.answer_callback_query(call.id,'Redis: '+('включаю…' if target else 'выключаю…'))
+            except Exception: pass
+            safe_edit(bot,call,_r60_redis_menu_text(),reply_markup=_r60_redis_menu_keyboard())
+            pool=globals().get('GENERAL_TASK_POOL')
+            queued=bool(pool and pool.submit_unique('r60-redis-runtime-control',_r49_apply_redis_runtime_job,target,cid,mid))
+            if not queued:
+                with _R49_REDIS_CONTROL_LOCK:
+                    _R49_REDIS_CONTROL.update({'switching':False,'peer_ok':False,'detail':'control queue busy'})
+                safe_edit(bot,call,_r60_redis_menu_text('Очередь управления занята.'),reply_markup=_r60_redis_menu_keyboard())
+            return True
+
 
     if raw == 'r30:menu:toggle':
         # Presentation-only owner setting.  It is intentionally handled before

@@ -20,12 +20,12 @@
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
     "06_commands_callbacks.py": "5fe18651b36ad586e96cb8763c0fd48610d70dc5b579d1c39e1bac6f11b56691",
-    "07_state_web.py": "1c9d01f5b73c0d72add40ecb243bd0f53d42ebe9bf505ea6a7ef62fdfe2aa182",
+    "07_state_web.py": "a36564f760edab3d4a7adeeaa8d63d994b06d2974ea6502048e477e34e3a5120",
     "08_reliability_tasks.py": "61ff13237858c57171d8c0ba63ee6a4b55ab63945bb66464f1c1a199dd200b01",
     "09_final_transport.py": "b303ec75367799099fe9a436a6bdfdf32e4f1ec5e6092268bea2e3034e943639",
-    "10_split_policy_offload.py": "17518151ca355c1ce1a3c83178c97888ba7c9c99ffdf6a98bec86f6a37152cfb"
+    "10_split_policy_offload.py": "95849da1f4fd52e1277fbacec99580e6390f3d052cf79f2fd166b62817878c80"
   },
-  "release": "Пер-R59-REDIS-ENV-INSPECTOR",
+  "release": "Пер-R60-REDIS-LOGICAL-MODES-INSPECTOR",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -205,6 +205,10 @@
     "r58_reject_external_manifest_pointer",
     "r59_redis_runtime_refresh_ping",
     "r59_info_render_env_view",
-    "r59_info_code_runtime_view"
+    "r59_info_code_runtime_view",
+    "r60_redis_enabled_is_restart_default",
+    "r60_redis_explicit_on_off_menu",
+    "r60_redis_readonly_bounded_inspector",
+    "r60_redis_secret_masked_previews"
   ]
 }
