@@ -305,6 +305,14 @@ if ROLE=='fast':
        "callback_data='r49:redis:toggle'" in split_src and "raw == 'r49:redis:toggle'" in split_src and
        '/internal/runtime/redis' in split_src,
        'owner Info menu Redis toggle/HEAVY control missing')
+    ok('r59_info_env_views',
+       'def render_env_snapshot' in cfg_src and "callback_data='r59:vars:render:0'" in split_src and
+       "callback_data='r59:vars:code:0'" in split_src and "raw.startswith('r59:vars:')" in split_src,
+       'Render ENV / code runtime Info views missing')
+    ok('r59_redis_runtime_refresh',
+       'def key_value_refresh_runtime_v248' in core_src and 'def _r59_fast_redis_probe' in split_src and
+       'vys-262-r59-redis-control' in split_src and 'PING=PONG' in split_src,
+       'runtime Redis refresh / PING verification missing')
     ok('r49_fast_ui_latest_wins_queue',
        "WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool" in core_src and
        'WINDOW_RENDER_TASK_POOL.submit_latest' in rel_src and '_r22_execute_window_render' in rel_src,
