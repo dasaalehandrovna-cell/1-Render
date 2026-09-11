@@ -243,25 +243,29 @@ def _mega_login(timeout: int) -> tuple[bool, str]:
 
 
 def _canonical_mega_root() -> str:
-    return '/' + str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups2-2') or 'TelegramBotBackups2-2').strip('/')
+    """Return the *only* MEGA root allowed for this deployment.
+
+    R58: the root must come from Render MEGA_BACKUP_DIR.  There is deliberately
+    no historical/default root when MEGA is enabled: a missing variable is a
+    deployment error, not permission to inspect another MEGA folder.
+    """
+    raw = str(os.getenv('MEGA_BACKUP_DIR', '') or '').strip().replace('\\', '/')
+    root = '/' + raw.strip('/') if raw.strip('/') else ''
+    return root.rstrip('/')
 
 
 def _startup_mega_roots() -> list[str]:
-    """MEGA roots allowed only during FAST startup recovery.
+    """R58 strict-root policy: startup may inspect exactly one Render root."""
+    root = _canonical_mega_root()
+    return [root] if root else []
 
-    R50 keeps the configured root authoritative, but can bootstrap it from the
-    historical roots that HEAVY itself already understands. This closes the
-    empty-new-root race without re-enabling runtime MEGA access in FAST.
-    """
-    out: list[str] = []
-    for raw in [_canonical_mega_root(), *str(os.getenv(
-        'MEGA_LEGACY_BACKUP_DIRS',
-        '/TelegramBotBackups-2T,/TelegramBotBackups',
-    ) or '').split(',')]:
-        root = '/' + str(raw or '').strip().strip('/')
-        if root != '/' and root not in out:
-            out.append(root)
-    return out
+
+def _mega_remote_within_root(remote: str, root: str) -> bool:
+    root = '/' + str(root or '').strip().strip('/')
+    remote = '/' + str(remote or '').strip().strip('/')
+    if root == '/' or not root.strip('/'):
+        return False
+    return remote == root or remote.startswith(root.rstrip('/') + '/')
 
 
 def _mega_missing(detail: str) -> bool:
@@ -295,6 +299,9 @@ def _manifest_generation_remote(root: str, tmpdir: Path, mega_timeout: int) -> t
         generation_remote = root.rstrip('/') + '/database/generations/' + str(payload.get('generation')).rsplit('/', 1)[-1]
     if not generation_remote:
         return '', f'{manifest_remote}: no generation pointer'
+    # R58: a stale manifest must never escape the Render-configured MEGA root.
+    if not _mega_remote_within_root(generation_remote, root):
+        return '', f'{manifest_remote}: rejected external generation pointer={generation_remote}'
     return generation_remote, f'{manifest_remote}: generation={generation_remote.rsplit("/",1)[-1]}'
 
 
@@ -551,16 +558,18 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
 def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
     """Restore FAST from MEGA once per process start, then leave MEGA completely.
 
-    R55 recovery order follows the writer actually used by HEAVY: ``latest`` is
-    the live canonical full checkpoint. ``current_manifest`` is retained only as
-    immutable-generation fallback because older releases may leave it stale.
-      latest -> manifest generation -> generation scan -> next legacy root.
+    R58 strict-root recovery.  FAST is allowed to inspect only MEGA_BACKUP_DIR
+    supplied by Render.  No legacy/default roots are consulted and a manifest
+    pointer outside that root is rejected.
+      configured latest -> configured manifest generation -> configured generation scan.
     """
     roots = _startup_mega_roots()
+    if not roots:
+        return False, 'MEGA_ENABLED=1 but MEGA_BACKUP_DIR is empty; strict root policy refuses fallback'
     canonical_root = roots[0]
     mega_timeout = max(45, min(900, int(os.getenv('MEGA_TIMEOUT', '120') or '120')))
     login_timeout = max(45, min(300, int(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120')))
-    print(f'[SPLIT FRONT] R56 MEGA login start roots={len(roots)} timeout={login_timeout}s', flush=True)
+    print(f'[SPLIT FRONT] R58 MEGA STRICT ROOT={canonical_root} login start timeout={login_timeout}s', flush=True)
     logged, detail = _mega_login(login_timeout)
     print(f'[SPLIT FRONT] R56 MEGA login done ok={int(bool(logged))} detail={detail[:220]}', flush=True)
     if not logged:
@@ -602,10 +611,8 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
                 errors.append(f'{remote}: {install_detail}')
                 continue
             replay_parts: list[str] = []
-            ordered_event_roots = [source_root]
-            if canonical_root != source_root:
-                ordered_event_roots.append(canonical_root)
-            for event_root in ordered_event_roots:
+            # R58: replay deltas only from the same configured root as the base.
+            for event_root in [canonical_root]:
                 print(f'[SPLIT FRONT] R56 MEGA event replay start root={event_root}', flush=True)
                 replay_ok, replay_detail = _replay_mega_event_segments(target, event_root, mega_timeout)
                 replay_parts.append(f'{event_root}: {replay_detail}')
@@ -613,7 +620,7 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
                 if not replay_ok:
                     errors.append(f'{remote}: base installed but event replay failed at {event_root}: {replay_detail}')
                     return False, errors[-1]
-            source_note = 'canonical' if source_root == canonical_root else 'legacy-bootstrap'
+            source_note = 'configured-root'
             detail3 = (
                 f'MEGA startup restore OK source={source_note}/{source_kind} root={source_root} '
                 f'remote={remote}; {install_detail}; ' + '; '.join(replay_parts)
@@ -624,7 +631,7 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
 
     try:
         for root_no, root in enumerate(roots, 1):
-            print(f'[SPLIT FRONT] R56 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
+            print(f'[SPLIT FRONT] R58 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
 
             # HEAVY's active runtime checkpoint writer promotes this object on every
             # successful full snapshot.  It is therefore the freshest control file
@@ -653,7 +660,7 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
 
         useful_discovery = [x for x in discovery if x and not _mega_missing(x)]
         tail = errors[-6:] + useful_discovery[-3:]
-        return False, ('; '.join(tail) or 'no valid MEGA snapshot/generation found in configured or legacy roots')[:1200]
+        return False, ('; '.join(tail) or 'no valid MEGA snapshot/generation found inside configured MEGA_BACKUP_DIR')[:1200]
     finally:
         try: _run(['mega-logout'], timeout=20)
         except Exception: pass
@@ -711,6 +718,11 @@ def main():
             trace['base_source'] = 'LOCAL_SQLITE' if had_valid_local_before_restore else 'EMPTY_INIT_MEGA_DISABLED'
             print('[SPLIT FRONT] R56 MEGA disabled by MEGA_ENABLED=0; startup restore skipped', flush=True)
         else:
+            strict_root = _canonical_mega_root()
+            if not strict_root:
+                raise RuntimeError('R58: MEGA_ENABLED=1 requires MEGA_BACKUP_DIR in Render; no fallback root is allowed')
+            trace['mega_strict_root'] = strict_root
+            print(f'[SPLIT FRONT] R58 MEGA STRICT ROOT locked to {strict_root}', flush=True)
             trace['mega_contacted'] = True
             max_attempts = max(1, min(12, int(os.getenv('SPLIT_RESTORE_BOOT_ATTEMPTS', '3') or '3')))
             retry_sec = max(2, min(60, int(os.getenv('SPLIT_RESTORE_RETRY_SEC', '5') or '5')))

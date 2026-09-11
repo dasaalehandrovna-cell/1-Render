@@ -1732,10 +1732,10 @@ MEGA_ENABLED = _env_bool('MEGA_ENABLED', '0')
 MEGA_AUTORESTORE = _env_bool('MEGA_AUTORESTORE', '1')
 MEGA_EMAIL = os.getenv('MEGA_EMAIL', '').strip()
 MEGA_PASSWORD = os.getenv('MEGA_PASSWORD', '').strip()
-_MEGA_ROOT_RAW_V238 = str(os.getenv('MEGA_BACKUP_DIR', 'TelegramBotBackups') or 'TelegramBotBackups').strip().replace('\\', '/')
-MEGA_CANONICAL_BACKUP_DIR_V238 = '/' + _MEGA_ROOT_RAW_V238.strip('/')
-if MEGA_CANONICAL_BACKUP_DIR_V238 == '/':
-    MEGA_CANONICAL_BACKUP_DIR_V238 = '/TelegramBotBackups'
+_MEGA_ROOT_RAW_V238 = str(os.getenv('MEGA_BACKUP_DIR', '') or '').strip().replace('\\', '/')
+if MEGA_ENABLED and not _MEGA_ROOT_RAW_V238.strip('/'):
+    raise RuntimeError('R58: MEGA_ENABLED=1 requires explicit MEGA_BACKUP_DIR in Render')
+MEGA_CANONICAL_BACKUP_DIR_V238 = ('/' + _MEGA_ROOT_RAW_V238.strip('/')) if _MEGA_ROOT_RAW_V238.strip('/') else ''
 MEGA_BACKUP_DIR = MEGA_CANONICAL_BACKUP_DIR_V238.rstrip('/')
 MEGA_LEGACY_BACKUP_DIR = MEGA_BACKUP_DIR
 MEGA_TARGET_BACKUP_DIR = MEGA_BACKUP_DIR
@@ -8652,13 +8652,7 @@ needed by the bot.  The store is optional.  If no URL is configured or the servi
 briefly unavailable, callers fall back to the existing local/SQLite behaviour.
 """
 
-KEY_VALUE_URL = str(
-    os.getenv('RENDER_KEY_VALUE_URL')
-    or os.getenv('KEY_VALUE_URL')
-    or os.getenv('REDIS_URL')
-    or os.getenv('VALKEY_URL')
-    or ''
-).strip()
+KEY_VALUE_URL = str(os.getenv('REDIS_URL') or '').strip()
 KEY_VALUE_ENABLED = str(os.getenv('KEY_VALUE_ENABLED', '1') or '1').strip().casefold() not in {'0', 'false', 'no', 'off'}
 KEY_VALUE_PREFIX = str(os.getenv('KEY_VALUE_PREFIX', 'vysbot:kv1') or 'vysbot:kv1').strip(': ') or 'vysbot:kv1'
 KEY_VALUE_CONNECT_TIMEOUT = max(0.05, min(1.0, float(os.getenv('KEY_VALUE_CONNECT_TIMEOUT_SECONDS', '0.18') or '0.18')))
@@ -8668,7 +8662,31 @@ KEY_VALUE_NAV_TTL_SECONDS = max(300, min(86400, int(os.getenv('KEY_VALUE_NAV_TTL
 KEY_VALUE_CALLBACK_TTL_SECONDS = max(900, min(86400, int(os.getenv('KEY_VALUE_CALLBACK_TTL_SECONDS', str(6 * 60 * 60)) or str(6 * 60 * 60))))
 
 
+def _key_value_env_url_v248() -> str:
+    # R59: Redis can be enabled/disabled at runtime from Info.  Never rely on the
+    # URL captured once at module import; runtime_config intentionally changes
+    # REDIS_URL when the owner toggles Redis.
+    return str(os.getenv('REDIS_URL') or '').strip()
+
+def key_value_refresh_runtime_v248() -> bool:
+    global KEY_VALUE_URL, KEY_VALUE_CLIENT_V248
+    current = _key_value_env_url_v248()
+    if current == str(KEY_VALUE_URL or ''):
+        return bool(current)
+    old = globals().get('KEY_VALUE_CLIENT_V248')
+    try:
+        if old is not None:
+            old.reset_circuit()
+    except Exception:
+        pass
+    KEY_VALUE_URL = current
+    cls = globals().get('_RenderKeyValueRESPClientV248')
+    if cls is not None:
+        KEY_VALUE_CLIENT_V248 = cls(KEY_VALUE_URL)
+    return bool(current)
+
 def key_value_configured_v248() -> bool:
+    key_value_refresh_runtime_v248()
     return bool(KEY_VALUE_ENABLED and KEY_VALUE_URL and KEY_VALUE_URL.startswith(('redis://', 'rediss://')))
 
 
@@ -9100,7 +9118,7 @@ def mega_is_configured(control_plane: bool=False) -> bool:
     gate_category = 'mega_control' if control_plane else 'mega'
     if callable(gate) and (not gate(gate_category)):
         return False
-    return bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD)
+    return bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD and str(MEGA_BACKUP_DIR or '').strip('/'))
 
 def mega_remote_file_path(filename: str=None) -> str:
     filename = filename or MEGA_LATEST_GLOBAL_NAME
@@ -18014,7 +18032,7 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
 """v185 DATA CONSTITUTION.
 
 Immutable storage contract. UI/performance modules must not redefine these functions.
-Canonical MEGA root is the immutable MEGA_BACKUP_DIR (default /TelegramBotBackups).
+Canonical MEGA root is the immutable Render MEGA_BACKUP_DIR; R58 has no default or legacy fallback root.
 """
 DATA_CONSTITUTION_SCHEMA = 1
 DATA_CONSTITUTION_QUARANTINE = False
@@ -20341,7 +20359,7 @@ def config_guard_status_text_v234() -> str:
     rep = dict(CONFIG_GUARD_LAST_REPORT_V234 or {})
     metrics = (cp or {}).get('metrics') or _v234_config_metrics(config_guard_projection_v234())
     return f"🧩 ЗАЩИТА НАСТРОЕК v234\n\nBoot-проверка: {('✅' if CONFIG_GUARD_BOOT_VERIFIED_V234 else '⏳')}\nРежим последней проверки: {rep.get('mode') or '—'}\nАвтовосстановление: {('да' if rep.get('repaired') else 'нет')}\nПоколение config: {int((cp or {}).get('generation') or 0)}\nПересылки: {metrics.get('forward_edges', 0)} · Напоминания: {metrics.get('reminder_items', 0)}\nГомонковые entries: {metrics.get('gomonk_entries', 0)} · включено контуров/валют: {metrics.get('gomonk_enabled', 0)}\n\nПеред READY настройки сверяются независимо от финансов. Новый canonical SQLite snapshot не продвигается, пока его config-проекция не совпадает с живым состоянием."[:3900]
-MEGA_STORAGE_CONTRACT_V242 = {'schema': 1, 'root': '/TelegramBotBackups', 'canonical_pointer': 'database/current_manifest.json', 'generations': 'database/generations/generation_*.sqlite3.gz', 'manifests': 'database/manifests/generation_*.json', 'legacy_latest': 'database/latest_bot_state.sqlite3.gz', 'pre_restore': 'database/pre_restore/pre_restore_*.sqlite3.gz', 'read_order': ['current_manifest', 'latest_generation_file', 'legacy_latest', 'legacy_global'], 'write_order': ['flush_sqlite', 'immutable_generation', 'manifest', 'current_manifest', 'verify']}
+MEGA_STORAGE_CONTRACT_V242 = {'schema': 1, 'root': MEGA_BACKUP_DIR, 'canonical_pointer': 'database/current_manifest.json', 'generations': 'database/generations/generation_*.sqlite3.gz', 'manifests': 'database/manifests/generation_*.json', 'legacy_latest': 'database/latest_bot_state.sqlite3.gz', 'pre_restore': 'database/pre_restore/pre_restore_*.sqlite3.gz', 'read_order': ['current_manifest', 'latest_generation_file', 'legacy_latest', 'legacy_global'], 'write_order': ['flush_sqlite', 'immutable_generation', 'manifest', 'current_manifest', 'verify']}
 
 def _v242_embed_manifest_from_sqlite(raw_sqlite: str, created_at: str, reason: str='snapshot') -> dict:
     """Build embedded semantics FROM the immutable candidate itself, never from hot RAM.

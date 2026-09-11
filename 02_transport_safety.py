@@ -59,7 +59,7 @@ STORAGE_CONTROL_KIND_V246 = 'telegram_bot_storage_control_v246'
 STORAGE_CONTROL_SCHEMA_V246 = 1
 
 def _storage_control_remote_v246() -> str:
-    return str(globals().get('MEGA_BACKUP_DIR') or '/TelegramBotBackups').rstrip('/') + '/' + STORAGE_CONTROL_FILENAME_V246
+    return str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/') + '/' + STORAGE_CONTROL_FILENAME_V246
 
 def _v246_iso_epoch(value) -> float:
     raw = str(value or '').strip()
@@ -121,7 +121,7 @@ def mega_storage_control_write_v246(mode: str, reason: str='switch', epoch: int 
         try:
             if not mega_login_if_needed(control_plane=True):
                 return False
-            root = str(globals().get('MEGA_BACKUP_DIR') or '/TelegramBotBackups').rstrip('/')
+            root = str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
             payload = {
                 'kind': STORAGE_CONTROL_KIND_V246,
                 'schema_version': STORAGE_CONTROL_SCHEMA_V246,
@@ -188,7 +188,7 @@ def _v246_mega_restore_evidence() -> dict:
     try:
         if not mega_login_if_needed(control_plane=True):
             return out
-        remote = (constitution_current_manifest_remote() if callable(globals().get('constitution_current_manifest_remote')) else str(globals().get('MEGA_BACKUP_DIR') or '/TelegramBotBackups').rstrip('/') + '/database/current_manifest.json')
+        remote = (constitution_current_manifest_remote() if callable(globals().get('constitution_current_manifest_remote')) else str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/') + '/database/current_manifest.json')
         res = _mega_run('mega-get', [remote, work], check=False, timeout=min(60, int(MEGA_TIMEOUT)), control_plane=True)
         if int(getattr(res, 'returncode', 1)) != 0:
             return out

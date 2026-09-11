@@ -5272,7 +5272,7 @@ def _r57_startup_keyboard(details: bool = False):
 
 def _r57_startup_compact_text() -> str:
     source, _trace = _r57_restore_source_info()
-    return f"✅ Бот запущен · R57 · {VERSION}\nВосстановление: {source}"
+    return f"✅ Бот запущен · R59 · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
     source, trace = _r57_restore_source_info()
@@ -5287,7 +5287,7 @@ def _r57_startup_details_text() -> str:
     except Exception:
         task_stats = {}
     details = [
-        f"🤖 R57 · {VERSION}",
+        f"🤖 R59 · {VERSION}",
         f"Восстановление: {source}",
         f"Правки: {STARTUP_RELEASE_SUMMARY}",
         f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",
@@ -8849,7 +8849,7 @@ def _v153_remote_marker_exists(root: str) -> bool:
         return False
 
 def _v153_select_boot_mega_root() -> str:
-    root = str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '/TelegramBotBackups').rstrip('/')
+    root = str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
     _v153_apply_mega_root(root)
     return root
 
@@ -8959,7 +8959,7 @@ def _v153_migration_store(root=None) -> dict:
     return {'status': 'removed_v238', 'copied_files': 0, 'total_files': 0, 'remaining_files': 0, 'last_error': '', 'active_root': str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '')}
 
 def _v153_apply_mega_root(root: str) -> None:
-    canonical = str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '/TelegramBotBackups').rstrip('/')
+    canonical = str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
     globals()['MEGA_BACKUP_DIR'] = canonical
     globals()['MEGA_LEGACY_BACKUP_DIR'] = canonical
     globals()['MEGA_TARGET_BACKUP_DIR'] = canonical
@@ -8976,7 +8976,7 @@ def _canon_load_data__001():
         gs = loaded.get('_global_settings') if isinstance(loaded, dict) else None
         if isinstance(gs, dict):
             gs.pop('mega_root_migration_v153', None)
-        _v153_apply_mega_root(str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or '/TelegramBotBackups'))
+        _v153_apply_mega_root(str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or ''))
     except Exception:
         pass
     return loaded

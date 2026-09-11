@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r57-simple-switches"
+CONFIG_VERSION = "vys-262-r59-redis-env-inspector"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -194,6 +194,14 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
 # R57: Render master switches are captured before packaged tuning is installed.
 # MEGA_ENABLED=0 disables every MEGA path; REDIS_ENABLED=0 disables every Redis path.
 # TELEGRAM_BACKUP_ENABLED=0 disables the Telegram backup/durable channel on FAST.
+# R59: preserve the exact process environment as it arrived from Render before
+# packaged runtime_config mutates/overwrites operational values.  This is used
+# only for owner diagnostics; secret values are masked by the UI layer.
+_RENDER_ENV_AT_IMPORT: Dict[str, str] = {str(k): str(v) for k, v in os.environ.items()}
+
+def render_env_snapshot() -> Dict[str, str]:
+    return dict(_RENDER_ENV_AT_IMPORT)
+
 def _render_flag(name: str, default: bool) -> bool:
     raw = str(os.environ.get(name, "1" if default else "0") or "").strip().lower()
     return raw in {"1", "true", "yes", "on", "да"}
@@ -206,7 +214,13 @@ _TELEGRAM_BACKUP_RENDER_ENABLED = _render_flag("TELEGRAM_BACKUP_ENABLED", True)
 # R49 root-fix: keep the externally supplied Redis URL private while runtime Redis
 # is OFF by default.  The owner can enable it explicitly from Info without a
 # restart; a restart always returns to the packaged OFF default.
-_REDIS_EXTERNAL_URL = str(os.environ.get("REDIS_URL", "") or "").strip()
+_REDIS_EXTERNAL_URL = str(
+    os.environ.get("REDIS_URL")
+    or os.environ.get("RENDER_KEY_VALUE_URL")
+    or os.environ.get("KEY_VALUE_URL")
+    or os.environ.get("VALKEY_URL")
+    or ""
+).strip()
 _REDIS_RUNTIME_ENABLED = False
 _REDIS_RUNTIME_INITIALIZED = False
 
@@ -224,6 +238,8 @@ def redis_runtime_state() -> Dict[str, object]:
         "enabled": bool(_REDIS_RUNTIME_ENABLED and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL),
         "default_enabled": bool(_REDIS_START_ENABLED and _REDIS_RENDER_ENABLED),
         "start_enabled": bool(_REDIS_START_ENABLED),
+        "url_source_present": bool(_REDIS_EXTERNAL_URL),
+        "runtime_env_present": bool(str(os.environ.get("REDIS_URL", "") or "").strip()),
     }
 
 def set_redis_runtime_enabled(enabled: bool) -> Dict[str, object]:
@@ -260,6 +276,8 @@ def install_internal_runtime_config(role: str) -> Dict[str, str]:
     os.environ["REDIS_ENABLED"] = "1" if _REDIS_RENDER_ENABLED else "0"
     os.environ["REDIS_START_ENABLED"] = "1" if _REDIS_START_ENABLED else "0"
     os.environ["TELEGRAM_BACKUP_ENABLED"] = "1" if _TELEGRAM_BACKUP_RENDER_ENABLED else "0"
+    os.environ["MEGA_STRICT_ROOT"] = "1"
+    os.environ["MEGA_LEGACY_BACKUP_DIRS"] = ""
     if role == "front" and not _TELEGRAM_BACKUP_RENDER_ENABLED:
         # Master OFF: preserve the Render value outside the process, but make every
         # in-process Telegram durable/backup-channel path see it as unavailable.
