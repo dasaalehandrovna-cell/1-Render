@@ -1171,57 +1171,47 @@ def _split_event_redis_write_v268(row, state=None, error=''):
         return False,f'{type(exc).__name__}: {str(exc)[:180]}'
 
 def split_witness_event_v268(update_id, payload, chat_id=None, update_type='other'):
-    """R16: Redis is the first remote durable witness; Worker HTTP is fallback only.
+    """R57: keep Redis completely out of the Telegram hot path.
 
-    This removes an entire Render#1 -> Render#2 -> Redis hop from the Telegram hot path.
-    Render#2 hydrates pending events from Redis in its reconcile loop.
+    FAST sends the small raw-update witness only to HEAVY. HEAVY owns any optional
+    Redis mirroring/cache work in background. This means turning Redis ON from the
+    Info menu cannot add Redis network latency to a button or message callback.
     """
     row=_split_event_row_v268(update_id,payload,chat_id,update_type)
-    ok,rdetail=_split_event_redis_write_v268(row,'received','')
-    if ok:
-        _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
-        _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
-        return True
-    base,secret=_split_peer_base(),_split_secret(); detail=f'redis={rdetail}'
+    base,secret=_split_peer_base(),_split_secret(); detail='worker not configured'
     if base and secret:
         try:
             raw=_split_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
             wire=_split_gzip.compress(raw,compresslevel=1)
-            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r16-fallback'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(0.35,min(2.5,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','1.2') or '1.2'))))
+            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r57'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(0.35,min(2.5,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','1.2') or '1.2'))))
             if 200 <= r.status_code < 300:
                 _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
                 _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
-                _SPLIT_STATE['event_redis_fallbacks']=int(_SPLIT_STATE.get('event_redis_fallbacks') or 0)+1
                 return True
-            detail=f'{detail}; worker HTTP {r.status_code}: {r.text[:160]}'
+            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
         except Exception as exc:
-            detail=f'{detail}; worker {type(exc).__name__}: {str(exc)[:160]}'
+            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
     _SPLIT_STATE['event_last_error']=detail[:260]
     return False
 
 def _split_event_status_send_v268(update_id, chat_id=None, update_type='other', success=True, error=''):
+    """R57: commit witness also goes through HEAVY; FAST never blocks on Redis."""
     event_id=_split_event_id_v268(update_id)
     row={'schema':1,'event_id':event_id,'update_id':str(update_id),'chat_id':chat_id,'update_type':str(update_type or 'other')[:40],
          'state':'committed' if success else 'failed_retry','committed_at':_split_time.time() if success else 0.0,
          'state_token':_split_current_state_token_v264(),'last_error':str(error or '')[:300]}
-    ok,rdetail=_split_event_redis_write_v268(row,row['state'],error)
-    if ok:
-        if success:
-            _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
-        _SPLIT_STATE['event_last_error']=''
-        return True
-    base,secret=_split_peer_base(),_split_secret(); detail=f'redis={rdetail}'
+    base,secret=_split_peer_base(),_split_secret(); detail='worker not configured'
     if base and secret:
         try:
-            r=requests.post(base+'/internal/event/commit',json=row,headers=_split_headers('vys-262-front-event-commit-r16-fallback'),timeout=4)
+            r=requests.post(base+'/internal/event/commit',json=row,headers=_split_headers('vys-262-front-event-commit-r57'),timeout=4)
             if 200 <= r.status_code < 300:
                 if success:
                     _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
                 _SPLIT_STATE['event_last_error']=''
                 return True
-            detail=f'{detail}; worker HTTP {r.status_code}: {r.text[:160]}'
+            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
         except Exception as exc:
-            detail=f'{detail}; worker {type(exc).__name__}: {str(exc)[:160]}'
+            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
     _SPLIT_STATE['event_last_error']=detail[:260]
     return False
 
@@ -4550,6 +4540,8 @@ def _r49_redis_button():
     st = _r49_redis_runtime_state()
     if st.get('switching'):
         label = '⏳ Redis: ' + ('ВКЛЮЧАЮ…' if st.get('target') else 'ВЫКЛЮЧАЮ…')
+    elif not st.get('master_enabled'):
+        label = '🧱 Redis: ⛔ REDIS_ENABLED=0'
     elif not st.get('configured'):
         label = '🧱 Redis: ⛔ НЕТ REDIS_URL'
     elif st.get('enabled'):
@@ -4600,7 +4592,7 @@ def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -
         headers_fn = globals().get('_split_headers')
         headers = dict(headers_fn('vys-262-r49-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
         response = __import__('requests').post(base.rstrip('/') + '/internal/runtime/redis',
-                                               json={'enabled': enabled}, headers=headers, timeout=12)
+                                               json={'enabled': enabled}, headers=headers, timeout=(2.0, 4.0))
         try: payload = response.json() if response.content else {}
         except Exception: payload = {}
         peer_state = (payload or {}).get('redis') or {}
@@ -5009,6 +5001,10 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             except Exception: pass
             return True
         target = not bool(state.get('enabled'))
+        if target and not bool(state.get('master_enabled')):
+            try: bot.answer_callback_query(call.id, 'REDIS_ENABLED=0 в Render. Сначала разрешите Redis переменной Render.', show_alert=True)
+            except Exception: pass
+            return True
         if target and not bool(state.get('configured')):
             try: bot.answer_callback_query(call.id, 'REDIS_URL не настроен в Render. Redis остаётся выключен.', show_alert=True)
             except Exception: pass

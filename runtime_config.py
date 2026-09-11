@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r56-render-master-switches"
+CONFIG_VERSION = "vys-262-r57-simple-switches"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -191,14 +191,17 @@ WORKER_INTERNAL_ENV: Dict[str, str] = {
 
 
 
-# R56: Render master switches are captured before packaged tuning is installed.
+# R57: Render master switches are captured before packaged tuning is installed.
 # MEGA_ENABLED=0 disables every MEGA path; REDIS_ENABLED=0 disables every Redis path.
+# TELEGRAM_BACKUP_ENABLED=0 disables the Telegram backup/durable channel on FAST.
 def _render_flag(name: str, default: bool) -> bool:
     raw = str(os.environ.get(name, "1" if default else "0") or "").strip().lower()
     return raw in {"1", "true", "yes", "on", "да"}
 
 _MEGA_RENDER_ENABLED = _render_flag("MEGA_ENABLED", True)
 _REDIS_RENDER_ENABLED = _render_flag("REDIS_ENABLED", False)
+_REDIS_START_ENABLED = _render_flag("REDIS_START_ENABLED", False)
+_TELEGRAM_BACKUP_RENDER_ENABLED = _render_flag("TELEGRAM_BACKUP_ENABLED", True)
 
 # R49 root-fix: keep the externally supplied Redis URL private while runtime Redis
 # is OFF by default.  The owner can enable it explicitly from Info without a
@@ -219,7 +222,8 @@ def redis_runtime_state() -> Dict[str, object]:
         "configured": bool(_REDIS_EXTERNAL_URL),
         "master_enabled": bool(_REDIS_RENDER_ENABLED),
         "enabled": bool(_REDIS_RUNTIME_ENABLED and _REDIS_RENDER_ENABLED and _REDIS_EXTERNAL_URL),
-        "default_enabled": bool(_REDIS_RENDER_ENABLED),
+        "default_enabled": bool(_REDIS_START_ENABLED and _REDIS_RENDER_ENABLED),
+        "start_enabled": bool(_REDIS_START_ENABLED),
     }
 
 def set_redis_runtime_enabled(enabled: bool) -> Dict[str, object]:
@@ -234,8 +238,10 @@ def set_redis_runtime_enabled(enabled: bool) -> Dict[str, object]:
 def _init_redis_runtime_default() -> None:
     global _REDIS_RUNTIME_INITIALIZED
     if not _REDIS_RUNTIME_INITIALIZED:
-        # Render master switch is authoritative on every restart: 1=ON, 0=OFF.
-        _apply_redis_runtime_state(_REDIS_RENDER_ENABLED)
+        # REDIS_ENABLED is a master permission only. Runtime remains OFF after restart
+        # unless REDIS_START_ENABLED=1 is explicitly requested. This keeps Redis out
+        # of the Telegram hot path by default while still allowing the Info toggle.
+        _apply_redis_runtime_state(_REDIS_RENDER_ENABLED and _REDIS_START_ENABLED)
         _REDIS_RUNTIME_INITIALIZED = True
     else:
         _apply_redis_runtime_state(_REDIS_RUNTIME_ENABLED)
@@ -246,12 +252,20 @@ def install_internal_runtime_config(role: str) -> Dict[str, str]:
     values = FRONT_INTERNAL_ENV if role == "front" else WORKER_INTERNAL_ENV if role == "worker" else {}
     for key, value in values.items():
         # External master switches must never be overwritten by packaged defaults.
-        if str(key) in {"MEGA_ENABLED", "REDIS_ENABLED"}:
+        if str(key) in {"MEGA_ENABLED", "REDIS_ENABLED", "TELEGRAM_BACKUP_ENABLED", "REDIS_START_ENABLED"}:
             continue
         os.environ[str(key)] = str(value)
     fast_runtime_mega_disabled = role == "front" and str(os.environ.get("FAST_RUNTIME_MEGA_DISABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
     os.environ["MEGA_ENABLED"] = "1" if (_MEGA_RENDER_ENABLED and not fast_runtime_mega_disabled) else "0"
     os.environ["REDIS_ENABLED"] = "1" if _REDIS_RENDER_ENABLED else "0"
+    os.environ["REDIS_START_ENABLED"] = "1" if _REDIS_START_ENABLED else "0"
+    os.environ["TELEGRAM_BACKUP_ENABLED"] = "1" if _TELEGRAM_BACKUP_RENDER_ENABLED else "0"
+    if role == "front" and not _TELEGRAM_BACKUP_RENDER_ENABLED:
+        # Master OFF: preserve the Render value outside the process, but make every
+        # in-process Telegram durable/backup-channel path see it as unavailable.
+        os.environ["BACKUP_CHAT_ID"] = ""
+        os.environ["TELEGRAM_DURABLE_ENABLED"] = "0"
+        os.environ["TG_DURABLE_ENABLED"] = "0"
     if not _MEGA_RENDER_ENABLED:
         os.environ["MEGA_AUTORESTORE"] = "0"
         os.environ["SPLIT_EMERGENCY_MEGA"] = "0"

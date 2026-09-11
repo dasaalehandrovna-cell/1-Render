@@ -5172,18 +5172,11 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
-    '• 🛰 Пер-R43: тяжёлые file jobs запускаются асинхронно — FAST не держит единственный export-worker, а лёгкий supervisor ждёт реальную доставку.\n'
-    '• ⚡ R43 direct transport: если на HEAVY нет Redis, FAST хранит job в своём Redis-outbox, HEAVY сразу начинает работу без синхронного MEGA admission; тот же job_id переигрывается после рестарта до реальной доставки.\n'
-    '• 🔗 R40 canonical alias: повторные/восстановленные задания схлопываются в один canonical job_id, FAST следует его результату вместо ожидания закрытого дубля.\n'
-    '• 💾 R40 state outbox: изменения kv/chats/meta/cold сначала фиксируются в durable SQLite-outbox и удаляются только после durable ACK HEAVY.\n'
-    '• 🧩 HEAVY R39/R40: file и Google jobs имеют Redis/MEGA spool, single-flight тяжёлых snapshot и восстановление после рестарта.\n'
-    '• ⚡ R37/R36: общий Telegram limiter и быстрый FAST hot-path сохранены; SQLite I/O не держит глобальный data_lock.\n'
-    '• 🧭 Третий вариант: настройки сгруппированы по Финансам / Пересылке / Напоминаниям / Задачам / Контурам / Общим / Журналам / Владельцу.\n'
-    '• 🏷 Мастер ТЗ окон + маркеры и 🧩 мастер Конструкторов; центр Конструкторов доступен даже когда кнопки в рабочих окнах скрыты.\n'
-    '• 🛰 Активный чат остаётся горячим в RAM; LOWRAM выгружает данные только при реальном давлении памяти, а HEAVY/split остаётся на Render #2.\n'
-    '• 💾 Сохраняется надёжная R20/v262 схема durable capsule: максимум config generation + максимум user-state seq без отката.\n'
-    '• 🔒 Полный SQLite + delta/event journal остаются вторым уровнем защиты финансов и остальных данных; capsule не содержит финансовые cold-ledger записи.\n'
-    '• 🚀 Redis callback-токены зеркалируются пакетно в фоне; UI и render сохраняют строгий порядок FIFO.'
+    '• R57: MEGA, Redis и Telegram backup-channel имеют независимые Render master-switches.\n'
+    '• Redis не участвует в Telegram hot-path; включение из меню выполняется фоном.\n'
+    '• После READY владелец получает только короткое сообщение; подробности открываются кнопкой.\n'
+    '• /restore принимает полный .bin как raw SQLite или gzip snapshot.\n'
+    '• SQLite остаётся основным локальным источником состояния FAST.'
 )
 
 
@@ -5246,6 +5239,79 @@ def _v211_start_post_ready_runtime():
         pass
     return True
 
+def _r57_restore_source_info() -> tuple[str, dict]:
+    trace = {}
+    try:
+        import json as _r57_json
+        raw = str(os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
+        if raw:
+            parsed = _r57_json.loads(raw)
+            if isinstance(parsed, dict):
+                trace = parsed
+    except Exception:
+        trace = {}
+    source = str(trace.get('base_source') or '').strip().upper()
+    labels = {
+        'MEGA': 'MEGA',
+        'LOCAL_SQLITE': 'локальная SQLite',
+        'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE': 'локальная SQLite',
+        'EMPTY_INIT_MEGA_DISABLED': 'новая SQLite · MEGA отключена',
+        'EMPTY_INIT': 'новая SQLite',
+        'MEGA_RESTORE_FAILED': 'MEGA не восстановлена',
+    }
+    label = labels.get(source) or str(_RUNTIME_STATE.get('restore_detail') or 'локальное состояние')
+    return label[:180], trace
+
+def _r57_startup_keyboard(details: bool = False):
+    kb = types.InlineKeyboardMarkup()
+    if details:
+        kb.row(IB('↩️ Коротко', callback_data='r57:startup:compact'))
+    else:
+        kb.row(IB('ℹ️ Подробнее', callback_data='r57:startup:details'))
+    return kb
+
+def _r57_startup_compact_text() -> str:
+    source, _trace = _r57_restore_source_info()
+    return f"✅ Бот запущен · R57 · {VERSION}\nВосстановление: {source}"
+
+def _r57_startup_details_text() -> str:
+    source, trace = _r57_restore_source_info()
+    try:
+        redis_state = globals().get('redis_runtime_state', lambda: {})() or {}
+    except Exception:
+        redis_state = {}
+    mega_enabled = str(os.getenv('MEGA_ENABLED', '1') or '1').strip().casefold() not in {'0','false','no','off'}
+    tg_backup_enabled = str(os.getenv('TELEGRAM_BACKUP_ENABLED', '1') or '1').strip().casefold() not in {'0','false','no','off'}
+    try:
+        task_stats = mega_task_registry_stats() or {}
+    except Exception:
+        task_stats = {}
+    details = [
+        f"🤖 R57 · {VERSION}",
+        f"Восстановление: {source}",
+        f"Правки: {STARTUP_RELEASE_SUMMARY}",
+        f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",
+        f"READY: {_RUNTIME_STATE.get('ready_at') or '—'}",
+        f"Boot: {_RUNTIME_STATE.get('boot_duration_seconds') or '—'} с",
+        f"MEGA: {'ВКЛ' if mega_enabled else 'ВЫКЛ'}",
+        f"Redis: {'ВКЛ' if redis_state.get('enabled') else 'ВЫКЛ'} (Render master: {'ВКЛ' if redis_state.get('master_enabled') else 'ВЫКЛ'})",
+        f"Telegram backup: {'ВКЛ' if tg_backup_enabled and bool(str(os.getenv('BACKUP_CHAT_ID','') or '').strip()) else 'ВЫКЛ'}",
+        f"Render: {str(os.getenv('RENDER_EXTERNAL_HOSTNAME', '') or os.getenv('RENDER_INSTANCE_ID', '') or '—')[-48:]}",
+        f"Commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}",
+        f"Durable jobs: pending {task_stats.get('pending', 0)}, running {task_stats.get('running', 0)}, failed {task_stats.get('failed', 0)}",
+        f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}",
+        f"Keep-alive: {'ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else 'ВЫКЛ'}",
+    ]
+    if trace:
+        details.append(f"Restore base: {trace.get('base_source') or '—'}")
+        if trace.get('final_revision') not in (None, ''):
+            details.append(f"Revision: {trace.get('final_revision')}")
+        if trace.get('error'):
+            details.append(f"Restore error: {str(trace.get('error'))[:240]}")
+    if _RUNTIME_STATE.get('restore_detail'):
+        details.append(f"Детали: {str(_RUNTIME_STATE.get('restore_detail'))[:420]}")
+    return '\n'.join(details)
+
 def _v211_notify_owner_ready_once():
     try:
         if not runtime_is_ready() or not OWNER_ID:
@@ -5255,11 +5321,11 @@ def _v211_notify_owner_ready_once():
                 return True
             _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
-        bot.send_message(owner_id, f"{('🚨' if RESTORE_GUARD_ACTIVE else '✅')} {version_animal_badge()} Бот запущен и READY (Пер-R43 · версия {VERSION}).\n🛠 Правки версии:\n{STARTUP_RELEASE_SUMMARY}\nСтарт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or '—'}; boot {_RUNTIME_STATE.get('boot_duration_seconds') or '—'}с\nВосстановление: {_RUNTIME_STATE.get('restore_detail') or '—'}\nRender instance: {str(os.getenv('RENDER_INSTANCE_ID', '') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')[:12]}\nDurable-задачи ({mega_task_registry_stats().get('backend', 'mega')}): pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\nЖурнал: {('✅ ВКЛ' if is_journal_registration_enabled() else '⬜ ВЫКЛ')}; keep-alive: {('✅ ВКЛ' if globals().get('keepalive_self_enabled', lambda: KEEP_ALIVE_ENABLED)() else '⬜ ВЫКЛ')}\n/start")
+        bot.send_message(owner_id, _r57_startup_compact_text(), reply_markup=_r57_startup_keyboard(False))
         return True
     except Exception as exc:
         try:
-            log_error(f'notify owner READY v211: {exc}')
+            log_error(f'notify owner READY r57: {exc}')
         except Exception:
             pass
         return False
@@ -9827,6 +9893,19 @@ def _v153_callback_once(call, key: str) -> bool:
     return True
 def _v153_extension_callback(call, data_str: str) -> bool:
     data_str = str(data_str or '')
+    if data_str in {'r57:startup:details', 'r57:startup:compact'}:
+        uid = _v153_actor_id(call)
+        if not _v153_platform_owner(uid):
+            return True
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        if data_str.endswith(':details'):
+            safe_edit(bot, call, _r57_startup_details_text(), reply_markup=_r57_startup_keyboard(True))
+        else:
+            safe_edit(bot, call, _r57_startup_compact_text(), reply_markup=_r57_startup_keyboard(False))
+        return True
     if data_str == 'runtime_watcher':
         uid = _v153_actor_id(call)
         chat_id = int(call.message.chat.id)

@@ -5141,17 +5141,18 @@ def handle_document(msg):
         if maybe_prompt_owner_for_json_restore(msg, fname):
             return
     if restore_mode is not None and restore_mode == chat_id:
-        if not (fname.endswith('.json') or fname.endswith('.ison') or fname.endswith('.csv') or fname.endswith('.gz')):
-            send_and_auto_delete(chat_id, '⚠️ В режиме восстановления принимаются GZ / JSON / ISON / CSV.')
+        if not (fname.endswith('.json') or fname.endswith('.ison') or fname.endswith('.csv') or fname.endswith('.gz') or fname.endswith('.bin')):
+            send_and_auto_delete(chat_id, '⚠️ В режиме восстановления принимаются GZ / BIN / JSON / ISON / CSV.')
             return
-        if fname.endswith('.gz'):
+        if fname.endswith(('.gz', '.bin')):
             try:
-                prep = globals().get('v182_prepare_gz_restore_document')
+                helper_name = 'v182_prepare_bin_restore_document' if fname.endswith('.bin') else 'v182_prepare_gz_restore_document'
+                prep = globals().get(helper_name)
                 if not callable(prep):
-                    raise RuntimeError('GZ restore helper не загружен')
+                    raise RuntimeError(f'{helper_name} не загружен')
                 prep(msg, file)
             except Exception as e:
-                send_and_auto_delete(chat_id, f'❌ GZ не подготовлен: {e}', 15)
+                send_and_auto_delete(chat_id, f'❌ Файл не подготовлен: {e}', 15)
             return
         tmp_path = f'restore_{chat_id}_{fname}'
         try:

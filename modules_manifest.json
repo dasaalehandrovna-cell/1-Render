@@ -19,13 +19,13 @@
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
-    "06_commands_callbacks.py": "67de7d23d0fe3ba6a60f1f9148bf200fdf244ba24d30c398605c8e4724acd720",
-    "07_state_web.py": "b61b4584d174225f063b742efdce3d4366c10126a68cc5469b85e622fe7504e8",
+    "06_commands_callbacks.py": "5fe18651b36ad586e96cb8763c0fd48610d70dc5b579d1c39e1bac6f11b56691",
+    "07_state_web.py": "d10228e99cbf78421205cf6351069f83997db3833ea6cc37794380a645b46b71",
     "08_reliability_tasks.py": "61ff13237858c57171d8c0ba63ee6a4b55ab63945bb66464f1c1a199dd200b01",
-    "09_final_transport.py": "5386d069c7286929753c5daecad715d677670dac01c7020bcfb63e9b7ce5c586",
-    "10_split_policy_offload.py": "1ae8fd0532c2bffcffed9dd53d6b11bda1fd422171a6b8dbabc662af25424082"
+    "09_final_transport.py": "b303ec75367799099fe9a436a6bdfdf32e4f1ec5e6092268bea2e3034e943639",
+    "10_split_policy_offload.py": "dc90e993261113eaffbbe3811e2fab7cc06b8b2f646015802493f778e49aef7e"
   },
-  "release": "Пер-R52-FORENSIC-BUTTON-TRACE",
+  "release": "Пер-R57-SIMPLE-SWITCHES",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -194,6 +194,11 @@
     "r52_telegram_rate_wait_trace",
     "r52_ack_error_trace",
     "r52_render_error_trace",
-    "r52_hot_path_heartbeat"
+    "r52_hot_path_heartbeat",
+    "r57_telegram_backup_render_master_switch",
+    "r57_compact_ready_notice_with_details",
+    "r57_restore_bin_sqlite_or_gzip",
+    "r57_redis_master_permission_runtime_off_default",
+    "r57_redis_removed_from_fast_telegram_hotpath"
   ]
 }

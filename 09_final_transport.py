@@ -1507,8 +1507,62 @@ def v182_prepare_gz_restore_document(msg, document=None) -> bool:
                 pass
         raise
 
+def v182_prepare_bin_restore_document(msg, document=None) -> bool:
+    """R57: accept a complete SQLite or complete gzip snapshot stored as .bin."""
+    import os as _os, gzip as _gzip, shutil as _shutil
+    uid = _v153_actor_id(msg)
+    chat_id = int(msg.chat.id)
+    document = document or getattr(getattr(msg, 'reply_to_message', None), 'document', None)
+    if not document:
+        raise RuntimeError('Не найден BIN-файл')
+    name = str(getattr(document, 'file_name', '') or '').lower()
+    if not name.endswith('.bin'):
+        raise RuntimeError('Нужен файл .bin')
+    uploaded = folder = raw = archive = None
+    try:
+        uploaded, folder = _v182_download_restore_document(document)
+        with open(uploaded, 'rb') as fh:
+            magic = fh.read(16)
+        if magic.startswith(b'\x1f\x8b'):
+            archive = uploaded
+            detected = 'gzip snapshot'
+        elif magic.startswith(b'SQLite format 3\x00'):
+            archive = _os.path.join(folder, 'restore_from_bin.sqlite3.gz')
+            with open(uploaded, 'rb') as fin, _gzip.open(archive, 'wb', compresslevel=3) as fout:
+                _shutil.copyfileobj(fin, fout, 1024 * 1024)
+            detected = 'raw SQLite'
+        else:
+            raise RuntimeError('BIN не является полным SQLite/gzip snapshot. Если это часть BOT_STATE_SQLITE_PART_*.bin, нужен полный snapshot, а не один chunk.')
+        manifest, raw = _v153_validate_restore_gz(archive)
+        scope = str(manifest.get('scope') or 'global')
+        tenant_id = str(manifest.get('tenant_id') or _v153_tenant_for_chat(chat_id))
+        if scope == 'global' and (not _v153_platform_owner(uid)):
+            raise RuntimeError('Глобальное восстановление доступно только владельцу платформы')
+        if scope == 'tenant' and (not _v153_can_manage_tenant(uid, tenant_id)):
+            current = _v153_tenant_for_chat(chat_id)
+            if not _v153_can_manage_tenant(uid, current):
+                raise RuntimeError('Нельзя восстановить чужое пространство')
+            tenant_id = current
+        token = _v153_hashlib.sha256(f'r57bin:{uid}:{chat_id}:{_v153_time.time_ns()}'.encode()).hexdigest()[:16]
+        with _V153_LOCK:
+            _V153_RESTORE_PENDING[token] = {'uid': uid, 'chat_id': chat_id, 'gz': archive, 'raw': raw, 'manifest': manifest, 'tenant_id': tenant_id, 'created': _v153_time.time(), 'upload_folder': folder}
+        fmt = str(manifest.get('snapshot_format') or 'sqlite')
+        text = f"🧪 BIN-файл проверен ({detected}).\n\nФормат: {fmt}\nВерсия: {manifest.get('bot_version') or 'не указана'}\nОбласть: {('весь бот' if scope == 'global' else 'пространство')}\nЧатов: {manifest.get('chat_count', 0)}\nФинансовых записей: {manifest.get('record_count', 'см. snapshot')}\nСоздан: {manifest.get('created_at') or 'не указано'}\n\nПеред применением будет создан pre_restore backup текущей базы.\nПосле подтверждения текущий scope будет ЗАМЕНЁН данными BIN без объединения."
+        bot.reply_to(msg, text, reply_markup=_v153_restore_keyboard(token, scope))
+        global restore_mode
+        restore_mode = None
+        data.pop('_restore_mode_chat_v150', None)
+        return True
+    except Exception:
+        if folder and (not raw):
+            try:
+                _v176_shutil.rmtree(folder, ignore_errors=True)
+            except Exception:
+                pass
+        raise
+
 def v182_cmd_restore(msg):
-    """Unified historical /restore: reply to GZ, or enter upload mode for GZ/JSON/ISON/CSV."""
+    """Unified /restore: reply to GZ/BIN, or enter upload mode for GZ/BIN/JSON/ISON/CSV."""
     try:
         update_chat_info_from_message(msg)
     except Exception:
@@ -1523,16 +1577,21 @@ def v182_cmd_restore(msg):
         bot.reply_to(msg, '⛔ Недостаточно прав для восстановления.')
         return
     replied_doc = getattr(getattr(msg, 'reply_to_message', None), 'document', None)
-    if replied_doc is not None and str(getattr(replied_doc, 'file_name', '') or '').lower().endswith('.gz'):
-        try:
-            v182_prepare_gz_restore_document(msg, replied_doc)
-        except Exception as exc:
-            bot.reply_to(msg, f'❌ GZ не подготовлен к восстановлению:\n{v153_redact_text(exc)[:700]}')
-        return
+    if replied_doc is not None:
+        replied_name = str(getattr(replied_doc, 'file_name', '') or '').lower()
+        if replied_name.endswith(('.gz', '.bin')):
+            try:
+                if replied_name.endswith('.bin'):
+                    v182_prepare_bin_restore_document(msg, replied_doc)
+                else:
+                    v182_prepare_gz_restore_document(msg, replied_doc)
+            except Exception as exc:
+                bot.reply_to(msg, f'❌ Файл не подготовлен к восстановлению:\n{v153_redact_text(exc)[:700]}')
+            return
     global restore_mode
     restore_mode = chat_id
     data.pop('_restore_mode_chat_v150', None)
-    send_and_auto_delete(chat_id, '📥 Режим восстановления включён — СТРОГАЯ ЗАМЕНА ИЗ ФАЙЛА.\n\nТекущее состояние будет сначала сохранено в pre_restore, затем выбранный scope будет заменён ровно данными файла. Никакого merge.\n\nТеперь отправьте ОДИН файл:\n• *.sqlite3.gz / *.gz — полный SQLite snapshot\n• *.json / *.ison — полный JSON/ISON backup (включая chat_<id>.json)\n• *.csv — CSV чата\n\nДля следующего файла снова отправьте /restore.\nОтмена: /restore_off', 30)
+    send_and_auto_delete(chat_id, '📥 Режим восстановления включён — СТРОГАЯ ЗАМЕНА ИЗ ФАЙЛА.\n\nТекущее состояние будет сначала сохранено в pre_restore, затем выбранный scope будет заменён ровно данными файла. Никакого merge.\n\nТеперь отправьте ОДИН файл:\n• *.sqlite3.gz / *.gz — полный SQLite snapshot\n• *.bin — полный SQLite или gzip snapshot в BIN\n• *.json / *.ison — полный JSON/ISON backup (включая chat_<id>.json)\n• *.csv — CSV чата\n\nДля следующего файла снова отправьте /restore.\nОтмена: /restore_off', 30)
 
 def _v182_install_restore_handler() -> int:
     replaced = 0
