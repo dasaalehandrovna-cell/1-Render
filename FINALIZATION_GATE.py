@@ -452,6 +452,83 @@ if ROLE=='fast':
        'delete_message' not in back_main_src,
        'Back/Main must edit only the clicked message and preserve sibling windows')
 
+    # R67: forwarding config/runtime parity and deterministic independent-window redraws.
+    resolver_src=_fn_sources(web_src,{'_canon_resolve_forward_targets__001'}).get('_canon_resolve_forward_targets__001','')
+    schedule_fwd_src=_fn_sources(web_src,{'_canon_schedule_forward_any_message__001'}).get('_canon_schedule_forward_any_message__001','')
+    bi_src=_fn_sources(rel_src,{'set_forward_pair_bidirectional'}).get('set_forward_pair_bidirectional','')
+    fwd_persist_src=_fn_sources(rel_src,{'_v166_schedule_forward_persist'}).get('_v166_schedule_forward_persist','')
+    restore_windows_src=_fn_sources(core_src,{'restore_finance_window_runtime_state'}).get('restore_finance_window_runtime_state','')
+    edit_retry_src=_fn_sources(final_transport,{'_canon_v161_edit_retry__001'}).get('_canon_v161_edit_retry__001','')
+    active_persist_src=_fn_sources(cmd_src,{'_v186_persist_active_window_state'}).get('_v186_persist_active_window_state','')
+    ok('r67_forward_explicit_rules_are_runtime_authority',
+       "data.get('forward_rules'" in resolver_src and 'tenant_same_space' not in resolver_src and
+       '_V148_ORIG_RESOLVE_FORWARD_TARGETS' not in resolver_src,
+       'runtime resolver must deliver explicit stored edges without a second tenant veto')
+    ok('r67_forward_permission_sender_consistent',
+       'v152_chat_permission_allowed' in schedule_fwd_src and
+       'not _v152_actor_is_platform_owner' not in schedule_fwd_src,
+       'forward permission must be chat-level and identical for owner/non-owner senders')
+    ok('r67_bidirectional_pair_atomic',
+       "fr.setdefault(str(a), {})[str(b)] = 'twoway'" in bi_src and
+       "fr.setdefault(str(b), {})[str(a)] = 'twoway'" in bi_src and
+       bi_src.count('_v166_schedule_forward_persist') == 1 and
+       cmd_src.count('set_forward_pair_bidirectional(A, B, not (ab_on and ba_on))') >= 2,
+       'two-way UI must commit both directions with one durable persist admission')
+    ok('r67_forward_config_root_only_persist',
+       'save_data(data, root_only=True)' in fwd_persist_src and 'save_data(data, full=True)' not in fwd_persist_src,
+       'forward config persistence must not full-save all chat state')
+    ok('r67_restore_preserves_all_window_day_pointers',
+       "data.setdefault('active_messages', {})[str(cid)] = dict(main_windows)" in restore_windows_src and
+       "state['main_windows'] = dict(main_windows)" in restore_windows_src and
+       "state['main_windows'] = {selected_day: selected_mid}" not in restore_windows_src,
+       'deploy restore must not collapse compact window state to one day/message')
+    ok('r67_navigation_direct_commit',
+       all(x in edit_retry_src for x in ('back_main_instant','nav_prev_restore','info_v161','start_reuse_main')) and
+       '_tg_call_retry(bot.edit_message_text' in edit_retry_src and 'direct_purposes' in edit_retry_src,
+       'critical navigation must receive real Telegram edit outcome instead of queue-only success')
+    ok('r67_back_never_redirects_to_sibling',
+       '_V161_PREV_BACKUP_WINDOW' not in back_main_src and
+       'back_main_retry_same_window' in back_main_src and
+       'independent_window=1' in back_main_src,
+       'Back on a parallel window must only edit/retry the clicked message')
+    ok('r67_window_move_single_chat_persist',
+       'save_data(' not in active_persist_src and '_sync_finance_window_state_from_runtime' in active_persist_src,
+       'active-window persist helper must not duplicate the chat SQLite write')
+
+    # R67 forwarding total-audit invariants: ordinary messages, channel posts,
+    # edits, albums, replies and exact-once copy mapping remain wired.
+    msg_src=all_py.get('04_messages_features.py','')
+    split_src=all_py.get('10_split_policy_offload.py','')
+    any_msg_src=_fn_sources(msg_src,{'on_any_message'}).get('on_any_message','')
+    channel_src=_fn_sources(cmd_src,{'on_any_channel_post'}).get('on_any_channel_post','')
+    edited_channel_src=_fn_sources(cmd_src,{'on_edited_channel_post'}).get('on_edited_channel_post','')
+    single_fwd_src=_fn_sources(msg_src,{'_forward_single_to_target'}).get('_forward_single_to_target','')
+    media_src=_fn_sources(msg_src,{'_collect_media_group_for_forward','_flush_media_group_forward_locked'})
+    sender_guard_src=_fn_sources(core_src,{'_forward_sender_skip_reason'}).get('_forward_sender_skip_reason','')
+    probe_all_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
+    forward_status_src=_fn_sources(core_src,{'build_forward_status_text'}).get('build_forward_status_text','')
+    ok('r67_forward_all_ingress_paths_wired',
+       'schedule_forward_any_message(chat_id, msg)' in any_msg_src and
+       'schedule_forward_any_message(msg.chat.id, msg)' in channel_src and
+       'schedule_propagate_edited_to_copies(msg)' in edited_channel_src,
+       'group/private/channel normal+edited message paths must remain connected to forwarding')
+    ok('r67_forward_exact_once_and_reply_mapping',
+       'get_forward_links' in single_fwd_src and '_store_forward_link' in single_fwd_src and
+       'resolve_reply_target_message_id' in single_fwd_src and 'forward_duplicate_copy_blocked_v260' in single_fwd_src,
+       'copy delivery must preserve exact-once index and reply mapping')
+    ok('r67_forward_media_copy_fallback_chain',
+       '_collect_media_group_for_forward' in msg_src and '_flush_media_group_forward_locked' in msg_src and
+       'bot.copy_message' in single_fwd_src and 'bot.forward_message' in single_fwd_src and '_fallback_send_single' in single_fwd_src,
+       'albums and single media must retain copy→forward→typed-send fallback')
+    ok('r67_forward_input_defaults_and_self_loop_guard',
+       "R29_INPUT_DEFAULTS = {'forwarded': True, 'other_bots': True}" in split_src and
+       "return 'bot_sender'" in sender_guard_src and 'groupanonymousbot' not in sender_guard_src,
+       'forwarded/third-party-bot messages default ON while own-bot copies remain loop-protected')
+    ok('r67_forward_privacy_mode_diagnostic',
+       'can_read_all_group_messages' in probe_all_src and 'group_privacy_read_all' in probe_all_src and
+       'BotFather Privacy Mode' in forward_status_src,
+       'full chat probe must expose Telegram Group Privacy as an explicit cause of missing ingress')
+
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot
         # and all startup contracts, but prevent daemon/background threads from

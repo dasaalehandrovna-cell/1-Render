@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "ff8d724a93f1ad1779784c126630769e160a7939ec3333fdb65d7674f864caec",
+    "01_core_data.py": "77e04f37fe50251f6922fc27d22140b9cba6aeb7c567fbc620a0b44242086cd2",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
-    "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
-    "07_state_web.py": "a8542e9fd9c8272835ea550842c4d8a87532d8d2f41b77f19cb41e09ab22ad53",
-    "08_reliability_tasks.py": "1844e1dc0d47f223b3726e3fde243f329d96508892e68150efcf6f89115a0f8c",
-    "09_final_transport.py": "d21f9ae07ef37a449de5b0b9903a2c924fedd972384d65f8d4a423a0da5bf0dc",
+    "06_commands_callbacks.py": "d09a7a3ee0b045c268a592556b4486bf544bea8ed377332159e1a98556f21963",
+    "07_state_web.py": "c57125ee0d746023279ee455fb41fcdf2966e7aefd21a2f255d0b4472448df13",
+    "08_reliability_tasks.py": "f281d00c8efc6a8a366af49cdf765282ba30d82dc298627def63cc2c2f930f8f",
+    "09_final_transport.py": "01922a196a5b63ca91216f9c05e6873e408f60d28cfd71d5efb3d5df3406b1df",
     "10_split_policy_offload.py": "7ff3b2c1a96cc9c76b306df74ac35d2b52b1a54888bf88b5277a9e23cf8b72f9"
   },
-  "release": "Пер-R66-PARALLEL-INDEPENDENT-WINDOWS",
+  "release": "Пер-R67-FORWARDING-WINDOW-RUNTIME-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -228,6 +228,14 @@
     "r66_no_stale_main_callback_redirect",
     "r66_window_local_day_navigation",
     "r66_back_main_preserves_sibling_windows",
-    "r66_recreate_preserves_existing_windows"
+    "r66_recreate_preserves_existing_windows",
+    "r67_forward_runtime_explicit_rules_authoritative",
+    "r67_forward_chat_permission_sender_consistent",
+    "r67_forward_bidirectional_atomic_pair",
+    "r67_forward_root_only_config_persist",
+    "r67_window_compact_state_preserves_all_days",
+    "r67_navigation_direct_commit_for_back_info_start",
+    "r67_back_edits_clicked_window_only",
+    "r67_window_single_persist_per_move"
   ]
 }

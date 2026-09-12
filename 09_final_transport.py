@@ -165,8 +165,41 @@ def _v177_deferred_ui_retry(chat_id: int, message_id: int, text: str, reply_mark
         pass
 
 def _canon_v161_edit_retry__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='ui') -> str:
-    """R22 UI policy: enqueue latest render; callback worker never waits for Telegram RTT."""
+    """Final UI edit policy. Critical navigation commits immediately in its async lane.
+
+    Ordinary redraws still use latest-wins WINDOW_RENDER_TASK_POOL. R67 makes Back,
+    Previous, Info and /start reuse wait for the real Telegram edit result so callers
+    can immediately recover from a missing/deleted message instead of treating an
+    unverified queue admission as a successful redraw.
+    """
     started = _v176_time.monotonic()
+    direct_purposes = {'back_main_instant', 'nav_prev_restore', 'info_v161', 'start_reuse_main'}
+    if str(purpose or '') in direct_purposes:
+        try:
+            cancel_fn = globals().get('cancel_fast_ui_edit')
+            if callable(cancel_fn):
+                cancel_fn(int(chat_id), int(message_id))
+        except Exception:
+            pass
+        try:
+            _tg_call_retry(bot.edit_message_text, text, chat_id=int(chat_id), message_id=int(message_id), reply_markup=reply_markup, parse_mode=parse_mode, attempts=2, purpose=f'{purpose}_direct')
+            result = 'ok'
+        except Exception as exc:
+            low = str(exc).casefold()
+            if 'message is not modified' in low:
+                result = 'ok'
+            elif 'message to edit not found' in low or "message can't be edited" in low or 'message_id_invalid' in low:
+                result = 'not_found'
+            elif is_telegram_429(exc):
+                result = 'rate_limited'
+            else:
+                result = 'failed'
+                try:
+                    log_error(f'R67 direct navigation edit failed chat={int(chat_id)} msg={int(message_id)} purpose={purpose}: {exc}')
+                except Exception:
+                    pass
+        v177_perf_stage('render_direct_navigation', _v176_time.monotonic() - started)
+        return result
     try:
         result = str(fast_ui_edit_message_text(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose) or 'failed')
     except Exception:

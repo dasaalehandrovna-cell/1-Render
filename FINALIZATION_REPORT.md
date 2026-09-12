@@ -1,26 +1,23 @@
-# R65 — Priority navigation, isolated chat probe, all-MEGA manual recovery
+# R67 — Forwarding + window runtime finalization
 
-## FAST/UI
-- Safe navigation (`Назад`, `Инфо`, `Главное`, close/page/list navigation) uses dedicated `nav-ui` pool.
-- Per-window navigation epoch prevents an older slow callback/render from repainting over a newer navigation result.
-- Telegram callback admission/ACK remains fast and separate from render.
+## Forwarding
+- Explicit stored `forward_rules` are the runtime source of truth. Runtime delivery no longer silently vetoes configured edges through a second `tenant_same_space` filter.
+- Chat forwarding permission is sender-independent: owner and ordinary users are treated identically once Telegram delivers the message.
+- Two-way A⇄B enable/disable is atomic and persists once, preventing half-configured pairs after a crash/redeploy.
+- Forwarding config persistence is root-only instead of a full all-chat save.
+- Normal messages, channel posts, edits, albums/media groups, reply mapping, exact-once delivery index, copy→forward→typed-send fallback and finance-copy sync remain wired.
+- Full chat probe records `can_read_all_group_messages`; the forwarding menu explicitly warns when BotFather Group Privacy prevents ordinary group messages from reaching the bot.
 
-## Chat probe
-- Full chat check performs Telegram network I/O in a bounded pool (`CHAT_PROBE_WORKERS`, default 4, range 2..6).
-- Network workers do not mutate/persist the central state.
-- Results are merged locally after network completion.
-- Persistence is targeted to checked chats + owner and deferred until interactive callback/nav/render queues are idle.
-- The old full `save_data(data)` from the probe path is removed.
+## Windows
+- Compact finance-window restore keeps every persisted latest-per-day pointer instead of collapsing to one selected day.
+- Same-day parallel Telegram windows remain owned by the durable open-window registry.
+- Back/Main edits only the clicked message and never redirects a transient failure into another sibling window.
+- Back, Previous, Info and `/start` reuse obtain the real Telegram edit result in their async lane; missing messages can be recovered immediately.
+- Ordinary redraws remain latest-wins/asynchronous.
+- Active-window persistence no longer performs the same chat SQLite save twice.
 
-## Manual MEGA recovery
-- FAST may keep `MEGA_ENABLED=0`.
-- `Настройки после деплоя -> Базы MEGA / восстановление` browses the whole MEGA account through authenticated FAST -> HEAVY HTTP.
-- HEAVY lists only the current folder with `mega-ls -l`; folder navigation is paged in Telegram.
-- Selected files are downloaded through HEAVY, validated as gzip/raw SQLite with `PRAGMA quick_check`, then replace the live DB only after explicit confirmation.
-- After successful selected restore FAST seals a verified full SQLite snapshot into Redis (R64 recovery contract).
-- Automatic HEAVY MEGA backup/restore remains strictly locked to Render `MEGA_BACKUP_DIR`; the whole-account browser is manual read-only recovery access only.
-
-## Finalization
-- No PREV/ORIG/BASE compatibility chain added.
-- FAST finalization gate includes explicit R65 contracts.
-- Release manifest hashes refreshed after all runtime edits.
+## Verification
+- FAST finalization gate: 96/96 PASS.
+- HEAVY unchanged gate: 34/34 PASS.
+- Behavioral tests PASS: explicit two-way resolution, sender-consistent permission, atomic pair, multi-day window restore, direct critical navigation.
+- Full startup import could not be executed in this offline build environment because `pyTelegramBotAPI/telebot` is not installed and package download DNS is unavailable. Static compile/gates and behavior tests passed.

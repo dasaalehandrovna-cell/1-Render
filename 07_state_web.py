@@ -1252,27 +1252,50 @@ def _canon_collect_all_known_chat_ids__001(include_owner: bool=True) -> list[int
         root_id = owner_scope_id(current_state_chat_id())
         ids = [cid for cid in ids if int(cid) != int(root_id)]
     return sorted(set(ids), key=lambda cid: get_chat_display_name(cid).casefold())
-_V148_ORIG_RESOLVE_FORWARD_TARGETS = _v177_legacy_0140_resolve_forward_targets
-
 def _canon_resolve_forward_targets__001(source_chat_id: int):
+    """Return the exact explicit forwarding edges stored for this source.
+
+    R67 final contract: authorization happens when a rule is configured. Runtime
+    delivery must not silently veto an already-stored edge using a second,
+    different tenant-space policy. Raw and migrated source ids are merged so a
+    supergroup migration cannot make one direction of a two-way pair disappear.
+    """
     resolver = globals().get('resolve_canonical_chat_id_v199')
     suspended = globals().get('is_forward_target_suspended_v199')
-    src = int(resolver(int(source_chat_id))) if callable(resolver) else int(source_chat_id)
-    rows = _V148_ORIG_RESOLVE_FORWARD_TARGETS(src) if callable(_V148_ORIG_RESOLVE_FORWARD_TARGETS) else []
+    source_raw = int(source_chat_id)
+    source_canonical = int(resolver(source_raw)) if callable(resolver) else source_raw
+    source_keys = []
+    for value in (source_canonical, source_raw):
+        key = str(int(value))
+        if key not in source_keys:
+            source_keys.append(key)
+    with data_lock:
+        fr = data.get('forward_rules', {}) or {}
+        ff = data.get('forward_finance', {}) or {}
+        snapshots = []
+        for src_key in source_keys:
+            rules = dict(fr.get(src_key, {}) or {})
+            finances = dict(ff.get(src_key, {}) or {})
+            snapshots.append((src_key, rules, finances))
     out = []
     seen = set()
-    for dst, mode, fin in rows or []:
-        dst = int(resolver(int(dst))) if callable(resolver) else int(dst)
-        if dst in seen or (callable(suspended) and suspended(dst)):
-            continue
-        if tenant_same_space(src, dst):
-            out.append((dst, mode, bool(fin)))
-            seen.add(dst)
-        else:
+    for src_key, rules, finances in snapshots:
+        for raw_dst, mode in rules.items():
             try:
-                bot_journal('tenant_cross_forward_blocked', src, f'dst={dst}')
+                raw_dst_id = int(raw_dst)
+                dst = int(resolver(raw_dst_id)) if callable(resolver) else raw_dst_id
+            except Exception:
+                continue
+            if dst == source_canonical or dst in seen:
+                continue
+            try:
+                if callable(suspended) and (suspended(raw_dst_id) or suspended(dst)):
+                    continue
             except Exception:
                 pass
+            fin = bool(finances.get(str(raw_dst), finances.get(str(dst), False)))
+            out.append((dst, str(mode or 'oneway_to'), fin))
+            seen.add(dst)
     return out
 _V148_ORIG_ADD_FORWARD_LINK = _v177_legacy_0141_add_forward_link
 
@@ -8252,10 +8275,17 @@ def _canon_handle_gomonk_insert_message__001(msg):
 _V152_ORIG_SCHEDULE_FORWARD = _v177_legacy_0001_schedule_forward_any_message
 
 def _canon_schedule_forward_any_message__001(chat_id: int, msg):
+    """Apply one chat-level forwarding permission contract to every sender.
+
+    R67 removes the historical platform-owner bypass. A configured chat either
+    forwards delivered messages for everyone or blocks forwarding for everyone;
+    sender identity can no longer make one side appear to work while another does
+    not. Telegram Privacy Mode still determines which group messages reach us.
+    """
     cid = int(chat_id)
     uid = _v152_actor_id(msg)
     capability = 'forward.media_groups' if getattr(msg, 'media_group_id', None) else 'forward.messages'
-    if not _v152_actor_is_platform_owner(uid) and (not v152_chat_permission_allowed(cid, capability)):
+    if not v152_chat_permission_allowed(cid, capability):
         try:
             bot_journal('chat_permission_forward_blocked', cid, f'user={uid}; capability={capability}', 'WARN')
         except Exception:

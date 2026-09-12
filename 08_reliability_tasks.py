@@ -4429,6 +4429,12 @@ def _v161_send_main(chat_id: int, day_key: str) -> int:
     return mid
 
 def _canon_return_to_main_window_closing_previous__001(chat_id: int, day_key: str, current_message_id: int | None=None):
+    """Render Main in the clicked window; never redirect work into a sibling window.
+
+    R67 keeps every Telegram window independent. If the clicked message exists, Back
+    edits exactly that message. A transient failure may queue one retry for the same
+    message; only a confirmed missing message may cause a replacement window to be sent.
+    """
     chat_id = int(chat_id)
     day_key = str(day_key)[:10]
     try:
@@ -4441,44 +4447,57 @@ def _canon_return_to_main_window_closing_previous__001(chat_id: int, day_key: st
         old_mid = 0
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
-    if current_mid:
+
+    def _commit(mid: int) -> str:
         try:
-            cancel_auto_delete_for_message(chat_id, current_mid)
-            cancel_fast_ui_edit(chat_id, current_mid)
+            cancel_auto_delete_for_message(chat_id, int(mid))
+            cancel_fast_ui_edit(chat_id, int(mid))
         except Exception:
             pass
-        result = _v161_edit_retry(chat_id, current_mid, txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_instant')
+        result = _v161_edit_retry(chat_id, int(mid), txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_instant')
         try:
-            bot_journal('back_main_v161', chat_id, f'msg={current_mid}; old={old_mid or None}; result={result}; preserve_parallel=1')
+            bot_journal('back_main_v161', chat_id, f'msg={int(mid)}; latest_pointer={old_mid or None}; result={result}; independent_window=1')
         except Exception:
             pass
-        if result in {'ok', 'scheduled'}:
-            set_active_window_id(chat_id, day_key, current_mid)
+        if result == 'ok':
+            set_active_window_id(chat_id, day_key, int(mid))
             try:
                 schedule_balance_panel_refresh(chat_id, 0.05)
             except Exception:
                 pass
+        return str(result or 'failed')
+
+    if current_mid:
+        result = _commit(current_mid)
+        if result == 'ok':
             return True
         if result == 'not_found':
             try:
                 unregister_open_window(chat_id, current_mid)
             except Exception:
                 pass
-    if old_mid and old_mid != current_mid:
-        try:
-            row = get_registered_open_window(chat_id, old_mid) or {}
-            if str(row.get('window_type') or '') == 'main_day':
-                _V161_FORCE_MAIN.value = True
-                try:
-                    if callable(_V161_PREV_BACKUP_WINDOW):
-                        _V161_PREV_BACKUP_WINDOW(chat_id, day_key, message_id_override=old_mid)
-                finally:
-                    _V161_FORCE_MAIN.value = False
-                set_active_window_id(chat_id, day_key, old_mid)
-                return True
-        except Exception:
             try:
+                _V161_FORCE_MAIN.value = True
+                _v161_send_main(chat_id, day_key)
+                return True
+            finally:
                 _V161_FORCE_MAIN.value = False
+        # Never mutate a different parallel window because this one had a transient
+        # error. One latest-wins retry is allowed for the same clicked message.
+        try:
+            retry = fast_ui_edit_message_text(chat_id, current_mid, txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_retry_same_window')
+            return str(retry or '') in {'ok', 'scheduled'}
+        except Exception:
+            return False
+
+    # Internal callers without a concrete Telegram message may reuse the latest pointer.
+    if old_mid:
+        result = _commit(old_mid)
+        if result == 'ok':
+            return True
+        if result == 'not_found':
+            try:
+                unregister_open_window(chat_id, old_mid)
             except Exception:
                 pass
     try:
@@ -7405,7 +7424,7 @@ def _v166_schedule_forward_persist(*chat_ids):
                 ids = sorted(_V166_FORWARD_DIRTY_CHATS)
                 _V166_FORWARD_DIRTY_CHATS.clear()
             try:
-                save_data(data, full=True)
+                save_data(data, root_only=True)
             except Exception as exc:
                 try:
                     log_error(f'v166 forward local persist: {exc}')
@@ -16329,6 +16348,61 @@ _V217_PREV_REMOVE_FORWARD_FINANCE = _canon_remove_forward_finance__001
 def _canon_remove_forward_finance__002(src_chat_id: int, dst_chat_id: int):
     _v217_forward_scope_guard(int(src_chat_id), int(dst_chat_id))
     return _V217_PREV_REMOVE_FORWARD_FINANCE(int(src_chat_id), int(dst_chat_id))
+
+def set_forward_pair_bidirectional(chat_a: int, chat_b: int, enabled: bool) -> bool:
+    """Atomically enable or clear both directions of a forwarding pair.
+
+    R67 prevents a crash/deploy between two independent writes from leaving A→B
+    enabled while B→A is missing. Disabling the pair also clears directional
+    finance flags, matching the historical two-way toggle semantics.
+    """
+    a, b = int(chat_a), int(chat_b)
+    if a == b:
+        raise ValueError('Нельзя связать чат пересылкой с самим собой')
+    _v217_forward_scope_guard(a, b)
+    _v217_forward_scope_guard(b, a)
+    if enabled:
+        _v166_authorize_pair(a, b)
+    with data_lock, _V166_FORWARD_STATE_LOCK:
+        fr = data.setdefault('forward_rules', {})
+        ff = data.setdefault('forward_finance', {})
+        if enabled:
+            fr.setdefault(str(a), {})[str(b)] = 'twoway'
+            fr.setdefault(str(b), {})[str(a)] = 'twoway'
+            order = data.setdefault('forward_pair_order', [])
+            if not isinstance(order, list):
+                order = []
+                data['forward_pair_order'] = order
+            key, rev = f'{a}:{b}', f'{b}:{a}'
+            if key not in order and rev not in order:
+                order.append(key)
+        else:
+            for src, dst in ((a, b), (b, a)):
+                (fr.get(str(src)) or {}).pop(str(dst), None)
+                if str(src) in fr and not fr.get(str(src)):
+                    fr.pop(str(src), None)
+                (ff.get(str(src)) or {}).pop(str(dst), None)
+                if str(src) in ff and not ff.get(str(src)):
+                    ff.pop(str(src), None)
+            key, rev = f'{a}:{b}', f'{b}:{a}'
+            order = data.setdefault('forward_pair_order', [])
+            if isinstance(order, list):
+                data['forward_pair_order'] = [x for x in order if x not in {key, rev}]
+    if enabled:
+        for cid in (a, b):
+            if _v215_circle_business_chat(cid):
+                _v215_set_forward_mode(cid, True, persist=False)
+    else:
+        _v166_cleanup_global_pair(a, b)
+        for cid in (a, b):
+            if _v215_circle_business_chat(cid) and not _v215_forward_rules_present(cid):
+                _v215_set_forward_mode(cid, False, persist=False)
+    _v166_schedule_forward_persist(a, b)
+    try:
+        bot_journal('forward_pair_bidirectional_r67', a, f'peer={b}; enabled={int(bool(enabled))}')
+    except Exception:
+        pass
+    return bool(enabled)
 _V217_PREV_FORWARD_MENU_KB = _canon_build_forward_menu_keyboard_for_current_mode__001
 
 def _canon_build_forward_menu_keyboard_for_current_mode__002(day_key: str | None=None, A: int | None=None, B: int | None=None):
