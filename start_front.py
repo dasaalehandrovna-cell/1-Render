@@ -1,10 +1,10 @@
 # v262
 #!/usr/bin/env python3
-"""Render #1 launcher: restore its SQLite directly from MEGA, then run FAST.
+"""Render #1 launcher: restore SQLite from Redis first, then MEGA fallback, then run FAST.
 
-R50 root-fix policy:
-- startup/restart recovery belongs to FAST and contacts MEGA directly;
-- Redis and HEAVY are not part of startup recovery;
+R63 recovery policy:
+- startup/restart recovery belongs to FAST; Redis is the first fast restore source;
+- MEGA is a strict-root fallback; HEAVY is not required for startup recovery;
 - after startup, FAST logs out of MEGA and removes MEGA credentials from its process;
 - all normal runtime MEGA work is therefore delegated to Render #2 / HEAVY.
 """
@@ -90,7 +90,7 @@ class _ReusableBootHTTPServer(ThreadingHTTPServer):
 
 class _BootHealthHandler(BaseHTTPRequestHandler):
     def _reply(self, status: int, body: bool, extra: dict | None=None):
-        payload = {'ok': status < 400, 'role': 'front', 'phase': 'restoring_from_mega'}
+        payload = {'ok': status < 400, 'role': 'front', 'phase': 'restoring_remote_state'}
         if extra:
             payload.update(extra)
         raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8') if body else b''
@@ -669,6 +669,122 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+
+def _redis_render_url() -> str:
+    return str(
+        os.getenv('REDIS_URL')
+        or os.getenv('RENDER_KEY_VALUE_URL')
+        or os.getenv('KEY_VALUE_URL')
+        or os.getenv('VALKEY_URL')
+        or ''
+    ).strip()
+
+
+def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
+    """R63: restore FAST directly from the shared Render Redis/Valkey.
+
+    Recovery image = immutable full gzip SQLite snapshot + all retained R32 logical
+    state events.  Redis is contacted directly by FAST; HEAVY is not required for
+    startup recovery.  Event replay is idempotent per shard through the existing
+    r32_state_revisions table.
+    """
+    url = _redis_render_url()
+    if not url:
+        return False, 'Redis URL not configured in Render'
+    try:
+        import redis as _redis_mod
+    except Exception as exc:
+        return False, f'redis package unavailable: {type(exc).__name__}: {str(exc)[:160]}'
+
+    key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
+    meta_key = key + ':meta'
+    prefix = str(os.getenv('WORKER_R32_STATE_EVENT_PREFIX', 'vys262:state_events:r32') or 'vys262:state_events:r32').strip()
+    index_key = prefix + ':index'
+    max_events = max(1000, min(500000, int(os.getenv('REDIS_RESTORE_MAX_EVENTS', '200000') or '200000')))
+    connect_timeout = max(0.5, min(10.0, float(os.getenv('REDIS_RESTORE_CONNECT_TIMEOUT_SEC', '3') or '3')))
+    socket_timeout = max(2.0, min(60.0, float(os.getenv('REDIS_RESTORE_SOCKET_TIMEOUT_SEC', '15') or '15')))
+    work = Path(tempfile.mkdtemp(prefix='v262_fast_startup_redis_'))
+    gz_path = work / 'redis_latest.sqlite3.gz'
+    started = time.monotonic()
+    try:
+        client = _redis_mod.Redis.from_url(
+            url,
+            socket_connect_timeout=connect_timeout,
+            socket_timeout=socket_timeout,
+            health_check_interval=30,
+        )
+        if not client.ping():
+            return False, 'Redis PING returned false'
+        payload = client.get(key)
+        if not payload:
+            return False, f'Redis full snapshot missing key={key}'
+        max_bytes = max(1, min(128, int(os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16'))) * 1024 * 1024
+        if len(payload) > max_bytes:
+            return False, f'Redis snapshot too large: {len(payload)} > {max_bytes}'
+        gz_path.write_bytes(bytes(payload))
+        ok, install_detail = _install_gzip_db(gz_path, target)
+        if not ok:
+            return False, 'Redis snapshot invalid: ' + str(install_detail)[:320]
+
+        meta = {}
+        try:
+            raw_meta = client.get(meta_key)
+            if isinstance(raw_meta, (bytes, bytearray)):
+                raw_meta = raw_meta.decode('utf-8', 'replace')
+            if raw_meta:
+                meta = json.loads(raw_meta) if isinstance(raw_meta, str) else {}
+        except Exception:
+            meta = {}
+
+        # Read event ids in bounded pages. One Redis round-trip per page plus one MGET
+        # is dramatically faster than hundreds of MEGA file downloads.
+        try:
+            total = int(client.zcard(index_key) or 0)
+        except Exception:
+            total = 0
+        if total > max_events:
+            return False, f'Redis event index too large for safe bounded replay: {total} > {max_events}'
+        start_idx = 0
+        applied = stale = decoded = missing = 0
+        page = max(100, min(5000, int(os.getenv('REDIS_RESTORE_EVENT_PAGE', '1000') or '1000')))
+        for offset in range(start_idx, total, page):
+            ids = client.zrange(index_key, offset, min(total - 1, offset + page - 1)) or []
+            if not ids:
+                continue
+            id_text = [x.decode('utf-8', 'replace') if isinstance(x, (bytes, bytearray)) else str(x) for x in ids]
+            raws = client.mget([f'{prefix}:event:{eid}' for eid in id_text]) or []
+            events = []
+            for raw in raws:
+                if not raw:
+                    missing += 1
+                    continue
+                try:
+                    if isinstance(raw, (bytes, bytearray)):
+                        raw = raw.decode('utf-8')
+                    ev = json.loads(raw)
+                    if _r32_event_valid(ev):
+                        events.append(ev)
+                        decoded += 1
+                except Exception:
+                    continue
+            if events:
+                a, st = _apply_r32_events(target, events)
+                applied += int(a or 0)
+                stale += int(st or 0)
+
+        if not _db_valid(target):
+            return False, 'SQLite invalid after Redis snapshot/event replay'
+        final_rev = _db_revision(target)
+        return True, (
+            f'Redis startup restore OK snapshot={len(payload)}B meta_revision={float((meta or {}).get("revision") or 0.0):.6f} '
+            f'events_index={total} replayed={decoded} applied={applied} stale={stale} missing={missing} '
+            f'final_revision={final_rev:.6f} elapsed={time.monotonic()-started:.2f}s'
+        )
+    except Exception as exc:
+        return False, f'Redis restore {type(exc).__name__}: {str(exc)[:320]}'
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
 def _scrub_fast_runtime_mega_credentials() -> None:
     for key in ('MEGA_SESSION', 'MEGA_EMAIL', 'MEGA_PASSWORD'):
         os.environ.pop(key, None)
@@ -711,17 +827,42 @@ def main():
         had_valid_local_before_restore = bool(trace['local_valid_before'])
         mega_master_enabled = _bool('MEGA_ENABLED', True)
         trace['mega_master_enabled'] = bool(mega_master_enabled)
-        if not mega_master_enabled:
+        strict_root = ''
+        if mega_master_enabled:
+            strict_root = _canonical_mega_root()
+            if not strict_root:
+                raise RuntimeError('R58: MEGA_ENABLED=1 requires explicit MEGA_BACKUP_DIR in Render; no fallback root is allowed')
+            trace['mega_strict_root'] = strict_root
+        redis_master_enabled = _bool('REDIS_ENABLED', False)
+        redis_url_present = bool(_redis_render_url())
+        trace['redis_master_enabled'] = bool(redis_master_enabled)
+        trace['redis_url_present'] = bool(redis_url_present)
+        redis_restored = False
+        if redis_master_enabled and redis_url_present:
+            trace['redis_contacted'] = True
+            print('[SPLIT FRONT] R63 REDIS startup restore start', flush=True)
+            redis_ok, redis_detail = _restore_from_redis_startup(target)
+            trace['redis_ok'] = bool(redis_ok)
+            trace['redis_detail'] = str(redis_detail)[:900]
+            print(f'[SPLIT FRONT] R63 REDIS startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
+            if redis_ok:
+                redis_restored = True
+                trace['base_source'] = 'REDIS'
+        else:
+            trace['redis_ok'] = False
+            trace['redis_detail'] = 'Redis startup restore skipped: REDIS_ENABLED=0 or URL missing'
+
+        if redis_restored:
+            trace['mega_contacted'] = False
+            trace['mega_ok'] = False
+            trace['mega_detail'] = 'MEGA startup restore skipped because Redis restore succeeded'
+        elif not mega_master_enabled:
             trace['mega_contacted'] = False
             trace['mega_ok'] = False
             trace['mega_detail'] = 'MEGA disabled by Render MEGA_ENABLED=0'
-            trace['base_source'] = 'LOCAL_SQLITE' if had_valid_local_before_restore else 'EMPTY_INIT_MEGA_DISABLED'
-            print('[SPLIT FRONT] R56 MEGA disabled by MEGA_ENABLED=0; startup restore skipped', flush=True)
+            trace['base_source'] = 'LOCAL_SQLITE' if had_valid_local_before_restore and _db_valid(target) else 'EMPTY_INIT_REMOTE_UNAVAILABLE'
+            print('[SPLIT FRONT] R63 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback', flush=True)
         else:
-            strict_root = _canonical_mega_root()
-            if not strict_root:
-                raise RuntimeError('R58: MEGA_ENABLED=1 requires MEGA_BACKUP_DIR in Render; no fallback root is allowed')
-            trace['mega_strict_root'] = strict_root
             print(f'[SPLIT FRONT] R58 MEGA STRICT ROOT locked to {strict_root}', flush=True)
             trace['mega_contacted'] = True
             max_attempts = max(1, min(12, int(os.getenv('SPLIT_RESTORE_BOOT_ATTEMPTS', '3') or '3')))
@@ -734,13 +875,13 @@ def main():
                 trace['mega_detail'] = last_detail[:700]
                 trace['mega_attempt'] = attempt
                 trace['mega_attempts_max'] = max_attempts
-                print(f'[SPLIT FRONT] R56 FAST MEGA startup restore attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
+                print(f'[SPLIT FRONT] R63 FAST MEGA fallback attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
                 if ok:
                     trace['base_source'] = 'MEGA'
                     break
                 if had_valid_local_before_restore and _db_valid(target):
-                    trace['base_source'] = 'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE'
-                    print('[SPLIT FRONT] keeping pre-existing valid local SQLite after MEGA attempt:', detail, flush=True)
+                    trace['base_source'] = 'LOCAL_SQLITE_NEWER_OR_REMOTE_UNAVAILABLE'
+                    print('[SPLIT FRONT] keeping pre-existing valid local SQLite after remote restore attempts:', detail, flush=True)
                     break
                 if _bool('SPLIT_ALLOW_EMPTY_BOOT', False):
                     trace['base_source'] = 'EMPTY_INIT'
@@ -749,10 +890,10 @@ def main():
                 if attempt < max_attempts:
                     time.sleep(retry_sec)
             else:
-                trace['base_source'] = 'MEGA_RESTORE_FAILED'
+                trace['base_source'] = 'REMOTE_RESTORE_FAILED'
                 trace['local_valid_after'] = _db_valid(target)
-                print('[SPLIT FRONT] R56 FATAL: no valid MEGA startup snapshot after bounded attempts:', last_detail, flush=True)
-                raise RuntimeError('R56 MEGA startup restore failed: ' + last_detail[:700])
+                print('[SPLIT FRONT] R63 FATAL: Redis failed and no valid MEGA startup snapshot:', last_detail, flush=True)
+                raise RuntimeError('R63 remote startup restore failed: ' + last_detail[:700])
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')

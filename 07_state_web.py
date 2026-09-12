@@ -5272,7 +5272,7 @@ def _r57_startup_keyboard(details: bool = False):
 
 def _r57_startup_compact_text() -> str:
     source, _trace = _r57_restore_source_info()
-    return f"✅ Бот запущен · R61 · {VERSION}\nВосстановление: {source}"
+    return f"✅ Бот запущен · R63 · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
     source, trace = _r57_restore_source_info()
@@ -5287,7 +5287,7 @@ def _r57_startup_details_text() -> str:
     except Exception:
         task_stats = {}
     details = [
-        f"🤖 R61 · {VERSION}",
+        f"🤖 R63 · {VERSION}",
         f"Восстановление: {source}",
         f"Правки: {STARTUP_RELEASE_SUMMARY}",
         f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",

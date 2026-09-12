@@ -277,14 +277,21 @@ if ROLE=='fast':
     ok('r49_restore_trace_present',
        'R49_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R49]' in start_src and 'restore_trace' in web_src and 'RESTORE TRACE R49' in core_src,
        'restore source/revision trace missing from startup or Watcher')
-    # R56: Render MEGA_ENABLED is the master switch.  When enabled, FAST startup
-    # still restores directly from MEGA only; when disabled, MEGA is not contacted.
+    # R63: Redis is the first direct startup source; MEGA remains a strict-root
+    # fallback and is never contacted when REDIS succeeds or MEGA_ENABLED=0.
     ok('r56_fast_startup_mega_master_switch',
        all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','def _startup_mega_roots','def _discover_generation_remotes',
                                     "mega_master_enabled = _bool('MEGA_ENABLED', True)",
-                                    'R56 MEGA disabled by MEGA_ENABLED=0; startup restore skipped']) and
-       'redis.Redis' not in start_src and '/internal/snapshot' not in start_src,
-       'MEGA_ENABLED must fully gate FAST startup MEGA while preserving direct MEGA restore when enabled')
+                                    "elif not mega_master_enabled:",
+                                    'R63 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback']) and
+       '/internal/snapshot' not in start_src,
+       'MEGA_ENABLED must fully gate FAST fallback MEGA while preserving strict direct restore when enabled')
+    ok('r63_fast_startup_redis_first_restore',
+       all(x in start_src for x in ['def _restore_from_redis_startup','R63 REDIS startup restore start',
+                                    "trace['base_source'] = 'REDIS'", 'WORKER_REDIS_SNAPSHOT_KEY',
+                                    'WORKER_R32_STATE_EVENT_PREFIX', 'client.zrange', '_apply_r32_events(target, events)']) and
+       start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('ok, detail = _restore_from_mega_startup(target)'),
+       'FAST must restore directly from shared Redis full snapshot + retained state events before MEGA fallback')
     ok('r49_fast_runtime_mega_scrubbed',
        "os.environ.pop(key, None)" in start_src and "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
        "os.environ['MEGA_ENABLED'] = '0'" in start_src,
