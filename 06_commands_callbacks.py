@@ -2321,13 +2321,9 @@ def on_callback(call):
             return
         _, day_key, cmd = data_str.split(':', 2)
         store = get_chat_store(chat_id)
-        if cmd != 'open':
-            try:
-                fn = globals().get('canonical_main_day')
-                if callable(fn):
-                    day_key = str(fn(chat_id))[:10]
-            except Exception:
-                pass
+        # The callback carries the day of THIS Telegram window.  Never replace
+        # it with a chat-global latest-window day: parallel windows are independent.
+        day_key = str(day_key)[:10]
         if cmd.startswith('removed_'):
             try:
                 removed_chat_id = int(cmd.rsplit('_', 1)[1])
@@ -2342,11 +2338,7 @@ def on_callback(call):
             elif cmd == 'today':
                 nd = today_key()
             else:
-                try:
-                    fn = globals().get('canonical_main_day')
-                    base_day_key = str(fn(chat_id) if callable(fn) else store.get('current_view_day') or day_key)[:10]
-                except Exception:
-                    base_day_key = str(store.get('current_view_day') or day_key)[:10]
+                base_day_key = str(day_key)[:10]
                 shift = -1 if cmd == 'prev' else 1
                 nd = (datetime.strptime(base_day_key, '%Y-%m-%d') + timedelta(days=shift)).strftime('%Y-%m-%d')
             store['current_view_day'] = nd
@@ -3056,7 +3048,11 @@ def get_or_create_active_windows(chat_id: int) -> dict:
     return data.setdefault('active_messages', {}).setdefault(str(chat_id), {})
 
 def get_primary_main_window(chat_id: int) -> tuple[int | None, str]:
-    """Return the single authoritative main window for this chat."""
+    """Return the latest main-window pointer used only for background refreshes.
+
+    Multiple Telegram main windows may coexist and remain interactive.  This
+    pointer must never be used to invalidate, delete or redirect another window.
+    """
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
     mid = 0
@@ -3086,7 +3082,6 @@ def get_primary_main_window(chat_id: int) -> tuple[int | None, str]:
             store['primary_main_window_id'] = mid
             store['primary_main_window_day'] = day
             store['current_view_day'] = day
-            aw.clear()
             aw[day] = mid
     return (mid or None, day)
 
@@ -3100,22 +3095,6 @@ def is_primary_main_message(chat_id: int, message_id: int) -> bool:
         return bool(mid and int(mid) == int(message_id))
     except Exception:
         return False
-
-def _v189_delete_stale_main_message(chat_id: int, message_id: int):
-    try:
-        fn = globals().get('v177_delete_message_async')
-        if callable(fn):
-            fn(int(chat_id), int(message_id), 'v189_stale_main')
-            return
-    except Exception:
-        pass
-    try:
-        pool = globals().get('GENERAL_TASK_POOL')
-        if pool is not None:
-            pool.submit(f'v189-stale-main:{int(chat_id)}:{int(message_id)}', lambda: _tg_call_retry(bot.delete_message, int(chat_id), int(message_id), attempts=1, purpose='v189_stale_main_delete'))
-            return
-    except Exception:
-        pass
 
 def _v186_persist_active_window_state(chat_id: int):
     """Persist UI-only window state outside callback latency path."""
@@ -3134,45 +3113,40 @@ def _v186_persist_active_window_state(chat_id: int):
             pass
 
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
-    """Promote exactly one Telegram message as the authoritative main window."""
+    """Remember the latest main window without retiring any other window.
+
+    Each Telegram message is an independent interactive surface.  Opening or
+    navigating one main window must never unregister or delete another one.
+    ``active_messages`` remains only a lightweight latest-per-day pointer for
+    background refresh code.  The open-window registry keeps all live windows.
+    """
     chat_id = int(chat_id)
     day_key = str(day_key)[:10]
     message_id = int(message_id)
     aw = get_or_create_active_windows(chat_id)
-    stale_ids = set()
-    for _dk, _mid in list(aw.items()):
-        try:
-            if int(_mid or 0) and int(_mid) != message_id:
-                stale_ids.add(int(_mid))
-        except Exception:
-            pass
-    store = get_chat_store(chat_id)
-    try:
-        prev_primary = int(store.get('primary_main_window_id') or 0)
-        if prev_primary and prev_primary != message_id:
-            stale_ids.add(prev_primary)
-    except Exception:
-        pass
-    aw.clear()
     aw[day_key] = message_id
+    store = get_chat_store(chat_id)
     store['primary_main_window_id'] = message_id
     store['primary_main_window_day'] = day_key
     store['current_view_day'] = day_key
-    register_open_window(chat_id, message_id, 'main_day', code='О1', day_key=day_key, params={'parallel_allowed': False, 'primary': True})
-    for stale_mid in sorted(stale_ids):
-        try:
-            unregister_open_window(chat_id, stale_mid)
-        except Exception:
-            pass
-        _v189_delete_stale_main_message(chat_id, stale_mid)
+    register_open_window(chat_id, message_id, 'main_day', code='О1', day_key=day_key, params={'parallel_allowed': True})
     try:
         DELAYED_SCHEDULER.schedule(f'v186-active-window-persist:{chat_id}', 0.15, _v186_persist_active_window_state, chat_id)
     except Exception:
         pass
 
 def get_active_window_id(chat_id: int, day_key: str):
-    mid, active_day = get_primary_main_window(int(chat_id))
-    return mid if mid and str(active_day) == str(day_key)[:10] else None
+    chat_id = int(chat_id)
+    day_key = str(day_key)[:10]
+    try:
+        aw = get_or_create_active_windows(chat_id)
+        mid = int(aw.get(day_key) or 0)
+        if mid:
+            return mid
+    except Exception:
+        pass
+    mid, active_day = get_primary_main_window(chat_id)
+    return mid if mid and str(active_day) == day_key else None
 
 def clear_active_window_id(chat_id: int, day_key: str):
     try:
@@ -3194,22 +3168,6 @@ def clear_active_window_id(chat_id: int, day_key: str):
             pass
     except Exception as e:
         log_error(f'clear_active_window_id({chat_id},{day_key}): {e}')
-
-def close_previous_main_window_before_back(chat_id: int, day_key: str, current_message_id: int | None=None):
-    """При возврате в основное окно удаляет прежнее О1, чтобы не оставалось дубля."""
-    try:
-        old_mid = get_active_window_id(chat_id, day_key)
-        if not old_mid:
-            return
-        if current_message_id is not None and int(old_mid) == int(current_message_id):
-            return
-        try:
-            bot.delete_message(int(chat_id), int(old_mid))
-        except Exception:
-            pass
-        clear_active_window_id(chat_id, day_key)
-    except Exception as e:
-        log_error(f'close_previous_main_window_before_back({chat_id},{day_key}): {e}')
 
 def _v177_legacy_0229_update_or_send_day_window(chat_id: int, day_key: str):
     if is_owner_chat(chat_id):
@@ -3234,10 +3192,9 @@ def _v177_legacy_0229_update_or_send_day_window(chat_id: int, day_key: str):
                 if 'message is not modified' in err:
                     schedule_balance_panel_refresh(chat_id, 0.5)
                     return
-                try:
-                    bot.delete_message(chat_id, old_mid)
-                except Exception:
-                    pass
+                # Preserve the existing Telegram message.  If it cannot be edited,
+                # create another independent main window instead of retiring it.
+                pass
         sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode='HTML')
         set_active_window_id(chat_id, day_key, sent.message_id)
     schedule_balance_panel_refresh(chat_id, 0.5)
@@ -4952,12 +4909,6 @@ def _v177_legacy_0240_backup_window_for_owner(chat_id: int, day_key: str, messag
                         save_data(data)
                 except Exception:
                     pass
-                try:
-                    delete_async = globals().get('v177_delete_message_async')
-                    if callable(delete_async):
-                        delete_async(chat_id, mid, 'main_day_replace_v178')
-                except Exception:
-                    pass
             elif str(result or '') not in {'rate_limited', 'failed'}:
                 return result
         sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode='HTML')
@@ -5003,22 +4954,8 @@ def cancel_auto_delete_for_message(chat_id: int, message_id: int):
         log_error(f'cancel_auto_delete_for_message({chat_id},{message_id}): {e}')
 
 def recreate_main_window_now(chat_id: int, day_key: str):
-    """Удаляет старое о1, если возможно, и создаёт новое основное окно."""
-    try:
-        old_mid = get_active_window_id(chat_id, day_key)
-        if old_mid:
-            try:
-                bot.delete_message(chat_id, int(old_mid))
-            except Exception:
-                pass
-            try:
-                clear_active_window_id(chat_id, day_key)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    force_new_day_window(chat_id, day_key)
-
+    """Create another main window while preserving every existing window."""
+    force_new_day_window(int(chat_id), str(day_key)[:10])
 def _v177_legacy_0241_force_new_day_window(chat_id: int, day_key: str):
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
@@ -5055,19 +4992,6 @@ def _v177_legacy_0242_return_to_main_window_closing_previous(chat_id: int, day_k
         bot_journal('back_main_fast', chat_id, f'day={day_key} result={result} old={old_mid} current={current_message_id}')
         if result in {'ok', 'scheduled'}:
             set_active_window_id(chat_id, day_key, current_message_id)
-            if old_mid and old_mid != current_message_id:
-
-                def _delete_old():
-                    try:
-                        _tg_call_retry(bot.delete_message, chat_id, int(old_mid), attempts=1, purpose='back_main_delete_old')
-                    except Exception:
-                        pass
-                    finally:
-                        try:
-                            unregister_open_window(chat_id, int(old_mid))
-                        except Exception:
-                            pass
-                GENERAL_TASK_POOL.submit(f'back-delete:{chat_id}:{old_mid}', _delete_old)
             schedule_balance_panel_refresh(chat_id, 0.05)
             return
         if result == 'not_found':

@@ -420,6 +420,38 @@ if ROLE=='fast':
        "globals().get('r64_publish_restore_snapshot_v271')" in web_src,
        'manual MEGA browser/restore must use HEAVY and seal selected restore into Redis')
 
+
+    # R66: every Telegram main window is independent; opening/navigating one
+    # window must never retire or redirect another window.
+    cmd_src=all_py.get('06_commands_callbacks.py','')
+    set_active_src=_fn_sources(cmd_src,{'set_active_window_id'}).get('set_active_window_id','')
+    on_callback_src=_fn_sources(cmd_src,{'on_callback'}).get('on_callback','')
+    recreate_src=_fn_sources(cmd_src,{'recreate_main_window_now'}).get('recreate_main_window_now','')
+    ok('r66_parallel_main_windows_no_auto_retire',
+       "'parallel_allowed': True" in set_active_src and
+       'stale_ids' not in set_active_src and 'aw.clear()' not in set_active_src and
+       'delete_message' not in set_active_src and '_v189_delete_stale_main_message' not in cmd_src,
+       'registering a main window must preserve all existing Telegram windows')
+    ok('r66_no_stale_main_callback_redirect',
+       '_v189_redirect_stale_finance_window' not in final_transport and
+       'stale_main_redirect_v189' not in final_transport,
+       'old main-window callbacks must execute normally instead of being deleted/redirected')
+    ok('r66_window_local_day_navigation',
+       "base_day_key = str(day_key)[:10]" in on_callback_src and
+       "day_key = str(day_key)[:10]" in on_callback_src and
+       "day_key = str(fn(chat_id))[:10]" not in on_callback_src,
+       'prev/next/back actions must use the date encoded in the clicked window')
+    ok('r66_recreate_preserves_existing_window',
+       'force_new_day_window' in recreate_src and 'delete_message' not in recreate_src and
+       'clear_active_window_id' not in recreate_src,
+       'creating another main window must not delete the previous one')
+    back_main_src=_fn_sources(rel_src,{'_canon_return_to_main_window_closing_previous__001'}).get('_canon_return_to_main_window_closing_previous__001','')
+    ok('r66_no_back_main_sibling_delete',
+       'back_main_delete_old' not in cmd_src and 'back-delete:' not in cmd_src and
+       'close_previous_main_window_before_back' not in cmd_src and
+       'delete_message' not in back_main_src,
+       'Back/Main must edit only the clicked message and preserve sibling windows')
+
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot
         # and all startup contracts, but prevent daemon/background threads from

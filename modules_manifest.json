@@ -19,13 +19,13 @@
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
-    "06_commands_callbacks.py": "30d56a8ef7ec03901b56563f1c04ee21ea28e5e56e80a90fa76a924aba4c7cc6",
+    "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
     "07_state_web.py": "a8542e9fd9c8272835ea550842c4d8a87532d8d2f41b77f19cb41e09ab22ad53",
     "08_reliability_tasks.py": "1844e1dc0d47f223b3726e3fde243f329d96508892e68150efcf6f89115a0f8c",
-    "09_final_transport.py": "5043a9657d25164336b1db5aa6a0ebdc6210c4a3ccb72859935d299533952656",
-    "10_split_policy_offload.py": "9347a1e0eee7af5f670dc08fb3be01b7d24bd2d045ae446a2bf47af522e4d5e7"
+    "09_final_transport.py": "d21f9ae07ef37a449de5b0b9903a2c924fedd972384d65f8d4a423a0da5bf0dc",
+    "10_split_policy_offload.py": "7ff3b2c1a96cc9c76b306df74ac35d2b52b1a54888bf88b5277a9e23cf8b72f9"
   },
-  "release": "Пер-R65-PRIORITY-NAV-CHAT-PROBE-MEGA-RECOVERY-BROWSER",
+  "release": "Пер-R66-PARALLEL-INDEPENDENT-WINDOWS",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -223,6 +223,11 @@
     "r65_all_mega_manual_recovery_browser_via_heavy",
     "r65_fast_mega_disabled_manual_restore_via_heavy",
     "r65_selected_mega_restore_redis_seal",
-    "r65_chat_probe_idle_persist"
+    "r65_chat_probe_idle_persist",
+    "r66_parallel_main_windows_no_auto_retire",
+    "r66_no_stale_main_callback_redirect",
+    "r66_window_local_day_navigation",
+    "r66_back_main_preserves_sibling_windows",
+    "r66_recreate_preserves_existing_windows"
   ]
 }
