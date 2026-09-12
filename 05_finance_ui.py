@@ -2419,13 +2419,36 @@ def _visible_forward_items_for_new_menu(include_owner: bool=True):
     return visible
 
 def build_forward_new_text(A: int | None=None, B: int | None=None) -> str:
-    """В22 новый режим: пары сверху, выбор A/B и настройка шести кнопок."""
+    """В22/R68: pair controls plus live Telegram reachability/privacy diagnosis."""
     lines = ['🔁 Пересылка / В22', 'Режим: по-новому', '']
     if A and B:
         arrow, fin, *_ = _forward_pair_icons(A, B)
         lines.append(f'Чат А: {get_chat_display_name(A)} ({arrow})')
         lines.append(f'Чат Б: ({fin}) {get_chat_display_name(B)}')
         lines.append('Ниже выбери направление пересылки и 💰 финучёт.')
+        try:
+            pre = forward_pair_preflight_cached_r68(int(A), int(B))
+        except Exception:
+            pre = {}
+        if isinstance(pre, dict) and pre:
+            lines.append('')
+            chats = pre.get('chats') or {}
+            bad = []
+            for cid in (int(A), int(B)):
+                row = chats.get(str(cid)) or {}
+                if not bool(row.get('reachable')):
+                    bad.append(get_chat_display_name(cid))
+            if bad:
+                lines.append('⛔ Telegram: бот не видит чат(ы): ' + ', '.join(bad))
+            if any(int(x) < 0 for x in (int(A), int(B))):
+                privacy = pre.get('privacy_read_all')
+                if privacy is False:
+                    lines.append('⛔ Group Privacy включён: обычные сообщения группы НЕ поступают боту.')
+                    lines.append('BotFather → /setprivacy → Disable, затем удалить и заново добавить бота в группу.')
+                elif privacy is True and not bad:
+                    lines.append('✅ Telegram preflight: оба чата доступны, Group Privacy выключен.')
+            elif not bad:
+                lines.append('✅ Telegram preflight: оба чата доступны.')
     elif A:
         lines.append(f'Чат А выбран: {get_chat_display_name(A)}')
         lines.append('Теперь выбери Чат Б. Остальные чаты остаются ниже по 2 кнопки в ряд.')

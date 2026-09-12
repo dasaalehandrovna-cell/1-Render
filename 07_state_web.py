@@ -8275,19 +8275,30 @@ def _canon_handle_gomonk_insert_message__001(msg):
 _V152_ORIG_SCHEDULE_FORWARD = _v177_legacy_0001_schedule_forward_any_message
 
 def _canon_schedule_forward_any_message__001(chat_id: int, msg):
-    """Apply one chat-level forwarding permission contract to every sender.
+    """R68 forwarding ingress: explicit stored edges are the runtime authority.
 
-    R67 removes the historical platform-owner bypass. A configured chat either
-    forwards delivered messages for everyone or blocks forwarding for everyone;
-    sender identity can no longer make one side appear to work while another does
-    not. Telegram Privacy Mode still determines which group messages reach us.
+    Permissions are enforced while configuring/managing forwarding. Once an edge
+    is stored, delivery must not be vetoed again by an unrelated chat permission
+    profile or by the sender identity. Telegram can still prevent ingress entirely
+    (notably Group Privacy); that case is diagnosed separately by pair preflight.
     """
     cid = int(chat_id)
-    uid = _v152_actor_id(msg)
-    capability = 'forward.media_groups' if getattr(msg, 'media_group_id', None) else 'forward.messages'
-    if not v152_chat_permission_allowed(cid, capability):
+    try:
+        targets = list(resolve_forward_targets(cid) or [])
+    except Exception as exc:
+        try: log_error(f'[FWD R68 RESOLVE ERROR] src={cid}: {exc}')
+        except Exception: pass
+        targets = []
+    try:
+        mid = int(getattr(msg, 'message_id', 0) or 0)
+        bot_journal('forward_ingress_r68', cid, f'msg={mid}; targets={len(targets)}; media_group={int(bool(getattr(msg, "media_group_id", None)))}')
+    except Exception:
+        pass
+    if not targets:
         try:
-            bot_journal('chat_permission_forward_blocked', cid, f'user={uid}; capability={capability}', 'WARN')
+            mid = int(getattr(msg, 'message_id', 0) or 0)
+            if mid:
+                _forward_outcome_update(cid, mid, state='no_targets')
         except Exception:
             pass
         return None

@@ -938,6 +938,11 @@ def on_callback(call):
                     return
                 if answer_removed_chat(call, A) or answer_removed_chat(call, B):
                     return
+                try:
+                    forward_pair_preflight_r68(A, B)
+                except Exception as exc:
+                    try: log_error(f'forward pair preflight r68 {A}<->{B}: {exc}')
+                    except Exception: pass
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str.startswith('fw_new_src:'):
@@ -1017,6 +1022,12 @@ def on_callback(call):
                     ba_on = str(A) in (fr.get(str(B), {}) or {})
                     set_forward_pair_bidirectional(A, B, not (ab_on and ba_on))
                 _forget_forward_pair_if_empty(A, B)
+                try:
+                    if str(B) in ((data.get('forward_rules', {}) or {}).get(str(A), {}) or {}) or str(A) in ((data.get('forward_rules', {}) or {}).get(str(B), {}) or {}):
+                        forward_pair_preflight_r68(A, B)
+                except Exception as exc:
+                    try: log_error(f'forward pair post-toggle preflight r68 {A}<->{B}: {exc}')
+                    except Exception: pass
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str.startswith('fw_new_clear:'):

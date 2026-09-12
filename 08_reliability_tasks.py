@@ -7471,11 +7471,16 @@ def _v166_authorize_pair(src: int, dst: int):
         actor = int(tenant_current_actor_user_id() or 0)
     except Exception:
         actor = 0
-    if not tenant_is_platform_owner_user(actor):
+    owner_context = False
+    try:
+        owner_context = bool(int(current_state_chat_id() or 0) == int(OWNER_ID or 0))
+    except Exception:
+        owner_context = False
+    if not (tenant_is_platform_owner_user(actor) or owner_context):
         raise PermissionError('Можно связывать только свой 1-й круг и его 2-й круг')
     try:
         key = f'{min(src, dst)}:{max(src, dst)}'
-        _v164_root().setdefault('global_forward_pairs', {})[key] = {'src': src, 'dst': dst, 'created_by': actor, 'created_at': _v164_now()}
+        _v164_root().setdefault('global_forward_pairs', {})[key] = {'src': src, 'dst': dst, 'created_by': actor or int(OWNER_ID or 0), 'created_at': _v164_now()}
     except Exception:
         pass
 
@@ -16003,10 +16008,22 @@ def _canon_forward_any_message__002(source_chat_id: int, msg):
     cid = int(source_chat_id)
     if _v215_circle_business_chat(cid) and (not contour_forwarding_mode_enabled(cid)):
         try:
-            bot_journal('forward_mode_off_skip_v215', cid, f"message_id={int(getattr(msg, 'message_id', 0) or 0)}", 'INFO')
+            explicit_targets = list(resolve_forward_targets(cid) or [])
+        except Exception:
+            explicit_targets = []
+        if not explicit_targets:
+            try:
+                bot_journal('forward_mode_off_skip_v215', cid, f"message_id={int(getattr(msg, 'message_id', 0) or 0)}; explicit_targets=0", 'INFO')
+            except Exception:
+                pass
+            return
+        # R68 self-heal: a persisted explicit edge wins over a stale contour-mode
+        # toggle. Do not silently kill an already-configured forwarding direction.
+        try:
+            _v215_set_forward_mode(cid, True, persist=False)
+            bot_journal('forward_mode_autoheal_r68', cid, f'explicit_targets={len(explicit_targets)}')
         except Exception:
             pass
-        return
     return _V215_PREV_FORWARD_ANY_MESSAGE(cid, msg)
 _V215_PREV_ADD_FORWARD_LINK = _canon_add_forward_link__001
 
@@ -16322,6 +16339,15 @@ def _v217_forward_scope_guard(src_chat_id: int, dst_chat_id: int) -> None:
         ctx = int(current_state_chat_id() or 0)
     except Exception:
         ctx = 0
+    try:
+        actor = int(tenant_current_actor_user_id() or 0)
+    except Exception:
+        actor = 0
+    # R68: the owner forwarding console is global by design. Thread-local actor
+    # context may be absent in callback workers, so OWNER_ID chat context is an
+    # explicit equivalent authorization and must not randomly block a valid pair.
+    if (actor and tenant_is_platform_owner_user(actor)) or (ctx and int(ctx) == int(OWNER_ID or 0)):
+        return
     if not ctx or not _v215_circle_business_chat(ctx):
         return
     tid = str(tenant_id_for_chat(ctx, create=False) or '')

@@ -7133,6 +7133,78 @@ def probe_all_known_chats() -> tuple[int, int]:
         pass
     return (ok, bad)
 
+def forward_pair_preflight_r68(chat_a: int, chat_b: int) -> dict:
+    """Live Telegram preflight for an explicitly configured forwarding pair.
+
+    This is invoked from the owner UI, never from the message hot path. It proves
+    whether Telegram lets this bot see each endpoint and whether Group Privacy is
+    disabled globally. The result is cached for display in the forwarding window.
+    """
+    a, b = int(chat_a), int(chat_b)
+    result = {
+        'a': a, 'b': b, 'at': now_local().isoformat(timespec='seconds'),
+        'privacy_read_all': None, 'bot_id': 0, 'chats': {}, 'ok': True,
+    }
+    try:
+        me = bot.get_me()
+        result['bot_id'] = int(getattr(me, 'id', 0) or 0)
+        pv = getattr(me, 'can_read_all_group_messages', None)
+        if pv is not None:
+            result['privacy_read_all'] = bool(pv)
+    except Exception as exc:
+        result['get_me_error'] = str(exc)[:300]
+        result['ok'] = False
+    for cid in (a, b):
+        row = {'chat_id': int(cid), 'reachable': False, 'member_status': '', 'error': ''}
+        try:
+            info = bot.get_chat(int(cid))
+            row['reachable'] = True
+            row['type'] = str(getattr(info, 'type', '') or '')
+            row['title'] = str(getattr(info, 'title', '') or getattr(info, 'first_name', '') or get_chat_display_name(cid))[:160]
+            if int(cid) < 0 and int(result.get('bot_id') or 0):
+                try:
+                    member = bot.get_chat_member(int(cid), int(result['bot_id']))
+                    row['member_status'] = str(getattr(member, 'status', '') or '')
+                except Exception as member_exc:
+                    row['member_error'] = str(member_exc)[:300]
+        except Exception as exc:
+            row['error'] = str(exc)[:300]
+            result['ok'] = False
+        result['chats'][str(cid)] = row
+    if any(int(x) < 0 for x in (a, b)) and result.get('privacy_read_all') is False:
+        result['ok'] = False
+        result['privacy_block'] = True
+    key = f'{min(a,b)}:{max(a,b)}'
+    try:
+        gs = data.setdefault('_global_settings', {})
+        cache = gs.setdefault('forward_pair_preflight_r68', {})
+        cache[key] = result
+        probe = gs.setdefault('last_chat_probe_summary_v197', {})
+        if result.get('privacy_read_all') is not None:
+            probe['group_privacy_read_all'] = bool(result.get('privacy_read_all'))
+        try:
+            pool = globals().get('BACKGROUND_TASK_POOL')
+            if pool is not None:
+                pool.submit_unique('forward-preflight-r68-persist', save_data, data, root_only=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        bot_journal('forward_pair_preflight_r68', int(OWNER_ID or 0), json.dumps(result, ensure_ascii=False, separators=(',', ':')), 'INFO' if result.get('ok') else 'WARN')
+    except Exception:
+        pass
+    return result
+
+def forward_pair_preflight_cached_r68(chat_a: int, chat_b: int) -> dict:
+    try:
+        a, b = int(chat_a), int(chat_b)
+        key = f'{min(a,b)}:{max(a,b)}'
+        row = (((data.get('_global_settings') or {}).get('forward_pair_preflight_r68') or {}).get(key) or {})
+        return dict(row) if isinstance(row, dict) else {}
+    except Exception:
+        return {}
+
 def build_removed_chats_menu(day_key: str | None=None):
     kb = types.InlineKeyboardMarkup(row_width=2)
     suspended = globals().get('is_forward_target_suspended_v199')

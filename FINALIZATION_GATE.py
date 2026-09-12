@@ -464,10 +464,10 @@ if ROLE=='fast':
        "data.get('forward_rules'" in resolver_src and 'tenant_same_space' not in resolver_src and
        '_V148_ORIG_RESOLVE_FORWARD_TARGETS' not in resolver_src,
        'runtime resolver must deliver explicit stored edges without a second tenant veto')
-    ok('r67_forward_permission_sender_consistent',
-       'v152_chat_permission_allowed' in schedule_fwd_src and
-       'not _v152_actor_is_platform_owner' not in schedule_fwd_src,
-       'forward permission must be chat-level and identical for owner/non-owner senders')
+    ok('r68_forward_explicit_edge_bypasses_runtime_permission_veto',
+       'v152_chat_permission_allowed' not in schedule_fwd_src and
+       'resolve_forward_targets' in schedule_fwd_src and 'forward_ingress_r68' in schedule_fwd_src,
+       'stored forwarding edge must be the delivery authority; runtime permission profile cannot silently veto it')
     ok('r67_bidirectional_pair_atomic',
        "fr.setdefault(str(a), {})[str(b)] = 'twoway'" in bi_src and
        "fr.setdefault(str(b), {})[str(a)] = 'twoway'" in bi_src and
@@ -528,6 +528,28 @@ if ROLE=='fast':
        'can_read_all_group_messages' in probe_all_src and 'group_privacy_read_all' in probe_all_src and
        'BotFather Privacy Mode' in forward_status_src,
        'full chat probe must expose Telegram Group Privacy as an explicit cause of missing ingress')
+
+
+    preflight_src=_fn_sources(core_src,{'forward_pair_preflight_r68'}).get('forward_pair_preflight_r68','')
+    scope_guard_src=_fn_sources(rel_src,{'_v217_forward_scope_guard'}).get('_v217_forward_scope_guard','')
+    authorize_src=_fn_sources(rel_src,{'_v166_authorize_pair'}).get('_v166_authorize_pair','')
+    forward_runtime_src=_fn_sources(rel_src,{'_canon_forward_any_message__002'}).get('_canon_forward_any_message__002','')
+    fwd_new_text_src=_fn_sources(all_py.get('05_finance_ui.py',''),{'build_forward_new_text'}).get('build_forward_new_text','')
+    ok('r68_forward_pair_live_preflight',
+       'bot.get_me()' in preflight_src and 'can_read_all_group_messages' in preflight_src and
+       'bot.get_chat(int(cid))' in preflight_src and 'bot.get_chat_member' in preflight_src,
+       'pair UI must prove Telegram endpoint visibility and Group Privacy instead of showing a false healthy state')
+    ok('r68_owner_console_cross_space_pair_authority',
+       'int(ctx) == int(OWNER_ID or 0)' in scope_guard_src and 'owner_context' in authorize_src,
+       'owner callback workers must not lose authorization merely because thread-local actor/tenant context is absent')
+    ok('r68_explicit_rule_autoheals_stale_forward_mode',
+       'explicit_targets = list(resolve_forward_targets(cid) or [])' in forward_runtime_src and
+       '_v215_set_forward_mode(cid, True, persist=False)' in forward_runtime_src and 'forward_mode_autoheal_r68' in forward_runtime_src,
+       'persisted explicit edges must not be killed by a stale contour forward-mode flag')
+    ok('r68_pair_screen_shows_privacy_and_reachability',
+       'forward_pair_preflight_cached_r68' in fwd_new_text_src and 'Group Privacy включён' in fwd_new_text_src and
+       'бот не видит чат(ы)' in fwd_new_text_src,
+       'pair screen must show why an apparently enabled direction cannot physically receive/send Telegram traffic')
 
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot
