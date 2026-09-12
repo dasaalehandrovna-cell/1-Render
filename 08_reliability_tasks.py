@@ -3013,6 +3013,19 @@ def _r22_execute_window_render(payload: dict) -> None:
             apply_fn(payload, delayed=bool(payload.get('_r22_queue_wait', 0.0) > 0.01))
     except Exception:
         pass
+    stale_fn = globals().get('_r65_render_is_stale_after_navigation')
+    if callable(stale_fn):
+        try:
+            if bool(stale_fn(payload)):
+                try:
+                    log_info(f'R65 NAV stale render skipped update={_r25_uid or "-"} chat={payload.get("chat_id")} msg={payload.get("message_id")} action={_r25_action}')
+                    r52_diag('R65_NAV_STALE_RENDER_SKIP', update=_r25_uid or '-', chat=payload.get('chat_id'), msg=payload.get('message_id'), action=_r25_action)
+                except Exception:
+                    pass
+                _r22_render_stage(payload, 'telegram_render_done', 0.0, 'stale_after_navigation')
+                return
+        except Exception:
+            pass
     started = _v160_time.monotonic()
     result = 'failed'
     try:
@@ -3081,6 +3094,9 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         ctx = ctx_fn() if callable(ctx_fn) else {}
         payload['_r25_update_id'] = str((ctx or {}).get('update_id') or '')
         payload['_r22_action'] = str((ctx or {}).get('action') or '')[:180]
+        epoch_fn = globals().get('_r65_render_epoch_for_update')
+        if callable(epoch_fn):
+            payload.update(epoch_fn(payload['_r25_update_id'], chat_id, message_id) or {})
     except Exception:
         payload['_r25_update_id'] = ''
         payload['_r22_action'] = ''
@@ -7119,6 +7135,8 @@ def _v166_is_safe_window_callback(raw: str) -> bool:
     if low.startswith(('fw_back', 'fw_new_back', 'chat_desc_', 'v164:circle:', 'rem:list', 'rem:open',
                        'rem:completed', 'itmr_', 'version_')):
         return True
+    if low.startswith('v242:mdb:') and (':confirm:' not in low):
+        return True
     if low in {'journal_open','journal_back','journal_toggle','keepalive_status','info_queues','info_delta_status'}:
         return True
     if low == 'nav_prev' or 'back' in low or low.endswith('_close') or low.startswith('close_'):
@@ -7157,10 +7175,12 @@ def _canon_v163_webhook_select_lane__001(payload: dict, update_type: str, update
             # callback shares this state lane in R22.
             return (V166_FINANCE_UI_TASK_POOL, f'finance-ui:{(chat_id if chat_id else update_key)}')
         if chat_id and message_id:
-            # R24: one small FIFO actor per visible Telegram window. Every click is
-            # processed exactly in arrival order; no parallel state races and no click
-            # is sacrificed as "stale". Heavy work is dispatched only after this
-            # short FAST stage by the existing R21 split helpers.
+            # R65: idempotent navigation (Back / Info / Main / Close / page navigation)
+            # has a dedicated priority lane. It must never wait behind a slow ordinary
+            # callback for the same visible window. A navigation epoch in the render
+            # stage prevents an older callback from repainting over the newer nav result.
+            if _v166_is_safe_window_callback(raw):
+                return (NAVIGATION_TASK_POOL, f'nav-window:{chat_id}:{message_id}')
             return (V166_WINDOW_UI_TASK_POOL, f'fast-window:{chat_id}:{message_id}')
         return (V166_WINDOW_UI_TASK_POOL, f'fast-callback:{update_key}')
     return (WEBHOOK_TASK_POOL, update_key)

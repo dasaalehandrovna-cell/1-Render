@@ -398,6 +398,28 @@ if ROLE=='fast':
                 cg_hits.append(f'{fn}:{owner}:{kind}@{line}:'+' -> '.join(path)); break
     ok('r49_no_indirect_io_under_central_locks',not cg_hits,'; '.join(cg_hits[:12]))
 
+    # R65: priority navigation, non-blocking chat probe and manual all-MEGA recovery via HEAVY.
+    ok('r65_priority_navigation_lane',
+       "NAVIGATION_TASK_POOL = KeyedTaskPool('nav-ui'" in core_src and
+       "return (NAVIGATION_TASK_POOL, f'nav-window:{chat_id}:{message_id}')" in rel_src,
+       'safe navigation must bypass ordinary callback work')
+    ok('r65_navigation_epoch_stale_render_guard',
+       'def _r65_render_is_stale_after_navigation' in web_src and
+       "globals().get('_r65_render_is_stale_after_navigation')" in rel_src and
+       'R65_NAV_STALE_RENDER_SKIP' in rel_src,
+       'older renders must not overwrite newer navigation')
+    probe_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
+    ok('r65_parallel_chat_probe_idle_targeted_persist',
+       'ThreadPoolExecutor' in probe_src and '_r65_schedule_chat_probe_persist' in probe_src and
+       'save_data(data)' not in probe_src and 'save_data(data, chat_ids=' not in probe_src and
+       'def _r65_chat_probe_persist_when_idle' in core_src and 'save_data(data, chat_ids=ids)' in core_src,
+       'chat probe network phase must not persist while user interaction is active')
+    ok('r65_all_mega_manual_recovery_via_heavy',
+       '/internal/r65/mega/list' in final_transport and '/internal/r65/mega/file' in final_transport and
+       'def _v265_heavy_download_mega_file' in final_transport and
+       "globals().get('r64_publish_restore_snapshot_v271')" in web_src,
+       'manual MEGA browser/restore must use HEAVY and seal selected restore into Redis')
+
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot
         # and all startup contracts, but prevent daemon/background threads from

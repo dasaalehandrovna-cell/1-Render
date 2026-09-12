@@ -4396,6 +4396,82 @@ def _r25_callback_durable_admission(payload: dict, update_id, update_chat_id) ->
 _R48_NAV_COALESCE_LOCK = threading.RLock()
 _R48_NAV_INFLIGHT = set()
 
+# R65: priority navigation epoch.  Back/Info/Main may bypass an ordinary window
+# callback, so any older render that finishes later must not repaint over it.
+_R65_NAV_EPOCH_LOCK = threading.RLock()
+_R65_WINDOW_NAV_EPOCH = {}
+_R65_UPDATE_NAV_EPOCH = {}
+
+def _r65_is_priority_navigation(raw: str) -> bool:
+    low = str(raw or '').casefold()
+    if not low:
+        return False
+    business = globals().get('_v166_is_finance_business_callback')
+    try:
+        if callable(business) and business(raw):
+            return False
+    except Exception:
+        pass
+    safe = globals().get('_v166_is_safe_window_callback')
+    try:
+        if callable(safe):
+            return bool(safe(raw))
+    except Exception:
+        pass
+    if low in {'nav_prev', 'info_close', 'journal_back', 'fw_back_src'}:
+        return True
+    if low.startswith('d:'):
+        try:
+            cmd = low.split(':', 2)[2]
+        except Exception:
+            cmd = low
+        return any(x in cmd for x in ('info', 'back_main', 'forward_menu', 'calendar', 'prev', 'next', 'today'))
+    return ('back' in low) or low.endswith('_close')
+
+def _r65_note_callback_epoch(payload: dict, update_id) -> None:
+    try:
+        cq = (payload or {}).get('callback_query') or {}
+        msg = cq.get('message') or {}
+        chat = int((msg.get('chat') or {}).get('id'))
+        mid = int(msg.get('message_id'))
+        raw = str(cq.get('data') or '')
+    except Exception:
+        return
+    key = (chat, mid)
+    now = time.time()
+    with _R65_NAV_EPOCH_LOCK:
+        epoch = int(_R65_WINDOW_NAV_EPOCH.get(key, 0) or 0)
+        is_nav = bool(_r65_is_priority_navigation(raw))
+        if is_nav:
+            epoch += 1
+            _R65_WINDOW_NAV_EPOCH[key] = epoch
+        _R65_UPDATE_NAV_EPOCH[str(update_id or '')] = {'chat': chat, 'message_id': mid, 'epoch': epoch, 'is_nav': is_nav, 'ts': now}
+        if len(_R65_UPDATE_NAV_EPOCH) > 3000:
+            cutoff = now - 1800.0
+            for uid, row in list(_R65_UPDATE_NAV_EPOCH.items()):
+                if float((row or {}).get('ts') or 0.0) < cutoff:
+                    _R65_UPDATE_NAV_EPOCH.pop(uid, None)
+
+def _r65_render_epoch_for_update(update_id, chat_id: int, message_id: int) -> dict:
+    try:
+        key = (int(chat_id), int(message_id))
+    except Exception:
+        return {}
+    with _R65_NAV_EPOCH_LOCK:
+        row = dict(_R65_UPDATE_NAV_EPOCH.get(str(update_id or ''), {}) or {})
+        current = int(_R65_WINDOW_NAV_EPOCH.get(key, 0) or 0)
+    return {'_r65_nav_epoch': int(row.get('epoch', current) or 0), '_r65_nav_is_priority': bool(row.get('is_nav', False))}
+
+def _r65_render_is_stale_after_navigation(payload: dict) -> bool:
+    try:
+        key = (int(payload.get('chat_id')), int(payload.get('message_id')))
+        render_epoch = int(payload.get('_r65_nav_epoch') or 0)
+    except Exception:
+        return False
+    with _R65_NAV_EPOCH_LOCK:
+        current = int(_R65_WINDOW_NAV_EPOCH.get(key, 0) or 0)
+    return render_epoch < current
+
 def _r48_nav_coalesce_key(payload: dict):
     """Only idempotent navigation clicks are coalesced. Money/edit/delete/apply are never dropped."""
     try:
@@ -4437,6 +4513,11 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
         _cq0=(payload or {}).get('callback_query') or {}; _m0=_cq0.get('message') or {}
         r52_note_callback_activity(); r52_diag('CALLBACK_CLAIM', update=update_id, chat=update_chat_id, msg=_m0.get('message_id'), user=((_cq0.get('from') or {}).get('id') if isinstance(_cq0.get('from'),dict) else None), action=str(_cq0.get('data') or '')[:240], claim=claim_state, dispatcher=UPDATE_DISPATCHER.stats(), pools=r52_hot_pool_snapshot())
     except Exception: pass
+    if claim_state == 'new':
+        try:
+            _r65_note_callback_epoch(payload, update_id)
+        except Exception:
+            pass
     _r48_coalesce_key = _r48_nav_coalesce_key(payload) if claim_state == 'new' else None
     if claim_state == 'new' and _r48_coalesce_key:
         with _R48_NAV_COALESCE_LOCK:
@@ -5272,7 +5353,7 @@ def _r57_startup_keyboard(details: bool = False):
 
 def _r57_startup_compact_text() -> str:
     source, _trace = _r57_restore_source_info()
-    return f"✅ Бот запущен · R64 · {VERSION}\nВосстановление: {source}"
+    return f"✅ Бот запущен · R65 · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
     source, trace = _r57_restore_source_info()
@@ -5287,7 +5368,7 @@ def _r57_startup_details_text() -> str:
     except Exception:
         task_stats = {}
     details = [
-        f"🤖 R64 · {VERSION}",
+        f"🤖 R65 · {VERSION}",
         f"Восстановление: {source}",
         f"Правки: {STARTUP_RELEASE_SUMMARY}",
         f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",
@@ -10797,11 +10878,22 @@ def _v242_mega_catalog_entry(token: str) -> dict:
     return dict(_V242_MEGA_DB_CATALOG_CACHE.get(token) or {})
 
 def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
-    """Exact point-in-time database restore selected by owner. No current deltas are auto-applied."""
-    row = _v242_mega_catalog_entry(token)
+    """R65 exact point-in-time restore selected in the all-MEGA browser.
+
+    FAST never logs into MEGA when MEGA_ENABLED=0.  The selected file is streamed from
+    authenticated HEAVY, validated locally, then FAST seals the accepted SQLite into Redis.
+    """
+    browser_entry = globals().get('_v265_mdb_entry')
+    row = dict(browser_entry(token) or {}) if callable(browser_entry) else {}
     if not row:
-        raise RuntimeError('Выбранная база больше не найдена в каталоге MEGA')
-    remote = str(row.get('remote') or '')
+        row = _v242_mega_catalog_entry(token)
+    if not row:
+        raise RuntimeError('Выбранный файл больше не найден в каталоге MEGA')
+    if str(row.get('kind') or '') == 'dir':
+        raise RuntimeError('Для восстановления нужно выбрать файл, а не папку')
+    remote = str(row.get('path') or row.get('remote') or '')
+    if not remote:
+        raise RuntimeError('У выбранного файла отсутствует MEGA path')
     previous = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
     epoch = 0
@@ -10814,15 +10906,27 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
         backup_dir = _v153_backup_before_restore()
         work = _v153_tempfile.mkdtemp(prefix='v242_mega_selected_')
         try:
-            res = _mega_run('mega-get', [remote, work], check=False, timeout=max(float(MEGA_TIMEOUT), 240.0))
-            if res.returncode != 0:
-                raise RuntimeError('Не удалось скачать выбранную базу MEGA')
-            found = list(Path(work).rglob(os.path.basename(remote))) or list(Path(work).rglob('*.sqlite3.gz'))
-            if not found:
+            downloaded = ''
+            fetch = globals().get('_v265_heavy_download_mega_file')
+            if callable(fetch):
+                downloaded = str(fetch(remote, work) or '')
+            elif mega_is_configured():
+                res = _mega_run('mega-get', [remote, work], check=False, timeout=max(float(MEGA_TIMEOUT), 240.0))
+                if res.returncode != 0:
+                    raise RuntimeError('Не удалось скачать выбранную базу MEGA')
+                found = [str(x) for x in Path(work).rglob('*') if x.is_file()]
+                downloaded = found[0] if found else ''
+            else:
+                raise RuntimeError('Render #2 недоступен, а прямой MEGA на FAST отключён')
+            if not downloaded or not os.path.isfile(downloaded):
                 raise RuntimeError('Скачанный файл базы не найден')
-            gz = str(found[0])
             raw = os.path.join(work, 'selected.sqlite3')
-            _lowram_gunzip_file(gz, raw)
+            with open(downloaded, 'rb') as _r65_in:
+                magic = _r65_in.read(2)
+            if magic == b'\x1f\x8b':
+                _lowram_gunzip_file(downloaded, raw)
+            else:
+                _v153_shutil.copy2(downloaded, raw)
             semantic = constitution_semantic_manifest_from_sqlite(raw) or {}
             conn = sqlite3.connect(raw)
             try:
@@ -10850,7 +10954,14 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
             except Exception:
                 pass
             save_data(data, full=True)
-            reanchor = _v240_restore_reanchor_guaranteed('owner_selected_mega_database_v242') or {}
+            redis_row = {'required': False, 'ok': False, 'detail': 'helper unavailable'}
+            try:
+                seal = globals().get('r64_publish_restore_snapshot_v271')
+                if callable(seal):
+                    redis_row = dict(seal('owner_selected_mega_database_r65') or redis_row)
+            except Exception as _r65_redis_exc:
+                redis_row = {'required': True, 'ok': False, 'detail': f'{type(_r65_redis_exc).__name__}: {str(_r65_redis_exc)[:220]}'}
+            reanchor = _v240_restore_reanchor_guaranteed('owner_selected_mega_database_r65') or {}
             try:
                 rec = globals().get('_reminder_boot_reconcile_v241')
                 if callable(rec):
@@ -10859,7 +10970,15 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
                 pass
             success = True
             active = reanchor.get('active') or {}
-            return {'ok': True, 'source': remote, 'source_records': int(semantic.get('total_records') or 0), 'generation': str(active.get('generation') or ''), 'remote_confirmed': bool(reanchor.get('remote_confirmed_v242', False))}
+            return {
+                'ok': True, 'source': remote,
+                'source_records': int(semantic.get('total_records') or 0),
+                'generation': str(active.get('generation') or ''),
+                'remote_confirmed': bool(reanchor.get('remote_confirmed_v242', False)),
+                'redis_required': bool(redis_row.get('required')),
+                'redis_ok': bool(redis_row.get('ok')),
+                'redis_detail': str(redis_row.get('detail') or '')[:300],
+            }
         finally:
             _v153_shutil.rmtree(work, ignore_errors=True)
     finally:

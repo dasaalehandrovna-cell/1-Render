@@ -4812,7 +4812,7 @@ def _r60_redis_menu_text(extra=''):
     st=_r49_redis_runtime_state()
     enabled=bool(st.get('enabled'))
     lines=[
-        '🧱 REDIS · R64',
+        '🧱 REDIS · R65',
         '',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
@@ -5172,7 +5172,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     if mode == R31_MENU_MODE_THIRD:
         return _r31_third_info_text(cid)
     return window_mark(
-        'ℹ️ ИНФО · R64\n\n'
+        'ℹ️ ИНФО · R65\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
         '⚡ FAST UI: callback не ждёт Telegram; рендер идёт отдельной latest-wins очередью.\n'

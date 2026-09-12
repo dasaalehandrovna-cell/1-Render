@@ -22,6 +22,7 @@ import secrets
 import hashlib
 import queue
 import heapq
+import concurrent.futures
 import signal
 import socket
 import sys
@@ -923,6 +924,9 @@ UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI
 # R19: dedicated lane for light navigation/window callbacks. Heavy/business UI
 # can saturate UI_TASK_POOL without delaying the user's next menu/button reaction.
 FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 2, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
+# R65: dedicated high-priority lane for idempotent Back / Info / Main navigation.
+# It never waits behind ordinary window callbacks or background chat probes.
+NAVIGATION_TASK_POOL = KeyedTaskPool('nav-ui', _env_int('NAVIGATION_UI_WORKERS', 2, 2, 4), _env_int('NAVIGATION_UI_MAX_PENDING', 300, 50, 1000))
 # R22: Telegram editMessageText/caption runs here, never inside callback workers.
 WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 2, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 1000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 2, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
@@ -1230,7 +1234,7 @@ def r25_trace_end():
 
 def r52_hot_pool_snapshot():
     rows={}
-    for nm in ('FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
+    for nm in ('NAVIGATION_TASK_POOL','FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
         try:
             pool=globals().get(nm)
             if pool is not None and hasattr(pool,'stats'): rows[nm]=pool.stats()
@@ -6846,10 +6850,208 @@ except Exception:
     pass
 probe_bot_in_chat = _v177_legacy_0040_probe_bot_in_chat
 
-def probe_all_known_chats() -> tuple[int, int]:
-    """Full explicit Telegram sync for every known chat, INCLUDING the primary owner chat."""
+def _r65_probe_chat_network_only(chat_id: int, bot_uid: int=0) -> dict:
+    """Telegram-only half of the full chat probe.
+
+    IMPORTANT: this function performs no data/save_data/SQLite mutations.  It can run
+    concurrently without holding the bot's global data lock while Telegram is slow.
+    """
+    cid = int(chat_id)
+    row = {'chat_id': cid, 'ok': False, 'warnings': [], 'at': now_local().isoformat(timespec='seconds')}
     try:
-        normalize_known_chats_for_owner()
+        obj = _tg_call_retry(bot.get_chat, cid, attempts=2, purpose='probe_get_chat')
+        row['chat_obj'] = obj
+        row['snapshot'] = _v197_chat_object_snapshot(obj)
+        row['ok'] = True
+    except Exception as exc:
+        row['error'] = f'{type(exc).__name__}: {str(exc)[:700]}'
+        try:
+            row['migrate_to'] = _v199_extract_migration_target(exc)
+        except Exception:
+            row['migrate_to'] = None
+        try:
+            row['removed'] = bool(_is_bot_removed_error(exc) or ('chat not found' in str(exc or '').casefold()))
+        except Exception:
+            row['removed'] = 'chat not found' in str(exc or '').casefold()
+        return row
+
+    fn = getattr(bot, 'get_chat_member_count', None) or getattr(bot, 'get_chat_members_count', None)
+    if callable(fn):
+        try:
+            row['member_count'] = int(_tg_call_retry(fn, cid, attempts=2, purpose='probe_member_count'))
+        except Exception as exc:
+            row['warnings'].append('member_count:' + str(exc)[:160])
+            try:
+                row['migrate_to'] = row.get('migrate_to') or _v199_extract_migration_target(exc)
+            except Exception:
+                pass
+    if bot_uid and hasattr(bot, 'get_chat_member'):
+        try:
+            member = _tg_call_retry(bot.get_chat_member, cid, int(bot_uid), attempts=2, purpose='probe_bot_member')
+            membership = {'status': str(getattr(member, 'status', '') or '')}
+            for key in ('can_manage_chat', 'can_delete_messages', 'can_manage_video_chats', 'can_restrict_members', 'can_promote_members', 'can_change_info', 'can_invite_users', 'can_post_messages', 'can_edit_messages', 'can_pin_messages', 'can_manage_topics'):
+                value = getattr(member, key, None)
+                if value is not None:
+                    membership[key] = bool(value)
+            row['bot_membership'] = membership
+        except Exception as exc:
+            row['warnings'].append('bot_member:' + str(exc)[:160])
+            try:
+                row['migrate_to'] = row.get('migrate_to') or _v199_extract_migration_target(exc)
+            except Exception:
+                pass
+    chat_type = str((row.get('snapshot') or {}).get('type') or getattr(row.get('chat_obj'), 'type', '') or '')
+    if chat_type in {'group', 'supergroup', 'channel'} and hasattr(bot, 'get_chat_administrators'):
+        try:
+            admins = list(_tg_call_retry(bot.get_chat_administrators, cid, attempts=2, purpose='probe_administrators') or [])
+            admin_rows = []
+            for member in admins:
+                user = getattr(member, 'user', None)
+                admin_rows.append({
+                    'id': int(getattr(user, 'id', 0) or 0),
+                    'name': (str(getattr(user, 'first_name', '') or '') + ' ' + str(getattr(user, 'last_name', '') or '')).strip(),
+                    'username': str(getattr(user, 'username', '') or '').lstrip('@') or None,
+                    'status': str(getattr(member, 'status', '') or ''),
+                    'custom_title': str(getattr(member, 'custom_title', '') or '') or None,
+                })
+            admin_rows.sort(key=lambda r: r.get('id') or 0)
+            row['administrators'] = admin_rows
+        except Exception as exc:
+            row['warnings'].append('administrators:' + str(exc)[:160])
+    return row
+
+
+def _r65_apply_chat_probe_result(row: dict) -> tuple[int, bool, bool, bool]:
+    """Apply one completed network result using only short local critical sections."""
+    cid = int((row or {}).get('chat_id') or 0)
+    before_title = get_chat_display_name(cid)
+    before_fp = _v197_chat_probe_fingerprint(cid)
+    migrate_to = (row or {}).get('migrate_to')
+    if migrate_to and int(migrate_to) != cid:
+        try:
+            mig = globals().get('migrate_chat_id_everywhere')
+            if callable(mig) and mig(cid, int(migrate_to), 'R65 parallel chat probe migration'):
+                cid = int(migrate_to)
+        except Exception as exc:
+            log_error(f'R65 probe migrate {cid}->{migrate_to}: {exc}')
+    if not bool((row or {}).get('ok')):
+        err = str((row or {}).get('error') or 'Telegram probe failed')[:700]
+        try:
+            if bool((row or {}).get('removed')):
+                set_chat_bot_removed(cid, True, err, persist=False, schedule_backup=False)
+                suspend = globals().get('suspend_forward_target_v199')
+                if callable(suspend):
+                    suspend(cid, err, persist=False)
+            else:
+                set_chat_status_v150(cid, 'unreachable', err, source='telegram_probe_r65', persist=False, schedule_backup=False)
+        except Exception as exc:
+            log_error(f'R65 apply failed probe {cid}: {exc}')
+        after_fp = _v197_chat_probe_fingerprint(cid)
+        return cid, False, bool(before_fp != after_fp), bool(before_title != get_chat_display_name(cid))
+
+    try:
+        obj = (row or {}).get('chat_obj')
+        if obj is not None:
+            update_chat_info_from_chat_object(obj, persist=False, schedule_backup=False)
+    except Exception as exc:
+        log_error(f'R65 apply chat object {cid}: {exc}')
+    try:
+        store = get_chat_store(cid)
+        info = store.setdefault('info', {})
+        if 'member_count' in row:
+            info['member_count'] = int(row.get('member_count') or 0)
+        if isinstance(row.get('bot_membership'), dict):
+            info['bot_membership'] = dict(row.get('bot_membership') or {})
+        if isinstance(row.get('administrators'), list):
+            info['administrators'] = list(row.get('administrators') or [])
+            info['administrator_count'] = len(info['administrators'])
+        info['probe_warnings'] = list(row.get('warnings') or [])[-5:]
+        info['last_full_probe_at'] = str(row.get('at') or now_local().isoformat(timespec='seconds'))
+        membership_status = str((info.get('bot_membership') or {}).get('status') or '').casefold()
+        if membership_status in {'left', 'kicked'}:
+            set_chat_bot_removed(cid, True, f'getChatMember status={membership_status}: bot is not a member', persist=False, schedule_backup=False)
+            suspend = globals().get('suspend_forward_target_v199')
+            if callable(suspend):
+                suspend(cid, f'getChatMember status={membership_status}', persist=False)
+            probe_ok = False
+        else:
+            set_chat_bot_removed(cid, False, '', persist=False, schedule_backup=False)
+            reactivate = globals().get('reactivate_forward_target_v199')
+            if callable(reactivate):
+                reactivate(cid, persist=False)
+            probe_ok = True
+    except Exception as exc:
+        log_error(f'R65 apply deep facts {cid}: {exc}')
+        probe_ok = True
+    after_fp = _v197_chat_probe_fingerprint(cid)
+    return cid, bool(probe_ok), bool(before_fp != after_fp), bool(before_title != get_chat_display_name(cid))
+
+
+_R65_CHAT_PROBE_PERSIST_LOCK = threading.RLock()
+_R65_CHAT_PROBE_PERSIST_IDS = set()
+
+
+def _r65_chat_probe_persist_when_idle() -> None:
+    """Persist probe results only while interactive queues are idle."""
+    try:
+        disp = UPDATE_DISPATCHER.stats() or {}
+        hot = False
+        for pool in (NAVIGATION_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, CALLBACK_ACK_TASK_POOL):
+            st = pool.stats() or {}
+            if int(st.get('active') or 0) or int(st.get('pending') or 0):
+                hot = True
+                break
+        if hot or int(disp.get('pending') or 0) or int(disp.get('running') or 0):
+            DELAYED_SCHEDULER.schedule('r65-chat-probe-persist', 3.0, _r65_chat_probe_persist_when_idle)
+            return
+    except Exception:
+        pass
+    with _R65_CHAT_PROBE_PERSIST_LOCK:
+        ids = sorted(int(x) for x in _R65_CHAT_PROBE_PERSIST_IDS)
+        _R65_CHAT_PROBE_PERSIST_IDS.clear()
+    if not ids:
+        return
+    try:
+        save_data(data, chat_ids=ids)
+    except Exception as exc:
+        log_error(f'R65 chat probe idle persist: {exc}')
+        with _R65_CHAT_PROBE_PERSIST_LOCK:
+            _R65_CHAT_PROBE_PERSIST_IDS.update(ids)
+        try:
+            DELAYED_SCHEDULER.schedule('r65-chat-probe-persist', 10.0, _r65_chat_probe_persist_when_idle)
+        except Exception:
+            pass
+        return
+    try:
+        schedule_config_backup_for_chats(*ids, delay=1.0)
+    except Exception:
+        pass
+
+
+def _r65_schedule_chat_probe_persist(ids) -> None:
+    clean = set()
+    for raw in ids or []:
+        try:
+            clean.add(int(raw))
+        except Exception:
+            pass
+    if not clean:
+        return
+    with _R65_CHAT_PROBE_PERSIST_LOCK:
+        _R65_CHAT_PROBE_PERSIST_IDS.update(clean)
+    try:
+        DELAYED_SCHEDULER.schedule('r65-chat-probe-persist', 2.0, _r65_chat_probe_persist_when_idle)
+    except Exception:
+        try:
+            BACKGROUND_TASK_POOL.submit_unique('r65-chat-probe-persist', _r65_chat_probe_persist_when_idle)
+        except Exception:
+            pass
+
+
+def probe_all_known_chats() -> tuple[int, int]:
+    """R65 full chat sync: parallel Telegram I/O, short local merge, idle persistence."""
+    try:
+        normalize_known_chats_for_owner(persist=False)
     except Exception:
         pass
     ids_raw = collect_probe_chat_ids_v200(include_owner=True)
@@ -6862,55 +7064,58 @@ def probe_all_known_chats() -> tuple[int, int]:
             continue
         if cid not in ids:
             ids.append(cid)
+    try:
+        bot_uid = int(_v197_bot_user_id() or 0)
+    except Exception:
+        bot_uid = 0
+    workers = _env_int('CHAT_PROBE_WORKERS', 4, 2, 6)
+    network_rows = []
+    if ids:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix='chat-probe-net') as ex:
+            futures = [ex.submit(_r65_probe_chat_network_only, cid, bot_uid) for cid in ids]
+            for fut in concurrent.futures.as_completed(futures):
+                try:
+                    network_rows.append(fut.result())
+                except Exception as exc:
+                    log_error(f'R65 chat probe worker: {exc}')
     ok = bad = changed = renamed = 0
     processed = set()
-    for raw_cid in ids:
+    for row in network_rows:
         try:
-            cid = int(resolver(int(raw_cid))) if callable(resolver) else int(raw_cid)
-        except Exception:
-            continue
-        if cid in processed:
-            continue
-        before_title = get_chat_display_name(cid)
-        before_fp = _v197_chat_probe_fingerprint(cid)
-        probe_ok = False
-        try:
-            probe_ok = bool(probe_bot_in_chat(cid, deep=True, persist=False, schedule_backup=False))
+            cid, probe_ok, row_changed, row_renamed = _r65_apply_chat_probe_result(row)
         except Exception as exc:
-            log_error(f'probe_all_known_chats({cid}): {exc}')
-        try:
-            after_cid = int(resolver(cid)) if callable(resolver) else cid
-        except Exception:
-            after_cid = cid
-        processed.add(after_cid)
+            log_error(f'R65 chat probe apply: {exc}')
+            continue
+        processed.add(int(cid))
         if probe_ok:
             ok += 1
-        elif is_chat_bot_removed(after_cid):
+        elif is_chat_bot_removed(int(cid)):
             bad += 1
-        after_fp = _v197_chat_probe_fingerprint(after_cid)
-        if cid != after_cid or before_fp != after_fp:
+        if row_changed:
             changed += 1
-        if cid != after_cid or before_title != get_chat_display_name(after_cid):
+        if row_renamed:
             renamed += 1
     try:
-        normalize_known_chats_for_owner()
+        normalize_known_chats_for_owner(persist=False)
     except Exception:
         pass
-    summary = {'checked': len(processed), 'available': ok, 'unavailable': bad, 'errors': max(0, len(processed) - ok - bad), 'changed': changed, 'renamed': renamed, 'at': now_local().isoformat(timespec='seconds')}
+    summary = {
+        'checked': len(processed), 'available': ok, 'unavailable': bad,
+        'errors': max(0, len(processed) - ok - bad), 'changed': changed, 'renamed': renamed,
+        'workers': workers, 'at': now_local().isoformat(timespec='seconds'),
+    }
     try:
         data.setdefault('_global_settings', {})['last_chat_probe_summary_v197'] = summary
     except Exception:
         pass
-    save_data(data)
+    # R65: do not persist while the probe/background worker is still serving the user.
+    # Save only checked cards + owner, and only after interactive lanes become idle.
+    persist_ids = set(processed)
+    if OWNER_ID:
+        persist_ids.add(int(OWNER_ID))
+    _r65_schedule_chat_probe_persist(persist_ids)
     try:
-        schedule_config_backup_for_chats(*ids, delay=1.0)
-    except Exception:
-        try:
-            schedule_config_backup_for_chats()
-        except Exception:
-            pass
-    try:
-        bot_journal('chat_full_sync_v197', int(OWNER_ID or 0), json.dumps(summary, ensure_ascii=False, separators=(',', ':')))
+        bot_journal('chat_full_sync_r65', int(OWNER_ID or 0), json.dumps(summary, ensure_ascii=False, separators=(',', ':')))
     except Exception:
         pass
     return (ok, bad)
@@ -15422,7 +15627,7 @@ def _chat_title_suspect_key(cid: int, info: dict | None=None) -> str:
     typ = str(info.get('type') or '')
     return f't:{typ}:{title}' if title else f'id:{cid}'
 
-def normalize_known_chats_for_owner() -> int:
+def normalize_known_chats_for_owner(*, persist: bool=True) -> int:
     """
     Убирает только безопасные дубли карточек чатов у владельца:
     • одинаковый chat_id невозможен в dict, но битые ключи чистим;
@@ -15462,7 +15667,8 @@ def normalize_known_chats_for_owner() -> int:
         if keep != known or owner_store.get('suspected_duplicate_titles') != suspects:
             owner_store['known_chats'] = keep
             owner_store['suspected_duplicate_titles'] = suspects
-            save_data(data)
+            if persist:
+                save_data(data, chat_ids=[int(OWNER_ID)])
         return removed
     except Exception as e:
         log_error(f'normalize_known_chats_for_owner: {e}')

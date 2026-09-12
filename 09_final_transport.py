@@ -2801,37 +2801,216 @@ def _canon_build_info_keyboard__002(chat_id: int):
     rows.insert(insert + 1, [IB('⚙️ Режимы', callback_data='v240:modes:open')])
     return _v177_info_set_rows(kb, rows)
 
-def mega_database_browser_text_v242() -> str:
-    rows = _v242_mega_database_catalog(14) if callable(globals().get('_v242_mega_database_catalog')) else []
-    active = sum((1 for r in rows if r.get('active')))
-    return f'🗄 БАЗЫ MEGA / ВОССТАНОВЛЕНИЕ\n\nПорядок обычного старта: current_manifest → последняя generation → legacy latest.\nЗдесь можно вручную выбрать конкретную SQLite-базу. Перед заменой бот создаст pre_restore, затем после подтверждённого восстановления сразу опубликует НОВУЮ canonical generation в MEGA.\n\nНайдено файлов: {len(rows)} · текущая active: {active}'[:3900]
+_V265_MEGA_BROWSER_LOCK = threading.RLock()
+_V265_MEGA_BROWSER_STATE = {'path': '/', 'parent': '/', 'entries': [], 'page': 0, 'error': '', 'loaded_at': 0.0, 'loading': False}
+_V265_MEGA_BROWSER_TOKENS = {}
 
-def mega_database_browser_keyboard_v242():
-    kb = types.InlineKeyboardMarkup()
-    rows = _v242_mega_database_catalog(14) if callable(globals().get('_v242_mega_database_catalog')) else []
-    if not rows:
-        kb.row(IB('🔄 Повторить поиск', callback_data='v242:mdb:list'))
-    for i, row in enumerate(rows, 1):
-        flag = '✅ ' if row.get('active') else ''
-        kind = {'generation': 'GEN', 'legacy_latest': 'LATEST', 'legacy_history': 'HIST', 'pre_restore': 'PRE'}.get(str(row.get('kind')), 'DB')
+
+def _v265_mdb_token(path: str, kind: str='file') -> str:
+    raw = str(kind) + '\0' + str(path)
+    token = hashlib.sha256(raw.encode('utf-8', 'ignore')).hexdigest()[:14]
+    with _V265_MEGA_BROWSER_LOCK:
+        _V265_MEGA_BROWSER_TOKENS[token] = {'path': str(path), 'kind': str(kind), 'ts': time.time()}
+        if len(_V265_MEGA_BROWSER_TOKENS) > 2500:
+            cutoff = time.time() - 3600.0
+            for key, row in list(_V265_MEGA_BROWSER_TOKENS.items()):
+                if float((row or {}).get('ts') or 0.0) < cutoff:
+                    _V265_MEGA_BROWSER_TOKENS.pop(key, None)
+    return token
+
+
+def _v265_mdb_entry(token: str) -> dict:
+    with _V265_MEGA_BROWSER_LOCK:
+        return dict(_V265_MEGA_BROWSER_TOKENS.get(str(token or ''), {}) or {})
+
+
+def _v265_peer_mega_request(path: str) -> dict:
+    base_fn = globals().get('_split_peer_base')
+    headers_fn = globals().get('_split_headers')
+    base = str(base_fn() if callable(base_fn) else '').rstrip('/')
+    if not base or not callable(headers_fn):
+        raise RuntimeError('Render #2 / PEER_SERVICE_URL недоступен')
+    response = requests.get(
+        base + '/internal/r65/mega/list',
+        params={'path': str(path or '/')},
+        headers=headers_fn('vys-262-r65-mega-recovery-browser'),
+        timeout=(5, 90),
+    )
+    try:
+        body = response.json() if response.content else {}
+    except Exception:
+        body = {'error': (response.text or '')[:700]}
+    if not (200 <= response.status_code < 300) or not bool((body or {}).get('ok')):
+        raise RuntimeError(str((body or {}).get('error') or f'HEAVY HTTP {response.status_code}')[:700])
+    return dict(body or {})
+
+
+def _v265_refresh_mega_browser(path: str='/', page: int=0) -> dict:
+    path = str(path or '/').strip() or '/'
+    with _V265_MEGA_BROWSER_LOCK:
+        _V265_MEGA_BROWSER_STATE['loading'] = True
+        _V265_MEGA_BROWSER_STATE['error'] = ''
+    try:
+        body = _v265_peer_mega_request(path)
+        entries = []
+        for raw in list(body.get('entries') or []):
+            if not isinstance(raw, dict):
+                continue
+            ep = str(raw.get('path') or '').strip()
+            kind = 'dir' if str(raw.get('type') or '') == 'dir' else 'file'
+            if not ep:
+                continue
+            row = {'path': ep, 'kind': kind, 'name': str(raw.get('name') or ep.rsplit('/', 1)[-1] or '/')}
+            row['token'] = _v265_mdb_token(ep, kind)
+            entries.append(row)
+        with _V265_MEGA_BROWSER_LOCK:
+            _V265_MEGA_BROWSER_STATE.update({
+                'path': str(body.get('path') or path),
+                'parent': str(body.get('parent') or '/'),
+                'entries': entries,
+                'page': max(0, int(page or 0)),
+                'error': '',
+                'loaded_at': time.time(),
+                'loading': False,
+                'configured_root': str(body.get('configured_root') or ''),
+                'elapsed_mega': float(body.get('elapsed_mega') or 0.0),
+            })
+        return dict(_V265_MEGA_BROWSER_STATE)
+    except Exception as exc:
+        with _V265_MEGA_BROWSER_LOCK:
+            _V265_MEGA_BROWSER_STATE['loading'] = False
+            _V265_MEGA_BROWSER_STATE['error'] = f'{type(exc).__name__}: {str(exc)[:700]}'
+        raise
+
+
+def _v265_mdb_state(page: int | None=None) -> dict:
+    with _V265_MEGA_BROWSER_LOCK:
+        row = dict(_V265_MEGA_BROWSER_STATE)
+        row['entries'] = list(_V265_MEGA_BROWSER_STATE.get('entries') or [])
+    if page is not None:
+        row['page'] = max(0, int(page or 0))
+    return row
+
+
+def mega_database_browser_text_v242(page: int | None=None) -> str:
+    st = _v265_mdb_state(page)
+    entries = list(st.get('entries') or [])
+    per = 10
+    pages = max(1, (len(entries) + per - 1) // per)
+    cur = min(max(0, int(st.get('page') or 0)), pages - 1)
+    err = str(st.get('error') or '')
+    status = '⏳ загрузка…' if st.get('loading') else (('⛔ ' + err[:700]) if err else f'✅ {len(entries)} элементов')
+    return (
+        '🗄 БАЗЫ MEGA / ВОССТАНОВЛЕНИЕ · через #2\n\n'
+        f"Путь: {st.get('path') or '/'}\n"
+        f"Статус: {status}\n"
+        f"Страница: {cur + 1}/{pages}\n"
+        f"Рабочий root #2: {st.get('configured_root') or '—'}\n\n"
+        'Ручной recovery-browser может просматривать ВСЕ папки аккаунта MEGA. '
+        'Автоматический backup №2 при этом остаётся строго внутри MEGA_BACKUP_DIR.\n\n'
+        'Файл при восстановлении принимается только после SQLite quick_check; текущая база сначала получает pre_restore.'
+    )[:3900]
+
+
+def mega_database_browser_keyboard_v242(page: int | None=None):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    st = _v265_mdb_state(page)
+    entries = list(st.get('entries') or [])
+    per = 10
+    pages = max(1, (len(entries) + per - 1) // per)
+    cur = min(max(0, int(st.get('page') or 0)), pages - 1)
+    for row in entries[cur * per:(cur + 1) * per]:
         name = str(row.get('name') or '')
-        short = name if len(name) <= 42 else name[:39] + '…'
-        kb.row(IB(f'{flag}{i}. {kind} · {short}', callback_data=f"v242:mdb:pick:{row.get('token')}"))
-    kb.row(IB('🔄 Обновить', callback_data='v242:mdb:list'))
+        short = name if len(name) <= 48 else name[:45] + '…'
+        if row.get('kind') == 'dir':
+            kb.row(IB('📁 ' + short, callback_data=f"v242:mdb:dir:{row.get('token')}"))
+        else:
+            kb.row(IB('📄 ' + short, callback_data=f"v242:mdb:pick:{row.get('token')}"))
+    nav = []
+    if cur > 0:
+        nav.append(IB('◀️', callback_data=f'v242:mdb:page:{cur - 1}'))
+    if cur + 1 < pages:
+        nav.append(IB('▶️', callback_data=f'v242:mdb:page:{cur + 1}'))
+    if nav:
+        kb.row(*nav)
+    parent = str(st.get('parent') or '/')
+    path = str(st.get('path') or '/')
+    if path != '/':
+        kb.row(IB('⬆️ Вверх', callback_data=f"v242:mdb:dir:{_v265_mdb_token(parent, 'dir')}"))
+    kb.row(IB('🏠 Корень MEGA', callback_data='v242:mdb:root'), IB('🔄 Обновить', callback_data='v242:mdb:refresh'))
     kb.row(IB('🔙 Настройки после деплоя', callback_data='v234:config:open'))
     kb.row(IB('❌ Закрыть', callback_data='info_close'))
     return kb
 
+
 def mega_database_confirm_text_v242(token: str) -> str:
-    row = _v242_mega_catalog_entry(token) if callable(globals().get('_v242_mega_catalog_entry')) else {}
-    return f"⚠️ ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ MEGA\n\nФайл: {row.get('name') or 'не найден'}\nТип: {row.get('kind') or '—'}\nActive сейчас: {('да' if row.get('active') else 'нет')}\n\nБудет создан pre_restore текущей базы. Затем выбранная SQLite полностью заменит рабочую базу без merge. После успешной замены бот сразу создаст новую canonical generation в MEGA."[:3900]
+    row = _v265_mdb_entry(token)
+    return (
+        '⚠️ ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ MEGA · через #2\n\n'
+        f"Файл: {row.get('name') or str(row.get('path') or '').rsplit('/',1)[-1] or 'не найден'}\n"
+        f"Путь: {row.get('path') or '—'}\n\n"
+        'FAST скачает файл через HEAVY, проверит gzip/raw SQLite и PRAGMA quick_check. '
+        'Только валидная SQLite полностью заменит рабочую базу без merge. Перед заменой создаётся pre_restore. '
+        'После успеха FAST сразу закрепит full snapshot в Redis, а HEAVY получит re-anchor в свой строгий MEGA root.'
+    )[:3900]
+
 
 def mega_database_confirm_keyboard_v242(token: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB('✅ ПОДТВЕРДИТЬ восстановление', callback_data=f'v242:mdb:confirm:{token}'))
-    kb.row(IB('⬅️ Назад к базам', callback_data='v242:mdb:list'))
+    kb.row(IB('⬅️ Назад к папке', callback_data='v242:mdb:back'))
     kb.row(IB('❌ Закрыть', callback_data='info_close'))
     return kb
+
+
+def _v265_heavy_download_mega_file(remote: str, workdir: str) -> str:
+    base_fn = globals().get('_split_peer_base')
+    headers_fn = globals().get('_split_headers')
+    base = str(base_fn() if callable(base_fn) else '').rstrip('/')
+    if not base or not callable(headers_fn):
+        raise RuntimeError('Render #2 / PEER_SERVICE_URL недоступен')
+    response = requests.get(
+        base + '/internal/r65/mega/file',
+        params={'path': str(remote or '')},
+        headers=headers_fn('vys-262-r65-mega-recovery-file'),
+        timeout=(8, 360),
+        stream=True,
+    )
+    if not (200 <= response.status_code < 300):
+        try:
+            body = response.json() if response.content else {}
+            detail = str((body or {}).get('error') or '')
+        except Exception:
+            detail = (response.text or '')[:700]
+        raise RuntimeError(f'HEAVY MEGA file HTTP {response.status_code}: {detail[:700]}')
+    name = str(remote or '').rstrip('/').rsplit('/', 1)[-1] or 'mega_restore.bin'
+    safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', name)[-120:] or 'mega_restore.bin'
+    target = os.path.join(str(workdir), safe)
+    size = 0
+    max_bytes = 256 * 1024 * 1024
+    with open(target, 'wb') as fh:
+        for chunk in response.iter_content(1024 * 1024):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > max_bytes:
+                raise RuntimeError('Файл MEGA больше recovery-лимита 256 МБ')
+            fh.write(chunk)
+    if size <= 0:
+        raise RuntimeError('HEAVY передал пустой файл')
+    return target
+
+
+def _v265_mdb_refresh_job(chat_id: int, message_id: int, path: str, page: int=0) -> None:
+    try:
+        _v265_refresh_mega_browser(path, page)
+        fast_ui_edit_message_text(int(chat_id), int(message_id), window_mark(mega_database_browser_text_v242(page), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242(page), purpose='r65_mega_browser')
+    except Exception as exc:
+        fast_ui_edit_message_text(int(chat_id), int(message_id), window_mark(mega_database_browser_text_v242(page), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242(page), purpose='r65_mega_browser_error')
+        try:
+            send_and_auto_delete(int(chat_id), '❌ MEGA browser через #2: ' + str(exc)[:500], 30)
+        except Exception:
+            pass
 
 # --- ИСТОЧНИК: 88_ui_constructor.py ---
 """v205: restore the v196 non-destructive UI Constructor 1/2 lab.
@@ -5133,15 +5312,59 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                 pass
             return True
         action = resolved.split(':', 2)[2]
-        if action == 'list':
+        if action in {'list', 'root', 'refresh'} or action.startswith('dir:'):
+            if action in {'list', 'root'}:
+                path = '/'
+            elif action == 'refresh':
+                path = str(_v265_mdb_state().get('path') or '/')
+            else:
+                token = action.split(':', 1)[1]
+                path = str((_v265_mdb_entry(token) or {}).get('path') or '/')
             try:
-                bot.answer_callback_query(call.id, 'Читаю каталог MEGA…')
+                bot.answer_callback_query(call.id, 'Читаю MEGA через Render #2…')
             except Exception:
                 pass
-            safe_edit(bot, call, window_mark(mega_database_browser_text_v242(), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242())
+            with _V265_MEGA_BROWSER_LOCK:
+                _V265_MEGA_BROWSER_STATE.update({'path': path, 'loading': True, 'error': '', 'page': 0, 'entries': []})
+            safe_edit_current_only(bot, call, window_mark(mega_database_browser_text_v242(0), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242(0))
+            pool = globals().get('RECOVERY_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
+            queued = bool(pool and pool.submit_unique(f'r65-mega-browser:{cid}', _v265_mdb_refresh_job, cid, int(call.message.message_id), path, 0))
+            if not queued:
+                try:
+                    bot.answer_callback_query(call.id, 'MEGA browser уже занят')
+                except Exception:
+                    pass
+            return True
+        if action.startswith('page:'):
+            try:
+                page = max(0, int(action.split(':', 1)[1]))
+            except Exception:
+                page = 0
+            with _V265_MEGA_BROWSER_LOCK:
+                _V265_MEGA_BROWSER_STATE['page'] = page
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            safe_edit(bot, call, window_mark(mega_database_browser_text_v242(page), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242(page))
+            return True
+        if action == 'back':
+            page = int(_v265_mdb_state().get('page') or 0)
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            safe_edit(bot, call, window_mark(mega_database_browser_text_v242(page), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242(page))
             return True
         if action.startswith('pick:'):
             token = action.split(':', 1)[1]
+            row = _v265_mdb_entry(token)
+            if not row or row.get('kind') != 'file':
+                try:
+                    bot.answer_callback_query(call.id, 'Файл больше не найден. Обновите папку.', show_alert=True)
+                except Exception:
+                    pass
+                return True
             try:
                 bot.answer_callback_query(call.id)
             except Exception:
@@ -5159,7 +5382,8 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
             def _job():
                 try:
                     rep = _v242_restore_selected_mega_database(token, cid)
-                    send_and_auto_delete(cid, f"✅ База MEGA восстановлена. records={rep.get('source_records')} · новая generation={rep.get('generation') or 'LOCAL-PENDING'}", 180)
+                    redis_note = '✅' if rep.get('redis_ok') else ('—' if rep.get('redis_required') is False else '⛔')
+                    send_and_auto_delete(cid, f"✅ База MEGA восстановлена через #2. records={rep.get('source_records')} · новая generation={rep.get('generation') or 'LOCAL-PENDING'} · Redis={redis_note}", 180)
                     try:
                         schedule_startup_main_windows(delay=0.5)
                     except Exception:
