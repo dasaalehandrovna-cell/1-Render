@@ -4375,7 +4375,7 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
         result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
         _v240_restore_reanchor_guaranteed(f'owner_json_prompt:{fname}')
         restore_success = True
-        send_and_auto_delete(owner_chat_id, result + '\n🏛 DATA CONSTITUTION: состояние закреплено новым generation.', 15)
+        send_and_auto_delete(owner_chat_id, result + '\n🏛 DATA CONSTITUTION: состояние закреплено новым generation.' + _r64_restore_redis_seal_text(f'owner_json_prompt:{fname}'), 22)
     except Exception as e:
         send_and_auto_delete(owner_chat_id, f'❌ JSON/ISON не восстановлен: {e}', 15)
     finally:
@@ -5122,6 +5122,21 @@ def reset_chat_data(chat_id: int):
         log_error(f'reset_chat_data({chat_id}): {e}')
 
 
+def _r64_restore_redis_seal_text(reason: str) -> str:
+    fn = globals().get('r64_publish_restore_snapshot_v271')
+    if not callable(fn):
+        return '\n⚠️ Redis recovery helper недоступен.'
+    try:
+        row = fn(str(reason or 'restore')) or {}
+    except Exception as exc:
+        return f'\n⛔ Redis snapshot НЕ закреплён: {type(exc).__name__}: {str(exc)[:220]}'
+    if not row.get('required'):
+        return '\nℹ️ Redis recovery не настроен в Render.'
+    if row.get('ok'):
+        return f"\n🧠 Redis: full SQLite snapshot проверен ({int(row.get('size') or 0)} B)."
+    return '\n⛔ Redis snapshot НЕ закреплён: ' + str(row.get('detail') or 'unknown')[:300]
+
+
 def handle_document(msg):
     global restore_mode, data
     chat_id = msg.chat.id
@@ -5202,7 +5217,7 @@ def handle_document(msg):
                 save_data(data, chat_ids=[chat_id])
                 _v240_restore_reanchor_guaranteed('csv_meta_restore_exact')
                 restore_success = True
-                send_and_auto_delete(chat_id, '🟢 csv_meta.json импортирован и точно закреплён в durable-хранилище')
+                send_and_auto_delete(chat_id, '🟢 csv_meta.json импортирован и закреплён.' + _r64_restore_redis_seal_text('csv_meta_restore_exact'))
                 return
             if fname.endswith(('.json', '.ison')):
                 payload = _load_json(tmp_path, None)
@@ -5216,7 +5231,7 @@ def handle_document(msg):
                     data.pop('_restore_mode_chat_v150', None)
                     _v240_restore_reanchor_guaranteed('global_json_restore_exact')
                     restore_success = True
-                    send_and_auto_delete(chat_id, f"🟢 Полный JSON/ISON всего бота восстановлен и закреплён. Чатов: {result.get('chats', 0)}", 18)
+                    send_and_auto_delete(chat_id, f"🟢 Полный JSON/ISON всего бота восстановлен. Чатов: {result.get('chats', 0)}" + _r64_restore_redis_seal_text('global_json_restore_exact'), 22)
                     return
                 inner_chat_id = payload.get('chat_id')
                 if inner_chat_id is None:
@@ -5238,7 +5253,7 @@ def handle_document(msg):
                 _v240_restore_reanchor_guaranteed(f'chat_json_restore_exact:{target_chat_id}')
                 restore_success = True
                 settings_count = int((result.get('settings') or {}).get('settings_keys') or 0)
-                send_and_auto_delete(chat_id, f"🟢 JSON/ISON восстановлен СТРОГО ИЗ ФАЙЛА: {get_chat_display_name(target_chat_id)}\nЗаписей в файле: {result.get('backup_records', 0)}\nЗаписей после restore: {result.get('records_after', 0)}\nПредыдущее live-состояние заменено: {result.get('replaced_live_records', 0)} записей\nВосстановлено настроек: {settings_count}\nНичего из текущего состояния не подмешивалось.", 22)
+                send_and_auto_delete(chat_id, f"🟢 JSON/ISON восстановлен СТРОГО ИЗ ФАЙЛА: {get_chat_display_name(target_chat_id)}\nЗаписей в файле: {result.get('backup_records', 0)}\nЗаписей после restore: {result.get('records_after', 0)}\nПредыдущее live-состояние заменено: {result.get('replaced_live_records', 0)} записей\nВосстановлено настроек: {settings_count}\nНичего из текущего состояния не подмешивалось." + _r64_restore_redis_seal_text(f'chat_json_restore_exact:{target_chat_id}'), 26)
                 return
             if fname.startswith('data_') and fname.endswith('.csv'):
                 restore_from_csv(chat_id, tmp_path)
@@ -5249,7 +5264,7 @@ def handle_document(msg):
                 save_data(data, chat_ids=[chat_id])
                 _v240_restore_reanchor_guaranteed(f'chat_csv_restore_exact:{chat_id}')
                 restore_success = True
-                send_and_auto_delete(chat_id, f'🟢 CSV чата восстановлен и точно закреплён ({fname})')
+                send_and_auto_delete(chat_id, f'🟢 CSV чата восстановлен ({fname})' + _r64_restore_redis_seal_text(f'chat_csv_restore_exact:{chat_id}'))
                 return
             send_and_auto_delete(chat_id, f'⚠️ Неизвестный файл: {fname}')
         except Exception as e:

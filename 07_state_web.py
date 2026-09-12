@@ -5272,7 +5272,7 @@ def _r57_startup_keyboard(details: bool = False):
 
 def _r57_startup_compact_text() -> str:
     source, _trace = _r57_restore_source_info()
-    return f"✅ Бот запущен · R63 · {VERSION}\nВосстановление: {source}"
+    return f"✅ Бот запущен · R64 · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
     source, trace = _r57_restore_source_info()
@@ -5287,7 +5287,7 @@ def _r57_startup_details_text() -> str:
     except Exception:
         task_stats = {}
     details = [
-        f"🤖 R63 · {VERSION}",
+        f"🤖 R64 · {VERSION}",
         f"Восстановление: {source}",
         f"Правки: {STARTUP_RELEASE_SUMMARY}",
         f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",
@@ -9788,10 +9788,23 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
             restored_failed = _v153_restore_failed_tasks_from_db(str(row['raw']), set((int(x) for x in (row.get('manifest') or {}).get('chat_ids') or [])))
         constitution_result = _v240_restore_reanchor_guaranteed(f'gz_restore:{scope}:{mode}')
         remote_ok = bool(constitution_result.get('remote_confirmed_v240', True))
+        redis_fn = globals().get('r64_publish_restore_snapshot_v271')
+        redis_result = redis_fn(f'gz_restore:{scope}:{mode}') if callable(redis_fn) else {'required': False, 'ok': False, 'detail': 'R64 Redis seal helper unavailable'}
+        redis_required = bool((redis_result or {}).get('required'))
+        redis_ok = bool((redis_result or {}).get('ok'))
         suffix = '' if remote_ok else '\n⚠️ Remote re-anchor временно pending; восстановленное состояние уже принято локально.'
-        safe_edit(bot, call, f"✅ Восстановление завершено.\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\nFailed-задач восстановлено: {restored_failed}." + suffix)
+        if redis_required and redis_ok:
+            suffix += f"\n🧠 Redis: full SQLite snapshot проверен ({int((redis_result or {}).get('size') or 0)} B)."
+            headline = '✅ Восстановление завершено и закреплено в Redis.'
+        elif redis_required:
+            suffix += '\n⛔ Redis snapshot НЕ закреплён: ' + str((redis_result or {}).get('detail') or 'unknown')[:320]
+            headline = '⚠️ База восстановлена локально, но Redis recovery НЕ закреплён.'
+        else:
+            suffix += '\nℹ️ Redis recovery не настроен в Render.'
+            headline = '✅ Восстановление завершено.'
+        safe_edit(bot, call, f"{headline}\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\nFailed-задач восстановлено: {restored_failed}." + suffix)
         restore_success = True
-        bot_journal('v240_restore_applied', int(row['chat_id']), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}; constitution=1; remote_confirmed={int(remote_ok)}; epoch={restore_epoch}")
+        bot_journal('v240_restore_applied', int(row['chat_id']), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}; constitution=1; remote_confirmed={int(remote_ok)}; redis_required={int(redis_required)}; redis_ok={int(redis_ok)}; epoch={restore_epoch}")
     except Exception as exc:
         safe_edit(bot, call, f'❌ Восстановление остановлено:\n{v153_redact_text(exc)[:800]}')
         bot_journal('v153_restore_failed', int(row['chat_id']), v153_redact_text(exc), 'ERROR')

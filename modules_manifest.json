@@ -19,13 +19,13 @@
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
-    "06_commands_callbacks.py": "5fe18651b36ad586e96cb8763c0fd48610d70dc5b579d1c39e1bac6f11b56691",
-    "07_state_web.py": "b7c956dd1e0d04af271af884a40780c781d30a4d6d9e17bc165e86c10298ef19",
+    "06_commands_callbacks.py": "30d56a8ef7ec03901b56563f1c04ee21ea28e5e56e80a90fa76a924aba4c7cc6",
+    "07_state_web.py": "f9de18e6265c050c327262da7aabe8d2dbcfa159025dc7367a3537b3f01dd982",
     "08_reliability_tasks.py": "af03ebdfa4868439dd9b6e565a4c18e66f2d307f904236f7c1dd269ba2cdc59f",
     "09_final_transport.py": "b303ec75367799099fe9a436a6bdfdf32e4f1ec5e6092268bea2e3034e943639",
-    "10_split_policy_offload.py": "87c8d06c9d25e2b8424007be5375a7f59e57ad9f3a99ca3492feaba56350ce17"
+    "10_split_policy_offload.py": "1f2acf72b4121076e14dabb5adcb9e2ad0811fa7fdafcc6cce5164d2cd66f47a"
   },
-  "release": "Пер-R63-SHARED-REDIS-RECOVERY",
+  "release": "Пер-R64-FAST-OWNED-REDIS-RECOVERY",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -213,6 +213,9 @@
     "r63_fast_redis_first_startup_restore",
     "r63_redis_full_snapshot_plus_state_events",
     "r63_heavy_shared_redis_boot_mirror",
-    "r63_redis_primary_mega_fallback_archive"
+    "r63_redis_primary_mega_fallback_archive",
+    "r64_fast_manual_restore_writes_verified_redis_snapshot",
+    "r64_fast_periodic_full_snapshot_independent_of_heavy",
+    "r64_snapshot_event_cutoff_tail_replay"
   ]
 }

@@ -283,11 +283,11 @@ if ROLE=='fast':
        all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','def _startup_mega_roots','def _discover_generation_remotes',
                                     "mega_master_enabled = _bool('MEGA_ENABLED', True)",
                                     "elif not mega_master_enabled:",
-                                    'R63 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback']) and
+                                    'R64 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback']) and
        '/internal/snapshot' not in start_src,
        'MEGA_ENABLED must fully gate FAST fallback MEGA while preserving strict direct restore when enabled')
-    ok('r63_fast_startup_redis_first_restore',
-       all(x in start_src for x in ['def _restore_from_redis_startup','R63 REDIS startup restore start',
+    ok('r64_fast_startup_redis_first_restore',
+       all(x in start_src for x in ['def _restore_from_redis_startup','R64 REDIS startup restore start',
                                     "trace['base_source'] = 'REDIS'", 'WORKER_REDIS_SNAPSHOT_KEY',
                                     'WORKER_R32_STATE_EVENT_PREFIX', 'client.zrange', '_apply_r32_events(target, events)']) and
        start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('ok, detail = _restore_from_mega_startup(target)'),
@@ -316,6 +316,20 @@ if ROLE=='fast':
        'def _r61_fetch_redis_inspect_direct' in split_src and "raw.startswith('r60:redis:')" in split_src and
        'STARTUP_REOPEN_WINDOWS' in rel_src,
        'Info must expose explicit Redis modes/direct inspector and deploy must not reopen windows by default')
+    ok('r64_fast_owned_restore_snapshot_verify',
+       'def r64_publish_restore_snapshot_v271' in split_src and
+       "reason='manual_restore:'" in split_src and 'Redis verify: sha256 mismatch' in split_src and
+       'r64_publish_restore_snapshot_v271' in web_src and 'redis_required' in web_src and 'redis_ok' in web_src,
+       'manual restore must synchronously seal and verify full SQLite in Redis directly from FAST')
+    ok('r64_fast_periodic_redis_checkpoint',
+       'def r64_schedule_fast_redis_snapshot_v271' in split_src and
+       "r64_schedule_fast_redis_snapshot_v271('logical_save')" in split_src and
+       "_split_cache_snapshot_to_redis_v266('periodic_fast_checkpoint', verify=True" in split_src,
+       'FAST must independently refresh the Redis full snapshot after normal SQLite changes')
+    ok('r64_redis_snapshot_event_cutoff',
+       "'event_cutoff_score': float(capture_started)" in split_src and
+       'client.zrangebyscore' in start_src and 'events_tail=' in start_src,
+       'startup must replay only Redis events newer than the exact full snapshot')
     ok('r59_info_env_views',
        'def render_env_snapshot' in cfg_src and "callback_data='r59:vars:render:0'" in split_src and
        "callback_data='r59:vars:code:0'" in split_src and "raw.startswith('r59:vars:')" in split_src,

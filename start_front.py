@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: restore SQLite from Redis first, then MEGA fallback, then run FAST.
 
-R63 recovery policy:
+R64 recovery policy:
 - startup/restart recovery belongs to FAST; Redis is the first fast restore source;
 - MEGA is a strict-root fallback; HEAVY is not required for startup recovery;
 - after startup, FAST logs out of MEGA and removes MEGA credentials from its process;
@@ -681,7 +681,7 @@ def _redis_render_url() -> str:
 
 
 def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
-    """R63: restore FAST directly from the shared Render Redis/Valkey.
+    """R64: restore FAST directly from the shared Render Redis/Valkey.
 
     Recovery image = immutable full gzip SQLite snapshot + all retained R32 logical
     state events.  Redis is contacted directly by FAST; HEAVY is not required for
@@ -736,19 +736,25 @@ def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
         except Exception:
             meta = {}
 
-        # Read event ids in bounded pages. One Redis round-trip per page plus one MGET
-        # is dramatically faster than hundreds of MEGA file downloads.
+        # R64: replay only the event tail newer than this exact full snapshot.
+        # Older R63 snapshots have no cutoff and safely fall back to the full idempotent index.
         try:
-            total = int(client.zcard(index_key) or 0)
+            cutoff = float((meta or {}).get('event_cutoff_score') or 0.0)
+        except Exception:
+            cutoff = 0.0
+        try:
+            total = int(client.zcount(index_key, f'({cutoff}', '+inf') or 0) if cutoff > 0 else int(client.zcard(index_key) or 0)
         except Exception:
             total = 0
         if total > max_events:
-            return False, f'Redis event index too large for safe bounded replay: {total} > {max_events}'
-        start_idx = 0
+            return False, f'Redis event tail too large for safe bounded replay: {total} > {max_events}'
         applied = stale = decoded = missing = 0
         page = max(100, min(5000, int(os.getenv('REDIS_RESTORE_EVENT_PAGE', '1000') or '1000')))
-        for offset in range(start_idx, total, page):
-            ids = client.zrange(index_key, offset, min(total - 1, offset + page - 1)) or []
+        for offset in range(0, total, page):
+            if cutoff > 0:
+                ids = client.zrangebyscore(index_key, f'({cutoff}', '+inf', start=offset, num=page) or []
+            else:
+                ids = client.zrange(index_key, offset, min(total - 1, offset + page - 1)) or []
             if not ids:
                 continue
             id_text = [x.decode('utf-8', 'replace') if isinstance(x, (bytes, bytearray)) else str(x) for x in ids]
@@ -777,7 +783,7 @@ def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
         final_rev = _db_revision(target)
         return True, (
             f'Redis startup restore OK snapshot={len(payload)}B meta_revision={float((meta or {}).get("revision") or 0.0):.6f} '
-            f'events_index={total} replayed={decoded} applied={applied} stale={stale} missing={missing} '
+            f'event_cutoff={cutoff:.6f} events_tail={total} replayed={decoded} applied={applied} stale={stale} missing={missing} '
             f'final_revision={final_rev:.6f} elapsed={time.monotonic()-started:.2f}s'
         )
     except Exception as exc:
@@ -840,11 +846,11 @@ def main():
         redis_restored = False
         if redis_master_enabled and redis_url_present:
             trace['redis_contacted'] = True
-            print('[SPLIT FRONT] R63 REDIS startup restore start', flush=True)
+            print('[SPLIT FRONT] R64 REDIS startup restore start', flush=True)
             redis_ok, redis_detail = _restore_from_redis_startup(target)
             trace['redis_ok'] = bool(redis_ok)
             trace['redis_detail'] = str(redis_detail)[:900]
-            print(f'[SPLIT FRONT] R63 REDIS startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
+            print(f'[SPLIT FRONT] R64 REDIS startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
             if redis_ok:
                 redis_restored = True
                 trace['base_source'] = 'REDIS'
@@ -861,7 +867,7 @@ def main():
             trace['mega_ok'] = False
             trace['mega_detail'] = 'MEGA disabled by Render MEGA_ENABLED=0'
             trace['base_source'] = 'LOCAL_SQLITE' if had_valid_local_before_restore and _db_valid(target) else 'EMPTY_INIT_REMOTE_UNAVAILABLE'
-            print('[SPLIT FRONT] R63 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback', flush=True)
+            print('[SPLIT FRONT] R64 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback', flush=True)
         else:
             print(f'[SPLIT FRONT] R58 MEGA STRICT ROOT locked to {strict_root}', flush=True)
             trace['mega_contacted'] = True
@@ -875,7 +881,7 @@ def main():
                 trace['mega_detail'] = last_detail[:700]
                 trace['mega_attempt'] = attempt
                 trace['mega_attempts_max'] = max_attempts
-                print(f'[SPLIT FRONT] R63 FAST MEGA fallback attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
+                print(f'[SPLIT FRONT] R64 FAST MEGA fallback attempt={attempt}/{max_attempts}:', ok, detail, flush=True)
                 if ok:
                     trace['base_source'] = 'MEGA'
                     break
@@ -892,8 +898,8 @@ def main():
             else:
                 trace['base_source'] = 'REMOTE_RESTORE_FAILED'
                 trace['local_valid_after'] = _db_valid(target)
-                print('[SPLIT FRONT] R63 FATAL: Redis failed and no valid MEGA startup snapshot:', last_detail, flush=True)
-                raise RuntimeError('R63 remote startup restore failed: ' + last_detail[:700])
+                print('[SPLIT FRONT] R64 FATAL: Redis failed and no valid MEGA startup snapshot:', last_detail, flush=True)
+                raise RuntimeError('R64 remote startup restore failed: ' + last_detail[:700])
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')

@@ -1519,34 +1519,51 @@ def _split_redis_snapshot_keys_v266():
     return key, key + ':meta'
 
 
-def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=None):
-    """Best-effort durable bridge when worker is unavailable or being redeployed.
+def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=None, *, verify=True, use_render_url=False):
+    """Write one canonical full SQLite snapshot to Redis and verify it.
 
-    Runs only from background sync/shutdown paths, never inline in Telegram handling.
+    R64: FAST owns its Redis baseline.  HEAVY may mirror/checkpoint the same keys,
+    but a successful manual restore no longer depends on HEAVY being online.
+    Background checkpoints use the active runtime URL; the manual-restore seal may
+    use the Render-owned URL whenever REDIS_ENABLED=1 so REDIS_START_ENABLED does
+    not prevent protecting a user-confirmed restore.
     """
     if _split_redis is None:
         _SPLIT_STATE['redis_fallback_last_error'] = 'redis package unavailable'
         return False
-    url = _r61_effective_redis_url()
+    url = _r61_render_redis_url() if use_render_url else _r61_effective_redis_url()
+    if use_render_url:
+        try:
+            import runtime_config as _r64_rc
+            _r64_state = dict(_r64_rc.redis_runtime_state() or {})
+            if not bool(_r64_state.get('master_enabled')):
+                _SPLIT_STATE['redis_fallback_last_error'] = 'REDIS_ENABLED=0'
+                return False
+        except Exception as _r64_state_exc:
+            _SPLIT_STATE['redis_fallback_last_error'] = f'redis state: {type(_r64_state_exc).__name__}: {str(_r64_state_exc)[:120]}'
+            return False
     if not url:
-        _SPLIT_STATE['redis_fallback_last_error'] = 'REDIS_URL empty'
+        _SPLIT_STATE['redis_fallback_last_error'] = 'REDIS_URL empty/inactive'
         return False
     workdir = None
+    client = None
     try:
+        capture_started = _split_time.time()
         if existing_gz:
             gz = str(existing_gz)
         else:
-            workdir = _split_tempfile.mkdtemp(prefix='v266_front_redis_')
+            workdir = _split_tempfile.mkdtemp(prefix='r64_front_redis_')
             raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
             gz = raw + '.gz'
             SQLITE.backup_to(raw)
             with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
                 _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
-        payload = open(gz, 'rb').read()
+        with open(gz, 'rb') as _r64_fh:
+            payload = _r64_fh.read()
         max_mb = max(1, min(128, int(_split_os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16')))
         if len(payload) > max_mb * 1024 * 1024:
             raise RuntimeError(f'snapshot too large for Redis: {len(payload)}')
-        # revision is derived from the same SQLite image by the worker; the side meta is informational.
+        digest = _split_hashlib.sha256(payload).hexdigest()
         revision = 0.0
         try:
             for kind in ('split_state_revision_r18', 'user_state_shadow_v265', 'runtime_continuity_v263'):
@@ -1555,7 +1572,7 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
         except Exception:
             pass
         key, meta_key = _split_redis_snapshot_keys_v266()
-        client = _split_redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=8, health_check_interval=30)
+        client = _split_redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=12, health_check_interval=30)
         existing_revision = 0.0
         try:
             existing_raw = client.get(meta_key)
@@ -1565,24 +1582,134 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             existing_revision = float((existing_meta or {}).get('revision') or 0.0)
         except Exception:
             existing_revision = 0.0
-        if existing_revision > revision + 0.000001:
+        # A manual restore is an explicit re-anchor and must overwrite any older-lineage
+        # revision comparison.  Background checkpoints still preserve a provably newer image.
+        is_manual = str(reason or '').startswith('manual_restore:')
+        if (not is_manual) and existing_revision > revision + 0.000001:
             _SPLIT_STATE['redis_fallback_last_ok'] = _split_time.time()
             _SPLIT_STATE['redis_fallback_last_error'] = 'newer Redis snapshot preserved'
             return True
-        meta = {'revision': revision, 'size': len(payload), 'saved_at': _split_time.time(), 'reason': str(reason or '')[:160], 'source': 'front-r18'}
+        meta = {
+            'revision': revision, 'size': len(payload), 'sha256': digest,
+            'saved_at': _split_time.time(), 'event_cutoff_score': float(capture_started),
+            'reason': str(reason or '')[:160], 'source': 'fast-r64', 'schema': 2,
+        }
         pipe = client.pipeline(transaction=True)
         pipe.set(key, payload)
         pipe.set(meta_key, _split_json.dumps(meta, separators=(',', ':')))
         pipe.execute()
+        if verify:
+            back = client.get(key)
+            if not isinstance(back, (bytes, bytearray)):
+                raise RuntimeError('Redis verify: snapshot key unreadable')
+            if len(back) != len(payload):
+                raise RuntimeError(f'Redis verify: size mismatch {len(back)} != {len(payload)}')
+            back_digest = _split_hashlib.sha256(bytes(back)).hexdigest()
+            if back_digest != digest:
+                raise RuntimeError('Redis verify: sha256 mismatch')
+            meta_back = client.get(meta_key)
+            if isinstance(meta_back, (bytes, bytearray)):
+                meta_back = meta_back.decode('utf-8', 'replace')
+            meta_obj = _split_json.loads(meta_back) if isinstance(meta_back, str) and meta_back else {}
+            if str((meta_obj or {}).get('sha256') or '') != digest:
+                raise RuntimeError('Redis verify: meta sha256 mismatch')
         _SPLIT_STATE['redis_fallback_last_ok'] = _split_time.time()
         _SPLIT_STATE['redis_fallback_last_error'] = ''
+        _SPLIT_STATE['redis_fallback_last_size'] = len(payload)
+        _SPLIT_STATE['redis_fallback_last_sha256'] = digest
+        _SPLIT_STATE['redis_fallback_last_reason'] = str(reason or '')[:160]
         return True
     except Exception as exc:
-        _SPLIT_STATE['redis_fallback_last_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+        _SPLIT_STATE['redis_fallback_last_error'] = f'{type(exc).__name__}: {str(exc)[:220]}'
         return False
     finally:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass
         if workdir:
             _split_shutil.rmtree(workdir, ignore_errors=True)
+
+
+def r64_publish_restore_snapshot_v271(reason='restore'):
+    """Synchronously seal a successful manual restore into Redis on FAST.
+
+    Returns a structured result so every restore path can report whether the new
+    canonical SQLite was actually recoverable before telling the owner it is sealed.
+    """
+    try:
+        import runtime_config as _r64_rc
+        st = dict(_r64_rc.redis_runtime_state() or {})
+    except Exception as exc:
+        return {'required': False, 'ok': False, 'detail': f'runtime_config: {type(exc).__name__}: {str(exc)[:180]}'}
+    required = bool(st.get('master_enabled') and st.get('configured'))
+    if not required:
+        return {'required': False, 'ok': False, 'detail': 'Redis recovery not configured in Render'}
+    ok = bool(_split_cache_snapshot_to_redis_v266(
+        reason='manual_restore:' + str(reason or 'restore')[:120],
+        verify=True, use_render_url=True,
+    ))
+    detail = 'Redis full SQLite snapshot verified' if ok else str(_SPLIT_STATE.get('redis_fallback_last_error') or 'unknown Redis snapshot error')[:300]
+    try:
+        bot_journal('r64_restore_redis_snapshot', int(OWNER_ID or 0), f'ok={int(ok)}; reason={str(reason)[:120]}; detail={detail}')
+    except Exception:
+        pass
+    if not ok and _r61_effective_redis_url():
+        try:
+            retry_fn = globals().get('r64_schedule_fast_redis_snapshot_v271')
+            if callable(retry_fn): retry_fn('manual_restore_retry')
+        except Exception:
+            pass
+    return {
+        'required': True, 'ok': ok, 'detail': detail,
+        'size': int(_SPLIT_STATE.get('redis_fallback_last_size') or 0),
+        'sha256': str(_SPLIT_STATE.get('redis_fallback_last_sha256') or '')[:64],
+    }
+
+
+_R64_REDIS_SNAPSHOT_TIMER = None
+_R64_REDIS_SNAPSHOT_LOCK = _split_threading.RLock()
+_R64_REDIS_SNAPSHOT_DIRTY = False
+_R64_REDIS_SNAPSHOT_LAST_AT = 0.0
+
+def _r64_periodic_redis_snapshot_fire_v271():
+    global _R64_REDIS_SNAPSHOT_TIMER, _R64_REDIS_SNAPSHOT_DIRTY, _R64_REDIS_SNAPSHOT_LAST_AT
+    with _R64_REDIS_SNAPSHOT_LOCK:
+        _R64_REDIS_SNAPSHOT_TIMER = None
+        dirty = bool(_R64_REDIS_SNAPSHOT_DIRTY)
+        _R64_REDIS_SNAPSHOT_DIRTY = False
+    if not dirty or not _r61_effective_redis_url():
+        return
+    ok = bool(_split_cache_snapshot_to_redis_v266('periodic_fast_checkpoint', verify=True, use_render_url=False))
+    now = _split_time.time()
+    if ok:
+        _R64_REDIS_SNAPSHOT_LAST_AT = now
+        return
+    # Keep one bounded retry armed.  The latest SQLite stays authoritative locally.
+    with _R64_REDIS_SNAPSHOT_LOCK:
+        _R64_REDIS_SNAPSHOT_DIRTY = True
+        if _R64_REDIS_SNAPSHOT_TIMER is None:
+            _R64_REDIS_SNAPSHOT_TIMER = _split_threading.Timer(30.0, _r64_periodic_redis_snapshot_fire_v271)
+            _R64_REDIS_SNAPSHOT_TIMER.daemon = True
+            _R64_REDIS_SNAPSHOT_TIMER.start()
+
+def r64_schedule_fast_redis_snapshot_v271(reason='state_change'):
+    """Debounced FAST-owned Redis checkpoint; never runs in the Telegram hot path."""
+    global _R64_REDIS_SNAPSHOT_TIMER, _R64_REDIS_SNAPSHOT_DIRTY
+    if not _r61_effective_redis_url():
+        return False
+    with _R64_REDIS_SNAPSHOT_LOCK:
+        _R64_REDIS_SNAPSHOT_DIRTY = True
+        now = _split_time.time()
+        since = max(0.0, now - float(_R64_REDIS_SNAPSHOT_LAST_AT or 0.0))
+        delay = 12.0 if since >= 60.0 else max(12.0, 60.0 - since)
+        if _R64_REDIS_SNAPSHOT_TIMER is not None:
+            return True
+        _R64_REDIS_SNAPSHOT_TIMER = _split_threading.Timer(delay, _r64_periodic_redis_snapshot_fire_v271)
+        _R64_REDIS_SNAPSHOT_TIMER.daemon = True
+        _R64_REDIS_SNAPSHOT_TIMER.start()
+    return True
 
 
 def _split_ping_once():
@@ -2769,6 +2896,11 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
             else:
                 _SPLIT_STATE['sync_pending'] = True
                 _SPLIT_STATE['sync_reason'] = 'boot_coalesced'
+    except Exception:
+        pass
+    try:
+        if not bool(globals().get('_V241_RESTORE_ACTIVE', False)):
+            r64_schedule_fast_redis_snapshot_v271('logical_save')
     except Exception:
         pass
     return result
@@ -4680,7 +4812,7 @@ def _r60_redis_menu_text(extra=''):
     st=_r49_redis_runtime_state()
     enabled=bool(st.get('enabled'))
     lines=[
-        '🧱 REDIS · R63',
+        '🧱 REDIS · R64',
         '',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
@@ -5040,7 +5172,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     if mode == R31_MENU_MODE_THIRD:
         return _r31_third_info_text(cid)
     return window_mark(
-        'ℹ️ ИНФО · R63\n\n'
+        'ℹ️ ИНФО · R64\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
         '⚡ FAST UI: callback не ждёт Telegram; рендер идёт отдельной latest-wins очередью.\n'
