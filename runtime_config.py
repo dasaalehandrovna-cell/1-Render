@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r66-parallel-independent-windows"
+CONFIG_VERSION = "vys-262-r67-turbo-ui"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -40,6 +40,10 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
         "WINDOW_RENDER_MAX_PENDING_KEYS": "256",
     "UI_MAX_PENDING": "300",
     "CALLBACK_ACK_WORKERS": "2",
+    "NAVIGATION_UI_WORKERS": "4",
+    "NAVIGATION_UI_MAX_PENDING": "256",
+    "FAST_TELEGRAM_CHAT_GAP": "0.10",
+    "TELEGRAM_GLOBAL_MIN_GAP": "0.05",
     "UI_CLEANUP_WORKERS": "1",
     "UI_DELETE_WORKERS": "1",
     "UI_DELETE_MAX_PENDING": "400",

@@ -682,25 +682,46 @@ class LatestKeyedTaskPool:
         for idx in range(self.workers):
             threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True).start()
 
-    def submit_latest(self, key, func, *args, **kwargs):
+    def submit_latest(self, key, func, *args, on_replaced=None, **kwargs):
+        """Submit newest work for *key* and replace an older waiting task.
+
+        ``on_replaced`` belongs to the submitted task itself.  If that waiting task is
+        superseded later, its callback is executed outside the pool lock.  R67 TURBO
+        uses this to close the durable dispatcher ticket for a navigation callback that
+        is intentionally discarded before execution.
+        """
         key = str(key)
+        replaced_callback = None
         with self._lock:
             if key not in self._active_keys and len(self._active_keys) >= self.max_pending_keys:
                 self._rejected += 1
                 return 0
             self._seq[key] += 1
             seq = int(self._seq[key])
-            task = (seq, func, args, kwargs, time.monotonic())
-            if key in self._latest:
+            previous = self._latest.get(key)
+            task = (seq, func, args, kwargs, time.monotonic(), on_replaced)
+            if previous is not None:
                 self._replaced += 1
+                if len(previous) >= 6:
+                    replaced_callback = previous[5]
             self._latest[key] = task
             self._submitted += 1
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
             _r52_snap = (len(self._latest), self._active_workers, len(self._active_keys), self._replaced)
+        if callable(replaced_callback):
+            try:
+                replaced_callback()
+            except Exception as exc:
+                try: log_error(f'POOL {self.name} replace callback: {exc}')
+                except Exception: pass
         r52_diag('LATEST_SUBMIT', pool=self.name, key=key, seq=seq, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], replaced=_r52_snap[3], func=getattr(func,'__name__',type(func).__name__))
         return seq
+
+    def submit(self, key, func, *args, **kwargs):
+        """Compatibility with selector callers; still latest-wins, never FIFO."""
+        return bool(self.submit_latest(key, func, *args, **kwargs))
 
     def is_latest(self, key, seq: int) -> bool:
         key = str(key)
@@ -720,7 +741,7 @@ class LatestKeyedTaskPool:
                     self._active_keys.discard(key)
                 self._ready.task_done()
                 continue
-            seq, func, args, kwargs, enqueued_mono = task
+            seq, func, args, kwargs, enqueued_mono, _on_replaced = task
             wait = max(0.0, time.monotonic() - enqueued_mono)
             with self._lock:
                 self._max_wait = max(self._max_wait, wait)
@@ -926,7 +947,7 @@ UI_TASK_POOL = KeyedTaskPool('ui', _env_int('UI_WORKERS', 2, 2, 8), _env_int('UI
 FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 2, 2, 8), _env_int('FAST_UI_MAX_PENDING', 600, 50, 2000))
 # R65: dedicated high-priority lane for idempotent Back / Info / Main navigation.
 # It never waits behind ordinary window callbacks or background chat probes.
-NAVIGATION_TASK_POOL = KeyedTaskPool('nav-ui', _env_int('NAVIGATION_UI_WORKERS', 2, 2, 4), _env_int('NAVIGATION_UI_MAX_PENDING', 300, 50, 1000))
+NAVIGATION_TASK_POOL = LatestKeyedTaskPool('nav-ui', _env_int('NAVIGATION_UI_WORKERS', 4, 2, 6), _env_int('NAVIGATION_UI_MAX_PENDING', 256, 32, 1000))
 # R22: Telegram editMessageText/caption runs here, never inside callback workers.
 WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 2, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 1000))
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 2, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
@@ -2945,8 +2966,20 @@ def effective_ui_edit_interval() -> float:
     return max(0.02, min(0.05, configured))
 
 def effective_fast_telegram_gap() -> float:
-    configured = float(active_bot_behavior_profile_info().get('fast_tg_gap', 0.02))
-    return max(0.32, min(0.55, float(os.getenv('FAST_TELEGRAM_CHAT_GAP', '0.36') or '0.36')))
+    """R67 TURBO: fast UI edits are latest-wins, so a 320ms artificial chat gap is unnecessary.
+
+    Keep a small floor to avoid bursts, while the shared Telegram 429 cooldown remains
+    authoritative and automatically slows all callers if Telegram asks us to back off.
+    """
+    try:
+        configured = float(active_bot_behavior_profile_info().get('fast_tg_gap', 0.10) or 0.10)
+    except Exception:
+        configured = 0.10
+    try:
+        requested = float(os.getenv('FAST_TELEGRAM_CHAT_GAP', str(configured)) or configured)
+    except Exception:
+        requested = configured
+    return max(0.06, min(0.20, requested))
 
 def main_article_buttons_enabled(chat_id: int) -> bool:
     try:

@@ -438,7 +438,7 @@ if ROLE=='fast':
 
     # R65: priority navigation, non-blocking chat probe and manual all-MEGA recovery via HEAVY.
     ok('r65_priority_navigation_lane',
-       "NAVIGATION_TASK_POOL = KeyedTaskPool('nav-ui'" in core_src and
+       "NAVIGATION_TASK_POOL = LatestKeyedTaskPool('nav-ui'" in core_src and
        "return (NAVIGATION_TASK_POOL, f'nav-window:{chat_id}:{message_id}')" in rel_src,
        'safe navigation must bypass ordinary callback work')
     ok('r65_navigation_epoch_stale_render_guard',
@@ -446,6 +446,18 @@ if ROLE=='fast':
        "globals().get('_r65_render_is_stale_after_navigation')" in rel_src and
        'R65_NAV_STALE_RENDER_SKIP' in rel_src,
        'older renders must not overwrite newer navigation')
+    ok('r67_turbo_navigation_latest_wins',
+       "NAVIGATION_TASK_POOL = LatestKeyedTaskPool('nav-ui'" in core_src and
+       'selected_pool.submit_latest' in web_src and
+       'superseded_navigation_r67_turbo' in web_src,
+       'safe navigation must replace stale waiting callbacks and close their durable tickets')
+    ok('r67_turbo_fast_telegram_gap',
+       'return max(0.06, min(0.20, requested))' in core_src and
+       str(env.get('FAST_TELEGRAM_CHAT_GAP','')) == '0.10',
+       'FAST Telegram chat gap must be adaptive and around 100ms')
+    ok('r67_turbo_ack_timeout',
+       "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py',''),
+       'callback ACK must have a bounded network timeout')
     probe_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
     ok('r65_parallel_chat_probe_idle_targeted_persist',
        'ThreadPoolExecutor' in probe_src and '_r65_schedule_chat_probe_persist' in probe_src and

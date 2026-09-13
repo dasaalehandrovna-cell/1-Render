@@ -6221,6 +6221,8 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         except Exception: pass
         try: r52_diag('ACK_NATIVE_START', update=_r25_ack_row.get('update_id') or '-', chat=_r25_ack_row.get('chat_id'), action=str(_r25_ack_row.get('action') or '')[:180], callback_id=callback_id, text=str(text or '')[:180], show_alert=int(bool(kwargs.get('show_alert'))), ack_pool=CALLBACK_ACK_TASK_POOL.stats())
         except Exception: pass
+        # R67 TURBO: never let one slow ACK socket occupy an ACK worker for tens of seconds.
+        kwargs.setdefault('timeout', 3)
         result = _NATIVE_BOT_ANSWER_CALLBACK_QUERY(bot, callback_query_id, *args, **kwargs)
         try: log_info(f'BTNTRACE update={_r25_ack_row.get("update_id") or "-"} chat={_r25_ack_row.get("chat_id")} action={str(_r25_ack_row.get("action") or "")[:180]} stage=ACK_DONE elapsed={time.monotonic()-_r25_ack_started:.3f}s')
         except Exception: pass

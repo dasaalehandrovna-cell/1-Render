@@ -4705,7 +4705,43 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             selected_pool, selected_key = (FAST_UI_TASK_POOL, f'fast-callback:{update_key}')
         try: r52_diag('CALLBACK_LANE_SELECTED', update=update_id, chat=update_chat_id, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240], pool=getattr(selected_pool,'name','?'), key=selected_key, pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {})
         except Exception: pass
-        _r52_enqueued = selected_pool.submit(selected_key, _process_callback)
+        def _r67_turbo_superseded_navigation():
+            """Close a navigation callback that was replaced before execution."""
+            try:
+                UPDATE_DISPATCHER.finish(update_id, True, 'superseded_navigation_r67_turbo')
+            except Exception:
+                pass
+            if _r48_coalesce_key:
+                try:
+                    with _R48_NAV_COALESCE_LOCK:
+                        _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
+                except Exception:
+                    pass
+            try:
+                UI_CLEANUP_TASK_POOL.submit(
+                    f'r67-turbo-superseded:{update_id}',
+                    _r22_callback_inbox_mark_background,
+                    update_id, 'done', 'superseded_navigation_r67_turbo'
+                )
+                UI_CLEANUP_TASK_POOL.submit(
+                    f'r67-turbo-event:{update_id}',
+                    _r22_callback_commit_background,
+                    update_id, update_chat_id, True, 'superseded_navigation_r67_turbo'
+                )
+            except Exception:
+                pass
+            try:
+                r52_diag('R67_TURBO_NAV_SUPERSEDED', update=update_id, chat=update_chat_id, key=selected_key)
+            except Exception:
+                pass
+
+        if selected_pool is globals().get('NAVIGATION_TASK_POOL') and hasattr(selected_pool, 'submit_latest'):
+            _r52_enqueued = selected_pool.submit_latest(
+                selected_key, _process_callback,
+                on_replaced=_r67_turbo_superseded_navigation,
+            )
+        else:
+            _r52_enqueued = selected_pool.submit(selected_key, _process_callback)
         try: r52_diag('CALLBACK_ENQUEUE_RESULT', update=update_id, chat=update_chat_id, pool=getattr(selected_pool,'name','?'), key=selected_key, queued=int(bool(_r52_enqueued)), pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {}, dispatcher=UPDATE_DISPATCHER.stats())
         except Exception: pass
         if not _r52_enqueued:

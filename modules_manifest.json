@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "ff8d724a93f1ad1779784c126630769e160a7939ec3333fdb65d7674f864caec",
+    "01_core_data.py": "e9b5d3ac0be192a974f7335459211c0eb80843382cdf3ab29595ac7ae46eebf1",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
-    "05_finance_ui.py": "fe1ce1e22626228c38ca53dde587537605cc6354a8cb634a2eb0e56eb3f093e6",
+    "05_finance_ui.py": "6d9b508d304a258f84d09452e14279355b2d661b56a797a501a3e604393b64a8",
     "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
-    "07_state_web.py": "962f742b469cb098b4475232c9a2882f6a2b4868406c1d2ccb37521f7a711661",
+    "07_state_web.py": "6497a017ef7322810a9039f636990f282e08594e9778212bf690fd8aa8506477",
     "08_reliability_tasks.py": "96d907c50e6233a61037f5aaf1f2b339b776155b089de16f7fdcf2350888f52b",
     "09_final_transport.py": "9e139df07a872c37c120b593613aef9650b61dc16d722924c9a745fb4fc16a22",
     "10_split_policy_offload.py": "262c40d352f43ee376f550c4db089e7c27a30e23744a8abcfdd82c7106e10a6f"
   },
-  "release": "Пер-R67-BOOT-REPLAY-FINALIZED",
+  "release": "Пер-R67-TURBO-BOTFATHER-UI-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -233,6 +233,11 @@
     "r67_drop_stale_ui_navigation_callbacks_after_restart",
     "r67_running_failed_business_callback_needs_review",
     "r67_boot_replay_decision_audit",
-    "r67_single_public_runtime_owner_for_split_final_symbols"
+    "r67_single_public_runtime_owner_for_split_final_symbols",
+    "r67_turbo_latest_wins_navigation_actor",
+    "r67_turbo_superseded_navigation_durable_close",
+    "r67_turbo_100ms_fast_telegram_edit_gap",
+    "r67_turbo_bounded_callback_ack_timeout",
+    "r67_turbo_business_fifo_unchanged"
   ]
 }
