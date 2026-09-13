@@ -31,7 +31,7 @@ _require_info = str(os.getenv('FINALIZATION_REQUIRE_INFO','1')).strip().lower() 
 _runtime_build = str(os.getenv('FINALIZATION_RUNTIME_BUILD','0')).strip().lower() in {'1','true','yes','on'}
 _run_startup_smoke = str(os.getenv('FINALIZATION_STARTUP_SMOKE','0')).strip().lower() in {'1','true','yes','on'}
 ok('required_FINALIZATION_GATE.py',(ROOT/'FINALIZATION_GATE.py').is_file(),'FINALIZATION_GATE.py')
-for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md','INFO/CHANGELOG.md','INFO/NEXT_CHAT_HANDOFF.md','INFO/DEPLOY_R68_RU.md']:
+for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md','INFO/CHANGELOG.md','INFO/NEXT_CHAT_HANDOFF.md','INFO/DEPLOY_R69_RU.md']:
     if _require_info:
         ok('required_'+req,(ROOT/req).is_file(),req)
 
@@ -46,13 +46,20 @@ if ROLE=='fast':
     actual_root_py={p.name for p in ROOT.glob('*.py')}
     ok('r48_compact_root_exact',actual_root_py==expected_root_py,
        'extra='+','.join(sorted(actual_root_py-expected_root_py))+' missing='+','.join(sorted(expected_root_py-actual_root_py)))
-    # R68 release layout: root contains deployment/runtime files only.
-    allowed_root_files = expected_root_py | {
+    # R69 release layout: PACKAGE root and Docker runtime root are intentionally different.
+    # PACKAGE must contain Dockerfile/.dockerignore for deployment; Docker /app must NOT
+    # require those build-context files because the explicit Docker COPY allowlist omits them.
+    package_root_files = expected_root_py | {
         'Dockerfile','.dockerignore','requirements.txt','modules_manifest.json'
     }
+    runtime_root_files = expected_root_py | {
+        'requirements.txt','modules_manifest.json'
+    }
     actual_root_files = {x.name for x in ROOT.iterdir() if x.is_file()}
-    ok('r68_root_deploy_files_only', actual_root_files == allowed_root_files,
-       'extra='+','.join(sorted(actual_root_files-allowed_root_files))+' missing='+','.join(sorted(allowed_root_files-actual_root_files)))
+    expected_mode_root = runtime_root_files if _runtime_build else package_root_files
+    mode_check = 'r69_runtime_build_root_exact' if _runtime_build else 'r69_package_root_deploy_files_only'
+    ok(mode_check, actual_root_files == expected_mode_root,
+       'extra='+','.join(sorted(actual_root_files-expected_mode_root))+' missing='+','.join(sorted(expected_mode_root-actual_root_files)))
     hash_bad=[]; marker_bad=[]
     for rel,sha in files.items():
         p=ROOT/rel
@@ -245,7 +252,7 @@ if ROLE=='fast':
            all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py']) and 'COPY INFO/' not in docker_src,
            'Dockerfile must explicitly copy only compact runtime; INFO must not be a production dependency')
         ok('r48_dockerignore_allowlist',
-           dockerignore_src.lstrip().startswith('# R68 DEPLOY-ONLY ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
+           dockerignore_src.lstrip().startswith('# R69 DEPLOY-ONLY ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
            '.dockerignore must be a strict runtime-only compact allowlist; INFO is release-only')
 
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
@@ -518,17 +525,17 @@ if ROLE=='fast':
         history_src=text('INFO/CHANGELOG.md')
         map_src=text('INFO/BOT_MAP.md')
         handoff_src=text('INFO/NEXT_CHAT_HANDOFF.md')
-        ok('r68_info_version_increment_rule',
+        ok('r69_info_version_increment_rule',
            'каждая следующая версия' in rules_src.lower() and '+1' in rules_src,
            'project rules must preserve the user version +1 rule')
-        ok('r68_info_history_present',
-           'R68' in history_src and 'R67' in history_src,
+        ok('r69_info_history_present',
+           'R69' in history_src and 'R68' in history_src and 'R67' in history_src,
            'CHANGELOG must preserve previous and current release history')
-        ok('r68_info_bot_map_for_fast_edits',
+        ok('r69_info_bot_map_for_fast_edits',
            'БЫСТРАЯ КАРТА ПРАВОК' in map_src and '01_core_data.py' in map_src and '10_split_policy_offload.py' in map_src,
            'BOT_MAP must tell the next chat where to edit common subsystems')
-        ok('r68_info_next_chat_handoff',
-           'PATCH → FINALIZE → TEST → PACKAGE' in handoff_src and 'R68' in handoff_src and 'R69' in handoff_src,
+        ok('r69_info_next_chat_handoff',
+           'PATCH → FINALIZE → TEST → PACKAGE' in handoff_src and 'R69' in handoff_src and 'R70' in handoff_src,
            'next-chat handoff must explain current base and next version')
     probe_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
     ok('r65_parallel_chat_probe_idle_targeted_persist',

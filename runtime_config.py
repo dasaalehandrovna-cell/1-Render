@@ -1,4 +1,4 @@
-"""vys-262 R68 internal runtime configuration.
+"""vys-262 R69 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r68-local-files-history-map"
+CONFIG_VERSION = "vys-262-r69-runtime-gate-mode-fix"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {

@@ -25,7 +25,7 @@
     "09_final_transport.py": "9e139df07a872c37c120b593613aef9650b61dc16d722924c9a745fb4fc16a22",
     "10_split_policy_offload.py": "9c0c5fc6818b08652988db7a25122b5fe486ea6500b705defa2965ee1bc6f794"
   },
-  "release": "Пер-R68-LOCAL-FILES-HISTORY-MAP-FINAL",
+  "release": "Пер-R69-RUNTIME-GATE-MODE-FIX-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -253,6 +253,9 @@
     "r68_local_restore_trace_json",
     "r68_local_sqlite_gz_background_snapshot",
     "r68_same_container_snapshot_plus_event_replay",
-    "r68_local_ephemeral_not_cross_deploy_authority"
+    "r68_local_ephemeral_not_cross_deploy_authority",
+    "r69_package_vs_runtime_root_gate_split",
+    "r69_docker_runtime_no_dockerfile_dependency",
+    "r69_info_history_handoff_r70"
   ]
 }
