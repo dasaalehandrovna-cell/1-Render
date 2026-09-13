@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r67-turbo-ui"
+CONFIG_VERSION = "vys-262-r67-direct-botfather-ui"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -42,7 +42,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "CALLBACK_ACK_WORKERS": "2",
     "NAVIGATION_UI_WORKERS": "4",
     "NAVIGATION_UI_MAX_PENDING": "256",
-    "FAST_TELEGRAM_CHAT_GAP": "0.10",
+    "FAST_TELEGRAM_CHAT_GAP": "0.03",
     "TELEGRAM_GLOBAL_MIN_GAP": "0.05",
     "UI_CLEANUP_WORKERS": "1",
     "UI_DELETE_WORKERS": "1",

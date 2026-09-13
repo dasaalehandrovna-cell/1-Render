@@ -446,18 +446,31 @@ if ROLE=='fast':
        "globals().get('_r65_render_is_stale_after_navigation')" in rel_src and
        'R65_NAV_STALE_RENDER_SKIP' in rel_src,
        'older renders must not overwrite newer navigation')
-    ok('r67_turbo_navigation_latest_wins',
-       "NAVIGATION_TASK_POOL = LatestKeyedTaskPool('nav-ui'" in core_src and
-       'selected_pool.submit_latest' in web_src and
-       'superseded_navigation_r67_turbo' in web_src,
-       'safe navigation must replace stale waiting callbacks and close their durable tickets')
-    ok('r67_turbo_fast_telegram_gap',
-       'return max(0.06, min(0.20, requested))' in core_src and
-       str(env.get('FAST_TELEGRAM_CHAT_GAP','')) == '0.10',
-       'FAST Telegram chat gap must be adaptive and around 100ms')
-    ok('r67_turbo_ack_timeout',
-       "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py',''),
-       'callback ACK must have a bounded network timeout')
+    ack_direct_src=_fn_sources(rel_src,{'_canon_schedule_callback_receipt_ack__001'}).get('_canon_schedule_callback_receipt_ack__001','')
+    render_direct_src=_fn_sources(rel_src,{'_canon_fast_ui_edit_message_text__001'}).get('_canon_fast_ui_edit_message_text__001','')
+    ok('r67_direct_ack_before_all_queues',
+       '_tracked_answer_callback_query(callback_id, show_alert=False, timeout=1.25)' in ack_direct_src and
+       ack_direct_src.find('_tracked_answer_callback_query') < ack_direct_src.find('CALLBACK_ACK_TASK_POOL.submit_unique'),
+       'every callback must receive a direct native ACK before any internal queue; ACK pool is fallback only')
+    ok('r67_direct_navigation_no_pool_hop',
+       "if selected_pool is globals().get('NAVIGATION_TASK_POOL')" in web_src and
+       "UPDATE_DISPATCHER.mark_enqueued(update_id, 'direct-nav', selected_key)" in web_src and
+       '_process_callback()' in web_src and 'R67_DIRECT_NAV_START' in web_src,
+       'safe navigation must execute directly in the webhook request after direct ACK')
+    ok('r67_direct_callback_render_no_window_pool',
+       'if direct_callback:' in render_direct_src and '_r22_execute_window_render(payload)' in render_direct_src and
+       render_direct_src.find('_r22_execute_window_render(payload)') < render_direct_src.find('WINDOW_RENDER_TASK_POOL.submit_latest'),
+       'live callback render must go straight to Telegram; window-render actor is background fallback only')
+    ok('r67_background_render_still_latest_wins',
+       'WINDOW_RENDER_TASK_POOL.submit_latest' in render_direct_src,
+       'background/scheduler renders must remain latest-wins so they cannot flood Telegram')
+    ok('r67_direct_fast_telegram_gap',
+       'return max(0.02, min(0.08, requested))' in core_src and
+       str(env.get('FAST_TELEGRAM_CHAT_GAP','')) == '0.03',
+       'direct callback Telegram gap must default around 30ms while retaining 429 cooldown')
+    ok('r67_direct_ack_timeout',
+       "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py','') and 'timeout=1.25' in ack_direct_src,
+       'direct ACK and fallback ACK must both have bounded network timeouts')
     probe_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
     ok('r65_parallel_chat_probe_idle_targeted_persist',
        'ThreadPoolExecutor' in probe_src and '_r65_schedule_chat_probe_persist' in probe_src and

@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "e9b5d3ac0be192a974f7335459211c0eb80843382cdf3ab29595ac7ae46eebf1",
+    "01_core_data.py": "81663f930109d4bbba9b35edb261142215429c9f8aa037ffb637400b9341e0bf",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "6d9b508d304a258f84d09452e14279355b2d661b56a797a501a3e604393b64a8",
     "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
-    "07_state_web.py": "6497a017ef7322810a9039f636990f282e08594e9778212bf690fd8aa8506477",
-    "08_reliability_tasks.py": "96d907c50e6233a61037f5aaf1f2b339b776155b089de16f7fdcf2350888f52b",
+    "07_state_web.py": "2fc528ce220f2d18c53d5932dd533539f0128c398cf5fa6369218ade32fbc15e",
+    "08_reliability_tasks.py": "a7b1da40521247cd5eb38b1e8cf7ccfa34aefd94ff7ab3a268ecf1ba199823a8",
     "09_final_transport.py": "9e139df07a872c37c120b593613aef9650b61dc16d722924c9a745fb4fc16a22",
     "10_split_policy_offload.py": "262c40d352f43ee376f550c4db089e7c27a30e23744a8abcfdd82c7106e10a6f"
   },
-  "release": "Пер-R67-TURBO-BOTFATHER-UI-FINAL",
+  "release": "Пер-R67-DIRECT-BOTFATHER-UI-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -238,6 +238,12 @@
     "r67_turbo_superseded_navigation_durable_close",
     "r67_turbo_100ms_fast_telegram_edit_gap",
     "r67_turbo_bounded_callback_ack_timeout",
-    "r67_turbo_business_fifo_unchanged"
+    "r67_turbo_business_fifo_unchanged",
+    "r67_direct_native_callback_ack_before_internal_queues",
+    "r67_direct_navigation_in_webhook_request",
+    "r67_direct_callback_render_without_window_actor",
+    "r67_business_order_preserved_after_direct_visual_ack",
+    "r67_background_render_latest_wins_only",
+    "r67_fast_telegram_gap_20_80ms_default_30ms"
   ]
 }

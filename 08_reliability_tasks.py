@@ -3102,16 +3102,50 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         payload['_r22_action'] = ''
     payload['_r22_enqueued_mono'] = _v160_time.monotonic()
     key = f'{chat_id}:{message_id}'
+
+    # R67 DIRECT UI: when this render belongs to the callback currently being handled,
+    # do not insert a window-render actor between the handler and Telegram.  The render
+    # executor still enforces navigation epoch/stale fences, but runs synchronously in
+    # the callback execution context.  Background/scheduler refreshes remain latest-wins
+    # through WINDOW_RENDER_TASK_POOL so they can never overtake a live user gesture.
+    try:
+        ctx_fn = globals().get('r25_trace_current')
+        live_ctx = ctx_fn() if callable(ctx_fn) else {}
+        direct_callback = (str((live_ctx or {}).get('update_type') or '') == 'callback_query' and
+                           str((live_ctx or {}).get('update_id') or '') == str(payload.get('_r25_update_id') or ''))
+    except Exception:
+        direct_callback = False
+    if direct_callback:
+        try:
+            r52_diag('R67_DIRECT_RENDER_START', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, action=payload.get('_r22_action') or '', purpose=purpose, key=key)
+        except Exception:
+            pass
+        started = _v160_time.monotonic()
+        try:
+            _r22_execute_window_render(payload)
+            try:
+                r52_diag('R67_DIRECT_RENDER_DONE', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, purpose=purpose, elapsed=_v160_time.monotonic()-started)
+            except Exception:
+                pass
+            return 'direct'
+        except Exception as exc:
+            try:
+                log_error(f'R67 DIRECT WINDOW RENDER FAILED chat={chat_id} msg={message_id}: {exc}')
+                r52_diag('R67_DIRECT_RENDER_ERROR', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, purpose=purpose, elapsed=_v160_time.monotonic()-started, error=f'{type(exc).__name__}:{str(exc)[:700]}')
+            except Exception:
+                pass
+            return 'failed'
+
     try:
         r52_diag('RENDER_SUBMIT_START', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, action=payload.get('_r22_action') or '', purpose=purpose, key=key, text_len=len(str(text or '')), render_pool=WINDOW_RENDER_TASK_POOL.stats())
         seq = WINDOW_RENDER_TASK_POOL.submit_latest(key, _r22_execute_window_render, payload)
         r52_diag('RENDER_SUBMIT_DONE', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, action=payload.get('_r22_action') or '', purpose=purpose, key=key, seq=seq, render_pool=WINDOW_RENDER_TASK_POOL.stats())
     except Exception as exc:
-        try: log_error(f'R49 WINDOW RENDER ENQUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
+        try: log_error(f'R67 WINDOW RENDER ENQUEUE FAILED chat={chat_id} msg={message_id}: {exc}')
         except Exception: pass
         return 'failed'
     if not seq:
-        try: log_error(f'R49 WINDOW RENDER QUEUE FULL chat={chat_id} msg={message_id}')
+        try: log_error(f'R67 WINDOW RENDER QUEUE FULL chat={chat_id} msg={message_id}')
         except Exception: pass
         return 'failed'
     try:
@@ -7284,7 +7318,13 @@ def _execute_telegram_payload_core(payload: dict, update_id=None, update_chat_id
 
 
 def _canon_schedule_callback_receipt_ack__001(callback_id: str, chat_id=None, delay: float | None=None):
-    # R18: receipt ACK is a dedicated immediate lane, not a delayed scheduler job.
+    """R67 DIRECT UI: the user's first visual response has no internal queue.
+
+    The webhook request calls Telegram answerCallbackQuery immediately.  Only a failed
+    direct network attempt is delegated to the bounded ACK pool as a retry.  This keeps
+    the BotFather-like spinner dismissal in front of SQLite/Redis/dispatcher/business
+    work while preserving a reliable fallback if Telegram is briefly unavailable.
+    """
     callback_id = str(callback_id or '')
     if not callback_id:
         return False
@@ -7296,13 +7336,27 @@ def _canon_schedule_callback_receipt_ack__001(callback_id: str, chat_id=None, de
             row['ts'] = time.time()
             if row.get('answered') or row.get('inflight'):
                 return True
-        _r52_ack_ok=bool(CALLBACK_ACK_TASK_POOL.submit_unique(f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id))
-        try: r52_diag('ACK_POOL_ADMISSION', callback_id=callback_id, chat=chat_id, queued=int(_r52_ack_ok), ack_pool=CALLBACK_ACK_TASK_POOL.stats())
-        except Exception: pass
-        return _r52_ack_ok
+        started = _v166_time.monotonic()
+        try:
+            # _tracked_answer_callback_query performs the native Telegram call and owns
+            # ACK de-duplication.  A short timeout prevents one bad socket from pinning
+            # a Waitress request thread for seconds.
+            _tracked_answer_callback_query(callback_id, show_alert=False, timeout=1.25)
+            try:
+                r52_diag('R67_DIRECT_ACK_OK', callback_id=callback_id, chat=chat_id, elapsed=_v166_time.monotonic()-started)
+            except Exception:
+                pass
+            return True
+        except Exception as direct_exc:
+            try:
+                r52_diag('R67_DIRECT_ACK_FALLBACK', callback_id=callback_id, chat=chat_id, elapsed=_v166_time.monotonic()-started, error=f'{type(direct_exc).__name__}:{str(direct_exc)[:500]}')
+            except Exception:
+                pass
+            queued = bool(CALLBACK_ACK_TASK_POOL.submit_unique(
+                f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id
+            ))
+            return queued
     except Exception:
-        if callable(_V166_PREV_ACK):
-            return _V166_PREV_ACK(callback_id, chat_id, 0.03)
         return False
 
 def _v166_pair_key(a: int, b: int):

@@ -4735,23 +4735,36 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             except Exception:
                 pass
 
-        if selected_pool is globals().get('NAVIGATION_TASK_POOL') and hasattr(selected_pool, 'submit_latest'):
-            _r52_enqueued = selected_pool.submit_latest(
-                selected_key, _process_callback,
-                on_replaced=_r67_turbo_superseded_navigation,
-            )
+        # R67 DIRECT UI: safe/idempotent navigation has no internal task-pool hop.
+        # The callback ACK has already been sent directly above; execute the tiny nav
+        # handler now in the webhook request so its edit reaches Telegram immediately.
+        # State-changing/business callbacks keep their ordered lanes below.
+        if selected_pool is globals().get('NAVIGATION_TASK_POOL'):
+            try:
+                UPDATE_DISPATCHER.mark_enqueued(update_id, 'direct-nav', selected_key)
+                r52_diag('R67_DIRECT_NAV_START', update=update_id, chat=update_chat_id, key=selected_key, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240])
+            except Exception:
+                pass
+            _process_callback()
+            _r52_enqueued = True
+            try:
+                r52_diag('R67_DIRECT_NAV_DONE', update=update_id, chat=update_chat_id, key=selected_key)
+            except Exception:
+                pass
         else:
             _r52_enqueued = selected_pool.submit(selected_key, _process_callback)
-        try: r52_diag('CALLBACK_ENQUEUE_RESULT', update=update_id, chat=update_chat_id, pool=getattr(selected_pool,'name','?'), key=selected_key, queued=int(bool(_r52_enqueued)), pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {}, dispatcher=UPDATE_DISPATCHER.stats())
-        except Exception: pass
-        if not _r52_enqueued:
-            if _r48_coalesce_key:
-                try:
-                    with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
-                except Exception: pass
-            UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
-            return ('BUSY', 503)
-        UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
+            try:
+                r52_diag('CALLBACK_ENQUEUE_RESULT', update=update_id, chat=update_chat_id, pool=getattr(selected_pool,'name','?'), key=selected_key, queued=int(bool(_r52_enqueued)), pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {}, dispatcher=UPDATE_DISPATCHER.stats())
+            except Exception:
+                pass
+            if not _r52_enqueued:
+                if _r48_coalesce_key:
+                    try:
+                        with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
+                    except Exception: pass
+                UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
+                return ('BUSY', 503)
+            UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
     elif claim_state == 'done':
         # Keep the local durable row healthy if Telegram redelivered after a network race.
         try:

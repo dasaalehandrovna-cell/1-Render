@@ -2972,14 +2972,14 @@ def effective_fast_telegram_gap() -> float:
     authoritative and automatically slows all callers if Telegram asks us to back off.
     """
     try:
-        configured = float(active_bot_behavior_profile_info().get('fast_tg_gap', 0.10) or 0.10)
+        configured = float(active_bot_behavior_profile_info().get('fast_tg_gap', 0.03) or 0.03)
     except Exception:
-        configured = 0.10
+        configured = 0.03
     try:
         requested = float(os.getenv('FAST_TELEGRAM_CHAT_GAP', str(configured)) or configured)
     except Exception:
         requested = configured
-    return max(0.06, min(0.20, requested))
+    return max(0.02, min(0.08, requested))
 
 def main_article_buttons_enabled(chat_id: int) -> bool:
     try:
