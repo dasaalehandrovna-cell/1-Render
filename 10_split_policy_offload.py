@@ -5795,6 +5795,7 @@ import queue as _r32_queue
 import secrets as _r32_secrets
 import sqlite3 as _r32_sqlite3
 import threading as _r32_threading
+import shutil as _r32_shutil
 try:
     import redis as _r43_redis
 except Exception:
@@ -5817,6 +5818,76 @@ try:
     _R40_EVENT_DB_BUSY_MS=max(25,min(500,int(_r32_os.getenv('R40_EVENT_DB_BUSY_MS','120') or '120')))
 except Exception:
     _R40_EVENT_DB_BUSY_MS=120
+
+# R68: local append-only materialized state-event journal.
+# This is written only by the background state-event sender *after* the primary
+# SQLite mutation has committed.  It never runs in a Telegram callback thread.
+_R68_LOCAL_EVENT_ENABLED = str(_r32_os.getenv('LOCAL_STATE_EVENT_JOURNAL_ENABLED','1') or '1').strip().lower() in {'1','true','yes','on','да'}
+_R68_LOCAL_EVENT_FILE = str(
+    _r32_os.getenv('LOCAL_STATE_EVENT_JOURNAL_FILE','')
+    or _r32_os.path.join(str(_r32_os.getenv('LOCAL_RUNTIME_DIR','/tmp/vys262_fast_local') or '/tmp/vys262_fast_local'),'events.jsonl')
+)
+try:
+    _R68_LOCAL_EVENT_MAX_BYTES=max(1,min(64,int(_r32_os.getenv('LOCAL_STATE_EVENT_JOURNAL_MAX_MB','8') or '8')))*1024*1024
+except Exception:
+    _R68_LOCAL_EVENT_MAX_BYTES=8*1024*1024
+_R68_LOCAL_EVENT_LOCK=_r32_threading.RLock()
+_R68_LOCAL_EVENT_STATE={'rows':0,'rotations':0,'errors':0,'last_at':0.0,'last_error':''}
+
+def _r68_local_event_rotate_locked():
+    try:
+        if not _r32_os.path.isfile(_R68_LOCAL_EVENT_FILE):
+            return
+        if _r32_os.path.getsize(_R68_LOCAL_EVENT_FILE) < _R68_LOCAL_EVENT_MAX_BYTES:
+            return
+        old=_R68_LOCAL_EVENT_FILE+'.1'
+        try:
+            _r32_os.remove(old)
+        except FileNotFoundError:
+            pass
+        _r32_os.replace(_R68_LOCAL_EVENT_FILE,old)
+        _R68_LOCAL_EVENT_STATE['rotations']=int(_R68_LOCAL_EVENT_STATE.get('rotations') or 0)+1
+    except Exception as exc:
+        _R68_LOCAL_EVENT_STATE['errors']=int(_R68_LOCAL_EVENT_STATE.get('errors') or 0)+1
+        _R68_LOCAL_EVENT_STATE['last_error']=f'rotate {type(exc).__name__}: {str(exc)[:160]}'
+
+def _r68_local_event_append(events):
+    if not _R68_LOCAL_EVENT_ENABLED:
+        return False
+    good=[ev for ev in (events or []) if isinstance(ev,dict) and int(ev.get('schema') or 0)==32 and str(ev.get('event_id') or '')]
+    if not good:
+        return True
+    try:
+        with _R68_LOCAL_EVENT_LOCK:
+            _r32_os.makedirs(_r32_os.path.dirname(_R68_LOCAL_EVENT_FILE) or '.',exist_ok=True)
+            _r68_local_event_rotate_locked()
+            with open(_R68_LOCAL_EVENT_FILE,'a',encoding='utf-8') as fh:
+                now=_r32_time.time()
+                for ev in good:
+                    row={'captured_at':now,'event':ev}
+                    fh.write(_r32_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n')
+                fh.flush()
+                try: _r32_os.fsync(fh.fileno())
+                except Exception: pass
+            _R68_LOCAL_EVENT_STATE['rows']=int(_R68_LOCAL_EVENT_STATE.get('rows') or 0)+len(good)
+            _R68_LOCAL_EVENT_STATE['last_at']=_r32_time.time()
+            _R68_LOCAL_EVENT_STATE['last_error']=''
+        return True
+    except Exception as exc:
+        _R68_LOCAL_EVENT_STATE['errors']=int(_R68_LOCAL_EVENT_STATE.get('errors') or 0)+1
+        _R68_LOCAL_EVENT_STATE['last_error']=f'{type(exc).__name__}: {str(exc)[:180]}'
+        return False
+
+def r68_local_event_journal_status():
+    row=dict(_R68_LOCAL_EVENT_STATE)
+    row['enabled']=bool(_R68_LOCAL_EVENT_ENABLED)
+    row['path']=_R68_LOCAL_EVENT_FILE
+    try:
+        row['bytes']=int(_r32_os.path.getsize(_R68_LOCAL_EVENT_FILE)) if _r32_os.path.isfile(_R68_LOCAL_EVENT_FILE) else 0
+        row['rotated_bytes']=int(_r32_os.path.getsize(_R68_LOCAL_EVENT_FILE+'.1')) if _r32_os.path.isfile(_R68_LOCAL_EVENT_FILE+'.1') else 0
+    except Exception:
+        row['bytes']=-1
+    return row
 
 
 def _r40_event_db_connect(timeout_ms=None):
@@ -6203,6 +6274,13 @@ def _r32_sender_loop():
                     raise RuntimeError('R45 durable event outbox temporarily unavailable')
                 _R32_EVENT_STATE['last_enqueue_durable']=True
                 packet=_r32_build_packet(rows); packet['_r40_queue_count']=queue_count
+                # R68 local JSONL is a same-container crash breadcrumb only.
+                # Failure here must never block Redis/HEAVY delivery.
+                try:
+                    _r68_local_event_append(packet.get('events') or [])
+                    packet['_r68_local_journaled']=True
+                except Exception:
+                    packet['_r68_local_journaled']=False
             except Exception as exc:
                 _R32_EVENT_STATE['last_error']=f'build {type(exc).__name__}: {str(exc)[:220]}'
                 if queue_count:
@@ -6328,7 +6406,13 @@ def _split_push_snapshot_now_v263(reason='shutdown', sync_mega=False):
 
 def r32_event_stream_status():
     # R45-FIX2: diagnostics/UI reads cached counters only; never touch outbox SQLite.
-    row=dict(_R32_EVENT_STATE); row['durable_pending']=int(row.get('durable_pending') or 0); row['pending']=max(_R32_EVENT_Q.qsize(),int(row.get('durable_pending') or 0)); row['enabled']=bool(_R32_EVENT_STREAM_ENABLED); row['peer_base']=_r32_peer_base_impl(); return row
+    row=dict(_R32_EVENT_STATE)
+    row['durable_pending']=int(row.get('durable_pending') or 0)
+    row['pending']=max(_R32_EVENT_Q.qsize(),int(row.get('durable_pending') or 0))
+    row['enabled']=bool(_R32_EVENT_STREAM_ENABLED)
+    row['peer_base']=_r32_peer_base_impl()
+    row['local_event_journal']=r68_local_event_journal_status()
+    return row
 
 _r32_threading.Thread(target=_r32_sender_loop,name='per-r32-state-events',daemon=True).start()
 

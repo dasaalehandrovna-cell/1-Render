@@ -1,4 +1,4 @@
-"""vys-262 R47 FINALIZED internal runtime configuration.
+"""vys-262 R68 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-r67-direct-botfather-ui"
+CONFIG_VERSION = "vys-262-r68-local-files-history-map"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -89,6 +89,26 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
 
     # Small user-facing runtime constants
     "QUICK_EXPENSE_REMINDER_MINUTES": "60",
+
+    # R68 local ephemeral runtime layer.
+    # Render Free may wipe these files on redeploy/restart; they are acceleration /
+    # same-instance crash breadcrumbs only. Long-term durability remains Redis/HEAVY/MEGA.
+    "LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local",
+    "BOT_JOURNAL_FILE": "/tmp/vys262_fast_local/bot_journal.jsonl",
+    "WEBHOOK_INBOX_DB_FILE": "/tmp/vys262_fast_local/webhook.sqlite3",
+    "R40_EVENT_OUTBOX_DIR": "/tmp/vys262_fast_local",
+    "PREBOOT_WEBHOOK_SPOOL_FILE": "/tmp/vys262_fast_local/preboot_webhooks.ndjson",
+    "LOCAL_STATE_EVENT_JOURNAL_ENABLED": "1",
+    "LOCAL_STATE_EVENT_JOURNAL_FILE": "/tmp/vys262_fast_local/events.jsonl",
+    "LOCAL_STATE_EVENT_JOURNAL_MAX_MB": "8",
+    "LOCAL_RUNTIME_STATE_ENABLED": "1",
+    "LOCAL_RUNTIME_STATE_FILE": "/tmp/vys262_fast_local/runtime_state.json",
+    "LOCAL_RUNTIME_STATE_INTERVAL_SEC": "45",
+    "LOCAL_SQLITE_SNAPSHOT_ENABLED": "1",
+    "LOCAL_SQLITE_SNAPSHOT_FILE": "/tmp/vys262_fast_local/state.sqlite3.gz",
+    "LOCAL_SQLITE_SNAPSHOT_MIN_INTERVAL_SEC": "120",
+    "LOCAL_SQLITE_SNAPSHOT_COMPRESS_LEVEL": "1",
+    "LOCAL_RESTORE_TRACE_FILE": "/tmp/vys262_fast_local/restore_trace.json",
 
     # Shared Redis layout (names/limits are implementation details, not secrets)
     "WORKER_REDIS_SNAPSHOT_KEY": "vys262:bot_state:latest_gz",

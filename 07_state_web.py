@@ -5471,7 +5471,7 @@ def _r57_restore_source_info() -> tuple[str, dict]:
     trace = {}
     try:
         import json as _r57_json
-        raw = str(os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
+        raw = str(os.getenv('R68_RESTORE_TRACE_JSON', '') or os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
         if raw:
             parsed = _r57_json.loads(raw)
             if isinstance(parsed, dict):
@@ -5482,6 +5482,7 @@ def _r57_restore_source_info() -> tuple[str, dict]:
     labels = {
         'MEGA': 'MEGA',
         'LOCAL_SQLITE': 'локальная SQLite',
+        'LOCAL_RUNTIME_CACHE': 'локальный R68 cache (SQLite.gz + events.jsonl)',
         'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE': 'локальная SQLite',
         'EMPTY_INIT_MEGA_DISABLED': 'новая SQLite · MEGA отключена',
         'EMPTY_INIT': 'новая SQLite',
@@ -5759,7 +5760,7 @@ def main():
     # R49: start_front is the single restore authority; expose its exact source map
     # to Watcher instead of replacing it with a generic split-authoritative label.
     try:
-        _trace_raw = str(os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
+        _trace_raw = str(os.getenv('R68_RESTORE_TRACE_JSON', '') or os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
         _trace = json.loads(_trace_raw) if _trace_raw else {}
         if isinstance(_trace, dict) and _trace:
             with _RUNTIME_LOCK:
@@ -5768,13 +5769,13 @@ def main():
                 if _RUNTIME_STATE.get('restore_ok') is not False:
                     _RUNTIME_STATE['restore_ok'] = bool(_trace.get('final_revision') or _trace.get('base_source') == 'EMPTY_INIT')
                 _RUNTIME_STATE['restore_detail'] = (
-                    f"R49 base={_trace.get('base_source') or '—'} rev={_trace.get('base_revision') or 0}; "
+                    f"R68 base={_trace.get('base_source') or '—'} rev={_trace.get('base_revision') or 0}; "
                     f"events={_trace.get('redis_events_detail') or '—'}; capsule={_trace.get('redis_capsule_detail') or '—'}; "
                     f"HEAVY={int(bool(_trace.get('heavy_contacted')))} MEGA={int(bool(_trace.get('mega_contacted')))}; "
                     f"final={_trace.get('final_revision') or 0}"
                 )[:500]
     except Exception as _trace_exc:
-        runtime_event('r49_restore_trace_parse_error', str(_trace_exc), 'WARN')
+        runtime_event('r68_restore_trace_parse_error', str(_trace_exc), 'WARN')
     try:
         purge = globals().get('purge_legacy_mega_root_state_v238')
         if callable(purge):

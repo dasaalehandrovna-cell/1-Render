@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "81663f930109d4bbba9b35edb261142215429c9f8aa037ffb637400b9341e0bf",
+    "01_core_data.py": "3136df9bb69fb12c2ad0119b48ec8938296526cd8c33997c3f07cd9fbc52bc97",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "6d9b508d304a258f84d09452e14279355b2d661b56a797a501a3e604393b64a8",
     "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
-    "07_state_web.py": "2fc528ce220f2d18c53d5932dd533539f0128c398cf5fa6369218ade32fbc15e",
+    "07_state_web.py": "3bafb7aa3b4fb2ac0d37bc2fc8d078368540828f31e2b108bbc4018306229c5c",
     "08_reliability_tasks.py": "a7b1da40521247cd5eb38b1e8cf7ccfa34aefd94ff7ab3a268ecf1ba199823a8",
     "09_final_transport.py": "9e139df07a872c37c120b593613aef9650b61dc16d722924c9a745fb4fc16a22",
-    "10_split_policy_offload.py": "262c40d352f43ee376f550c4db089e7c27a30e23744a8abcfdd82c7106e10a6f"
+    "10_split_policy_offload.py": "9c0c5fc6818b08652988db7a25122b5fe486ea6500b705defa2965ee1bc6f794"
   },
-  "release": "Пер-R67-DIRECT-BOTFATHER-UI-FINAL",
+  "release": "Пер-R68-LOCAL-FILES-HISTORY-MAP-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -244,6 +244,15 @@
     "r67_direct_callback_render_without_window_actor",
     "r67_business_order_preserved_after_direct_visual_ack",
     "r67_background_render_latest_wins_only",
-    "r67_fast_telegram_gap_20_80ms_default_30ms"
+    "r67_fast_telegram_gap_20_80ms_default_30ms",
+    "r68_version_increment_rule",
+    "r68_deploy_root_runtime_only",
+    "r68_info_history_map_handoff",
+    "r68_local_events_jsonl_background_only",
+    "r68_local_runtime_state_json",
+    "r68_local_restore_trace_json",
+    "r68_local_sqlite_gz_background_snapshot",
+    "r68_same_container_snapshot_plus_event_replay",
+    "r68_local_ephemeral_not_cross_deploy_authority"
   ]
 }

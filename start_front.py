@@ -1,10 +1,10 @@
 # v262
 #!/usr/bin/env python3
-"""Render #1 launcher: restore SQLite from Redis first, then MEGA fallback, then run FAST.
+"""Render #1 launcher: R68 local crash cache, then Redis/MEGA recovery, then FAST.
 
-R64 recovery policy:
-- startup/restart recovery belongs to FAST; Redis is the first fast restore source;
-- MEGA is a strict-root fallback; HEAVY is not required for startup recovery;
+R68 recovery policy:
+- same-container local cache is tried only when the main SQLite is missing/invalid;
+- Redis remains the first cross-deploy fast restore source; MEGA is a strict-root fallback;
 - after startup, FAST logs out of MEGA and removes MEGA credentials from its process;
 - all normal runtime MEGA work is therefore delegated to Render #2 / HEAVY.
 """
@@ -412,6 +412,113 @@ def _apply_r32_events(path: Path, events: list[dict]) -> tuple[int, int]:
     return applied, stale
 
 
+def _r68_local_runtime_dir() -> Path:
+    return Path(os.getenv('LOCAL_RUNTIME_DIR', '/tmp/vys262_fast_local') or '/tmp/vys262_fast_local').resolve()
+
+
+def _r68_local_snapshot_path() -> Path:
+    raw = str(os.getenv('LOCAL_SQLITE_SNAPSHOT_FILE', '') or '').strip()
+    return Path(raw).resolve() if raw else (_r68_local_runtime_dir() / 'state.sqlite3.gz')
+
+
+def _r68_local_events_path() -> Path:
+    raw = str(os.getenv('LOCAL_STATE_EVENT_JOURNAL_FILE', '') or '').strip()
+    return Path(raw).resolve() if raw else (_r68_local_runtime_dir() / 'events.jsonl')
+
+
+def _r68_restore_trace_path() -> Path:
+    raw = str(os.getenv('LOCAL_RESTORE_TRACE_FILE', '') or '').strip()
+    return Path(raw).resolve() if raw else (_r68_local_runtime_dir() / 'restore_trace.json')
+
+
+def _r68_atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(payload, fh, ensure_ascii=False, separators=(',', ':'), default=str)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, path)
+
+
+def _r68_write_restore_trace_file(trace: dict) -> tuple[bool, str]:
+    try:
+        path = _r68_restore_trace_path()
+        _r68_atomic_json(path, trace)
+        return True, str(path)
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:220]}'
+
+
+def _r68_load_local_events(limit: int = 50000) -> tuple[list[dict], int]:
+    """Read the bounded same-container JSONL tail. .1 is older, current is newer."""
+    files = []
+    current = _r68_local_events_path()
+    rotated = Path(str(current) + '.1')
+    if rotated.exists():
+        files.append(rotated)
+    if current.exists():
+        files.append(current)
+    out = []
+    bad = 0
+    cap = max(100, min(200000, int(limit or 50000)))
+    for path in files:
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                for line in fh:
+                    if len(out) >= cap:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        ev = obj.get('event') if isinstance(obj, dict) and isinstance(obj.get('event'), dict) else obj
+                        if _r32_event_valid(ev):
+                            out.append(ev)
+                        else:
+                            bad += 1
+                    except Exception:
+                        bad += 1
+        except Exception:
+            bad += 1
+        if len(out) >= cap:
+            break
+    return out, bad
+
+
+def _restore_from_local_runtime_cache(target: Path) -> tuple[bool, str]:
+    """R68 same-container recovery cache: local gzip SQLite + append-only state events.
+
+    This layer is deliberately *not* treated as long-term durability because Render
+    Free storage is ephemeral. It only helps when the process restarts while the
+    container filesystem survives. Redis/MEGA remain the cross-deploy restore layers.
+    """
+    if _db_valid(target):
+        return False, 'local main SQLite already valid; cache restore not needed'
+    gz = _r68_local_snapshot_path()
+    if not gz.exists() or gz.stat().st_size < 256:
+        return False, f'local snapshot missing: {gz}'
+    ok, detail = _install_gzip_db(gz, target)
+    if not ok:
+        return False, 'local snapshot invalid: ' + str(detail)[:320]
+    events, bad = _r68_load_local_events(
+        max(1000, min(200000, int(os.getenv('LOCAL_STATE_EVENT_RESTORE_MAX', '50000') or '50000')))
+    )
+    applied = stale = 0
+    if events:
+        applied, stale = _apply_r32_events(target, events)
+    if not _db_valid(target):
+        return False, 'local cache SQLite invalid after event replay'
+    return True, (
+        f'local-cache restore OK snapshot={gz.stat().st_size}B events={len(events)} '
+        f'applied={applied} stale={stale} bad={bad} revision={_db_revision(target):.6f}'
+    )
+
+
 def _event_remote_upper_ns(remote: str) -> int | None:
     """Best-effort safe upper time/revision bound encoded by an immutable segment name."""
     name = str(remote or '').rsplit('/', 1)[-1]
@@ -815,8 +922,8 @@ def main():
     target = _db_path()
     started = time.time()
     trace = {
-        'schema': 2,
-        'policy': 'R56_RENDER_MASTER_SWITCHES',
+        'schema': 3,
+        'policy': 'R68_LOCAL_CACHE_REDIS_MEGA',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -839,6 +946,26 @@ def main():
             if not strict_root:
                 raise RuntimeError('R58: MEGA_ENABLED=1 requires explicit MEGA_BACKUP_DIR in Render; no fallback root is allowed')
             trace['mega_strict_root'] = strict_root
+        # R68: same-container local cache is a fast crash breadcrumb only.
+        # It is tried only when the main SQLite is missing/invalid and never replaces
+        # Redis/MEGA as cross-deploy durability.
+        trace['local_cache_contacted'] = False
+        trace['local_cache_ok'] = False
+        trace['local_cache_detail'] = ''
+        local_cache_restored = False
+        if not had_valid_local_before_restore:
+            trace['local_cache_contacted'] = True
+            local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)
+            trace['local_cache_ok'] = bool(local_cache_ok)
+            trace['local_cache_detail'] = str(local_cache_detail)[:900]
+            if local_cache_ok:
+                trace['base_source'] = 'LOCAL_RUNTIME_CACHE'
+                local_cache_restored = True
+                print(f'[SPLIT FRONT] R68 local runtime cache restore ok=1 detail={str(local_cache_detail)[:700]}', flush=True)
+                had_valid_local_before_restore = True
+            else:
+                print(f'[SPLIT FRONT] R68 local runtime cache restore ok=0 detail={str(local_cache_detail)[:500]}', flush=True)
+
         redis_master_enabled = _bool('REDIS_ENABLED', False)
         redis_url_present = bool(_redis_render_url())
         trace['redis_master_enabled'] = bool(redis_master_enabled)
@@ -862,6 +989,14 @@ def main():
             trace['mega_contacted'] = False
             trace['mega_ok'] = False
             trace['mega_detail'] = 'MEGA startup restore skipped because Redis restore succeeded'
+        elif local_cache_restored and _db_valid(target):
+            # A verified same-container snapshot + idempotent event replay is the
+            # fastest crash recovery. Do not stall this path on MEGA probes.
+            trace['mega_contacted'] = False
+            trace['mega_ok'] = False
+            trace['mega_detail'] = 'MEGA startup restore skipped because verified R68 local cache recovered the prior process'
+            trace['base_source'] = 'LOCAL_RUNTIME_CACHE'
+            print('[SPLIT FRONT] R68 verified local cache is authoritative for same-container crash recovery; MEGA boot probe skipped', flush=True)
         elif not mega_master_enabled:
             trace['mega_contacted'] = False
             trace['mega_ok'] = False
@@ -923,11 +1058,25 @@ def main():
             trace['redis_runtime_enabled'] = bool((redis_runtime_state() or {}).get('enabled'))
         except Exception:
             trace['redis_runtime_enabled'] = False
+        trace['base_revision'] = float(trace.get('local_revision_before') or 0.0)
+        if trace.get('base_source') in {'REDIS', 'MEGA', 'LOCAL_RUNTIME_CACHE'}:
+            trace['base_revision'] = float(trace.get('final_revision') or 0.0)
+        trace['local_found'] = bool(trace.get('local_found'))
+        trace['local_valid'] = bool(trace.get('local_valid_before'))
+        trace['local_revision'] = float(trace.get('local_revision_before') or 0.0)
+        trace['redis_full_attempted'] = bool(trace.get('redis_contacted'))
+        trace['redis_full_ok'] = bool(trace.get('redis_ok'))
+        trace['redis_full_detail'] = str(trace.get('redis_detail') or '')
         trace['elapsed_ms'] = round((time.time() - started) * 1000.0, 1)
         trace['finished_at'] = time.time()
+        trace_file_ok, trace_file_detail = _r68_write_restore_trace_file(trace)
+        trace['local_trace_file_ok'] = bool(trace_file_ok)
+        trace['local_trace_file'] = str(trace_file_detail)[:500]
         trace_json = json.dumps(trace, ensure_ascii=False, separators=(',', ':'))
+        os.environ['R68_RESTORE_TRACE_JSON'] = trace_json
+        # Compatibility read-only alias for pre-R68 watcher code during rolling deploy.
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
-        print('[RESTORE TRACE R49]', trace_json, flush=True)
+        print('[RESTORE TRACE R68]', trace_json, flush=True)
 
         # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after

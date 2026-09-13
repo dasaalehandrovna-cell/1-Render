@@ -31,7 +31,7 @@ _require_info = str(os.getenv('FINALIZATION_REQUIRE_INFO','1')).strip().lower() 
 _runtime_build = str(os.getenv('FINALIZATION_RUNTIME_BUILD','0')).strip().lower() in {'1','true','yes','on'}
 _run_startup_smoke = str(os.getenv('FINALIZATION_STARTUP_SMOKE','0')).strip().lower() in {'1','true','yes','on'}
 ok('required_FINALIZATION_GATE.py',(ROOT/'FINALIZATION_GATE.py').is_file(),'FINALIZATION_GATE.py')
-for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md']:
+for req in ['INFO/PROJECT_RULES.md','INFO/PATCH_PROTOCOL.md','INFO/FINALIZATION_REPORT.md','INFO/BOT_MAP.md','INFO/CHANGELOG.md','INFO/NEXT_CHAT_HANDOFF.md','INFO/DEPLOY_R68_RU.md']:
     if _require_info:
         ok('required_'+req,(ROOT/req).is_file(),req)
 
@@ -46,6 +46,13 @@ if ROLE=='fast':
     actual_root_py={p.name for p in ROOT.glob('*.py')}
     ok('r48_compact_root_exact',actual_root_py==expected_root_py,
        'extra='+','.join(sorted(actual_root_py-expected_root_py))+' missing='+','.join(sorted(expected_root_py-actual_root_py)))
+    # R68 release layout: root contains deployment/runtime files only.
+    allowed_root_files = expected_root_py | {
+        'Dockerfile','.dockerignore','requirements.txt','modules_manifest.json'
+    }
+    actual_root_files = {x.name for x in ROOT.iterdir() if x.is_file()}
+    ok('r68_root_deploy_files_only', actual_root_files == allowed_root_files,
+       'extra='+','.join(sorted(actual_root_files-allowed_root_files))+' missing='+','.join(sorted(allowed_root_files-actual_root_files)))
     hash_bad=[]; marker_bad=[]
     for rel,sha in files.items():
         p=ROOT/rel
@@ -238,7 +245,7 @@ if ROLE=='fast':
            all(name in docker_src for name in ['01_core_data.py','09_final_transport.py','10_split_policy_offload.py']) and 'COPY INFO/' not in docker_src,
            'Dockerfile must explicitly copy only compact runtime; INFO must not be a production dependency')
         ok('r48_dockerignore_allowlist',
-           dockerignore_src.lstrip().startswith('# R49 FINAL CLEAN BUILD ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
+           dockerignore_src.lstrip().startswith('# R68 DEPLOY-ONLY ALLOWLIST') and '\n*\n' in dockerignore_src and '!INFO/' not in dockerignore_src and '!10_split_policy_offload.py' in dockerignore_src,
            '.dockerignore must be a strict runtime-only compact allowlist; INFO is release-only')
 
     # Literal whole-project lock audit: direct disk/network persistence is forbidden
@@ -312,9 +319,11 @@ if ROLE=='fast':
        'waitress' in req_src.lower() and 'from waitress import serve' in web_src and 'app.run(' not in web_src and
        "WEBHOOK_MAX_CONNECTIONS\": \"8\"" in cfg_src and "WAITRESS_THREADS\": \"6\"" in cfg_src,
        'FAST must use bounded Waitress and webhook max_connections=8')
-    ok('r49_restore_trace_present',
-       'R49_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R49]' in start_src and 'restore_trace' in web_src and 'RESTORE TRACE R49' in core_src,
-       'restore source/revision trace missing from startup or Watcher')
+    ok('r68_restore_trace_present',
+       'R68_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R68]' in start_src and
+       'LOCAL_RESTORE_TRACE_FILE' in cfg_src and '_r68_write_restore_trace_file' in start_src and
+       'restore_trace' in web_src and 'RESTORE TRACE R68' in core_src,
+       'R68 restore source/revision trace file or Watcher integration missing')
     # R63: Redis is the first direct startup source; MEGA remains a strict-root
     # fallback and is never contacted when REDIS succeeds or MEGA_ENABLED=0.
     ok('r56_fast_startup_mega_master_switch',
@@ -330,6 +339,39 @@ if ROLE=='fast':
                                     'WORKER_R32_STATE_EVENT_PREFIX', 'client.zrange', '_apply_r32_events(target, events)']) and
        start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('ok, detail = _restore_from_mega_startup(target)'),
        'FAST must restore directly from shared Redis full snapshot + retained state events before MEGA fallback')
+    ok('r68_local_cache_before_external_restore',
+       all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
+                                    'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
+                                    "trace['base_source'] = 'LOCAL_RUNTIME_CACHE'"]) and
+       start_src.find('local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)') <
+       start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') <
+       start_src.find('ok, detail = _restore_from_mega_startup(target)'),
+       'same-container local cache must be attempted before Redis/MEGA only when main SQLite is invalid')
+    ok('r68_local_files_packaged_config',
+       all(x in cfg_src for x in [
+           '"LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local"',
+           '"LOCAL_STATE_EVENT_JOURNAL_FILE": "/tmp/vys262_fast_local/events.jsonl"',
+           '"LOCAL_RUNTIME_STATE_FILE": "/tmp/vys262_fast_local/runtime_state.json"',
+           '"LOCAL_SQLITE_SNAPSHOT_FILE": "/tmp/vys262_fast_local/state.sqlite3.gz"',
+           '"LOCAL_RESTORE_TRACE_FILE": "/tmp/vys262_fast_local/restore_trace.json"',
+           '"WEBHOOK_INBOX_DB_FILE": "/tmp/vys262_fast_local/webhook.sqlite3"',
+       ]),
+       'R68 local ephemeral file layout missing from runtime_config')
+    enqueue_src=_fn_sources(split_src,{'_r32_enqueue_descriptor'}).get('_r32_enqueue_descriptor','')
+    sender_src=_fn_sources(split_src,{'_r32_sender_loop'}).get('_r32_sender_loop','')
+    ok('r68_event_jsonl_background_only',
+       'def _r68_local_event_append' in split_src and
+       '_r68_local_event_append' not in enqueue_src and
+       '_r68_local_event_append(packet.get' in sender_src and
+       'LOCAL_STATE_EVENT_JOURNAL_MAX_MB' in split_src,
+       'events.jsonl must be written only by the background state-event sender, never callback capture')
+    ok('r68_runtime_snapshot_background_only',
+       'def _r68_write_local_runtime_state' in core_src and
+       'def _r68_write_local_sqlite_snapshot' in core_src and
+       'def _r68_local_runtime_tick' in core_src and
+       "MAINTENANCE_TASK_POOL.submit('r68-local-sqlite-snapshot'" in core_src and
+       "DELAYED_SCHEDULER.schedule('r68-local-runtime-tick'" in core_src,
+       'runtime_state/local SQLite.gz must use existing background workers/scheduler')
     ok('r49_fast_runtime_mega_scrubbed',
        "os.environ.pop(key, None)" in start_src and "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
        "os.environ['MEGA_ENABLED'] = '0'" in start_src,
@@ -471,6 +513,23 @@ if ROLE=='fast':
     ok('r67_direct_ack_timeout',
        "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py','') and 'timeout=1.25' in ack_direct_src,
        'direct ACK and fallback ACK must both have bounded network timeouts')
+    if _require_info:
+        rules_src=text('INFO/PROJECT_RULES.md')
+        history_src=text('INFO/CHANGELOG.md')
+        map_src=text('INFO/BOT_MAP.md')
+        handoff_src=text('INFO/NEXT_CHAT_HANDOFF.md')
+        ok('r68_info_version_increment_rule',
+           'каждая следующая версия' in rules_src.lower() and '+1' in rules_src,
+           'project rules must preserve the user version +1 rule')
+        ok('r68_info_history_present',
+           'R68' in history_src and 'R67' in history_src,
+           'CHANGELOG must preserve previous and current release history')
+        ok('r68_info_bot_map_for_fast_edits',
+           'БЫСТРАЯ КАРТА ПРАВОК' in map_src and '01_core_data.py' in map_src and '10_split_policy_offload.py' in map_src,
+           'BOT_MAP must tell the next chat where to edit common subsystems')
+        ok('r68_info_next_chat_handoff',
+           'PATCH → FINALIZE → TEST → PACKAGE' in handoff_src and 'R68' in handoff_src and 'R69' in handoff_src,
+           'next-chat handoff must explain current base and next version')
     probe_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
     ok('r65_parallel_chat_probe_idle_targeted_persist',
        'ThreadPoolExecutor' in probe_src and '_r65_schedule_chat_probe_persist' in probe_src and

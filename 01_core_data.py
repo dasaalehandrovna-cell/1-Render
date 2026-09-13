@@ -13604,6 +13604,155 @@ def runtime_heartbeat_snapshot(event: str='heartbeat') -> dict:
     mem = _runtime_memory_stats()
     return {'kind': 'telegram_bot_runtime_heartbeat', 'schema_version': 2, 'bot_version': VERSION, 'captured_at': now_local().isoformat(timespec='milliseconds'), 'event': str(event or 'heartbeat'), 'state': {'phase': st.get('phase') or '', 'ready': bool(st.get('ready')), 'shutting_down': bool(st.get('shutting_down')), 'started_at': st.get('started_at') or '', 'ready_at': st.get('ready_at') or '', 'last_webhook_at': st.get('last_webhook_at') or '', 'last_webhook_update_id': st.get('last_webhook_update_id') or '', 'shutdown_started_at': st.get('shutdown_started_at') or '', 'shutdown_finished_at': st.get('shutdown_finished_at') or '', 'shutdown_signal': st.get('shutdown_signal') or '', 'fatal_main_exception': st.get('fatal_main_exception') or '', 'fatal_thread_exception': st.get('fatal_thread_exception') or '', 'last_runtime_snapshot_ok_at': st.get('last_runtime_snapshot_ok_at') or ''}, 'render': _runtime_render_env(), 'process': {'pid': os.getpid(), 'rss_mb': mem.get('rss_mb'), 'peak_rss_mb': mem.get('peak_rss_mb'), 'container_current_mb': mem.get('container_current_mb'), 'container_peak_mb': mem.get('container_peak_mb'), 'limit_mb': mem.get('limit_mb'), 'rss_percent_limit': mem.get('rss_percent_limit'), 'container_percent_limit': mem.get('container_percent_limit'), 'cgroup_events': mem.get('cgroup_events') or {}, 'threads': threading.active_count(), 'uptime_seconds': round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3)}, 'queues': {'content': WEBHOOK_TASK_POOL.stats().get('pending', 0), 'fast_ui': FAST_UI_TASK_POOL.stats().get('pending', 0), 'window_render': WINDOW_RENDER_TASK_POOL.stats().get('pending', 0), 'ui': UI_TASK_POOL.stats().get('pending', 0), 'callback_ack': CALLBACK_ACK_TASK_POOL.stats().get('pending', 0), 'recovery': RECOVERY_TASK_POOL.stats().get('pending', 0), 'reminder': REMINDER_TASK_POOL.stats().get('pending', 0), 'finance': FINANCE_TASK_POOL.stats().get('pending', 0), 'fin_forward': FIN_FORWARD_TASK_POOL.stats().get('pending', 0), 'forward': FORWARD_TASK_POOL.stats().get('pending', 0), 'delta': DELTA_TASK_POOL.stats().get('pending', 0), 'backup': BACKUP_TASK_POOL.stats().get('pending', 0), 'maintenance': MAINTENANCE_TASK_POOL.stats().get('pending', 0)}}
 
+
+# R68 local ephemeral file layer.
+# No function below is called from the Telegram callback hot path.  All writes are
+# scheduled on existing background/maintenance workers so visual response remains direct.
+_R68_LOCAL_FILES_LOCK = threading.RLock()
+_R68_LOCAL_FILES_STATE = {
+    'runtime_state_writes': 0,
+    'runtime_state_errors': 0,
+    'snapshot_writes': 0,
+    'snapshot_errors': 0,
+    'last_runtime_state_at': '',
+    'last_snapshot_at': '',
+    'last_snapshot_reason': '',
+    'last_snapshot_size': 0,
+    'last_error': '',
+    'last_snapshot_mono': 0.0,
+}
+
+def _r68_local_runtime_dir() -> str:
+    return str(os.getenv('LOCAL_RUNTIME_DIR', '/tmp/vys262_fast_local') or '/tmp/vys262_fast_local')
+
+def _r68_local_file(env_name: str, default_name: str) -> str:
+    raw = str(os.getenv(env_name, '') or '').strip()
+    return raw if raw else os.path.join(_r68_local_runtime_dir(), default_name)
+
+def _r68_atomic_json_file(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(payload, fh, ensure_ascii=False, separators=(',', ':'), default=str)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, path)
+
+def _r68_write_local_runtime_state(event: str='heartbeat') -> bool:
+    if str(os.getenv('LOCAL_RUNTIME_STATE_ENABLED', '1') or '1').strip().lower() not in {'1','true','yes','on','да'}:
+        return False
+    path = _r68_local_file('LOCAL_RUNTIME_STATE_FILE', 'runtime_state.json')
+    try:
+        payload = runtime_heartbeat_snapshot(event)
+        payload['local_files'] = r68_local_files_status(include_sizes=False)
+        _r68_atomic_json_file(path, payload)
+        with _R68_LOCAL_FILES_LOCK:
+            _R68_LOCAL_FILES_STATE['runtime_state_writes'] = int(_R68_LOCAL_FILES_STATE.get('runtime_state_writes') or 0) + 1
+            _R68_LOCAL_FILES_STATE['last_runtime_state_at'] = now_local().isoformat(timespec='milliseconds')
+        return True
+    except Exception as exc:
+        with _R68_LOCAL_FILES_LOCK:
+            _R68_LOCAL_FILES_STATE['runtime_state_errors'] = int(_R68_LOCAL_FILES_STATE.get('runtime_state_errors') or 0) + 1
+            _R68_LOCAL_FILES_STATE['last_error'] = f'runtime_state {type(exc).__name__}: {str(exc)[:220]}'
+        return False
+
+def _r68_write_local_sqlite_snapshot(reason: str='heartbeat', force: bool=False) -> bool:
+    if str(os.getenv('LOCAL_SQLITE_SNAPSHOT_ENABLED', '1') or '1').strip().lower() not in {'1','true','yes','on','да'}:
+        return False
+    min_interval = max(15.0, min(3600.0, float(os.getenv('LOCAL_SQLITE_SNAPSHOT_MIN_INTERVAL_SEC', '120') or '120')))
+    now_mono = time.monotonic()
+    with _R68_LOCAL_FILES_LOCK:
+        last = float(_R68_LOCAL_FILES_STATE.get('last_snapshot_mono') or 0.0)
+        if (not force) and last > 0 and (now_mono - last) < min_interval:
+            return False
+        # Reserve the slot before I/O so two background workers cannot duplicate it.
+        _R68_LOCAL_FILES_STATE['last_snapshot_mono'] = now_mono
+    path = _r68_local_file('LOCAL_SQLITE_SNAPSHOT_FILE', 'state.sqlite3.gz')
+    raw_tmp = path + '.sqlite.tmp'
+    gz_tmp = path + '.tmp'
+    try:
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        SQLITE.backup_to(raw_tmp)
+        con = sqlite3.connect(raw_tmp)
+        try:
+            row = con.execute('PRAGMA quick_check').fetchone()
+            if not row or str(row[0]).lower() != 'ok':
+                raise RuntimeError('local SQLite snapshot quick_check failed')
+        finally:
+            con.close()
+        level = max(1, min(6, int(os.getenv('LOCAL_SQLITE_SNAPSHOT_COMPRESS_LEVEL', '1') or '1')))
+        with open(raw_tmp, 'rb') as src, gzip.open(gz_tmp, 'wb', compresslevel=level) as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        os.replace(gz_tmp, path)
+        size = os.path.getsize(path)
+        with _R68_LOCAL_FILES_LOCK:
+            _R68_LOCAL_FILES_STATE['snapshot_writes'] = int(_R68_LOCAL_FILES_STATE.get('snapshot_writes') or 0) + 1
+            _R68_LOCAL_FILES_STATE['last_snapshot_at'] = now_local().isoformat(timespec='milliseconds')
+            _R68_LOCAL_FILES_STATE['last_snapshot_reason'] = str(reason or '')[:120]
+            _R68_LOCAL_FILES_STATE['last_snapshot_size'] = int(size)
+            _R68_LOCAL_FILES_STATE['last_error'] = ''
+        return True
+    except Exception as exc:
+        with _R68_LOCAL_FILES_LOCK:
+            _R68_LOCAL_FILES_STATE['snapshot_errors'] = int(_R68_LOCAL_FILES_STATE.get('snapshot_errors') or 0) + 1
+            _R68_LOCAL_FILES_STATE['last_error'] = f'snapshot {type(exc).__name__}: {str(exc)[:220]}'
+            # Let the next tick retry instead of waiting the full normal interval.
+            _R68_LOCAL_FILES_STATE['last_snapshot_mono'] = 0.0
+        return False
+    finally:
+        for tmp in (raw_tmp, gz_tmp):
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+
+def r68_local_files_status(include_sizes: bool=True) -> dict:
+    with _R68_LOCAL_FILES_LOCK:
+        row = dict(_R68_LOCAL_FILES_STATE)
+    paths = {
+        'runtime_dir': _r68_local_runtime_dir(),
+        'runtime_state': _r68_local_file('LOCAL_RUNTIME_STATE_FILE', 'runtime_state.json'),
+        'restore_trace': _r68_local_file('LOCAL_RESTORE_TRACE_FILE', 'restore_trace.json'),
+        'events_jsonl': _r68_local_file('LOCAL_STATE_EVENT_JOURNAL_FILE', 'events.jsonl'),
+        'sqlite_snapshot_gz': _r68_local_file('LOCAL_SQLITE_SNAPSHOT_FILE', 'state.sqlite3.gz'),
+        'webhook_sqlite': str(os.getenv('WEBHOOK_INBOX_DB_FILE', '') or ''),
+        'event_outbox_sqlite': os.path.join(str(os.getenv('R40_EVENT_OUTBOX_DIR', '/tmp') or '/tmp'), 'per_r40_state_event_outbox.sqlite3'),
+        'bot_journal': str(os.getenv('BOT_JOURNAL_FILE', '') or ''),
+    }
+    row['paths'] = paths
+    if include_sizes:
+        sizes = {}
+        for key, path in paths.items():
+            if not path or key == 'runtime_dir':
+                continue
+            try:
+                sizes[key] = int(os.path.getsize(path)) if os.path.isfile(path) else 0
+            except Exception:
+                sizes[key] = -1
+        row['sizes'] = sizes
+    return row
+
+def _r68_local_runtime_tick():
+    if runtime_is_shutting_down():
+        return
+    try:
+        GENERAL_TASK_POOL.submit('r68-local-runtime-state', _r68_write_local_runtime_state, 'heartbeat')
+    except Exception:
+        pass
+    try:
+        MAINTENANCE_TASK_POOL.submit('r68-local-sqlite-snapshot', _r68_write_local_sqlite_snapshot, 'heartbeat', False)
+    except Exception:
+        pass
+    try:
+        interval = max(20.0, min(600.0, float(os.getenv('LOCAL_RUNTIME_STATE_INTERVAL_SEC', '45') or '45')))
+        DELAYED_SCHEDULER.schedule('r68-local-runtime-tick', interval, _r68_local_runtime_tick)
+    except Exception:
+        pass
+
 def _runtime_disk_stats() -> dict:
     try:
         usage = shutil.disk_usage(os.getcwd())
@@ -13620,7 +13769,7 @@ def runtime_snapshot(extra: dict | None=None) -> dict:
         state = dict(_RUNTIME_STATE)
         events = list(_RUNTIME_EVENTS)[-20:]
         previous = _runtime_previous_summary(_RUNTIME_PREVIOUS) if isinstance(_RUNTIME_PREVIOUS, dict) else {}
-    snap = {'kind': 'telegram_bot_runtime_watcher', 'schema_version': 1, 'bot_version': VERSION, 'captured_at': now_local().isoformat(timespec='milliseconds'), 'state': state, 'render': _runtime_render_env(), 'process': {'pid': os.getpid(), 'hostname': socket.gethostname(), 'python': sys.version.split()[0], 'platform': platform.platform(), 'threads': threading.active_count(), 'uptime_seconds': round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3), **_runtime_memory_stats()}, 'disk': _runtime_disk_stats(), 'queues': _runtime_pool_stats(), 'delayed': DELAYED_SCHEDULER.stats(), 'callback_ack_delayed': CALLBACK_ACK_SCHEDULER.stats(), 'mega_tasks': mega_task_registry_stats() if 'mega_task_registry_stats' in globals() else {}, 'delta': {'pending_chats': len(_delta_pending_chats) if '_delta_pending_chats' in globals() else 0, 'last_success_at': globals().get('_delta_last_success_at', ''), 'last_file': globals().get('_delta_last_file', ''), 'last_event_count': globals().get('_delta_last_event_count', 0), 'last_error': globals().get('_delta_last_error', '')}, 'keep_alive': dict(KEEP_ALIVE_STATE) if 'KEEP_ALIVE_STATE' in globals() else {}, 'memory_guard': _runtime_memory_pressure(), 'memory_runtime': memory_runtime_summary() if 'memory_runtime_summary' in globals() else {}, 'audit_metrics': runtime_audit_metrics() if 'runtime_audit_metrics' in globals() else {}, 'config_guard_v234': {'boot_verified': bool(globals().get('CONFIG_GUARD_BOOT_VERIFIED_V234', False)), 'report': _delta_json_clone(globals().get('CONFIG_GUARD_LAST_REPORT_V234', {}) or {}), 'latest': config_guard_latest_local_v234() if callable(globals().get('config_guard_latest_local_v234')) else {}}, 'previous_runtime': previous, 'events': events}
+    snap = {'kind': 'telegram_bot_runtime_watcher', 'schema_version': 1, 'bot_version': VERSION, 'captured_at': now_local().isoformat(timespec='milliseconds'), 'state': state, 'render': _runtime_render_env(), 'process': {'pid': os.getpid(), 'hostname': socket.gethostname(), 'python': sys.version.split()[0], 'platform': platform.platform(), 'threads': threading.active_count(), 'uptime_seconds': round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3), **_runtime_memory_stats()}, 'disk': _runtime_disk_stats(), 'queues': _runtime_pool_stats(), 'delayed': DELAYED_SCHEDULER.stats(), 'callback_ack_delayed': CALLBACK_ACK_SCHEDULER.stats(), 'mega_tasks': mega_task_registry_stats() if 'mega_task_registry_stats' in globals() else {}, 'delta': {'pending_chats': len(_delta_pending_chats) if '_delta_pending_chats' in globals() else 0, 'last_success_at': globals().get('_delta_last_success_at', ''), 'last_file': globals().get('_delta_last_file', ''), 'last_event_count': globals().get('_delta_last_event_count', 0), 'last_error': globals().get('_delta_last_error', '')}, 'keep_alive': dict(KEEP_ALIVE_STATE) if 'KEEP_ALIVE_STATE' in globals() else {}, 'memory_guard': _runtime_memory_pressure(), 'memory_runtime': memory_runtime_summary() if 'memory_runtime_summary' in globals() else {}, 'local_files': r68_local_files_status() if 'r68_local_files_status' in globals() else {}, 'audit_metrics': runtime_audit_metrics() if 'runtime_audit_metrics' in globals() else {}, 'config_guard_v234': {'boot_verified': bool(globals().get('CONFIG_GUARD_BOOT_VERIFIED_V234', False)), 'report': _delta_json_clone(globals().get('CONFIG_GUARD_LAST_REPORT_V234', {}) or {}), 'latest': config_guard_latest_local_v234() if callable(globals().get('config_guard_latest_local_v234')) else {}}, 'previous_runtime': previous, 'events': events}
     if extra:
         snap['extra'] = _delta_json_clone(extra)
     return snap
@@ -14241,6 +14390,13 @@ def _v177_legacy_0082_runtime_mark_ready(detail: str=''):
         DELAYED_SCHEDULER.schedule('runtime-heartbeat', RUNTIME_WATCHER_HEARTBEAT_SECONDS, _runtime_heartbeat_job)
     except Exception:
         pass
+    # R68: local ephemeral breadcrumbs use existing bounded workers only.
+    try:
+        GENERAL_TASK_POOL.submit('r68-local-ready-state', _r68_write_local_runtime_state, 'ready')
+        MAINTENANCE_TASK_POOL.submit('r68-local-ready-snapshot', _r68_write_local_sqlite_snapshot, 'ready', True)
+        DELAYED_SCHEDULER.schedule('r68-local-runtime-tick', 15.0, _r68_local_runtime_tick)
+    except Exception as e:
+        runtime_event('r68_local_files_schedule_error', str(e), 'WARN')
     if not RESTORE_GUARD_ACTIVE:
         try:
             schedule_startup_main_windows(delay=1.0)
@@ -14363,6 +14519,7 @@ def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
         runtime_event('shutdown_start', f'signal={signal_name}')
         try:
             DELAYED_SCHEDULER.cancel('runtime-heartbeat')
+            DELAYED_SCHEDULER.cancel('r68-local-runtime-tick')
             DELAYED_SCHEDULER.cancel('journal-warm-tail')
             DELAYED_SCHEDULER.cancel('lowram-idle-sweep')
         except Exception:
@@ -14388,6 +14545,11 @@ def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
             _RUNTIME_STATE['phase'] = 'shutdown_complete'
             _RUNTIME_STATE['shutdown_finished_at'] = now_local().isoformat(timespec='seconds')
         runtime_event('shutdown_complete', f'delta_ok={delta_ok}; drain_ok={drain_ok}')
+        try:
+            _r68_write_local_runtime_state('shutdown')
+            _r68_write_local_sqlite_snapshot('shutdown', True)
+        except Exception as e:
+            runtime_event('r68_local_shutdown_snapshot_error', str(e), 'WARN')
         try:
             journal_flush_to_mega(True)
         except Exception:
@@ -14480,6 +14642,7 @@ def build_runtime_watcher_text() -> str:
     memrt = snap.get('memory_runtime') or {}
     memquick = memrt.get('quick') or {}
     memstate = memrt.get('state') or {}
+    local_files = snap.get('local_files') or {}
     prev = snap.get('previous_runtime') or {}
     prev_state = prev.get('state') or {}
     prev_render = prev.get('render') or {}
@@ -14491,15 +14654,25 @@ def build_runtime_watcher_text() -> str:
     lines = ['🖥 Render / Сервер — Watcher', f'Состояние: {status}', f"Фаза: {st.get('phase') or '—'}", f'Версия: {VERSION}', f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}", f"Старт: {st.get('started_at') or '—'}", f"READY: {st.get('ready_at') or '—'}", f"BOOT: {(st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—')} сек", '', 'Render:', f"Instance: {(instance[-28:] if instance != '—' else instance)}", f"Commit: {(commit[:12] if commit != '—' else commit)}", f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}", f"Region/type: {ren.get('RENDER_REGION') or '—'} / {ren.get('RENDER_SERVICE_TYPE') or '—'}", f"PID/host: {proc.get('pid')} / {proc.get('hostname')}", '', 'Ресурсы:', f"Python RAM: {(proc.get('rss_mb') if proc.get('rss_mb') is not None else '—')} MB; пик: {(proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—')} MB", f"Контейнер RAM: {(proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—')} MB; пик: {(proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—')} MB", f"RAM лимит cgroup: {(proc.get('limit_mb') if proc.get('limit_mb') is not None else '—')} MB; контейнер: {(proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—')}%", f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count', '—')} | malloc_trim {memstate.get('malloc_trim_count', '—')} | blocked exports {memstate.get('blocked_heavy_jobs', '—')}", f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb', '—')} MB", f"Диск: занято {(disk.get('used_mb') if disk.get('used_mb') is not None else '—')} MB; свободно {(disk.get('free_mb') if disk.get('free_mb') is not None else '—')} MB", f"Потоков Python: {proc.get('threads')}", f"Runtime объекты: операции {audit.get('operation_items', '—')} | integrity {audit.get('integrity_events', '—')} | forward outcomes {audit.get('forward_outcomes', '—')} | fin batches {audit.get('finance_forward_batches', '—')}", f"Кэши/буферы: finance {audit.get('finance_cache_entries', '—')} | expense {audit.get('expense_drafts', '—')} | journal {audit.get('journal_buffer_rows', '—')} | reminder mode {audit.get('reminder_mode', '—')}", '', 'BOOT / Telegram gate:', f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}", f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}", f"Webhook получено: {st.get('webhook_received', 0)}", f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}", f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}", '', 'Очереди P/A | done err rej | max wait:']
     if isinstance(restore_trace, dict) and restore_trace:
         lines.extend([
-            '', 'RESTORE TRACE R49:',
+            '', 'RESTORE TRACE R68:',
             f"Base: {restore_trace.get('base_source') or '—'} | revision {restore_trace.get('base_revision') or 0}",
             f"Local: found={restore_trace.get('local_found')} valid={restore_trace.get('local_valid')} rev={restore_trace.get('local_revision') or 0}",
+            f"Local cache: attempted={restore_trace.get('local_cache_contacted')} ok={restore_trace.get('local_cache_ok')} | {str(restore_trace.get('local_cache_detail') or '—')[:180]}",
             f"Redis full: attempted={restore_trace.get('redis_full_attempted')} ok={restore_trace.get('redis_full_ok')} | {str(restore_trace.get('redis_full_detail') or '—')[:180]}",
             f"Redis events: ok={restore_trace.get('redis_events_ok')} | {str(restore_trace.get('redis_events_detail') or '—')[:180]}",
             f"Redis capsule: ok={restore_trace.get('redis_capsule_ok')} | {str(restore_trace.get('redis_capsule_detail') or '—')[:180]}",
             f"HEAVY: contacted={restore_trace.get('heavy_contacted')} ok={restore_trace.get('heavy_ok')} | {str(restore_trace.get('heavy_detail') or '—')[:160]}",
             f"MEGA: contacted={restore_trace.get('mega_contacted')} ok={restore_trace.get('mega_ok')} | {str(restore_trace.get('mega_detail') or '—')[:160]}",
             f"Final revision: {restore_trace.get('final_revision') or 0} | restore {restore_trace.get('elapsed_ms') or 0} ms",
+        ])
+    if isinstance(local_files, dict):
+        sizes = local_files.get('sizes') or {}
+        lines.extend([
+            '',
+            'Локальные файлы R68 (ephemeral cache):',
+            f"runtime_state={sizes.get('runtime_state', 0)}B | events={sizes.get('events_jsonl', 0)}B | snapshot={sizes.get('sqlite_snapshot_gz', 0)}B",
+            f"webhook_db={sizes.get('webhook_sqlite', 0)}B | event_outbox={sizes.get('event_outbox_sqlite', 0)}B | journal={sizes.get('bot_journal', 0)}B",
+            f"snapshot last={local_files.get('last_snapshot_at') or '—'} reason={local_files.get('last_snapshot_reason') or '—'} err={str(local_files.get('last_error') or 'нет')[:120]}",
         ])
     for name in ('content', 'ui', 'callback-ack', 'recovery', 'reminder', 'finance', 'fin-forward', 'forward', 'delta', 'backup', 'export', 'general', 'maintenance', 'journal', 'delayed', 'dozvon'):
         q = queues.get(name) or {}
