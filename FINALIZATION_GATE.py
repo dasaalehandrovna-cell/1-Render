@@ -156,6 +156,8 @@ if ROLE=='fast':
     ok('r48_finance_persist_guard','held_by_current_thread' in _fn_sources(msg_src,{'persist_finance_chat_local_fast'}).get('persist_finance_chat_local_fast',''),'finance persist must reject SQLite while chat lock is held')
     ok('r48_navigation_coalesce', all(x in web_src for x in ['_R48_NAV_INFLIGHT','def _r48_nav_coalesce_key','R48 NAV COALESCE']),'safe navigation coalescing missing')
     ok('r48_recovery_yields_to_user','r27_user_quiet_for' in web_src and '5.0' in web_src,'webhook recovery user-activity yield missing')
+    ok('r67_boot_callback_recovery_policy', all(x in web_src for x in ['def _r67_callback_boot_recovery_policy','BOOT_REPLAY update=','boot_drop_r67','boot_review_r67']), 'boot callback replay classification/logging missing')
+    ok('r67_no_blind_running_callback_boot_replay', "if state == 'queued':\n            return ('business_mutation', 'replay', action)" in web_src and "return ('business_mutation', 'needs_review', action)" in web_src, 'running/failed business callback must not blindly replay after restart')
     ok('r48_no_callback_witness_thread','r18-cb-witness-' not in web_src,'callback witness must use bounded pool/scheduler')
     ok('r48_no_event_thread_fallback','vys262-event-r13' not in split_src,'state event fallback must not spawn per-event thread')
 
@@ -187,6 +189,42 @@ if ROLE=='fast':
        '09_final_transport.py' in parts and '10_split_policy_offload.py' in parts and
        parts.index('09_final_transport.py') < parts.index('10_split_policy_offload.py'),
        str(parts))
+    r67_final_symbols={
+        '_google_access_token','_google_sheets_create_category_report','_run_delta_batch','build_info_keyboard','build_info_text','build_main_keyboard',
+        'config_guard_sync_remote_v234','contour_callback_guard','load_data','mega_upload_latest_database_backup','persist_critical_delta_now',
+        'runtime_mark_ready','schedule_config_backup_for_chats','schedule_delta_backup','schedule_startup_main_windows','send_exact_range_export',
+        'send_export_for_chat_to','submit_interactive_file_job','tenant_google_handle_message','v163_webhook_select_lane'
+    }
+    r67_owners={name:[] for name in r67_final_symbols}
+    def _r67_module_scope_nodes(body):
+        for node in body:
+            yield node
+            # Module-level if/try/with branches still create globals.  Do not descend
+            # into function/class bodies because assignments there are locals.
+            if isinstance(node,(ast.If,ast.For,ast.While,ast.With,ast.Try)):
+                for attr in ('body','orelse','finalbody'):
+                    yield from _r67_module_scope_nodes(getattr(node,attr,[]) or [])
+                if isinstance(node,ast.Try):
+                    for handler in node.handlers:
+                        yield from _r67_module_scope_nodes(handler.body)
+            elif isinstance(node,ast.Match):
+                for case in node.cases:
+                    yield from _r67_module_scope_nodes(case.body)
+    for fn,src in runtime_py.items():
+        try: tree=ast.parse(src)
+        except Exception: continue
+        for node in _r67_module_scope_nodes(tree.body):
+            if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in r67_owners:
+                r67_owners[node.name].append((fn,node.lineno,'def'))
+            elif isinstance(node,ast.Assign):
+                for tgt in node.targets:
+                    if isinstance(tgt,ast.Name) and tgt.id in r67_owners:
+                        r67_owners[tgt.id].append((fn,node.lineno,'assign'))
+            elif isinstance(node,ast.AnnAssign) and isinstance(node.target,ast.Name) and node.target.id in r67_owners:
+                r67_owners[node.target.id].append((fn,node.lineno,'assign'))
+    r67_dup={k:v for k,v in r67_owners.items() if len(v)!=1}
+    ok('r67_single_public_runtime_owner',not r67_dup,str(r67_dup))
+    ok('r67_no_prev_contour_chain','_R29_PREV_CONTOUR_GUARD' not in split_src,'R29 PREV contour chain remains')
     if not _runtime_build:
         docker_src=text('Dockerfile') if (ROOT/'Dockerfile').is_file() else ''
         dockerignore_src=text('.dockerignore') if (ROOT/'.dockerignore').is_file() else ''
@@ -451,105 +489,6 @@ if ROLE=='fast':
        'close_previous_main_window_before_back' not in cmd_src and
        'delete_message' not in back_main_src,
        'Back/Main must edit only the clicked message and preserve sibling windows')
-
-    # R67: forwarding config/runtime parity and deterministic independent-window redraws.
-    resolver_src=_fn_sources(web_src,{'_canon_resolve_forward_targets__001'}).get('_canon_resolve_forward_targets__001','')
-    schedule_fwd_src=_fn_sources(web_src,{'_canon_schedule_forward_any_message__001'}).get('_canon_schedule_forward_any_message__001','')
-    bi_src=_fn_sources(rel_src,{'set_forward_pair_bidirectional'}).get('set_forward_pair_bidirectional','')
-    fwd_persist_src=_fn_sources(rel_src,{'_v166_schedule_forward_persist'}).get('_v166_schedule_forward_persist','')
-    restore_windows_src=_fn_sources(core_src,{'restore_finance_window_runtime_state'}).get('restore_finance_window_runtime_state','')
-    edit_retry_src=_fn_sources(final_transport,{'_canon_v161_edit_retry__001'}).get('_canon_v161_edit_retry__001','')
-    active_persist_src=_fn_sources(cmd_src,{'_v186_persist_active_window_state'}).get('_v186_persist_active_window_state','')
-    ok('r67_forward_explicit_rules_are_runtime_authority',
-       "data.get('forward_rules'" in resolver_src and 'tenant_same_space' not in resolver_src and
-       '_V148_ORIG_RESOLVE_FORWARD_TARGETS' not in resolver_src,
-       'runtime resolver must deliver explicit stored edges without a second tenant veto')
-    ok('r68_forward_explicit_edge_bypasses_runtime_permission_veto',
-       'v152_chat_permission_allowed' not in schedule_fwd_src and
-       'resolve_forward_targets' in schedule_fwd_src and 'forward_ingress_r68' in schedule_fwd_src,
-       'stored forwarding edge must be the delivery authority; runtime permission profile cannot silently veto it')
-    ok('r67_bidirectional_pair_atomic',
-       "fr.setdefault(str(a), {})[str(b)] = 'twoway'" in bi_src and
-       "fr.setdefault(str(b), {})[str(a)] = 'twoway'" in bi_src and
-       bi_src.count('_v166_schedule_forward_persist') == 1 and
-       cmd_src.count('set_forward_pair_bidirectional(A, B, not (ab_on and ba_on))') >= 2,
-       'two-way UI must commit both directions with one durable persist admission')
-    ok('r67_forward_config_root_only_persist',
-       'save_data(data, root_only=True)' in fwd_persist_src and 'save_data(data, full=True)' not in fwd_persist_src,
-       'forward config persistence must not full-save all chat state')
-    ok('r67_restore_preserves_all_window_day_pointers',
-       "data.setdefault('active_messages', {})[str(cid)] = dict(main_windows)" in restore_windows_src and
-       "state['main_windows'] = dict(main_windows)" in restore_windows_src and
-       "state['main_windows'] = {selected_day: selected_mid}" not in restore_windows_src,
-       'deploy restore must not collapse compact window state to one day/message')
-    ok('r67_navigation_direct_commit',
-       all(x in edit_retry_src for x in ('back_main_instant','nav_prev_restore','info_v161','start_reuse_main')) and
-       '_tg_call_retry(bot.edit_message_text' in edit_retry_src and 'direct_purposes' in edit_retry_src,
-       'critical navigation must receive real Telegram edit outcome instead of queue-only success')
-    ok('r67_back_never_redirects_to_sibling',
-       '_V161_PREV_BACKUP_WINDOW' not in back_main_src and
-       'back_main_retry_same_window' in back_main_src and
-       'independent_window=1' in back_main_src,
-       'Back on a parallel window must only edit/retry the clicked message')
-    ok('r67_window_move_single_chat_persist',
-       'save_data(' not in active_persist_src and '_sync_finance_window_state_from_runtime' in active_persist_src,
-       'active-window persist helper must not duplicate the chat SQLite write')
-
-    # R67 forwarding total-audit invariants: ordinary messages, channel posts,
-    # edits, albums, replies and exact-once copy mapping remain wired.
-    msg_src=all_py.get('04_messages_features.py','')
-    split_src=all_py.get('10_split_policy_offload.py','')
-    any_msg_src=_fn_sources(msg_src,{'on_any_message'}).get('on_any_message','')
-    channel_src=_fn_sources(cmd_src,{'on_any_channel_post'}).get('on_any_channel_post','')
-    edited_channel_src=_fn_sources(cmd_src,{'on_edited_channel_post'}).get('on_edited_channel_post','')
-    single_fwd_src=_fn_sources(msg_src,{'_forward_single_to_target'}).get('_forward_single_to_target','')
-    media_src=_fn_sources(msg_src,{'_collect_media_group_for_forward','_flush_media_group_forward_locked'})
-    sender_guard_src=_fn_sources(core_src,{'_forward_sender_skip_reason'}).get('_forward_sender_skip_reason','')
-    probe_all_src=_fn_sources(core_src,{'probe_all_known_chats'}).get('probe_all_known_chats','')
-    forward_status_src=_fn_sources(core_src,{'build_forward_status_text'}).get('build_forward_status_text','')
-    ok('r67_forward_all_ingress_paths_wired',
-       'schedule_forward_any_message(chat_id, msg)' in any_msg_src and
-       'schedule_forward_any_message(msg.chat.id, msg)' in channel_src and
-       'schedule_propagate_edited_to_copies(msg)' in edited_channel_src,
-       'group/private/channel normal+edited message paths must remain connected to forwarding')
-    ok('r67_forward_exact_once_and_reply_mapping',
-       'get_forward_links' in single_fwd_src and '_store_forward_link' in single_fwd_src and
-       'resolve_reply_target_message_id' in single_fwd_src and 'forward_duplicate_copy_blocked_v260' in single_fwd_src,
-       'copy delivery must preserve exact-once index and reply mapping')
-    ok('r67_forward_media_copy_fallback_chain',
-       '_collect_media_group_for_forward' in msg_src and '_flush_media_group_forward_locked' in msg_src and
-       'bot.copy_message' in single_fwd_src and 'bot.forward_message' in single_fwd_src and '_fallback_send_single' in single_fwd_src,
-       'albums and single media must retain copy→forward→typed-send fallback')
-    ok('r67_forward_input_defaults_and_self_loop_guard',
-       "R29_INPUT_DEFAULTS = {'forwarded': True, 'other_bots': True}" in split_src and
-       "return 'bot_sender'" in sender_guard_src and 'groupanonymousbot' not in sender_guard_src,
-       'forwarded/third-party-bot messages default ON while own-bot copies remain loop-protected')
-    ok('r67_forward_privacy_mode_diagnostic',
-       'can_read_all_group_messages' in probe_all_src and 'group_privacy_read_all' in probe_all_src and
-       'BotFather Privacy Mode' in forward_status_src,
-       'full chat probe must expose Telegram Group Privacy as an explicit cause of missing ingress')
-
-
-    preflight_src=_fn_sources(core_src,{'forward_pair_preflight_r68'}).get('forward_pair_preflight_r68','')
-    scope_guard_src=_fn_sources(rel_src,{'_v217_forward_scope_guard'}).get('_v217_forward_scope_guard','')
-    authorize_src=_fn_sources(rel_src,{'_v166_authorize_pair'}).get('_v166_authorize_pair','')
-    forward_runtime_src=_fn_sources(rel_src,{'_canon_forward_any_message__002'}).get('_canon_forward_any_message__002','')
-    fwd_new_text_src=_fn_sources(all_py.get('05_finance_ui.py',''),{'build_forward_new_text'}).get('build_forward_new_text','')
-    ok('r68_forward_pair_live_preflight',
-       'bot.get_me()' in preflight_src and 'can_read_all_group_messages' in preflight_src and
-       'bot.get_chat(int(cid))' in preflight_src and 'bot.get_chat_member' in preflight_src,
-       'pair UI must prove Telegram endpoint visibility and Group Privacy instead of showing a false healthy state')
-    ok('r68_owner_console_cross_space_pair_authority',
-       'int(ctx) == int(OWNER_ID or 0)' in scope_guard_src and 'owner_context' in authorize_src,
-       'owner callback workers must not lose authorization merely because thread-local actor/tenant context is absent')
-    ok('r68_explicit_rule_autoheals_stale_forward_mode',
-       'explicit_targets = list(resolve_forward_targets(cid) or [])' in forward_runtime_src and
-       '_v215_set_forward_mode(cid, True, persist=False)' in forward_runtime_src and 'forward_mode_autoheal_r68' in forward_runtime_src,
-       'persisted explicit edges must not be killed by a stale contour forward-mode flag')
-    ok('r68_pair_screen_shows_privacy_and_reachability',
-       'forward_pair_preflight_cached_r68' in fwd_new_text_src and 'Group Privacy включён' in fwd_new_text_src and
-       'бот не видит чат(ы)' in fwd_new_text_src,
-       'pair screen must show why an apparently enabled direction cannot physically receive/send Telegram traffic')
 
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot

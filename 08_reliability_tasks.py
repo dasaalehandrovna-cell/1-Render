@@ -607,7 +607,7 @@ except Exception:
 _V156_ORIG_BUILD_INFO_KEYBOARD = _v177_legacy_0218_build_info_keyboard
 if callable(_V156_ORIG_BUILD_INFO_KEYBOARD):
 
-    def build_info_keyboard(chat_id: int):
+    def _v156_build_info_keyboard_legacy(chat_id: int):
         kb = _V156_ORIG_BUILD_INFO_KEYBOARD(int(chat_id))
         try:
             button = IB(process_visual_status_label(int(chat_id)), callback_data='v156:process_visual_toggle')
@@ -630,7 +630,7 @@ if callable(_V156_ORIG_BUILD_INFO_KEYBOARD):
 _V156_ORIG_BUILD_INFO_TEXT = _v177_legacy_0055_build_info_text
 if callable(_V156_ORIG_BUILD_INFO_TEXT):
 
-    def build_info_text(chat_id: int) -> str:
+    def _v156_build_info_text_legacy(chat_id: int) -> str:
         text = str(_V156_ORIG_BUILD_INFO_TEXT(int(chat_id)) or '')
         line = f"Окно процессов: {('✅ ВКЛ' if process_visual_status_enabled(int(chat_id)) else '⬜ ВЫКЛ')}"
         rows = text.splitlines()
@@ -4429,12 +4429,6 @@ def _v161_send_main(chat_id: int, day_key: str) -> int:
     return mid
 
 def _canon_return_to_main_window_closing_previous__001(chat_id: int, day_key: str, current_message_id: int | None=None):
-    """Render Main in the clicked window; never redirect work into a sibling window.
-
-    R67 keeps every Telegram window independent. If the clicked message exists, Back
-    edits exactly that message. A transient failure may queue one retry for the same
-    message; only a confirmed missing message may cause a replacement window to be sent.
-    """
     chat_id = int(chat_id)
     day_key = str(day_key)[:10]
     try:
@@ -4447,57 +4441,44 @@ def _canon_return_to_main_window_closing_previous__001(chat_id: int, day_key: st
         old_mid = 0
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
-
-    def _commit(mid: int) -> str:
+    if current_mid:
         try:
-            cancel_auto_delete_for_message(chat_id, int(mid))
-            cancel_fast_ui_edit(chat_id, int(mid))
+            cancel_auto_delete_for_message(chat_id, current_mid)
+            cancel_fast_ui_edit(chat_id, current_mid)
         except Exception:
             pass
-        result = _v161_edit_retry(chat_id, int(mid), txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_instant')
+        result = _v161_edit_retry(chat_id, current_mid, txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_instant')
         try:
-            bot_journal('back_main_v161', chat_id, f'msg={int(mid)}; latest_pointer={old_mid or None}; result={result}; independent_window=1')
+            bot_journal('back_main_v161', chat_id, f'msg={current_mid}; old={old_mid or None}; result={result}; preserve_parallel=1')
         except Exception:
             pass
-        if result == 'ok':
-            set_active_window_id(chat_id, day_key, int(mid))
+        if result in {'ok', 'scheduled'}:
+            set_active_window_id(chat_id, day_key, current_mid)
             try:
                 schedule_balance_panel_refresh(chat_id, 0.05)
             except Exception:
                 pass
-        return str(result or 'failed')
-
-    if current_mid:
-        result = _commit(current_mid)
-        if result == 'ok':
             return True
         if result == 'not_found':
             try:
                 unregister_open_window(chat_id, current_mid)
             except Exception:
                 pass
-            try:
-                _V161_FORCE_MAIN.value = True
-                _v161_send_main(chat_id, day_key)
-                return True
-            finally:
-                _V161_FORCE_MAIN.value = False
-        # Never mutate a different parallel window because this one had a transient
-        # error. One latest-wins retry is allowed for the same clicked message.
+    if old_mid and old_mid != current_mid:
         try:
-            retry = fast_ui_edit_message_text(chat_id, current_mid, txt, reply_markup=kb, parse_mode='HTML', purpose='back_main_retry_same_window')
-            return str(retry or '') in {'ok', 'scheduled'}
+            row = get_registered_open_window(chat_id, old_mid) or {}
+            if str(row.get('window_type') or '') == 'main_day':
+                _V161_FORCE_MAIN.value = True
+                try:
+                    if callable(_V161_PREV_BACKUP_WINDOW):
+                        _V161_PREV_BACKUP_WINDOW(chat_id, day_key, message_id_override=old_mid)
+                finally:
+                    _V161_FORCE_MAIN.value = False
+                set_active_window_id(chat_id, day_key, old_mid)
+                return True
         except Exception:
-            return False
-
-    # Internal callers without a concrete Telegram message may reuse the latest pointer.
-    if old_mid:
-        result = _commit(old_mid)
-        if result == 'ok':
-            return True
-        if result == 'not_found':
             try:
-                unregister_open_window(chat_id, old_mid)
+                _V161_FORCE_MAIN.value = False
             except Exception:
                 pass
     try:
@@ -7424,7 +7405,7 @@ def _v166_schedule_forward_persist(*chat_ids):
                 ids = sorted(_V166_FORWARD_DIRTY_CHATS)
                 _V166_FORWARD_DIRTY_CHATS.clear()
             try:
-                save_data(data, root_only=True)
+                save_data(data, full=True)
             except Exception as exc:
                 try:
                     log_error(f'v166 forward local persist: {exc}')
@@ -7471,16 +7452,11 @@ def _v166_authorize_pair(src: int, dst: int):
         actor = int(tenant_current_actor_user_id() or 0)
     except Exception:
         actor = 0
-    owner_context = False
-    try:
-        owner_context = bool(int(current_state_chat_id() or 0) == int(OWNER_ID or 0))
-    except Exception:
-        owner_context = False
-    if not (tenant_is_platform_owner_user(actor) or owner_context):
+    if not tenant_is_platform_owner_user(actor):
         raise PermissionError('Можно связывать только свой 1-й круг и его 2-й круг')
     try:
         key = f'{min(src, dst)}:{max(src, dst)}'
-        _v164_root().setdefault('global_forward_pairs', {})[key] = {'src': src, 'dst': dst, 'created_by': actor or int(OWNER_ID or 0), 'created_at': _v164_now()}
+        _v164_root().setdefault('global_forward_pairs', {})[key] = {'src': src, 'dst': dst, 'created_by': actor, 'created_at': _v164_now()}
     except Exception:
         pass
 
@@ -10899,7 +10875,7 @@ try:
     _V167_BASE_RUNTIME_MARK_READY = _v179_legacy_runtime_mark_ready
     if callable(_V167_BASE_RUNTIME_MARK_READY):
 
-        def runtime_mark_ready(detail: str=''):
+        def _v167_runtime_mark_ready_legacy(detail: str=''):
             result = _V167_BASE_RUNTIME_MARK_READY(detail)
             try:
                 if _v168_mark_resolved_tz_rows():
@@ -11632,7 +11608,7 @@ except Exception:
 _V171_PREV_RUNTIME_MARK_READY = _v179_legacy_runtime_mark_ready
 if callable(_V171_PREV_RUNTIME_MARK_READY):
 
-    def runtime_mark_ready(detail: str=''):
+    def _v171_runtime_mark_ready_legacy(detail: str=''):
         result = _V171_PREV_RUNTIME_MARK_READY(detail)
         try:
             fixed = _v171_mark_all_v169_tz_fixed()
@@ -12725,7 +12701,7 @@ except Exception:
 _V172_PREV_RUNTIME_MARK_READY = _v179_legacy_runtime_mark_ready
 if callable(_V172_PREV_RUNTIME_MARK_READY):
 
-    def runtime_mark_ready(detail: str=''):
+    def _v172_runtime_mark_ready_legacy(detail: str=''):
         result = _V172_PREV_RUNTIME_MARK_READY(detail)
         try:
             data.setdefault(V172_TASKS_KEY, {})
@@ -16008,22 +15984,10 @@ def _canon_forward_any_message__002(source_chat_id: int, msg):
     cid = int(source_chat_id)
     if _v215_circle_business_chat(cid) and (not contour_forwarding_mode_enabled(cid)):
         try:
-            explicit_targets = list(resolve_forward_targets(cid) or [])
-        except Exception:
-            explicit_targets = []
-        if not explicit_targets:
-            try:
-                bot_journal('forward_mode_off_skip_v215', cid, f"message_id={int(getattr(msg, 'message_id', 0) or 0)}; explicit_targets=0", 'INFO')
-            except Exception:
-                pass
-            return
-        # R68 self-heal: a persisted explicit edge wins over a stale contour-mode
-        # toggle. Do not silently kill an already-configured forwarding direction.
-        try:
-            _v215_set_forward_mode(cid, True, persist=False)
-            bot_journal('forward_mode_autoheal_r68', cid, f'explicit_targets={len(explicit_targets)}')
+            bot_journal('forward_mode_off_skip_v215', cid, f"message_id={int(getattr(msg, 'message_id', 0) or 0)}", 'INFO')
         except Exception:
             pass
+        return
     return _V215_PREV_FORWARD_ANY_MESSAGE(cid, msg)
 _V215_PREV_ADD_FORWARD_LINK = _canon_add_forward_link__001
 
@@ -16339,15 +16303,6 @@ def _v217_forward_scope_guard(src_chat_id: int, dst_chat_id: int) -> None:
         ctx = int(current_state_chat_id() or 0)
     except Exception:
         ctx = 0
-    try:
-        actor = int(tenant_current_actor_user_id() or 0)
-    except Exception:
-        actor = 0
-    # R68: the owner forwarding console is global by design. Thread-local actor
-    # context may be absent in callback workers, so OWNER_ID chat context is an
-    # explicit equivalent authorization and must not randomly block a valid pair.
-    if (actor and tenant_is_platform_owner_user(actor)) or (ctx and int(ctx) == int(OWNER_ID or 0)):
-        return
     if not ctx or not _v215_circle_business_chat(ctx):
         return
     tid = str(tenant_id_for_chat(ctx, create=False) or '')
@@ -16374,61 +16329,6 @@ _V217_PREV_REMOVE_FORWARD_FINANCE = _canon_remove_forward_finance__001
 def _canon_remove_forward_finance__002(src_chat_id: int, dst_chat_id: int):
     _v217_forward_scope_guard(int(src_chat_id), int(dst_chat_id))
     return _V217_PREV_REMOVE_FORWARD_FINANCE(int(src_chat_id), int(dst_chat_id))
-
-def set_forward_pair_bidirectional(chat_a: int, chat_b: int, enabled: bool) -> bool:
-    """Atomically enable or clear both directions of a forwarding pair.
-
-    R67 prevents a crash/deploy between two independent writes from leaving A→B
-    enabled while B→A is missing. Disabling the pair also clears directional
-    finance flags, matching the historical two-way toggle semantics.
-    """
-    a, b = int(chat_a), int(chat_b)
-    if a == b:
-        raise ValueError('Нельзя связать чат пересылкой с самим собой')
-    _v217_forward_scope_guard(a, b)
-    _v217_forward_scope_guard(b, a)
-    if enabled:
-        _v166_authorize_pair(a, b)
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        fr = data.setdefault('forward_rules', {})
-        ff = data.setdefault('forward_finance', {})
-        if enabled:
-            fr.setdefault(str(a), {})[str(b)] = 'twoway'
-            fr.setdefault(str(b), {})[str(a)] = 'twoway'
-            order = data.setdefault('forward_pair_order', [])
-            if not isinstance(order, list):
-                order = []
-                data['forward_pair_order'] = order
-            key, rev = f'{a}:{b}', f'{b}:{a}'
-            if key not in order and rev not in order:
-                order.append(key)
-        else:
-            for src, dst in ((a, b), (b, a)):
-                (fr.get(str(src)) or {}).pop(str(dst), None)
-                if str(src) in fr and not fr.get(str(src)):
-                    fr.pop(str(src), None)
-                (ff.get(str(src)) or {}).pop(str(dst), None)
-                if str(src) in ff and not ff.get(str(src)):
-                    ff.pop(str(src), None)
-            key, rev = f'{a}:{b}', f'{b}:{a}'
-            order = data.setdefault('forward_pair_order', [])
-            if isinstance(order, list):
-                data['forward_pair_order'] = [x for x in order if x not in {key, rev}]
-    if enabled:
-        for cid in (a, b):
-            if _v215_circle_business_chat(cid):
-                _v215_set_forward_mode(cid, True, persist=False)
-    else:
-        _v166_cleanup_global_pair(a, b)
-        for cid in (a, b):
-            if _v215_circle_business_chat(cid) and not _v215_forward_rules_present(cid):
-                _v215_set_forward_mode(cid, False, persist=False)
-    _v166_schedule_forward_persist(a, b)
-    try:
-        bot_journal('forward_pair_bidirectional_r67', a, f'peer={b}; enabled={int(bool(enabled))}')
-    except Exception:
-        pass
-    return bool(enabled)
 _V217_PREV_FORWARD_MENU_KB = _canon_build_forward_menu_keyboard_for_current_mode__001
 
 def _canon_build_forward_menu_keyboard_for_current_mode__002(day_key: str | None=None, A: int | None=None, B: int | None=None):

@@ -165,41 +165,8 @@ def _v177_deferred_ui_retry(chat_id: int, message_id: int, text: str, reply_mark
         pass
 
 def _canon_v161_edit_retry__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='ui') -> str:
-    """Final UI edit policy. Critical navigation commits immediately in its async lane.
-
-    Ordinary redraws still use latest-wins WINDOW_RENDER_TASK_POOL. R67 makes Back,
-    Previous, Info and /start reuse wait for the real Telegram edit result so callers
-    can immediately recover from a missing/deleted message instead of treating an
-    unverified queue admission as a successful redraw.
-    """
+    """R22 UI policy: enqueue latest render; callback worker never waits for Telegram RTT."""
     started = _v176_time.monotonic()
-    direct_purposes = {'back_main_instant', 'nav_prev_restore', 'info_v161', 'start_reuse_main'}
-    if str(purpose or '') in direct_purposes:
-        try:
-            cancel_fn = globals().get('cancel_fast_ui_edit')
-            if callable(cancel_fn):
-                cancel_fn(int(chat_id), int(message_id))
-        except Exception:
-            pass
-        try:
-            _tg_call_retry(bot.edit_message_text, text, chat_id=int(chat_id), message_id=int(message_id), reply_markup=reply_markup, parse_mode=parse_mode, attempts=2, purpose=f'{purpose}_direct')
-            result = 'ok'
-        except Exception as exc:
-            low = str(exc).casefold()
-            if 'message is not modified' in low:
-                result = 'ok'
-            elif 'message to edit not found' in low or "message can't be edited" in low or 'message_id_invalid' in low:
-                result = 'not_found'
-            elif is_telegram_429(exc):
-                result = 'rate_limited'
-            else:
-                result = 'failed'
-                try:
-                    log_error(f'R67 direct navigation edit failed chat={int(chat_id)} msg={int(message_id)} purpose={purpose}: {exc}')
-                except Exception:
-                    pass
-        v177_perf_stage('render_direct_navigation', _v176_time.monotonic() - started)
-        return result
     try:
         result = str(fast_ui_edit_message_text(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose) or 'failed')
     except Exception:
@@ -235,13 +202,13 @@ if callable(_V176_ORIG_WINDOW_CLEANUP):
         return _V176_ORIG_WINDOW_CLEANUP(*args, **kwargs)
 if callable(_V176_ORIG_SCHEDULE_DELTA):
 
-    def schedule_delta_backup(chat_id=None, delay=None, reason='change'):
+    def _v176_schedule_delta_backup_gate_legacy(chat_id=None, delay=None, reason='change'):
         if not v176_process_enabled('delta_auto'):
             return False
         return _V176_ORIG_SCHEDULE_DELTA(chat_id, delay=delay, reason=reason)
 if callable(_V176_ORIG_CRITICAL_DELTA):
 
-    def persist_critical_delta_now(chat_id: int) -> bool:
+    def _v176_persist_critical_delta_gate_legacy(chat_id: int) -> bool:
         if not v176_process_enabled('delta_critical'):
             return True
         return bool(_V176_ORIG_CRITICAL_DELTA(int(chat_id)))
@@ -6263,9 +6230,7 @@ _file_job_progress = _canon_file_job_progress__001
 _file_job_tick = _canon_file_job_tick__001
 _fin_forward_batch_finish_target = _canon_fin_forward_batch_finish_target__001
 _forget_forward_pair_if_empty = _canon_forget_forward_pair_if_empty__001
-_google_access_token = _canon_google_access_token__001
 _google_service_account_info = _canon_google_service_account_info__001
-_google_sheets_create_category_report = _canon_google_sheets_create_category_report__001
 _google_spreadsheet_id = _canon_google_spreadsheet_id__001
 _interactive_file_job_runner = _canon_interactive_file_job_runner__001
 _is_bot_removed_error = _canon_is_bot_removed_error__001
@@ -6293,7 +6258,6 @@ _reminder_items = _canon_reminder_items__001
 _reminder_mark_completed = _canon_reminder_mark_completed__001
 _reminder_send_cycle = _canon_reminder_send_cycle__002
 _reminder_tick = _canon_reminder_tick__001
-_run_delta_batch = _canon_run_delta_batch__002
 _run_pending_ui_edit = _canon_run_pending_ui_edit__001
 _runtime_export_select_paths = _canon_runtime_export_select_paths__001
 _runtime_heartbeat_job = _canon_runtime_heartbeat_job__001
@@ -6389,12 +6353,9 @@ build_forward_target_menu = _canon_build_forward_target_menu__001
 build_gomonk_menu_keyboard = _canon_build_gomonk_menu_keyboard__001
 build_gomonk_menu_text = _canon_build_gomonk_menu_text__001
 build_help_text = _canon_build_help_text__001
-build_info_keyboard = _canon_build_info_keyboard__002
-build_info_text = _v237_1_storage_build_info_text
 build_internal_timer_input_keyboard = _canon_build_internal_timer_input_keyboard__002
 build_internal_timer_input_text = _canon_build_internal_timer_input_text__001
 build_internal_timers_text = _canon_build_internal_timers_text__001
-build_main_keyboard = _v220_build_main_keyboard
 build_quick_balance_mode_menu = _canon_build_quick_balance_mode_menu__001
 build_reminder_list_keyboard = _v220_reminder_list_keyboard
 build_reminder_list_text = _canon_build_reminder_list_text__001
@@ -6411,9 +6372,7 @@ collect_all_known_chat_ids = _canon_collect_all_known_chat_ids__001
 collect_forward_menu_chats = _canon_collect_forward_menu_chats__001
 collect_forward_pairs_for_menu = _canon_collect_forward_pairs_for_menu__002
 config_guard_boot_verify_v234 = _canon_config_guard_boot_verify_v234__002
-config_guard_sync_remote_v234 = _canon_config_guard_sync_remote_v234__002
 constitution_download_best_boot_generation_v235 = _canon_constitution_download_best_boot_generation_v235__002
-contour_callback_guard = _v223_contour_callback_guard
 cycle_forward_copy_edit_mode = _canon_cycle_forward_copy_edit_mode__001
 delete_auto_finance_windows_for_chat = _canon_delete_auto_finance_windows_for_chat__001
 durable_task_required = _canon_durable_task_required__001
@@ -6437,7 +6396,6 @@ is_owner_chat = _canon_is_owner_chat__001
 is_primary_owner = _canon_is_primary_owner__001
 keepalive_begin_peer_url_input = _canon_keepalive_begin_peer_url_input__002
 keepalive_cancel_input = _canon_keepalive_cancel_input__002
-load_data = _canon_load_data__001
 log_error = _canon_log_error__001
 log_info = _canon_log_info__001
 lowram_apply_deltas_after_db_snapshot = _canon_lowram_apply_deltas_after_db_snapshot__002
@@ -6452,7 +6410,6 @@ mega_task_registry_stats = _canon_mega_task_registry_stats__002
 mega_tasks_active = _canon_mega_tasks_active__002
 mega_upload_chat_backup_bundle = _canon_mega_upload_chat_backup_bundle__002
 mega_upload_chat_latest_json_only = _canon_mega_upload_chat_latest_json_only__002
-mega_upload_latest_database_backup = _canon_mega_upload_latest_database_backup__002
 memory_malloc_trim = _canon_memory_malloc_trim__001
 migrate_chat_id_everywhere = _canon_migrate_chat_id_everywhere__001
 migrate_recent_expense_shortcut_events = _canon_migrate_recent_expense_shortcut_events__001
@@ -6460,7 +6417,6 @@ owner_scope_id = _canon_owner_scope_id__001
 owner_scoped_settings = _canon_owner_scoped_settings__001
 parse_gomonk_entries = _canon_parse_gomonk_entries__001
 pending_input_cancel_callback_final = _canon_pending_input_cancel_callback_final__001
-persist_critical_delta_now = _canon_persist_critical_delta_now__003
 process_visual_status_enabled = _canon_process_visual_status_enabled__001
 refresh_balance_panel_now = _canon_refresh_balance_panel_now__001
 refresh_registered_financial_windows = _canon_refresh_registered_financial_windows__001
@@ -6477,18 +6433,14 @@ resolve_forward_targets = _canon_resolve_forward_targets__001
 restore_previous_window = _canon_restore_previous_window__001
 return_to_main_window_closing_previous = _canon_return_to_main_window_closing_previous__002
 runtime_classify_previous = _canon_runtime_classify_previous__001
-runtime_mark_ready = _canon_runtime_mark_ready__001
 runtime_upload_snapshot = _canon_runtime_upload_snapshot__001
 safe_edit = _canon_safe_edit__001
 safe_edit_current_only = _canon_safe_edit_current_only__001
 safety_permission_allowed = _canon_safety_permission_allowed__001
 schedule_callback_receipt_ack = _canon_schedule_callback_receipt_ack__001
-schedule_config_backup_for_chats = _canon_schedule_config_backup_for_chats__002
-schedule_delta_backup = _canon_schedule_delta_backup__003
 schedule_forward_any_message = _canon_schedule_forward_any_message__001
 schedule_mega_task_recovery = _canon_schedule_mega_task_recovery__003
 schedule_safe_failed_task_repairs = _canon_schedule_safe_failed_task_repairs__002
-schedule_startup_main_windows = _canon_schedule_startup_main_windows__002
 security_known_users = _canon_security_known_users__001
 security_role_for_user = _canon_security_role_for_user__001
 security_set_role = _canon_security_set_role__001
@@ -6496,8 +6448,6 @@ security_user_allowed = _canon_security_user_allowed__001
 send_and_auto_delete = _canon_send_and_auto_delete__001
 send_csv_for_chat_to = _canon_send_csv_for_chat_to__001
 send_csv_wedthu = _canon_send_csv_wedthu__001
-send_exact_range_export = _canon_send_exact_range_export__001
-send_export_for_chat_to = _canon_send_export_for_chat_to__001
 send_html_and_auto_delete = _canon_send_html_and_auto_delete__001
 send_runtime_export_zip = _canon_send_runtime_export_zip__001
 set_additional_owner = _canon_set_additional_owner__001
@@ -6512,7 +6462,6 @@ set_internal_timer_seconds = _canon_set_internal_timer_seconds__001
 set_reminder_ui_mode = _canon_set_reminder_ui_mode__001
 set_webhook = _canon_set_webhook__001
 show_contour_start_modes = _v224_show_contour_start_modes
-submit_interactive_file_job = _canon_submit_interactive_file_job__001
 task_dispatcher_callback_final = _v219_task_dispatcher_callback_final
 telegram_apply_remote_deltas_v234 = _canon_telegram_apply_remote_deltas_v234__002
 telegram_restore_sqlite_snapshot_v234 = _canon_telegram_restore_sqlite_snapshot_v234__002
@@ -6526,7 +6475,6 @@ tenant_create_invite = _canon_tenant_create_invite__001
 tenant_dashboard_keyboard = _canon_tenant_dashboard_keyboard__001
 tenant_dashboard_text = _canon_tenant_dashboard_text__001
 tenant_detail_text = _canon_tenant_detail_text__001
-tenant_google_handle_message = _canon_tenant_google_handle_message__002
 tenant_handle_callback = _canon_tenant_handle_callback__001
 tenant_id_for_chat = _canon_tenant_id_for_chat__001
 tenant_note_chat_seen = _canon_tenant_note_chat_seen__001
@@ -6540,7 +6488,6 @@ update_chat_info_from_chat_object = _canon_update_chat_info_from_chat_object__00
 update_chat_info_from_message = _canon_update_chat_info_from_message__001
 update_or_send_day_window = _canon_update_or_send_day_window__001
 v152_human_download_name = _canon_v152_human_download_name__001
-v163_webhook_select_lane = _canon_v163_webhook_select_lane__001
 v217_callback_final = _canon_v217_callback_final__002
 v218_callback_final = _v221_v218_callback_final
 v219_annotation_callback_final = _v226_annotation_callback_final

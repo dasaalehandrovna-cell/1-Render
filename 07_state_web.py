@@ -1252,50 +1252,27 @@ def _canon_collect_all_known_chat_ids__001(include_owner: bool=True) -> list[int
         root_id = owner_scope_id(current_state_chat_id())
         ids = [cid for cid in ids if int(cid) != int(root_id)]
     return sorted(set(ids), key=lambda cid: get_chat_display_name(cid).casefold())
-def _canon_resolve_forward_targets__001(source_chat_id: int):
-    """Return the exact explicit forwarding edges stored for this source.
+_V148_ORIG_RESOLVE_FORWARD_TARGETS = _v177_legacy_0140_resolve_forward_targets
 
-    R67 final contract: authorization happens when a rule is configured. Runtime
-    delivery must not silently veto an already-stored edge using a second,
-    different tenant-space policy. Raw and migrated source ids are merged so a
-    supergroup migration cannot make one direction of a two-way pair disappear.
-    """
+def _canon_resolve_forward_targets__001(source_chat_id: int):
     resolver = globals().get('resolve_canonical_chat_id_v199')
     suspended = globals().get('is_forward_target_suspended_v199')
-    source_raw = int(source_chat_id)
-    source_canonical = int(resolver(source_raw)) if callable(resolver) else source_raw
-    source_keys = []
-    for value in (source_canonical, source_raw):
-        key = str(int(value))
-        if key not in source_keys:
-            source_keys.append(key)
-    with data_lock:
-        fr = data.get('forward_rules', {}) or {}
-        ff = data.get('forward_finance', {}) or {}
-        snapshots = []
-        for src_key in source_keys:
-            rules = dict(fr.get(src_key, {}) or {})
-            finances = dict(ff.get(src_key, {}) or {})
-            snapshots.append((src_key, rules, finances))
+    src = int(resolver(int(source_chat_id))) if callable(resolver) else int(source_chat_id)
+    rows = _V148_ORIG_RESOLVE_FORWARD_TARGETS(src) if callable(_V148_ORIG_RESOLVE_FORWARD_TARGETS) else []
     out = []
     seen = set()
-    for src_key, rules, finances in snapshots:
-        for raw_dst, mode in rules.items():
+    for dst, mode, fin in rows or []:
+        dst = int(resolver(int(dst))) if callable(resolver) else int(dst)
+        if dst in seen or (callable(suspended) and suspended(dst)):
+            continue
+        if tenant_same_space(src, dst):
+            out.append((dst, mode, bool(fin)))
+            seen.add(dst)
+        else:
             try:
-                raw_dst_id = int(raw_dst)
-                dst = int(resolver(raw_dst_id)) if callable(resolver) else raw_dst_id
-            except Exception:
-                continue
-            if dst == source_canonical or dst in seen:
-                continue
-            try:
-                if callable(suspended) and (suspended(raw_dst_id) or suspended(dst)):
-                    continue
+                bot_journal('tenant_cross_forward_blocked', src, f'dst={dst}')
             except Exception:
                 pass
-            fin = bool(finances.get(str(raw_dst), finances.get(str(dst), False)))
-            out.append((dst, str(mode or 'oneway_to'), fin))
-            seen.add(dst)
     return out
 _V148_ORIG_ADD_FORWARD_LINK = _v177_legacy_0141_add_forward_link
 
@@ -4226,6 +4203,88 @@ def _v260_inbox_migrate_legacy_once() -> int:
     except Exception: pass
     return moved
 
+def _r67_callback_boot_recovery_policy(row: dict) -> tuple[str, str, str]:
+    """Classify a persisted callback for *boot-time* recovery.
+
+    Returns ``(class_name, decision, action)`` where decision is one of:
+    ``replay``      -- only a never-started business/unknown callback may run again;
+    ``drop_done``   -- stale UI/navigation/diagnostic callback is intentionally retired;
+    ``needs_review``-- callback may already have produced a business side effect.
+
+    The critical safety rule is that a callback which was already ``running`` or
+    ``failed`` is never blindly executed again after a process restart.  Telegram UI
+    navigation is ephemeral and is never useful to replay after deploy.
+    """
+    row = row if isinstance(row, dict) else {}
+    payload = row.get('payload') or {}
+    state = str(row.get('state') or '')
+    cq = payload.get('callback_query') or {} if isinstance(payload, dict) else {}
+    action = str(cq.get('data') or '')
+    low = action.casefold()
+
+    # Diagnostic/test buttons are observational and stale by definition after boot.
+    if low.startswith(('r44:test:', 'r45:test:')):
+        return ('diagnostic', 'drop_done', action)
+
+    # Reuse the canonical FAST navigation classifier whenever available.  It knows
+    # about day/menu/list/open/back callbacks and explicitly excludes finance
+    # mutations and forwarding-pair mutations.
+    try:
+        safe_window = globals().get('_v166_is_safe_window_callback')
+        if callable(safe_window) and safe_window(action):
+            return ('ui_navigation', 'drop_done', action)
+    except Exception:
+        pass
+    try:
+        nav_key = globals().get('_r48_nav_coalesce_key')
+        if callable(nav_key) and nav_key(payload):
+            return ('ui_navigation', 'drop_done', action)
+    except Exception:
+        pass
+
+    # Explicit business-mutation detectors.  A *queued* mutation has not started and
+    # can be replayed.  running/failed is ambiguous (the side effect may have happened
+    # before the process died), therefore it requires review instead of duplication.
+    business = False
+    try:
+        finance_business = globals().get('_v166_is_finance_business_callback')
+        business = bool(callable(finance_business) and finance_business(action))
+    except Exception:
+        business = False
+    if not business:
+        try:
+            contour_business = globals().get('_r29_is_business_mutation_callback')
+            business = bool(callable(contour_business) and contour_business(action))
+        except Exception:
+            business = False
+    if business:
+        if state == 'queued':
+            return ('business_mutation', 'replay', action)
+        return ('business_mutation', 'needs_review', action)
+
+    # Unknown callback semantics are never guessed across a deploy.  Even a queued
+    # callback may be an unclassified mutation or an old UI action from a previous
+    # release.  Keep it for review instead of creating a duplicate side effect/window.
+    return ('callback_unknown', 'needs_review', action)
+
+
+def _r67_log_boot_replay_decision(row: dict, class_name: str, decision: str, action: str, detail: str='') -> None:
+    try:
+        update_id = row.get('update_id') if isinstance(row, dict) else None
+        chat_id = row.get('chat_id') if isinstance(row, dict) else None
+        state = str((row or {}).get('state') or '') if isinstance(row, dict) else ''
+        msg = f'BOOT_REPLAY update={update_id} chat={chat_id} state={state} action={str(action or "")[:180]} class={class_name} decision={decision}'
+        if detail:
+            msg += f' detail={str(detail)[:240]}'
+        log_info(msg)
+        try:
+            bot_journal('boot_replay_r67', chat_id, msg)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _v260_submit_webhook_inbox_row(row: dict) -> bool:
     """Replay on the same keyed lane, but never race a just-active human."""
     if not isinstance(row, dict):
@@ -4328,6 +4387,22 @@ def recover_webhook_inbox_v260(limit: int=100) -> int:
             if int(row.get('attempts') or 0) >= _V260_WEBHOOK_MAX_ATTEMPTS:
                 _v260_webhook_inbox_mark(row.get('update_id'), 'needs_review', str(row.get('error') or 'local retry exhausted'))
                 continue
+            if str(row.get('type') or '') == 'callback_query':
+                class_name, decision, action = _r67_callback_boot_recovery_policy(row)
+                _r67_log_boot_replay_decision(row, class_name, decision, action)
+                if decision == 'drop_done':
+                    _v260_webhook_inbox_mark(row.get('update_id'), 'done', f'boot_drop_r67:{class_name}')
+                    try:
+                        commit_fn = globals().get('split_event_committed_v268')
+                        if callable(commit_fn):
+                            commit_fn(row.get('update_id'), row.get('chat_id'), 'callback_query', True, f'boot_drop_r67:{class_name}')
+                    except Exception:
+                        pass
+                    continue
+                if decision == 'needs_review':
+                    _v260_webhook_inbox_mark(row.get('update_id'), 'needs_review', f'boot_review_r67:{class_name}; action={str(action or "")[:180]}')
+                    continue
+                # decision == replay: only an explicitly classified queued business mutation can reach this branch.
             rows.append(row)
         if stale_done:
             _v260_inbox_delete_keys(stale_done)
@@ -8275,30 +8350,12 @@ def _canon_handle_gomonk_insert_message__001(msg):
 _V152_ORIG_SCHEDULE_FORWARD = _v177_legacy_0001_schedule_forward_any_message
 
 def _canon_schedule_forward_any_message__001(chat_id: int, msg):
-    """R68 forwarding ingress: explicit stored edges are the runtime authority.
-
-    Permissions are enforced while configuring/managing forwarding. Once an edge
-    is stored, delivery must not be vetoed again by an unrelated chat permission
-    profile or by the sender identity. Telegram can still prevent ingress entirely
-    (notably Group Privacy); that case is diagnosed separately by pair preflight.
-    """
     cid = int(chat_id)
-    try:
-        targets = list(resolve_forward_targets(cid) or [])
-    except Exception as exc:
-        try: log_error(f'[FWD R68 RESOLVE ERROR] src={cid}: {exc}')
-        except Exception: pass
-        targets = []
-    try:
-        mid = int(getattr(msg, 'message_id', 0) or 0)
-        bot_journal('forward_ingress_r68', cid, f'msg={mid}; targets={len(targets)}; media_group={int(bool(getattr(msg, "media_group_id", None)))}')
-    except Exception:
-        pass
-    if not targets:
+    uid = _v152_actor_id(msg)
+    capability = 'forward.media_groups' if getattr(msg, 'media_group_id', None) else 'forward.messages'
+    if not _v152_actor_is_platform_owner(uid) and (not v152_chat_permission_allowed(cid, capability)):
         try:
-            mid = int(getattr(msg, 'message_id', 0) or 0)
-            if mid:
-                _forward_outcome_update(cid, mid, state='no_targets')
+            bot_journal('chat_permission_forward_blocked', cid, f'user={uid}; capability={capability}', 'WARN')
         except Exception:
             pass
         return None

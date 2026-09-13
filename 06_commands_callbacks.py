@@ -938,11 +938,6 @@ def on_callback(call):
                     return
                 if answer_removed_chat(call, A) or answer_removed_chat(call, B):
                     return
-                try:
-                    forward_pair_preflight_r68(A, B)
-                except Exception as exc:
-                    try: log_error(f'forward pair preflight r68 {A}<->{B}: {exc}')
-                    except Exception: pass
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str.startswith('fw_new_src:'):
@@ -1020,14 +1015,14 @@ def on_callback(call):
                 elif mode == 'two':
                     ab_on = str(B) in (fr.get(str(A), {}) or {})
                     ba_on = str(A) in (fr.get(str(B), {}) or {})
-                    set_forward_pair_bidirectional(A, B, not (ab_on and ba_on))
+                    if ab_on and ba_on:
+                        remove_forward_link(A, B)
+                        remove_forward_link(B, A)
+                    else:
+                        add_forward_link(A, B, 'twoway')
+                        add_forward_link(B, A, 'twoway')
+                        _remember_forward_pair(A, B)
                 _forget_forward_pair_if_empty(A, B)
-                try:
-                    if str(B) in ((data.get('forward_rules', {}) or {}).get(str(A), {}) or {}) or str(A) in ((data.get('forward_rules', {}) or {}).get(str(B), {}) or {}):
-                        forward_pair_preflight_r68(A, B)
-                except Exception as exc:
-                    try: log_error(f'forward pair post-toggle preflight r68 {A}<->{B}: {exc}')
-                    except Exception: pass
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str.startswith('fw_new_clear:'):
@@ -1039,7 +1034,11 @@ def on_callback(call):
                     B = int(parts[2])
                 except Exception:
                     return
-                set_forward_pair_bidirectional(A, B, False)
+                remove_forward_link(A, B)
+                remove_forward_link(B, A)
+                remove_forward_finance(A, B)
+                remove_forward_finance(B, A)
+                _forget_forward_pair_if_empty(A, B)
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str == 'fw_probe_all':
@@ -1169,9 +1168,15 @@ def on_callback(call):
                     fr = data.get('forward_rules', {}) or {}
                     ab_on = str(B) in fr.get(str(A), {})
                     ba_on = str(A) in fr.get(str(B), {})
-                    set_forward_pair_bidirectional(A, B, not (ab_on and ba_on))
+                    if ab_on and ba_on:
+                        remove_forward_link(A, B)
+                        remove_forward_link(B, A)
+                    else:
+                        add_forward_link(A, B, 'twoway')
+                        add_forward_link(B, A, 'twoway')
                 elif mode == 'del':
-                    set_forward_pair_bidirectional(A, B, False)
+                    remove_forward_link(A, B)
+                    remove_forward_link(B, A)
                 kb = build_forward_mode_menu(A, B)
                 safe_edit(bot, call, build_forward_status_text(f'Настройка пересылки: {get_chat_display_name(A)} ⇄ {get_chat_display_name(B)}'), reply_markup=kb)
                 return
@@ -3095,9 +3100,8 @@ def _v186_persist_active_window_state(chat_id: int):
     """Persist UI-only window state outside callback latency path."""
     try:
         _finance_window_state(int(chat_id))['auto_reopen_on_boot'] = True
-        # _sync_finance_window_state_from_runtime already persists this chat once.
-        # R67 avoids an immediate duplicate SQLite write for every window move.
         _sync_finance_window_state_from_runtime(int(chat_id), schedule_delta=False)
+        save_data(data, chat_ids=[int(chat_id)])
         try:
             schedule_config_backup_for_chats(int(chat_id), delay=3.0)
         except Exception:

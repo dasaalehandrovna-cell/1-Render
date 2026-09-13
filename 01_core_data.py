@@ -5761,7 +5761,7 @@ def restore_finance_window_runtime_state():
                 settings['quick_balance_enabled'] = False
                 settings['quick_balance_behavior'] = 'normal'
                 settings['quick_balance_user_selected'] = True
-            main_windows = {str(k)[:10]: int(v) for k, v in (state.get('main_windows') or {}).items() if v}
+            main_windows = {str(k): int(v) for k, v in (state.get('main_windows') or {}).items() if v}
             selected_day = str(state.get('current_view_day') or store.get('current_view_day') or today_key())[:10]
             selected_mid = int(main_windows.get(selected_day) or 0)
             if not selected_mid and main_windows:
@@ -5771,15 +5771,11 @@ def restore_finance_window_runtime_state():
                     selected_mid = int(selected_mid)
                 except Exception:
                     selected_mid = 0
-            # R67: compact state is latest-per-day, not a single canonical window.
-            # Rehydrate every persisted day pointer and keep primary_* as a mere
-            # convenience pointer. Same-day parallel windows live in the durable
-            # open_window_registry and must never be invalidated here.
-            data.setdefault('active_messages', {})[str(cid)] = dict(main_windows)
+            data.setdefault('active_messages', {})[str(cid)] = {selected_day: selected_mid} if selected_mid else {}
             store['primary_main_window_id'] = selected_mid or None
             store['primary_main_window_day'] = selected_day
             store['current_view_day'] = selected_day
-            state['main_windows'] = dict(main_windows)
+            state['main_windows'] = {selected_day: selected_mid} if selected_mid else {}
             state['current_view_day'] = selected_day
             store['balance_panel_id'] = int(state.get('balance_panel_id')) if state.get('balance_panel_id') else None
             store['balance_panel_mode'] = str(state.get('balance_panel_mode') or 'mini')
@@ -7068,18 +7064,10 @@ def probe_all_known_chats() -> tuple[int, int]:
             continue
         if cid not in ids:
             ids.append(cid)
-    privacy_read_all = None
     try:
-        me = bot.get_me()
-        bot_uid = int(getattr(me, 'id', 0) or 0)
-        privacy_value = getattr(me, 'can_read_all_group_messages', None)
-        if privacy_value is not None:
-            privacy_read_all = bool(privacy_value)
+        bot_uid = int(_v197_bot_user_id() or 0)
     except Exception:
-        try:
-            bot_uid = int(_v197_bot_user_id() or 0)
-        except Exception:
-            bot_uid = 0
+        bot_uid = 0
     workers = _env_int('CHAT_PROBE_WORKERS', 4, 2, 6)
     network_rows = []
     if ids:
@@ -7114,8 +7102,7 @@ def probe_all_known_chats() -> tuple[int, int]:
     summary = {
         'checked': len(processed), 'available': ok, 'unavailable': bad,
         'errors': max(0, len(processed) - ok - bad), 'changed': changed, 'renamed': renamed,
-        'workers': workers, 'group_privacy_read_all': privacy_read_all,
-        'at': now_local().isoformat(timespec='seconds'),
+        'workers': workers, 'at': now_local().isoformat(timespec='seconds'),
     }
     try:
         data.setdefault('_global_settings', {})['last_chat_probe_summary_v197'] = summary
@@ -7132,78 +7119,6 @@ def probe_all_known_chats() -> tuple[int, int]:
     except Exception:
         pass
     return (ok, bad)
-
-def forward_pair_preflight_r68(chat_a: int, chat_b: int) -> dict:
-    """Live Telegram preflight for an explicitly configured forwarding pair.
-
-    This is invoked from the owner UI, never from the message hot path. It proves
-    whether Telegram lets this bot see each endpoint and whether Group Privacy is
-    disabled globally. The result is cached for display in the forwarding window.
-    """
-    a, b = int(chat_a), int(chat_b)
-    result = {
-        'a': a, 'b': b, 'at': now_local().isoformat(timespec='seconds'),
-        'privacy_read_all': None, 'bot_id': 0, 'chats': {}, 'ok': True,
-    }
-    try:
-        me = bot.get_me()
-        result['bot_id'] = int(getattr(me, 'id', 0) or 0)
-        pv = getattr(me, 'can_read_all_group_messages', None)
-        if pv is not None:
-            result['privacy_read_all'] = bool(pv)
-    except Exception as exc:
-        result['get_me_error'] = str(exc)[:300]
-        result['ok'] = False
-    for cid in (a, b):
-        row = {'chat_id': int(cid), 'reachable': False, 'member_status': '', 'error': ''}
-        try:
-            info = bot.get_chat(int(cid))
-            row['reachable'] = True
-            row['type'] = str(getattr(info, 'type', '') or '')
-            row['title'] = str(getattr(info, 'title', '') or getattr(info, 'first_name', '') or get_chat_display_name(cid))[:160]
-            if int(cid) < 0 and int(result.get('bot_id') or 0):
-                try:
-                    member = bot.get_chat_member(int(cid), int(result['bot_id']))
-                    row['member_status'] = str(getattr(member, 'status', '') or '')
-                except Exception as member_exc:
-                    row['member_error'] = str(member_exc)[:300]
-        except Exception as exc:
-            row['error'] = str(exc)[:300]
-            result['ok'] = False
-        result['chats'][str(cid)] = row
-    if any(int(x) < 0 for x in (a, b)) and result.get('privacy_read_all') is False:
-        result['ok'] = False
-        result['privacy_block'] = True
-    key = f'{min(a,b)}:{max(a,b)}'
-    try:
-        gs = data.setdefault('_global_settings', {})
-        cache = gs.setdefault('forward_pair_preflight_r68', {})
-        cache[key] = result
-        probe = gs.setdefault('last_chat_probe_summary_v197', {})
-        if result.get('privacy_read_all') is not None:
-            probe['group_privacy_read_all'] = bool(result.get('privacy_read_all'))
-        try:
-            pool = globals().get('BACKGROUND_TASK_POOL')
-            if pool is not None:
-                pool.submit_unique('forward-preflight-r68-persist', save_data, data, root_only=True)
-        except Exception:
-            pass
-    except Exception:
-        pass
-    try:
-        bot_journal('forward_pair_preflight_r68', int(OWNER_ID or 0), json.dumps(result, ensure_ascii=False, separators=(',', ':')), 'INFO' if result.get('ok') else 'WARN')
-    except Exception:
-        pass
-    return result
-
-def forward_pair_preflight_cached_r68(chat_a: int, chat_b: int) -> dict:
-    try:
-        a, b = int(chat_a), int(chat_b)
-        key = f'{min(a,b)}:{max(a,b)}'
-        row = (((data.get('_global_settings') or {}).get('forward_pair_preflight_r68') or {}).get(key) or {})
-        return dict(row) if isinstance(row, dict) else {}
-    except Exception:
-        return {}
 
 def build_removed_chats_menu(day_key: str | None=None):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -8299,17 +8214,6 @@ def build_forward_status_text(title: str | None=None) -> str:
     if title and 'Пересылка' in str(title):
         lines.append('Шаги: 1) выберите чат A → 2) выберите чат B → 3) включите 📨 пересылку и 💰 финучёт пересылки по нужным направлениям.')
         lines.append('')
-    try:
-        probe = (data.get('_global_settings', {}) or {}).get('last_chat_probe_summary_v197') or {}
-        privacy = probe.get('group_privacy_read_all') if isinstance(probe, dict) else None
-        if privacy is True:
-            lines.append('👁 Group Privacy: ✅ бот получает обычные сообщения групп')
-        elif privacy is False:
-            lines.append('👁 Group Privacy: ⛔ BotFather Privacy Mode включён — обычные сообщения групп Telegram боту не отдаёт')
-        if privacy is not None:
-            lines.append('')
-    except Exception:
-        pass
     lines.append('Текущие связи:')
     lines.extend(build_forward_status_lines())
     return '\n'.join(lines)

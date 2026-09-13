@@ -2139,11 +2139,7 @@ persist_critical_delta_now = _v262_split_persist_critical_delta_now
 schedule_full_backup_only = _v262_split_schedule_full_backup_only
 mega_upload_latest_database_backup = _v262_split_mega_upload_latest_database_backup
 schedule_config_backup_for_chats = _v262_split_schedule_config_backup_for_chats
-_google_sheets_create_category_report = _v262_split_google_sheets_create_category_report
 _v167_google_upsert_named_tab = _split_v167_google_upsert_named_tab
-tenant_google_status_text = _split_tenant_google_status_text
-tenant_google_keyboard = _split_tenant_google_keyboard
-tenant_google_test = _split_tenant_google_test
 tenant_google_set_credentials = _split_reject_front_google_credentials
 
 # R11: no legacy MEGA delta is allowed to execute on the fast Front. Some old
@@ -2382,7 +2378,7 @@ def user_state_shadow_apply_v265(loaded):
 
 # Apply the shadow as part of canonical load, before tenant/bootstrap defaults can
 # create a factory profile. This is intentionally after normal SQLite unpacking.
-_LOAD_DATA_CORE = load_data
+_LOAD_DATA_CORE = _canon_load_data__001
 def load_data():
     loaded = _LOAD_DATA_CORE()
     return user_state_shadow_apply_v265(loaded)
@@ -2776,7 +2772,7 @@ def r20_schedule_durable_capsule(reason='state_change', delay=None):
 # R20: redirect the original v262 config-guard remote sync to the HEAVY capsule.
 # This preserves the semantic trigger/generation of v262 without allowing FAST to
 # log into MEGA or perform a remote upload. HEAVY persists Redis + MEGA asynchronously.
-_CONFIG_GUARD_SYNC_CORE = globals().get('config_guard_sync_remote_v234')
+_CONFIG_GUARD_SYNC_CORE = _canon_config_guard_sync_remote_v234__002
 def _r20_config_guard_sync_remote(*, recovery_write=False):
     try:
         r20_schedule_durable_capsule('config_guard_remote_sync', delay=2.0)
@@ -3120,7 +3116,7 @@ except Exception:
     pass
 
 # Suppress boot-time snapshot storms and publish exactly one fully migrated state at READY.
-_RUNTIME_MARK_READY_CORE = runtime_mark_ready
+_RUNTIME_MARK_READY_CORE = _canon_runtime_mark_ready__001
 def runtime_mark_ready(detail: str=''):
     result = _RUNTIME_MARK_READY_CORE(detail)
     try:
@@ -3359,7 +3355,7 @@ def _r7_google_test(tenant_id):
             pass
     return ok, text
 
-_GOOGLE_HANDLE_CORE = globals().get('tenant_google_handle_message')
+_GOOGLE_HANDLE_CORE = _canon_tenant_google_handle_message__002
 
 
 def _r7_google_handle_message(msg) -> bool:
@@ -3403,16 +3399,13 @@ def _r7_google_handle_message(msg) -> bool:
 
 # Final Google bindings.
 tenant_google_status_text = _r7_google_status_text
-tenant_google_keyboard = _r7_google_keyboard
-tenant_google_test = _r7_google_test
-tenant_google_handle_message = _r7_google_handle_message
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('v149:google:service_email', 'Ф233')
 except Exception:
     pass
 
 # --- Heavy file export bridge: front prepares business rows, worker serializes/uploads. ---
-_SEND_EXPORT_CORE = globals().get('send_export_for_chat_to')
+_SEND_EXPORT_CORE = _canon_send_export_for_chat_to__001
 _R7_EXPORT_SEEN = {}
 _R7_EXPORT_SEEN_LOCK = _split_threading.RLock()
 
@@ -3629,7 +3622,6 @@ def split_front_export_result_r7():
         return ({'ok':False,'error':'delivery queue busy'},503)
     return ({'ok':True,'accepted':True,'delivered':False},202)
 
-send_export_for_chat_to = _r7_send_export_for_chat_to
 
 # R7 marker coverage for the task callback that was seen in production plus Google UX.
 try:
@@ -3644,7 +3636,7 @@ except Exception:
     pass
 
 # --- R7 exact-range export and strict Front Google isolation. ---
-_EXACT_EXPORT_CORE = globals().get('send_exact_range_export')
+_EXACT_EXPORT_CORE = _canon_send_exact_range_export__001
 
 
 def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override=None, excel_options_override=None, delivery: str='chat'):
@@ -3724,7 +3716,6 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
         return False
 
 
-send_exact_range_export = _r7_send_exact_range_export
 
 # Active front hooks must never perform Google OAuth/Drive/Sheets network work.
 def _r7_front_google_forbidden(*args, **kwargs):
@@ -3804,7 +3795,7 @@ def _r10_worker_health_keyboard():
     return kb
 
 
-_INFO_KB_CORE = globals().get('build_info_keyboard')
+_INFO_KB_CORE = _canon_build_info_keyboard__002
 def _r10_build_info_keyboard(chat_id: int):
     kb=_INFO_KB_CORE(int(chat_id)) if callable(_INFO_KB_CORE) else types.InlineKeyboardMarkup()
     if int(chat_id) != int(OWNER_ID or 0): return kb
@@ -3823,9 +3814,8 @@ def _r10_build_info_keyboard(chat_id: int):
         kb=_v177_info_set_rows(kb,rows)
     return kb
 
-build_info_keyboard = _r10_build_info_keyboard
 
-_MAIN_KB_CORE = globals().get('build_main_keyboard')
+_MAIN_KB_CORE = _v220_build_main_keyboard
 def _r10_build_main_keyboard(day_key: str, chat_id=None):
     kb=_MAIN_KB_CORE(day_key,chat_id) if callable(_MAIN_KB_CORE) else types.InlineKeyboardMarkup()
     try: cid=int(chat_id if chat_id is not None else current_state_chat_id() or 0)
@@ -3838,9 +3828,8 @@ def _r10_build_main_keyboard(day_key: str, chat_id=None):
         kb=_v217_set_rows(kb,rows)
     return kb
 
-build_main_keyboard = _r10_build_main_keyboard
 
-_CONTOUR_GUARD_CORE = globals().get('contour_callback_guard')
+_CONTOUR_GUARD_CORE = _v223_contour_callback_guard
 def _r10_contour_callback_guard(call, resolved: str) -> bool:
     raw=str(resolved or '')
     if raw.startswith('r10:worker:'):
@@ -3877,7 +3866,6 @@ def _r10_contour_callback_guard(call, resolved: str) -> bool:
         return True
     return bool(_CONTOUR_GUARD_CORE(call,raw)) if callable(_CONTOUR_GUARD_CORE) else False
 
-contour_callback_guard = _r10_contour_callback_guard
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:*','Ф270')
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:status','Ф270')
@@ -4037,7 +4025,6 @@ def _r21_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, 
         pass
     return (True, 'Запущено')
 
-submit_interactive_file_job = _r21_submit_interactive_file_job
 
 try:
     bot_journal('r21_every_button_fast_loaded', int(OWNER_ID or 0),
@@ -4319,8 +4306,8 @@ def _r29_directive_block_keyboard():
 # but grouped behind six local submenus.
 # ---------------------------------------------------------------------------
 
-_R29_LEGACY_INFO_TEXT = globals().get('build_info_text')
-_R29_LEGACY_INFO_KB = globals().get('build_info_keyboard')
+_R29_LEGACY_INFO_TEXT = _v237_1_storage_build_info_text
+_R29_LEGACY_INFO_KB = _r10_build_info_keyboard
 
 
 def _r29_button_text(btn) -> str:
@@ -5227,14 +5214,14 @@ build_info_keyboard = _r29_build_info_keyboard
 # Google single-window UX.
 # ---------------------------------------------------------------------------
 
-_R29_GOOGLE_BASE_HANDLE = globals().get('tenant_google_handle_message')
-_R29_GOOGLE_BASE_KB = globals().get('tenant_google_keyboard')
-_R29_GOOGLE_BASE_STATUS = globals().get('tenant_google_status_text')
-_R29_GOOGLE_BASE_TEST = globals().get('tenant_google_test')
+_R29_GOOGLE_HANDLE_CORE = _r7_google_handle_message
+_R29_GOOGLE_KB_CORE = _r7_google_keyboard
+_R29_GOOGLE_STATUS_CORE = _r7_google_status_text
+_R29_GOOGLE_TEST_CORE = _r7_google_test
 
 
 def _r29_google_keyboard(tenant_id):
-    kb = _R29_GOOGLE_BASE_KB(tenant_id) if callable(_R29_GOOGLE_BASE_KB) else types.InlineKeyboardMarkup()
+    kb = _R29_GOOGLE_KB_CORE(tenant_id) if callable(_R29_GOOGLE_KB_CORE) else types.InlineKeyboardMarkup()
     try:
         rows = list(getattr(kb, 'keyboard', None) or [])
         callbacks = {_r29_button_callback(b) for row in rows for b in (row or [])}
@@ -5247,7 +5234,7 @@ def _r29_google_keyboard(tenant_id):
 
 def _r29_google_status(tenant_id) -> str:
     try:
-        return str(_R29_GOOGLE_BASE_STATUS(tenant_id)) if callable(_R29_GOOGLE_BASE_STATUS) else '📊 Google'
+        return str(_R29_GOOGLE_STATUS_CORE(tenant_id)) if callable(_R29_GOOGLE_STATUS_CORE) else '📊 Google'
     except Exception as exc:
         return '📊 Google\n\nОшибка локального статуса: ' + str(exc)[:300]
 
@@ -5388,7 +5375,7 @@ def _google_extension_callback(call, data_str: str) -> bool:
         _r29_google_edit(cid, mid, '⏳ Проверяю доступ к Google на Render #2…', _r29_google_back_keyboard(), purpose='r29_google_test_start')
         def _test():
             try:
-                fn = _R29_GOOGLE_BASE_TEST or globals().get('_r7_google_test')
+                fn = _R29_GOOGLE_TEST_CORE or globals().get('_r7_google_test')
                 ok, text = fn(str(tid)) if callable(fn) else (False, 'Проверка недоступна')
                 prefix = '✅ ' if ok else '🟡 '
                 _r29_google_edit(cid, mid, prefix + str(text or '') + '\n\n' + _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_test_done')
@@ -5440,7 +5427,7 @@ def _r29_google_handle_message(msg) -> bool:
         cfg = tenant_google_config(tid, create=False) if tid else {}
         wait = dict((cfg or {}).get('input_wait') or {})
         if not wait or not bool(wait.get('r29_single_window')):
-            return bool(_R29_GOOGLE_BASE_HANDLE(msg)) if callable(_R29_GOOGLE_BASE_HANDLE) else False
+            return bool(_R29_GOOGLE_HANDLE_CORE(msg)) if callable(_R29_GOOGLE_HANDLE_CORE) else False
         if int(wait.get('chat_id') or 0) != cid or int(wait.get('user_id') or 0) != uid:
             return False
         panel_mid = int(wait.get('panel_message_id') or 0)
@@ -5480,7 +5467,7 @@ def _r29_google_handle_message(msg) -> bool:
             _r29_google_edit(cid, panel_mid, '✅ Ссылка сохранена. Проверяю доступ на Render #2…', _r29_google_back_keyboard(), purpose='r29_google_sheet_saved')
         def _test_saved():
             try:
-                fn = _R29_GOOGLE_BASE_TEST or globals().get('_r7_google_test')
+                fn = _R29_GOOGLE_TEST_CORE or globals().get('_r7_google_test')
                 ok, text = fn(str(tid)) if callable(fn) else (False, 'Проверка недоступна')
                 out = ('✅ Таблица подключена и доступ проверен.\n\n' if ok else '🟡 Ссылка сохранена, но доступа пока нет.\n\n') + str(text or '') + '\n\n' + _r29_google_status(tid)
                 if panel_mid:
@@ -5512,7 +5499,7 @@ tenant_google_handle_message = _r29_google_handle_message
 # visual response; persistence/network work is explicitly backgrounded.
 # ---------------------------------------------------------------------------
 
-_R29_PREV_CONTOUR_GUARD = globals().get('contour_callback_guard')
+_R29_CONTOUR_GUARD_CORE = _r10_contour_callback_guard
 
 
 def _r29_contour_callback_guard(call, resolved: str) -> bool:
@@ -5522,7 +5509,7 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
         uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
         mid = int(call.message.message_id)
     except Exception:
-        return bool(_R29_PREV_CONTOUR_GUARD(call, raw)) if callable(_R29_PREV_CONTOUR_GUARD) else False
+        return bool(_R29_CONTOUR_GUARD_CORE(call, raw)) if callable(_R29_CONTOUR_GUARD_CORE) else False
 
     if raw.startswith('r59:vars:'):
         if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
@@ -5769,10 +5756,9 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             pass
         return True
 
-    return bool(_R29_PREV_CONTOUR_GUARD(call, raw)) if callable(_R29_PREV_CONTOUR_GUARD) else False
+    return bool(_R29_CONTOUR_GUARD_CORE(call, raw)) if callable(_R29_CONTOUR_GUARD_CORE) else False
 
 
-contour_callback_guard = _r29_contour_callback_guard
 
 # Marker declarations for the new local windows.
 try:
@@ -6359,7 +6345,7 @@ import json as _r33_json
 import os as _r33_os
 import time as _r33_time
 
-_LOCAL_SUBMIT_FILE_JOB = globals().get('submit_interactive_file_job')
+_LOCAL_SUBMIT_FILE_JOB = _r21_submit_interactive_file_job
 _R33_HEAVY_FILE_KINDS = {
     'period_export','exact_export','xlsx','csv','tabl_lsx','json','json_full','sqlite',
     'runtime','journal','journal_current','window_markers','window_tz',
@@ -6519,9 +6505,6 @@ def send_tabl_lsx_for_chat(recipient_chat_id:int,target_chat_id:int):
     ok,_info=submit_interactive_file_job(int(recipient_chat_id),'tabl_lsx','Excel /tabl_lsx',_r34_export_marker,int(recipient_chat_id),int(target_chat_id))
     return bool(ok)
 
-send_export_for_chat_to = send_export_for_chat_to
-send_exact_range_export = send_exact_range_export
-send_tabl_lsx_for_chat = send_tabl_lsx_for_chat
 
 # Defensive R49 hot-path regression gate: callback renderer must only enqueue.
 try:
@@ -7606,7 +7589,6 @@ def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwar
     if heavy: return _r40_submit_heavy_file(chat_id,kind_s,label,func,*args,**kwargs)
     return _LOCAL_SUBMIT_FILE_JOB(chat_id,kind,label,func,*args,**kwargs) if callable(_LOCAL_SUBMIT_FILE_JOB) else (False,'Экспорт недоступен')
 
-submit_interactive_file_job = submit_interactive_file_job
 
 try:
     bot_journal('r40_unified_transport_loaded',int(OWNER_ID or 0),'async FAST supervisor; canonical alias follow; per-job status; no EXPORT_TASK_POOL wait; window revision fence')
@@ -8053,7 +8035,7 @@ def _r44_full_test(chat_id):
     return window_mark('\n'.join(lines),'Ф4047')
 
 # Owner-only Test button in the actual main window.
-_R44_MAIN_KB_CORE=globals().get('build_main_keyboard')
+_R44_MAIN_KB_CORE=_r10_build_main_keyboard
 def _r44_build_main_keyboard(day_key,chat_id=None):
     kb=_R44_MAIN_KB_CORE(day_key,chat_id) if callable(_R44_MAIN_KB_CORE) else types.InlineKeyboardMarkup()
     try: cid=int(chat_id if chat_id is not None else current_state_chat_id() or 0)
@@ -8073,7 +8055,7 @@ def _r44_build_main_keyboard(day_key,chat_id=None):
     return kb
 if callable(_R44_MAIN_KB_CORE): build_main_keyboard = _r44_build_main_keyboard
 
-_R44_CONTOUR_GUARD_CORE=globals().get('contour_callback_guard')
+_R44_CONTOUR_GUARD_CORE=_r29_contour_callback_guard
 # R47 FINALIZATION: R44 synchronous diagnostic guard removed; R45 is sole diagnostic callback owner.
 
 # R47 FINALIZATION: no transport monkey-patching for diagnostics.
@@ -8263,7 +8245,7 @@ def _r45_enqueue_diag(call,raw,label='Проверяю связь…'):
 
 # Diagnostic callbacks are admitted on their own tiny lane.  Even a future bug in a
 # diagnostic handler therefore cannot hold the production fast-window actor.
-_R45_SELECTOR_CORE=globals().get('v163_webhook_select_lane')
+_R45_SELECTOR_CORE=_canon_v163_webhook_select_lane__001
 def _r45_webhook_select_lane(payload,update_type,update_key):
     if str(update_type)=='callback_query':
         try:
