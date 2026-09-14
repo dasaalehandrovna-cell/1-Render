@@ -3797,8 +3797,12 @@ def _r10_worker_health_keyboard():
 def _r70_routes_text():
     h=dict(_SPLIT_STATE.get('worker_health') or {});st=dict(h.get('state') or {})
     worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
+    try:
+        wa_stats = dict(WINDOW_ACTOR_REGISTRY.stats() or {})
+    except Exception:
+        wa_stats = {}
     lines=[
-        '🧭 <b>R70 · ВЛАДЕЛЬЦЫ ПРОЦЕССОВ R1/R2</b>','',
+        '🧭 <b>очнись_2 · ВЛАДЕЛЬЦЫ ПРОЦЕССОВ R1/R2</b>','',
         '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
         '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
         '🔒 Реальная доставка пересылки — <b>R1 FAST</b>',
@@ -3809,9 +3813,10 @@ def _r70_routes_text():
         '🔁 State events / delta — <b>R1 → R2</b>',
         '🧪 Диагностика — <b>R1 инициирует, R2 исполняет</b>','',
         f'R2 сейчас: {"✅ доступен" if worker_ok else "⛔ недоступен"} · очередь {int(h.get("queue_size") or 0)} · Google {int(h.get("google_queue_size") or 0)}',
-        f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}','',
-        'R70 намеренно не разрешает переключать Telegram UI/forward delivery на R2: у этих путей должен быть ровно один владелец, иначе снова возможны дубли окон/сообщений.',
-        'Для сравнения R1↔R2 используйте 🧪 Тест #1 ↔ #2 и R70 E2E.'
+        f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}',
+        f'Window Actor: окон {int(wa_stats.get("windows") or 0)} · markup-only {int(wa_stats.get("markup_only") or 0)} · no-op {int(wa_stats.get("noops") or 0)} · stale render {int(wa_stats.get("stale_renders") or 0)} · stale callback {int(wa_stats.get("stale_callbacks") or 0)}','',
+        'очнись_2 намеренно не разрешает переключать Telegram UI/forward delivery на R2: у этих путей должен быть ровно один владелец, иначе снова возможны дубли окон/сообщений.',
+        'Для сравнения R1↔R2 используйте 🧪 Тест #1 ↔ #2 и E2E.'
     ]
     return window_mark('\n'.join(lines),'Ф4072')
 

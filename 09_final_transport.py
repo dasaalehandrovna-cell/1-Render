@@ -6001,6 +6001,13 @@ def _final_send_message(chat_id, text, *args, **kwargs):
     source_markup = kwargs.get('reply_markup')
     decorated, token = _v161_tokenize_text(str(text or ''), cid, None)
     prepared = _final_prepare_markup(cid, source_markup, decorated)
+    # очнись_2: every newly created inline window starts at actor revision 1.
+    stamp = globals().get('window_actor_stamp_markup')
+    if callable(stamp):
+        try:
+            prepared = stamp(prepared, 1)
+        except Exception:
+            pass
     kwargs['reply_markup'] = prepared
     result = _native_telegram(_FINAL_NATIVE_SEND, cid, decorated, *args, **kwargs)
     mid = int(getattr(result, 'message_id', 0) or 0)
@@ -6011,42 +6018,122 @@ def _final_send_message(chat_id, text, *args, **kwargs):
             with _V161_TOKEN_LOCK:
                 _V161_WINDOW_TOKENS[cid, mid] = token
         except Exception: pass
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    if actor is not None and mid:
+        try:
+            actor.adopt_sent(cid, mid, decorated, prepared, kwargs.get('parse_mode'), 'send_message', state_revision=max(1, int((globals().get('window_actor_markup_revision') or (lambda _x: 1))(prepared) or 1)))
+        except Exception:
+            pass
     _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
     return result
-
 
 def _final_edit_message_text(text, *args, **kwargs):
     chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else args[0] if len(args) > 0 else None
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
+    parse_mode = kwargs.get('parse_mode')
     decorated, token = _v161_tokenize_text(str(text or ''), cid, mid)
     source_markup = kwargs.get('reply_markup')
     prepared = _final_prepare_markup(cid, source_markup, decorated)
-    kwargs['reply_markup'] = prepared
-    sig = _v153_ui_sig('text', cid, mid, decorated, prepared)
-    cached = _v153_ui_cached(sig)
-    if cached is not None:
-        return cached
-    try:
-        result = _native_telegram(_FINAL_NATIVE_EDIT_TEXT, decorated, *args, **kwargs)
-    except Exception as exc:
-        if 'message is not modified' in str(exc).casefold():
-            try: bot_journal('telegram_edit_idempotent', cid, f'message={mid}')
-            except Exception: pass
-            result = True
-        else:
-            raise
-    result = _v153_ui_remember(sig, result)
-    try: _v160_note_window_meta(cid, mid, decorated, 'edit_message_text')
-    except Exception: pass
-    if token and cid and mid:
-        try:
-            with _V161_TOKEN_LOCK:
-                _V161_WINDOW_TOKENS[cid, mid] = token
-        except Exception: pass
-    _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
-    return result
 
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    actor_meta = {}
+    actor_ctx_fn = globals().get('window_actor_current_context')
+    if actor is not None and cid and mid:
+        try:
+            actor_meta = actor_ctx_fn(cid, mid) if callable(actor_ctx_fn) else {}
+            if not actor_meta:
+                actor_meta = actor.reserve(cid, mid, decorated, prepared, parse_mode, 'native_edit_text') or {}
+            stamp = globals().get('window_actor_stamp_markup')
+            if callable(stamp):
+                prepared = stamp(prepared, int(actor_meta.get('state_revision') or 1))
+        except Exception:
+            actor_meta = {}
+    kwargs['reply_markup'] = prepared
+
+    def _execute_actor_edit():
+        generation = int(actor_meta.get('generation') or 0)
+        if actor is not None and generation:
+            try:
+                if not actor.is_current(cid, mid, generation):
+                    try: r52_diag('WINDOW_ACTOR_NATIVE_STALE_DROP', chat=cid, msg=mid, generation=generation)
+                    except Exception: pass
+                    return True
+            except Exception:
+                pass
+        # Global markup-diff: if visible text is already confirmed, never resend it.
+        if actor is not None and generation:
+            try:
+                snap = actor.delivery_snapshot(cid, mid)
+                text_fp = window_actor_text_fingerprint(decorated, parse_mode)
+                markup_fp = window_actor_markup_fingerprint(prepared, strip_revision=False)
+                if snap.get('delivered_text_fp') == text_fp:
+                    if snap.get('delivered_markup_fp') == markup_fp:
+                        actor.note_delivery(cid, mid, generation, decorated, prepared, parse_mode, mode='noop')
+                        try: r52_diag('WINDOW_ACTOR_NOOP', chat=cid, msg=mid, generation=generation, revision=actor_meta.get('state_revision'))
+                        except Exception: pass
+                        return True
+                    sig = _v153_ui_sig('markup', cid, mid, '', prepared)
+                    cached = _v153_ui_cached(sig)
+                    if cached is not None:
+                        actor.note_delivery(cid, mid, generation, decorated, prepared, parse_mode, mode='markup')
+                        return cached
+                    try:
+                        result = _native_telegram(_FINAL_NATIVE_EDIT_MARKUP, chat_id=cid, message_id=mid, reply_markup=prepared)
+                    except Exception as exc:
+                        if 'message is not modified' in str(exc).casefold():
+                            result = True
+                        else:
+                            raise
+                    result = _v153_ui_remember(sig, result)
+                    actor.note_delivery(cid, mid, generation, decorated, prepared, parse_mode, mode='markup')
+                    _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
+                    try:
+                        bot_journal('window_actor_markup_only', cid, f'message={mid}; gen={generation}; rev={actor_meta.get("state_revision") or 0}')
+                        r52_diag('WINDOW_ACTOR_MARKUP_ONLY', chat=cid, msg=mid, generation=generation, revision=actor_meta.get('state_revision'))
+                    except Exception:
+                        pass
+                    return result
+            except Exception as exc:
+                try: log_error(f'WINDOW_ACTOR markup diff {cid}/{mid}: {exc}')
+                except Exception: pass
+        sig = _v153_ui_sig('text', cid, mid, decorated, prepared)
+        cached = _v153_ui_cached(sig)
+        if cached is not None:
+            if actor is not None and generation:
+                try: actor.note_delivery(cid, mid, generation, decorated, prepared, parse_mode, mode='noop')
+                except Exception: pass
+            return cached
+        try:
+            result = _native_telegram(_FINAL_NATIVE_EDIT_TEXT, decorated, *args, **kwargs)
+        except Exception as exc:
+            if 'message is not modified' in str(exc).casefold():
+                try: bot_journal('telegram_edit_idempotent', cid, f'message={mid}')
+                except Exception: pass
+                result = True
+            else:
+                raise
+        result = _v153_ui_remember(sig, result)
+        if actor is not None and generation:
+            try: actor.note_delivery(cid, mid, generation, decorated, prepared, parse_mode, mode='full')
+            except Exception: pass
+        try: _v160_note_window_meta(cid, mid, decorated, 'edit_message_text')
+        except Exception: pass
+        if token and cid and mid:
+            try:
+                with _V161_TOKEN_LOCK:
+                    _V161_WINDOW_TOKENS[cid, mid] = token
+            except Exception: pass
+        _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
+        return result
+
+    if actor is not None and cid and mid:
+        try:
+            with actor.execution_lock(cid, mid):
+                return _execute_actor_edit()
+        except Exception:
+            return _execute_actor_edit()
+    return _execute_actor_edit()
 
 def _final_edit_message_caption(*args, **kwargs):
     positional = list(args)
@@ -6056,22 +6143,54 @@ def _final_edit_message_caption(*args, **kwargs):
     chat_id = kwargs.get('chat_id') if kwargs.get('chat_id') is not None else positional[0] if len(positional) > 0 else None
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
+    parse_mode = kwargs.get('parse_mode')
     decorated, token = _v161_tokenize_text(str(caption or ''), cid, mid)
     source_markup = kwargs.get('reply_markup')
     prepared = _final_prepare_markup(cid, source_markup, decorated)
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    actor_meta = {}
+    if actor is not None and cid and mid:
+        try:
+            ctx = globals().get('window_actor_current_context')
+            actor_meta = ctx(cid, mid) if callable(ctx) else {}
+            if not actor_meta:
+                actor_meta = actor.reserve(cid, mid, decorated, prepared, parse_mode, 'native_edit_caption') or {}
+            stamp = globals().get('window_actor_stamp_markup')
+            if callable(stamp):
+                prepared = stamp(prepared, int(actor_meta.get('state_revision') or 1))
+        except Exception:
+            actor_meta = {}
     kwargs['caption'] = decorated
     kwargs['reply_markup'] = prepared
-    result = _native_telegram(_FINAL_NATIVE_EDIT_CAPTION, *positional, **kwargs)
-    try: _v160_note_window_meta(cid, mid, decorated, 'edit_message_caption')
-    except Exception: pass
-    if token and cid and mid:
-        try:
-            with _V161_TOKEN_LOCK:
-                _V161_WINDOW_TOKENS[cid, mid] = token
-        except Exception: pass
-    _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
-    return result
 
+    def _do():
+        generation = int(actor_meta.get('generation') or 0)
+        if actor is not None and generation:
+            try:
+                if not actor.is_current(cid, mid, generation):
+                    return True
+            except Exception:
+                pass
+        result = _native_telegram(_FINAL_NATIVE_EDIT_CAPTION, *positional, **kwargs)
+        if actor is not None and generation:
+            try: actor.note_delivery(cid, mid, generation, decorated, prepared, parse_mode, mode='full')
+            except Exception: pass
+        try: _v160_note_window_meta(cid, mid, decorated, 'edit_message_caption')
+        except Exception: pass
+        if token and cid and mid:
+            try:
+                with _V161_TOKEN_LOCK:
+                    _V161_WINDOW_TOKENS[cid, mid] = token
+            except Exception: pass
+        _final_record_transport(cid, mid, prepared, decorated, source_markup=source_markup)
+        return result
+    if actor is not None and cid and mid:
+        try:
+            with actor.execution_lock(cid, mid):
+                return _do()
+        except Exception:
+            return _do()
+    return _do()
 
 def _final_edit_message_reply_markup(*args, **kwargs):
     positional = list(args)
@@ -6080,27 +6199,66 @@ def _final_edit_message_reply_markup(*args, **kwargs):
     cid = int(chat_id or 0); mid = int(message_id or 0)
     source_markup = kwargs.get('reply_markup') if 'reply_markup' in kwargs else positional[2] if len(positional) > 2 else None
     prepared = _final_filter_markup(cid, source_markup)
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    actor_meta = {}
+    if actor is not None and cid and mid:
+        try:
+            ctx = globals().get('window_actor_current_context')
+            actor_meta = ctx(cid, mid) if callable(ctx) else {}
+            if not actor_meta:
+                actor_meta = actor.reserve_markup_only(cid, mid, prepared) or {}
+            stamp = globals().get('window_actor_stamp_markup')
+            if callable(stamp):
+                prepared = stamp(prepared, int(actor_meta.get('state_revision') or 1))
+        except Exception:
+            actor_meta = {}
     if 'reply_markup' in kwargs:
         kwargs['reply_markup'] = prepared
     elif len(positional) > 2:
         positional[2] = prepared
-    sig = _v153_ui_sig('markup', cid, mid, '', prepared)
-    cached = _v153_ui_cached(sig)
-    if cached is not None:
-        return cached
-    try:
-        result = _native_telegram(_FINAL_NATIVE_EDIT_MARKUP, *positional, **kwargs)
-    except Exception as exc:
-        if 'message is not modified' in str(exc).casefold():
-            try: bot_journal('telegram_markup_idempotent', cid, f'message={mid}')
-            except Exception: pass
-            result = True
-        else:
-            raise
-    result = _v153_ui_remember(sig, result)
-    _final_record_transport(cid, mid, prepared, '', source_markup=source_markup)
-    return result
 
+    def _do():
+        generation = int(actor_meta.get('generation') or 0)
+        if actor is not None and generation:
+            try:
+                if not actor.is_current(cid, mid, generation):
+                    return True
+                snap = actor.delivery_snapshot(cid, mid)
+                exact = window_actor_markup_fingerprint(prepared, strip_revision=False)
+                if snap.get('delivered_markup_fp') == exact:
+                    actor.note_markup_delivery(cid, mid, generation, prepared, mode='noop')
+                    return True
+            except Exception:
+                pass
+        sig = _v153_ui_sig('markup', cid, mid, '', prepared)
+        cached = _v153_ui_cached(sig)
+        if cached is not None:
+            if actor is not None and generation:
+                try: actor.note_markup_delivery(cid, mid, generation, prepared, mode='markup')
+                except Exception: pass
+            return cached
+        try:
+            result = _native_telegram(_FINAL_NATIVE_EDIT_MARKUP, *positional, **kwargs)
+        except Exception as exc:
+            if 'message is not modified' in str(exc).casefold():
+                try: bot_journal('telegram_markup_idempotent', cid, f'message={mid}')
+                except Exception: pass
+                result = True
+            else:
+                raise
+        result = _v153_ui_remember(sig, result)
+        if actor is not None and generation:
+            try: actor.note_markup_delivery(cid, mid, generation, prepared, mode='markup')
+            except Exception: pass
+        _final_record_transport(cid, mid, prepared, '', source_markup=source_markup)
+        return result
+    if actor is not None and cid and mid:
+        try:
+            with actor.execution_lock(cid, mid):
+                return _do()
+        except Exception:
+            return _do()
+    return _do()
 
 def _final_delete_message(chat_id, message_id, *args, **kwargs):
     cid = int(chat_id); mid = int(message_id)
@@ -6116,6 +6274,12 @@ def _final_delete_message(chat_id, message_id, *args, **kwargs):
             raise
     try: unregister_open_window(cid, mid)
     except Exception: pass
+    try:
+        actor = globals().get('WINDOW_ACTOR_REGISTRY')
+        if actor is not None:
+            actor.forget(cid, mid)
+    except Exception:
+        pass
     try:
         fn = globals().get('v221_forget_live_markup')
         if callable(fn): fn(cid, mid)

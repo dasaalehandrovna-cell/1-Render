@@ -3017,6 +3017,20 @@ def _r22_execute_window_render(payload: dict) -> str:
             apply_fn(payload, delayed=bool(payload.get('_r22_queue_wait', 0.0) > 0.01))
     except Exception:
         pass
+    # очнись_2: actor generation is the stronger, per-window stale fence.
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    actor_generation = int(payload.get('_window_actor_generation') or 0)
+    if actor is not None and actor_generation:
+        try:
+            if not actor.is_current(int(payload.get('chat_id')), int(payload.get('message_id')), actor_generation):
+                try:
+                    r52_diag('WINDOW_ACTOR_STALE_RENDER_DROP', chat=payload.get('chat_id'), msg=payload.get('message_id'), generation=actor_generation, logical=payload.get('_window_actor_logical_id') or '')
+                except Exception:
+                    pass
+                _r22_render_stage(payload, 'telegram_render_done', 0.0, 'stale_generation')
+                return 'stale_generation'
+        except Exception:
+            pass
     stale_fn = globals().get('_r65_render_is_stale_after_navigation')
     if callable(stale_fn):
         try:
@@ -3079,7 +3093,24 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
             reply_markup = augment(reply_markup, text, chat_id)
     except Exception:
         pass
+    # очнись_2 Window Actor: reserve the newest desired generation before any
+    # worker/direct Telegram call.  state_revision changes only when the visible
+    # semantic text/keyboard changes; generation orders concurrent renders.
+    actor_meta = {}
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    if actor is not None:
+        try:
+            actor_meta = actor.reserve(chat_id, message_id, text, reply_markup, parse_mode, purpose) or {}
+        except Exception as exc:
+            try: log_error(f'WINDOW_ACTOR reserve {chat_id}/{message_id}: {exc}')
+            except Exception: pass
+            actor_meta = {}
     payload = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'reply_markup': reply_markup, 'parse_mode': parse_mode, 'purpose': purpose}
+    if actor_meta:
+        payload['_window_actor_logical_id'] = str(actor_meta.get('logical_window_id') or '')
+        payload['_window_actor_generation'] = int(actor_meta.get('generation') or 0)
+        payload['_window_actor_state_revision'] = int(actor_meta.get('state_revision') or 0)
+        payload['_window_actor_semantic_changed'] = bool(actor_meta.get('semantic_changed', False))
     try:
         prepare = globals().get('window_diag_prepare_fast_ui_payload')
         if callable(prepare):
@@ -3099,6 +3130,11 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
         payload['_r22_action'] = ''
     payload['_r22_enqueued_mono'] = _v160_time.monotonic()
     key = f'{chat_id}:{message_id}'
+    if actor is not None and int(payload.get('_window_actor_generation') or 0):
+        try:
+            actor.set_latest_payload(chat_id, message_id, int(payload.get('_window_actor_generation') or 0), payload)
+        except Exception:
+            pass
 
     # R67 DIRECT UI: when this render belongs to the callback currently being handled,
     # do not insert a window-render actor between the handler and Telegram.  The render
@@ -4343,7 +4379,7 @@ def _canon_safe_edit__001(bot_obj, call, text, reply_markup=None, parse_mode=Non
     except Exception:
         pass
     result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose='safe_edit_v177')
-    if result in {'ok', 'scheduled', 'stale_after_navigation'}:
+    if result in {'ok', 'scheduled', 'stale_after_navigation', 'stale_generation'}:
         try:
             _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
         except Exception:

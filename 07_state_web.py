@@ -4798,6 +4798,49 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
         pass
     return ('OK', 200)
 
+
+def _window_actor_decode_callback_v2(payload: dict) -> tuple[bool, int, int, int, str]:
+    """Strip очнись_2 actor revision from callback_data and detect stale keyboards.
+
+    The token is transport metadata only; every business/router layer continues to
+    receive the original legacy callback string, so no existing parser changes.
+    """
+    try:
+        cq = (payload or {}).get('callback_query') or {}
+        msg = cq.get('message') or {}
+        cid = int((msg.get('chat') or {}).get('id'))
+        mid = int(msg.get('message_id'))
+        raw = str(cq.get('data') or '')
+    except Exception:
+        return (False, 0, 0, 0, '')
+    strip_fn = globals().get('window_actor_strip_callback_token')
+    if not callable(strip_fn):
+        return (False, cid, mid, 0, raw)
+    try:
+        base, revision = strip_fn(raw)
+    except Exception:
+        return (False, cid, mid, 0, raw)
+    if int(revision or 0) <= 0:
+        return (False, cid, mid, 0, raw)
+    cq['data'] = str(base or '')
+    payload['callback_query'] = cq
+    payload['_window_actor_callback_revision'] = int(revision)
+    payload['_window_actor_callback_raw'] = raw
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    if actor is None:
+        return (False, cid, mid, int(revision), str(base or ''))
+    try:
+        stale, current = actor.callback_is_stale(cid, mid, int(revision))
+    except Exception:
+        stale, current = (False, 0)
+    if stale:
+        try:
+            r52_diag('WINDOW_ACTOR_STALE_CALLBACK', chat=cid, msg=mid, incoming_revision=int(revision), current_revision=int(current or 0), action=str(base or '')[:240])
+            bot_journal('window_actor_stale_callback', cid, f'message={mid}; incoming={int(revision)}; current={int(current or 0)}; action={str(base or "")[:160]}')
+        except Exception:
+            pass
+    return (bool(stale), cid, mid, int(revision), str(base or ''))
+
 @app.route(WEBHOOK_ROUTE_PATH, methods=['POST'])
 def telegram_webhook():
     if WEBHOOK_HEADER_SECRET_ENABLED:
@@ -4878,6 +4921,20 @@ def telegram_webhook():
         except Exception as ack_exc:
             log_error(f'CALLBACK IMMEDIATE ACK: {ack_exc}')
             try: r52_diag('ACK_SCHEDULE_ERROR', update=(payload or {}).get('update_id'), error=f'{type(ack_exc).__name__}:{str(ack_exc)[:800]}', pools=r52_hot_pool_snapshot())
+            except Exception: pass
+    # очнись_2: callback generation metadata is stripped before TeleBot/router
+    # parsing. A truly stale keyboard is acknowledged but never mutates state.
+    if isinstance(payload, dict) and 'callback_query' in payload:
+        try:
+            _wa_stale, _wa_cid, _wa_mid, _wa_rev, _wa_action = _window_actor_decode_callback_v2(payload)
+            if _wa_stale:
+                try:
+                    UPDATE_DISPATCHER.mark_http_acked(payload.get('update_id'))
+                except Exception:
+                    pass
+                return ('OK', 200)
+        except Exception as _wa_exc:
+            try: log_error(f'WINDOW_ACTOR callback decode: {_wa_exc}')
             except Exception: pass
     try:
         if isinstance(payload, dict):

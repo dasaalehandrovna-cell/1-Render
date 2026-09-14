@@ -935,6 +935,409 @@ class DelayedTaskScheduler:
             with self._cv:
                 self._executed += 1
 
+
+# --- очнись_2: canonical Window Actor ---------------------------------------
+# One actor owns one Telegram message/window.  `generation` orders concurrent
+# render requests; `state_revision` changes only when the semantic text/markup
+# changes and is embedded into callback_data.  That lets the webhook reject an
+# actually stale keyboard without putting SQLite/MEGA on the button hot path.
+_WINDOW_ACTOR_TOKEN_RE = re.compile(r'~w([0-9a-z]+)$', re.IGNORECASE)
+_WINDOW_ACTOR_CONTEXT = threading.local()
+
+
+def _window_actor_base36(value: int) -> str:
+    n = max(0, int(value or 0))
+    alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'
+    if n == 0:
+        return '0'
+    out = []
+    while n:
+        n, rem = divmod(n, 36)
+        out.append(alphabet[rem])
+    return ''.join(reversed(out))
+
+
+def _window_actor_unbase36(value: str) -> int:
+    try:
+        return int(str(value or '0'), 36)
+    except Exception:
+        return 0
+
+
+def window_actor_strip_callback_token(raw: str) -> tuple[str, int]:
+    text = str(raw or '')
+    m = _WINDOW_ACTOR_TOKEN_RE.search(text)
+    if not m:
+        return text, 0
+    return text[:m.start()], _window_actor_unbase36(m.group(1))
+
+
+def _window_actor_rows(markup):
+    if markup is None:
+        return []
+    rows = getattr(markup, 'keyboard', None)
+    if rows is not None:
+        return rows
+    if isinstance(markup, dict):
+        return markup.get('inline_keyboard') or markup.get('keyboard') or []
+    return []
+
+
+def _window_actor_button_value(button, name, default=''):
+    try:
+        if isinstance(button, dict):
+            return button.get(name, default)
+        return getattr(button, name, default)
+    except Exception:
+        return default
+
+
+def _window_actor_set_callback(button, value: str) -> None:
+    try:
+        if isinstance(button, dict):
+            button['callback_data'] = value
+        else:
+            setattr(button, 'callback_data', value)
+    except Exception:
+        pass
+
+
+def window_actor_markup_fingerprint(markup, strip_revision: bool=True) -> str:
+    serial = []
+    for row in _window_actor_rows(markup):
+        rr = []
+        for button in list(row or []):
+            cb = str(_window_actor_button_value(button, 'callback_data', '') or '')
+            if strip_revision and cb:
+                cb, _rev = window_actor_strip_callback_token(cb)
+            rr.append((
+                str(_window_actor_button_value(button, 'text', '') or ''),
+                cb,
+                str(_window_actor_button_value(button, 'url', '') or ''),
+                str(_window_actor_button_value(button, 'switch_inline_query', '') or ''),
+                str(_window_actor_button_value(button, 'switch_inline_query_current_chat', '') or ''),
+            ))
+        serial.append(tuple(rr))
+    raw = json.dumps(serial, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def window_actor_text_fingerprint(text: str, parse_mode=None) -> str:
+    raw = (str(parse_mode or '') + '\x00' + str(text or '')).encode('utf-8', 'replace')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def window_actor_stamp_markup(markup, state_revision: int):
+    if markup is None:
+        return None
+    try:
+        stamped = copy.deepcopy(markup)
+    except Exception:
+        stamped = markup
+    token = '~w' + _window_actor_base36(max(1, int(state_revision or 1)))
+    for row in _window_actor_rows(stamped):
+        for button in list(row or []):
+            cb = str(_window_actor_button_value(button, 'callback_data', '') or '')
+            if not cb:
+                continue
+            base, _old = window_actor_strip_callback_token(cb)
+            candidate = base + token
+            # Telegram callback_data limit is 64 bytes. Long legacy callbacks stay
+            # untagged instead of being truncated and changing business semantics.
+            if len(candidate.encode('utf-8')) <= 64:
+                _window_actor_set_callback(button, candidate)
+    return stamped
+
+
+def window_actor_markup_revision(markup) -> int:
+    found = 0
+    for row in _window_actor_rows(markup):
+        for button in list(row or []):
+            cb = str(_window_actor_button_value(button, 'callback_data', '') or '')
+            if not cb:
+                continue
+            _base, rev = window_actor_strip_callback_token(cb)
+            if rev:
+                if found and found != rev:
+                    return 0
+                found = rev
+    return int(found or 0)
+
+
+def window_actor_logical_id(chat_id: int, message_id: int, text: str='', purpose: str='') -> str:
+    marker = ''
+    try:
+        marker_fn = globals().get('_v160_marker_from_text')
+        if callable(marker_fn):
+            marker = str(marker_fn(str(text or '')) or '')
+    except Exception:
+        marker = ''
+    label = marker or str(purpose or 'window')[:80] or 'window'
+    return f'{int(chat_id)}:{int(message_id)}:{label}'
+
+
+class WindowActorRegistry:
+    """Single in-memory owner of each visible Telegram window.
+
+    No disk/network operations are performed here.  The registry only keeps the
+    newest desired render and fingerprints of what Telegram has confirmed.
+    """
+    def __init__(self, max_windows: int=2400):
+        self.max_windows = max(200, int(max_windows))
+        self._lock = threading.RLock()
+        self._rows = {}
+        self._stats = {'reserved': 0, 'semantic_revisions': 0, 'stale_renders': 0,
+                       'stale_callbacks': 0, 'markup_only': 0, 'full_edits': 0,
+                       'noops': 0, 'forgotten': 0}
+
+    def _key(self, chat_id, message_id):
+        return (int(chat_id), int(message_id))
+
+    def _ensure(self, key):
+        row = self._rows.get(key)
+        if row is None:
+            row = {
+                'logical_window_id': f'{key[0]}:{key[1]}:window',
+                'generation': 0,
+                'state_revision': 0,
+                'desired_text_fp': '',
+                'desired_markup_fp': '',
+                'delivered_text_fp': '',
+                'delivered_markup_fp': '',
+                'latest_payload': None,
+                'updated_mono': time.monotonic(),
+                'exec_lock': threading.RLock(),
+            }
+            self._rows[key] = row
+        return row
+
+    def _prune(self):
+        if len(self._rows) <= self.max_windows:
+            return
+        ordered = sorted(self._rows.items(), key=lambda kv: float((kv[1] or {}).get('updated_mono') or 0.0))
+        for key, _row in ordered[:max(1, len(ordered)-self.max_windows)]:
+            self._rows.pop(key, None)
+
+    def reserve(self, chat_id: int, message_id: int, text: str='', reply_markup=None,
+                parse_mode=None, purpose: str='', logical_window_id: str='') -> dict:
+        key = self._key(chat_id, message_id)
+        text_fp = window_actor_text_fingerprint(text, parse_mode)
+        markup_fp = window_actor_markup_fingerprint(reply_markup, strip_revision=True)
+        logical_id = str(logical_window_id or window_actor_logical_id(key[0], key[1], text, purpose))
+        with self._lock:
+            row = self._ensure(key)
+            row['generation'] = int(row.get('generation') or 0) + 1
+            semantic_changed = (
+                str(row.get('logical_window_id') or '') != logical_id or
+                str(row.get('desired_text_fp') or '') != text_fp or
+                str(row.get('desired_markup_fp') or '') != markup_fp
+            )
+            if semantic_changed or int(row.get('state_revision') or 0) <= 0:
+                row['state_revision'] = int(row.get('state_revision') or 0) + 1
+                self._stats['semantic_revisions'] += 1
+            row['logical_window_id'] = logical_id
+            row['desired_text_fp'] = text_fp
+            row['desired_markup_fp'] = markup_fp
+            row['updated_mono'] = time.monotonic()
+            self._stats['reserved'] += 1
+            result = {
+                'logical_window_id': logical_id,
+                'generation': int(row['generation']),
+                'state_revision': int(row['state_revision']),
+                'semantic_changed': bool(semantic_changed),
+            }
+            self._prune()
+            return result
+
+    def reserve_markup_only(self, chat_id: int, message_id: int, reply_markup=None) -> dict:
+        key = self._key(chat_id, message_id)
+        markup_fp = window_actor_markup_fingerprint(reply_markup, strip_revision=True)
+        with self._lock:
+            row = self._ensure(key)
+            row['generation'] = int(row.get('generation') or 0) + 1
+            semantic_changed = str(row.get('desired_markup_fp') or '') != markup_fp
+            if semantic_changed or int(row.get('state_revision') or 0) <= 0:
+                row['state_revision'] = int(row.get('state_revision') or 0) + 1
+                self._stats['semantic_revisions'] += 1
+            row['desired_markup_fp'] = markup_fp
+            row['updated_mono'] = time.monotonic()
+            self._stats['reserved'] += 1
+            return {
+                'logical_window_id': str(row.get('logical_window_id') or f'{key[0]}:{key[1]}:window'),
+                'generation': int(row['generation']),
+                'state_revision': int(row['state_revision']),
+                'semantic_changed': bool(semantic_changed),
+            }
+
+    def adopt_sent(self, chat_id: int, message_id: int, text: str='', reply_markup=None,
+                   parse_mode=None, purpose: str='send_message', state_revision: int=1) -> dict:
+        key = self._key(chat_id, message_id)
+        semantic_markup = window_actor_markup_fingerprint(reply_markup, strip_revision=True)
+        exact_markup = window_actor_markup_fingerprint(reply_markup, strip_revision=False)
+        text_fp = window_actor_text_fingerprint(text, parse_mode)
+        with self._lock:
+            row = self._ensure(key)
+            row['generation'] = max(1, int(row.get('generation') or 0))
+            row['state_revision'] = max(1, int(state_revision or 1), int(row.get('state_revision') or 0))
+            row['logical_window_id'] = window_actor_logical_id(key[0], key[1], text, purpose)
+            row['desired_text_fp'] = text_fp
+            row['desired_markup_fp'] = semantic_markup
+            row['delivered_text_fp'] = text_fp
+            row['delivered_markup_fp'] = exact_markup
+            row['updated_mono'] = time.monotonic()
+            return self.snapshot(key[0], key[1])
+
+    def set_latest_payload(self, chat_id: int, message_id: int, generation: int, payload: dict) -> bool:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._ensure(key)
+            if int(row.get('generation') or 0) != int(generation or 0):
+                return False
+            try:
+                row['latest_payload'] = copy.deepcopy(payload)
+            except Exception:
+                row['latest_payload'] = dict(payload or {})
+            row['updated_mono'] = time.monotonic()
+            return True
+
+    def latest_payload(self, chat_id: int, message_id: int):
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._rows.get(key) or {}
+            payload = row.get('latest_payload')
+            try:
+                return copy.deepcopy(payload) if payload is not None else None
+            except Exception:
+                return dict(payload or {}) if payload is not None else None
+
+    def execution_lock(self, chat_id: int, message_id: int):
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            return self._ensure(key)['exec_lock']
+
+    def is_current(self, chat_id: int, message_id: int, generation: int) -> bool:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._rows.get(key) or {}
+            ok = int(row.get('generation') or 0) == int(generation or 0)
+            if not ok:
+                self._stats['stale_renders'] += 1
+            return ok
+
+    def callback_is_stale(self, chat_id: int, message_id: int, state_revision: int) -> tuple[bool, int]:
+        if int(state_revision or 0) <= 0:
+            return False, 0
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._rows.get(key) or {}
+            current = int(row.get('state_revision') or 0)
+            stale = bool(current and int(state_revision) != current)
+            if stale:
+                self._stats['stale_callbacks'] += 1
+            return stale, current
+
+    def delivery_snapshot(self, chat_id: int, message_id: int) -> dict:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._rows.get(key) or {}
+            return {
+                'logical_window_id': str(row.get('logical_window_id') or ''),
+                'generation': int(row.get('generation') or 0),
+                'state_revision': int(row.get('state_revision') or 0),
+                'delivered_text_fp': str(row.get('delivered_text_fp') or ''),
+                'delivered_markup_fp': str(row.get('delivered_markup_fp') or ''),
+            }
+
+    def note_delivery(self, chat_id: int, message_id: int, generation: int, text: str,
+                      reply_markup=None, parse_mode=None, mode: str='full') -> bool:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._ensure(key)
+            if generation and int(row.get('generation') or 0) != int(generation):
+                return False
+            row['delivered_text_fp'] = window_actor_text_fingerprint(text, parse_mode)
+            row['delivered_markup_fp'] = window_actor_markup_fingerprint(reply_markup, strip_revision=False)
+            row['updated_mono'] = time.monotonic()
+            if mode == 'markup':
+                self._stats['markup_only'] += 1
+            elif mode == 'noop':
+                self._stats['noops'] += 1
+            else:
+                self._stats['full_edits'] += 1
+            return True
+
+    def note_markup_delivery(self, chat_id: int, message_id: int, generation: int,
+                             reply_markup=None, mode: str='markup') -> bool:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._ensure(key)
+            if generation and int(row.get('generation') or 0) != int(generation):
+                return False
+            row['delivered_markup_fp'] = window_actor_markup_fingerprint(reply_markup, strip_revision=False)
+            row['updated_mono'] = time.monotonic()
+            if mode == 'noop':
+                self._stats['noops'] += 1
+            else:
+                self._stats['markup_only'] += 1
+            return True
+
+    def forget(self, chat_id: int, message_id: int) -> None:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            if self._rows.pop(key, None) is not None:
+                self._stats['forgotten'] += 1
+
+    def snapshot(self, chat_id: int, message_id: int) -> dict:
+        key = self._key(chat_id, message_id)
+        with self._lock:
+            row = self._rows.get(key) or {}
+            return {k: v for k, v in row.items() if k not in {'exec_lock', 'latest_payload'}}
+
+    def stats(self) -> dict:
+        with self._lock:
+            out = dict(self._stats)
+            out['windows'] = len(self._rows)
+            return out
+
+
+try:
+    _WINDOW_ACTOR_MAX = max(200, min(12000, int(os.getenv('WINDOW_ACTOR_MAX_WINDOWS', '2400') or '2400')))
+except Exception:
+    _WINDOW_ACTOR_MAX = 2400
+WINDOW_ACTOR_REGISTRY = WindowActorRegistry(_WINDOW_ACTOR_MAX)
+
+
+@contextmanager
+def window_actor_context(chat_id: int, message_id: int, generation: int, state_revision: int, logical_window_id: str=''):
+    prev = getattr(_WINDOW_ACTOR_CONTEXT, 'value', None)
+    _WINDOW_ACTOR_CONTEXT.value = {
+        'chat_id': int(chat_id), 'message_id': int(message_id),
+        'generation': int(generation or 0), 'state_revision': int(state_revision or 0),
+        'logical_window_id': str(logical_window_id or ''),
+    }
+    try:
+        yield _WINDOW_ACTOR_CONTEXT.value
+    finally:
+        if prev is None:
+            try:
+                delattr(_WINDOW_ACTOR_CONTEXT, 'value')
+            except Exception:
+                pass
+        else:
+            _WINDOW_ACTOR_CONTEXT.value = prev
+
+
+def window_actor_current_context(chat_id=None, message_id=None) -> dict:
+    row = dict(getattr(_WINDOW_ACTOR_CONTEXT, 'value', None) or {})
+    if not row:
+        return {}
+    if chat_id is not None and int(row.get('chat_id') or 0) != int(chat_id):
+        return {}
+    if message_id is not None and int(row.get('message_id') or 0) != int(message_id):
+        return {}
+    return row
+
+
 def _env_int(name: str, default: int, minimum: int=1, maximum: int=128) -> int:
     try:
         return max(minimum, min(maximum, int(os.getenv(name, str(default)) or default)))
@@ -1716,7 +2119,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_1'
+BOT_DISPLAY_NAME = 'очнись_2'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""

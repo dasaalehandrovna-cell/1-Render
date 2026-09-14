@@ -530,7 +530,7 @@ if ROLE=='fast':
        '_v177_safe_edit_fallback_send' not in r70_render_src and "return str(result or 'failed')" in r70_render_src,
        'window renderer must only report status; it cannot send a second Telegram window')
     ok('r70_safe_edit_single_replacement_owner',
-       "if result == 'not_found':" in r70_safe_src and 'r70-safe-edit-replacement:' in r70_safe_src and "if result in {'ok', 'scheduled', 'stale_after_navigation'}:" in r70_safe_src,
+       "if result == 'not_found':" in r70_safe_src and 'r70-safe-edit-replacement:' in r70_safe_src and "if result in {'ok', 'scheduled', 'stale_after_navigation', 'stale_generation'}:" in r70_safe_src,
        'safe_edit must replace exactly once and only after an unambiguous not_found/uneditable result')
     ok('r70_ambiguous_errors_retry_same_edit',
        "result in {'failed', 'rate_limited'}" in r70_retry_src and 'r70-ui-retry:' in r70_retry_src and '_v177_deferred_ui_retry' in r70_retry_src,
@@ -549,6 +549,25 @@ if ROLE=='fast':
     ok('r70_r1_r2_owner_matrix',
        'def _r70_routes_text' in split_src and "callback_data='r70:routes'" in split_src and 'Telegram окна / кнопки' in split_src and 'R70 E2E' in split_src,
        'INFO/Render status must expose actual single-owner R1/R2 processor routing')
+    # очнись_2: global Window Actor + markup-only transport contract.
+    ok('och2_window_actor_registry',
+       'class WindowActorRegistry' in core_src and 'WINDOW_ACTOR_REGISTRY = WindowActorRegistry' in core_src and 'logical_window_id' in core_src and 'state_revision' in core_src,
+       'each visible Telegram window must have one RAM actor with generation/state revision')
+    ok('och2_actor_generation_on_fast_render',
+       "payload['_window_actor_generation']" in rel_src and "payload['_window_actor_state_revision']" in rel_src and 'actor.set_latest_payload' in rel_src and 'WINDOW_ACTOR_STALE_RENDER_DROP' in rel_src,
+       'FAST render must reserve actor generation before direct/background Telegram work')
+    ok('och2_global_markup_diff',
+       'WINDOW_ACTOR_MARKUP_ONLY' in final_transport and '_FINAL_NATIVE_EDIT_MARKUP' in final_transport and "snap.get('delivered_text_fp') == text_fp" in final_transport and 'WINDOW_ACTOR_NOOP' in final_transport,
+       'same text must use editMessageReplyMarkup only; identical window must make no Telegram call')
+    ok('och2_stale_callback_revision_guard',
+       'def _window_actor_decode_callback_v2' in web_src and 'WINDOW_ACTOR_STALE_CALLBACK' in web_src and "payload['_window_actor_callback_revision']" in web_src and "return ('OK', 200)" in web_src,
+       'stale keyboard callback must be stripped/rejected before business routing')
+    ok('och2_window_actor_serializes_one_message',
+       'lock = actor.execution_lock(chat_id, message_id)' in all_py.get('05_finance_ui.py','') and 'with actor.execution_lock(cid, mid)' in final_transport,
+       'direct/background renders of one Telegram message must serialize under one actor lock')
+    ok('och2_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_2'" in core_src,
+       'user-visible bot name must follow очнись_(number) rule')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

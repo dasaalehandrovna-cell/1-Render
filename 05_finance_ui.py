@@ -3837,7 +3837,7 @@ _ui_edit_last_fingerprint_ts = {}
 def _ui_edit_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
 
-def _perform_fast_ui_edit(payload: dict) -> str:
+def _perform_fast_ui_edit_network(payload: dict) -> str:
     chat_id = int(payload.get('chat_id'))
     message_id = int(payload.get('message_id'))
     text = payload.get('text') or ''
@@ -3900,6 +3900,41 @@ def _perform_fast_ui_edit(payload: dict) -> str:
             except Exception:
                 pass
             return 'failed'
+
+
+def _perform_fast_ui_edit(payload: dict) -> str:
+    """очнись_2 Window Actor execution fence.
+
+    All direct/background window edits serialize per Telegram message.  A newer
+    generation can therefore supersede a waiting older render, while an older
+    render already in flight finishes before the newer direct click and cannot
+    overwrite it afterwards.
+    """
+    chat_id = int((payload or {}).get('chat_id') or 0)
+    message_id = int((payload or {}).get('message_id') or 0)
+    generation = int((payload or {}).get('_window_actor_generation') or 0)
+    state_revision = int((payload or {}).get('_window_actor_state_revision') or 0)
+    logical_id = str((payload or {}).get('_window_actor_logical_id') or '')
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    if actor is None or not chat_id or not message_id or not generation:
+        return _perform_fast_ui_edit_network(payload)
+    try:
+        if not actor.is_current(chat_id, message_id, generation):
+            return 'stale_generation'
+        lock = actor.execution_lock(chat_id, message_id)
+    except Exception:
+        return _perform_fast_ui_edit_network(payload)
+    with lock:
+        try:
+            if not actor.is_current(chat_id, message_id, generation):
+                return 'stale_generation'
+        except Exception:
+            pass
+        ctx = globals().get('window_actor_context')
+        if callable(ctx):
+            with ctx(chat_id, message_id, generation, state_revision, logical_id):
+                return _perform_fast_ui_edit_network(payload)
+        return _perform_fast_ui_edit_network(payload)
 
 def _v177_legacy_0210_run_pending_ui_edit(key):
     with _ui_edit_lock:
