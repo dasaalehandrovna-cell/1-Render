@@ -498,7 +498,7 @@ if ROLE=='fast':
     ack_direct_src=_fn_sources(rel_src,{'_canon_schedule_callback_receipt_ack__001'}).get('_canon_schedule_callback_receipt_ack__001','')
     render_direct_src=_fn_sources(rel_src,{'_canon_fast_ui_edit_message_text__001'}).get('_canon_fast_ui_edit_message_text__001','')
     ok('r67_direct_ack_before_all_queues',
-       '_tracked_answer_callback_query(callback_id, show_alert=False, timeout=1.25)' in ack_direct_src and
+       '_tracked_answer_callback_query(callback_id, show_alert=False, timeout=ack_timeout)' in ack_direct_src and
        ack_direct_src.find('_tracked_answer_callback_query') < ack_direct_src.find('CALLBACK_ACK_TASK_POOL.submit_unique'),
        'every callback must receive a direct native ACK before any internal queue; ACK pool is fallback only')
     ok('r67_direct_navigation_no_pool_hop',
@@ -518,8 +518,37 @@ if ROLE=='fast':
        str(env.get('FAST_TELEGRAM_CHAT_GAP','')) == '0.03',
        'direct callback Telegram gap must default around 30ms while retaining 429 cooldown')
     ok('r67_direct_ack_timeout',
-       "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py','') and 'timeout=1.25' in ack_direct_src,
-       'direct ACK and fallback ACK must both have bounded network timeouts')
+       "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py','') and "R70_DIRECT_ACK_TIMEOUT','0.45'" in ack_direct_src and 'max(0.25,min(1.25' in ack_direct_src,
+       'direct ACK must default to ~450ms and fall back to the bounded ACK pool without blocking rendering')
+    r70_safe_src=_fn_sources(rel_src,{'_canon_safe_edit__001'}).get('_canon_safe_edit__001','')
+    r70_render_src=_fn_sources(rel_src,{'_r22_execute_window_render'}).get('_r22_execute_window_render','')
+    r70_retry_src=_fn_sources(final_transport,{'_canon_v161_edit_retry__001'}).get('_canon_v161_edit_retry__001','')
+    ok('r70_direct_returns_real_telegram_result',
+       "direct_result = str(_r22_execute_window_render(payload) or 'failed')" in render_direct_src and "return 'direct'" not in render_direct_src and 'return direct_result' in render_direct_src,
+       'Direct UI must return ok/not_found/rate_limited/failed, never a transport-mode token')
+    ok('r70_renderer_never_creates_replacement',
+       '_v177_safe_edit_fallback_send' not in r70_render_src and "return str(result or 'failed')" in r70_render_src,
+       'window renderer must only report status; it cannot send a second Telegram window')
+    ok('r70_safe_edit_single_replacement_owner',
+       "if result == 'not_found':" in r70_safe_src and 'r70-safe-edit-replacement:' in r70_safe_src and "if result in {'ok', 'scheduled', 'stale_after_navigation'}:" in r70_safe_src,
+       'safe_edit must replace exactly once and only after an unambiguous not_found/uneditable result')
+    ok('r70_ambiguous_errors_retry_same_edit',
+       "result in {'failed', 'rate_limited'}" in r70_retry_src and 'r70-ui-retry:' in r70_retry_src and '_v177_deferred_ui_retry' in r70_retry_src,
+       'timeout/5xx/rate-limit style failures must retry the same edit, never manufacture a new window')
+    ok('r70_e2e_front_callback_and_test_menu',
+       "@app.route('/internal/r70/test/result',methods=['POST'])" in split_src and 'r44:test:r70e2e' in split_src and 'r44:test:forward' in split_src and 'def _r70_e2e_test' in split_src and 'def _r70_forward_dry_run' in split_src,
+       'R70 test menu must verify HEAVY write/read/process/callback and forwarding effective routes')
+    sqlite_backup_src=_fn_sources(core_src,{'backup_to'}).get('backup_to','')
+    forward_status_src=_fn_sources(core_src,{'build_forward_status_text'}).get('build_forward_status_text','')
+    ok('r70_sqlite_snapshot_singleflight',
+       '_backup_coalesce_lock' in core_src and '_backup_cache_mono' in core_src and 'self._backup_cache_mono >= requested_mono' in sqlite_backup_src and "self._backup_stats['reused']" in sqlite_backup_src,
+       'concurrent Redis/HEAVY/MEGA snapshot requests must share one physical SQLite backup')
+    ok('r70_forward_ui_effective_state',
+       "globals().get('resolve_forward_targets')" in forward_status_src and 'Runtime-маршруты:' in forward_status_src and 'resolve_forward_targets() сейчас не даёт маршрут' in forward_status_src,
+       'forwarding UI must distinguish configured rules from effective production routes')
+    ok('r70_r1_r2_owner_matrix',
+       'def _r70_routes_text' in split_src and "callback_data='r70:routes'" in split_src and 'Telegram окна / кнопки' in split_src and 'R70 E2E' in split_src,
+       'INFO/Render status must expose actual single-owner R1/R2 processor routing')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

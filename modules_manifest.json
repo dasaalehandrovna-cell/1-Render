@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "3136df9bb69fb12c2ad0119b48ec8938296526cd8c33997c3f07cd9fbc52bc97",
+    "01_core_data.py": "8037b13e3812298bbd855cb849c226a802d6388585262381f68b307683a95b88",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
     "05_finance_ui.py": "6d9b508d304a258f84d09452e14279355b2d661b56a797a501a3e604393b64a8",
     "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
     "07_state_web.py": "3bafb7aa3b4fb2ac0d37bc2fc8d078368540828f31e2b108bbc4018306229c5c",
-    "08_reliability_tasks.py": "a7b1da40521247cd5eb38b1e8cf7ccfa34aefd94ff7ab3a268ecf1ba199823a8",
-    "09_final_transport.py": "9e139df07a872c37c120b593613aef9650b61dc16d722924c9a745fb4fc16a22",
-    "10_split_policy_offload.py": "9c0c5fc6818b08652988db7a25122b5fe486ea6500b705defa2965ee1bc6f794"
+    "08_reliability_tasks.py": "1c23e2dcd332f3cdcb6c9019f017fe2f44c5d4891ac4a8df00dffa266dc04921",
+    "09_final_transport.py": "bac310527257077b99dd9647cc58401ed5693a0dd7f176c196ce86c08a01098e",
+    "10_split_policy_offload.py": "79cef637b8990bfdd3e759aebf2c9342647920879b8c48a25cde8a76ad9b5899"
   },
-  "release": "Пер-R69-RUNTIME-GATE-MODE-FIX-FINAL",
+  "release": "Пер-R70-DIRECT-UI-SINGLE-OWNER-E2E-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -256,6 +256,16 @@
     "r68_local_ephemeral_not_cross_deploy_authority",
     "r69_package_vs_runtime_root_gate_split",
     "r69_docker_runtime_no_dockerfile_dependency",
-    "r69_info_history_handoff_r70"
+    "r69_info_history_handoff_r70",
+    "r70_direct_ui_real_result_contract",
+    "r70_single_replacement_owner",
+    "r70_no_generic_failed_sendmessage",
+    "r70_ambiguous_edit_retry_same_message",
+    "r70_direct_ack_450ms_fallback",
+    "r70_forward_effective_runtime_status",
+    "r70_sqlite_snapshot_singleflight",
+    "r70_heavy_scratch_roundtrip_e2e",
+    "r70_forward_dry_run",
+    "r70_r1_r2_owner_matrix"
   ]
 }

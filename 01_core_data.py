@@ -1716,7 +1716,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = VERSION
+BOT_DISPLAY_NAME = 'очнись_1'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -1936,6 +1936,14 @@ class SQLiteState:
         self._writer_stats = {'submitted': 0, 'done': 0, 'failed': 0, 'max_pending': 0, 'last_wait_ms': 0.0}
         self._writer_thread = threading.Thread(target=self._writer_loop, name='sqlite-writer-1', daemon=True)
         self._writer_thread.start()
+        # R70: one physical online backup for concurrent snapshot consumers.
+        # A waiter may reuse only a snapshot completed AFTER its own request began,
+        # so sequential later requests never receive a stale image.
+        self._backup_coalesce_lock = threading.Lock()
+        _snap_tag = hashlib.sha1(os.path.abspath(self.path).encode('utf-8','ignore')).hexdigest()[:12]
+        self._backup_cache_path = os.path.join(tempfile.gettempdir(), f'vys262_r70_snapshot_{_snap_tag}.sqlite3')
+        self._backup_cache_mono = 0.0
+        self._backup_stats = {'physical':0,'reused':0,'last_elapsed':0.0}
 
     def _writer_priority(self, explicit=None) -> int:
         if explicit is not None:
@@ -2191,34 +2199,56 @@ class SQLiteState:
         return sorted(set(out))
 
     def backup_to(self, target_path: str):
-        """R25 online snapshot using a separate SQLite connection.
+        """R70 single-flight online SQLite snapshot.
 
-        The old implementation held the one shared SQLITE.lock for the entire backup.
-        HEAVY `/internal/split/state` fetches could therefore freeze callbacks that only
-        needed a tiny SQLite read/write. WAL + SQLite online backup allows a consistent
-        snapshot without monopolising FAST's primary connection/lock.
+        Concurrent consumers (Redis/HEAVY/MEGA/diagnostics) share one physical
+        SQLite backup.  A cached image is reusable only when it completed after the
+        current caller requested its snapshot, which coalesces overlap without
+        serving stale data to later sequential requests.
         """
         target_path = str(target_path)
         os.makedirs(os.path.dirname(target_path) or '.', exist_ok=True)
-        started = time.monotonic()
+        requested_mono = time.monotonic()
+        started = requested_mono
+        reused = False
         try: r25_trace_stage('SQLITE_BACKUP_START', emit=False)
         except Exception: pass
-        source = sqlite3.connect(self.path, check_same_thread=False, timeout=0.25)
-        dest = sqlite3.connect(target_path, check_same_thread=False, timeout=0.25)
-        try:
-            try: source.execute('PRAGMA busy_timeout=250')
-            except Exception: pass
-            source.backup(dest, pages=64, sleep=0.005)
-            dest.commit()
-        finally:
-            try: dest.close()
-            except Exception: pass
-            try: source.close()
-            except Exception: pass
+        with self._backup_coalesce_lock:
+            cache_path = str(self._backup_cache_path)
+            if self._backup_cache_mono >= requested_mono and os.path.exists(cache_path):
+                shutil.copy2(cache_path, target_path)
+                reused = True
+                self._backup_stats['reused'] = int(self._backup_stats.get('reused') or 0) + 1
+            else:
+                tmp_cache = cache_path + f'.tmp.{os.getpid()}.{threading.get_ident()}'
+                try:
+                    try: os.unlink(tmp_cache)
+                    except FileNotFoundError: pass
+                    source = sqlite3.connect(self.path, check_same_thread=False, timeout=0.25)
+                    dest = sqlite3.connect(tmp_cache, check_same_thread=False, timeout=0.25)
+                    try:
+                        try: source.execute('PRAGMA busy_timeout=250')
+                        except Exception: pass
+                        source.backup(dest, pages=64, sleep=0.005)
+                        dest.commit()
+                    finally:
+                        try: dest.close()
+                        except Exception: pass
+                        try: source.close()
+                        except Exception: pass
+                    os.replace(tmp_cache, cache_path)
+                    self._backup_cache_mono = time.monotonic()
+                    self._backup_stats['physical'] = int(self._backup_stats.get('physical') or 0) + 1
+                    shutil.copy2(cache_path, target_path)
+                finally:
+                    try:
+                        if os.path.exists(tmp_cache): os.unlink(tmp_cache)
+                    except Exception: pass
         elapsed = max(0.0, time.monotonic() - started)
+        self._backup_stats['last_elapsed'] = elapsed
         try:
-            if elapsed >= 0.25:
-                _line=f'R26 SQLITE ONLINE BACKUP path={os.path.basename(target_path)} elapsed={elapsed:.3f}s shared_lock=0'; log_info(_line); r26_diag_trace_line(_line)
+            if elapsed >= 0.25 or reused:
+                _line=f'R70 SQLITE SNAPSHOT path={os.path.basename(target_path)} elapsed={elapsed:.3f}s reused={int(reused)} physical={int(self._backup_stats.get("physical") or 0)} reused_total={int(self._backup_stats.get("reused") or 0)} shared_lock=0'; log_info(_line); r26_diag_trace_line(_line)
             r25_trace_stage('SQLITE_BACKUP_DONE', elapsed, emit=elapsed >= _R25_TRACE_SLOW_LOCK_SEC)
         except Exception: pass
         return target_path
@@ -8249,6 +8279,29 @@ def build_forward_status_text(title: str | None=None) -> str:
         lines.append('')
     lines.append('Текущие связи:')
     lines.extend(build_forward_status_lines())
+    # R70: visual rules are not enough.  Show whether the production resolver
+    # would actually route messages now (mode/status/tenant/suspension included).
+    try:
+        pair_fn = globals().get('collect_forward_pairs_for_menu')
+        resolver = globals().get('resolve_forward_targets')
+        pairs = list(pair_fn() or []) if callable(pair_fn) else []
+        blocked=[]; active=0
+        if callable(resolver):
+            for a,b in pairs:
+                ab = int(b) in {int(x) for x in (resolver(int(a)) or [])}
+                ba = int(a) in {int(x) for x in (resolver(int(b)) or [])}
+                active += int(ab) + int(ba)
+                if not ab and not ba:
+                    blocked.append((int(a),int(b)))
+        if pairs:
+            lines.append('')
+            lines.append(f'Runtime-маршруты: ✅ {active} направлений · ⚠️ полностью заблокированных пар {len(blocked)}')
+            for a,b in blocked[:6]:
+                lines.append(f'⚠️ {chat_button_title(a)} ↔ {chat_button_title(b)}: правило есть, но resolve_forward_targets() сейчас не даёт маршрут')
+            if len(blocked)>6:
+                lines.append(f'…ещё {len(blocked)-6}')
+    except Exception:
+        pass
     return '\n'.join(lines)
 
 def _find_forward_origin_by_copied_message(chat_id: int, msg_id: int):

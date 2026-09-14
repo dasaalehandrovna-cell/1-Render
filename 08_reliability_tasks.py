@@ -2993,8 +2993,12 @@ def _r22_render_stage(payload: dict, stage: str, elapsed: float=0.0, result: str
             pass
 
 
-def _r22_execute_window_render(payload: dict) -> None:
-    """Actual Telegram network stage; R25 emits per-update render/TG timings."""
+def _r22_execute_window_render(payload: dict) -> str:
+    """R70: execute exactly one Telegram window edit and return its real status.
+
+    This function never creates a replacement message. Replacement ownership belongs
+    exclusively to safe_edit after an unambiguous Telegram ``not_found`` result.
+    """
     _r25_uid = str(payload.get('_r25_update_id') or '')
     _r25_action = str(payload.get('_r22_action') or payload.get('_r25_action') or '')[:180]
     try:
@@ -3023,7 +3027,7 @@ def _r22_execute_window_render(payload: dict) -> None:
                 except Exception:
                     pass
                 _r22_render_stage(payload, 'telegram_render_done', 0.0, 'stale_after_navigation')
-                return
+                return 'stale_after_navigation'
         except Exception:
             pass
     started = _v160_time.monotonic()
@@ -3044,16 +3048,9 @@ def _r22_execute_window_render(payload: dict) -> None:
         r52_diag('RENDER_WORKER_EXIT', update=_r25_uid or '-', chat=payload.get('chat_id'), msg=payload.get('message_id'), action=_r25_action, purpose=payload.get('purpose'), elapsed=elapsed, result=result, queue_wait=float(payload.get('_r22_queue_wait') or 0.0), render_pool=WINDOW_RENDER_TASK_POOL.stats())
     except Exception: pass
     _r22_render_stage(payload, 'telegram_render_done', elapsed, result)
-    # Preserve the old safe_edit recovery semantics, but recovery is also outside
-    # the callback worker. It is intentionally only for unusable Telegram messages.
-    if result in {'not_found', 'failed'} and str(payload.get('purpose') or '').startswith('safe_edit'):
-        try:
-            fallback = globals().get('_v177_safe_edit_fallback_send')
-            if callable(fallback):
-                fallback(bot, int(payload.get('chat_id')), int(payload.get('message_id')), str(payload.get('_r22_action') or ''),
-                         str(payload.get('text') or ''), payload.get('reply_markup'), payload.get('parse_mode'))
-        except Exception:
-            pass
+    # R70 FINALIZATION ONLY: renderer reports status only.  It must never create
+    # a second Telegram window.  safe_edit is the single replacement owner.
+    return str(result or 'failed')
 
 
 def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str='fast_ui') -> str:
@@ -3122,12 +3119,12 @@ def _canon_fast_ui_edit_message_text__001(chat_id: int, message_id: int, text: s
             pass
         started = _v160_time.monotonic()
         try:
-            _r22_execute_window_render(payload)
+            direct_result = str(_r22_execute_window_render(payload) or 'failed')
             try:
-                r52_diag('R67_DIRECT_RENDER_DONE', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, purpose=purpose, elapsed=_v160_time.monotonic()-started)
+                r52_diag('R70_DIRECT_RENDER_DONE', update=payload.get('_r25_update_id') or '-', chat=chat_id, msg=message_id, purpose=purpose, elapsed=_v160_time.monotonic()-started, result=direct_result)
             except Exception:
                 pass
-            return 'direct'
+            return direct_result
         except Exception as exc:
             try:
                 log_error(f'R67 DIRECT WINDOW RENDER FAILED chat={chat_id} msg={message_id}: {exc}')
@@ -4346,20 +4343,24 @@ def _canon_safe_edit__001(bot_obj, call, text, reply_markup=None, parse_mode=Non
     except Exception:
         pass
     result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose='safe_edit_v177')
-    if result in {'ok', 'scheduled'}:
+    if result in {'ok', 'scheduled', 'stale_after_navigation'}:
         try:
             _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
         except Exception:
             pass
         return result
-    try:
-        pool = globals().get('GENERAL_TASK_POOL')
-        key = f'v177-safe-edit-fallback:{chat_id}:{msg_id}'
-        queued = bool(pool and pool.submit_unique(key, _v177_safe_edit_fallback_send, bot_obj, chat_id, msg_id, raw_action, text, reply_markup, parse_mode))
-        if queued:
-            return 'scheduled_fallback'
-    except Exception:
-        pass
+    # R70: a new Telegram message is legal only when Telegram positively says that
+    # the original message is gone/uneditable.  Timeout/5xx/unknown failures must
+    # never manufacture a duplicate window.
+    if result == 'not_found':
+        try:
+            pool = globals().get('GENERAL_TASK_POOL')
+            key = f'r70-safe-edit-replacement:{chat_id}:{msg_id}'
+            queued = bool(pool and pool.submit_unique(key, _v177_safe_edit_fallback_send, bot_obj, chat_id, msg_id, raw_action, text, reply_markup, parse_mode))
+            if queued:
+                return 'scheduled_replacement'
+        except Exception:
+            pass
     try:
         bot_obj.answer_callback_query(call.id, 'Telegram не подтвердил обновление. Нажмите ещё раз.', show_alert=False)
     except Exception:
@@ -7341,7 +7342,11 @@ def _canon_schedule_callback_receipt_ack__001(callback_id: str, chat_id=None, de
             # _tracked_answer_callback_query performs the native Telegram call and owns
             # ACK de-duplication.  A short timeout prevents one bad socket from pinning
             # a Waitress request thread for seconds.
-            _tracked_answer_callback_query(callback_id, show_alert=False, timeout=1.25)
+            # R70: the ACK is cosmetic and must never delay the actual window render.
+            # If Telegram does not confirm quickly, the bounded ACK pool retries while
+            # the callback continues to render.  Clamp keeps pathological ENV safe.
+            ack_timeout=max(0.25,min(1.25,float(_v155_os.getenv('R70_DIRECT_ACK_TIMEOUT','0.45') or '0.45')))
+            _tracked_answer_callback_query(callback_id, show_alert=False, timeout=ack_timeout)
             try:
                 r52_diag('R67_DIRECT_ACK_OK', callback_id=callback_id, chat=chat_id, elapsed=_v166_time.monotonic()-started)
             except Exception:

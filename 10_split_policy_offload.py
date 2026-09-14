@@ -3790,8 +3790,35 @@ def _r10_worker_health_text(force=False):
 def _r10_worker_health_keyboard():
     kb=types.InlineKeyboardMarkup(row_width=2)
     kb.row(IB('🔄 Проверить сейчас', callback_data='r10:worker:refresh'))
-    kb.row(IB('📊 Google Excel', callback_data='v149:google:status'))
+    kb.row(IB('🧭 R1/R2 процессы', callback_data='r70:routes'), IB('📊 Google Excel', callback_data='v149:google:status'))
     kb.row(IB('🔙 В Инфо', callback_data='r10:worker:back'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+def _r70_routes_text():
+    h=dict(_SPLIT_STATE.get('worker_health') or {});st=dict(h.get('state') or {})
+    worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
+    lines=[
+        '🧭 <b>R70 · ВЛАДЕЛЬЦЫ ПРОЦЕССОВ R1/R2</b>','',
+        '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
+        '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
+        '🔒 Реальная доставка пересылки — <b>R1 FAST</b>',
+        '🔒 Canonical business mutation — <b>R1 FAST</b>',
+        '🛰 Google / тяжёлые таблицы — <b>R2 HEAVY</b>',
+        '🛰 File export / тяжёлая генерация — <b>R2 HEAVY</b>',
+        '🛰 MEGA runtime heavy jobs — <b>R2 HEAVY</b>',
+        '🔁 State events / delta — <b>R1 → R2</b>',
+        '🧪 Диагностика — <b>R1 инициирует, R2 исполняет</b>','',
+        f'R2 сейчас: {"✅ доступен" if worker_ok else "⛔ недоступен"} · очередь {int(h.get("queue_size") or 0)} · Google {int(h.get("google_queue_size") or 0)}',
+        f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}','',
+        'R70 намеренно не разрешает переключать Telegram UI/forward delivery на R2: у этих путей должен быть ровно один владелец, иначе снова возможны дубли окон/сообщений.',
+        'Для сравнения R1↔R2 используйте 🧪 Тест #1 ↔ #2 и R70 E2E.'
+    ]
+    return window_mark('\n'.join(lines),'Ф4072')
+
+def _r70_routes_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'),IB('🔄 Render #2',callback_data='r10:worker:refresh'))
+    kb.row(IB('🔙 Render #2',callback_data='r10:worker:status'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
 
 
@@ -3832,6 +3859,17 @@ def _r10_build_main_keyboard(day_key: str, chat_id=None):
 _CONTOUR_GUARD_CORE = _v223_contour_callback_guard
 def _r10_contour_callback_guard(call, resolved: str) -> bool:
     raw=str(resolved or '')
+    if raw == 'r70:routes':
+        try:
+            cid=int(call.message.chat.id);uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
+        except Exception:return True
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id,'Только основной владелец.',show_alert=True)
+            except Exception: pass
+            return True
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        safe_edit(bot,call,_r70_routes_text(),reply_markup=_r70_routes_keyboard(),parse_mode='HTML');return True
     if raw.startswith('r10:worker:'):
         try:
             cid=int(call.message.chat.id); uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
@@ -3868,6 +3906,7 @@ def _r10_contour_callback_guard(call, resolved: str) -> bool:
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:*','Ф270')
+    WINDOW_MARKER_CONSTANTS.setdefault('r70:routes','Ф4072')
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:status','Ф270')
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:refresh','Ф270')
     WINDOW_MARKER_CONSTANTS.setdefault('r10:worker:back','Ф89')
@@ -7997,6 +8036,24 @@ def _r44_request(chat_id, method, path, *, json_body=None, params=None, timeout=
         _r44_diag('peer_http_error',method=method,path=path,elapsed=elapsed,mode=mode,error=f'{type(exc).__name__}: {exc}')
         return None,{'ok':False,'error':f'{type(exc).__name__}: {str(exc)[:500]}','mode':mode,'elapsed':round(elapsed,3),'redis_verified':False if mode=='redis' else None}
 
+_R70_TEST_RESULT_LOCK=_r44_threading.RLock()
+_R70_TEST_RESULTS={}
+
+@app.route('/internal/r70/test/result',methods=['POST'])
+def r70_front_test_result():
+    auth=globals().get('_split_authorized_request')
+    if not callable(auth) or not bool(auth()): return ({'ok':False},404)
+    body=request.get_json(silent=True) or {};nonce=str(body.get('nonce') or '')[:120]
+    processed=str(body.get('processed_hash') or '')[:128];payload_hash=str(body.get('payload_hash') or '')[:128]
+    if not nonce or not processed:return ({'ok':False,'error':'nonce/processed_hash missing'},400)
+    with _R70_TEST_RESULT_LOCK:
+        _R70_TEST_RESULTS[nonce]={'nonce':nonce,'processed_hash':processed,'payload_hash':payload_hash,'received_at':_r44_time.time()}
+        cutoff=_r44_time.time()-600
+        for key,row in list(_R70_TEST_RESULTS.items()):
+            if float((row or {}).get('received_at') or 0)<cutoff:_R70_TEST_RESULTS.pop(key,None)
+    _r44_diag('r70_roundtrip_result_received',nonce=nonce,processed_hash=processed[:16])
+    return ({'ok':True,'role':'front','nonce':nonce,'processed_hash':processed,'payload_hash':payload_hash,'ts':_r44_time.time()},200)
+
 @app.route('/internal/r44/test/reverse',methods=['POST'])
 def r44_front_reverse_probe():
     auth=globals().get('_split_authorized_request')
@@ -8035,6 +8092,7 @@ def _r44_test_menu_kb(chat_id):
     kb.row(IB('🔗 #1 → #2 HTTP',callback_data='r44:test:echo'),IB('↩️ #2 → #1',callback_data='r44:test:reverse'))
     kb.row(IB('📁 MEGA #2',callback_data='r44:test:mega:root'),IB('🗃 Снимок БД',callback_data='r44:test:snapshot'))
     kb.row(IB(('🧠 Redis: ВКЛ' if mode=='redis' else '🧠 Redis: ВЫКЛ'),callback_data='r44:test:redis_toggle'),IB('🩺 Полный тест',callback_data='r44:test:full'))
+    kb.row(IB('🧬 R70 E2E запись↔ответ',callback_data='r44:test:r70e2e'),IB('➡️ Dry-run пересылки',callback_data='r44:test:forward'))
     kb.row(IB('📜 Последние события',callback_data='r44:test:tail'),IB('📥 Скачать журнал',callback_data='r44:test:journal'))
     kb.row(IB('🔄 Статус #2',callback_data='r44:test:status'))
     day=str(get_chat_store(cid).get('current_view_day') or today_key())
@@ -8099,6 +8157,55 @@ def _r44_render_tail():
     if len(lines)==2: lines.append('Пока пусто.')
     return window_mark('\n'.join(lines),'Ф4046')
 
+def _r70_e2e_test(chat_id):
+    cid=int(chat_id);nonce='r70-'+_r44_secrets.token_hex(8);payload=_r44_json.dumps({'chat_id':cid,'nonce':nonce,'sent_at':_r44_time.time()},ensure_ascii=False,separators=(',',':'))
+    expected_payload=_r44_hashlib.sha256(payload.encode('utf-8')).hexdigest();expected_processed=_r44_hashlib.sha256(('R70:'+expected_payload).encode('utf-8')).hexdigest()
+    _,m=_r44_request(cid,'POST','/internal/r70/test/roundtrip',json_body={'nonce':nonce,'payload':payload},timeout=20)
+    p=m.get('payload') if isinstance(m.get('payload'),dict) else {};cb=p.get('front_callback') if isinstance(p.get('front_callback'),dict) else {}
+    with _R70_TEST_RESULT_LOCK:front=dict(_R70_TEST_RESULTS.get(nonce) or {})
+    checks={
+        'accepted':bool(p.get('accepted')),
+        'stored':bool(p.get('stored')),
+        'read_back':bool(p.get('read_back')),
+        'payload_hash':str(p.get('payload_hash') or '')==expected_payload,
+        'processed_hash':str(p.get('processed_hash') or '')==expected_processed,
+        'heavy_to_front_callback':bool(cb.get('ok')),
+        'front_recorded_result':str(front.get('processed_hash') or '')==expected_processed,
+    }
+    ok=bool(m.get('ok') and p.get('ok') and all(checks.values()))
+    lines=['🧬 <b>R70 E2E · FAST ↔ HEAVY</b>','',f'Trace: <code>{_r44_html.escape(nonce)}</code>',
+           f'{"✅" if checks["accepted"] else "⛔"} HEAVY принял запрос',
+           f'{"✅" if checks["stored"] else "⛔"} HEAVY записал scratch SQLite',
+           f'{"✅" if checks["read_back"] else "⛔"} HEAVY прочитал запись обратно',
+           f'{"✅" if checks["payload_hash"] else "⛔"} SHA входа совпал',
+           f'{"✅" if checks["processed_hash"] else "⛔"} HEAVY обработал и выдал ожидаемый SHA',
+           f'{"✅" if checks["heavy_to_front_callback"] else "⛔"} HEAVY сделал callback в FAST',
+           f'{"✅" if checks["front_recorded_result"] else "⛔"} FAST принял и сверил результат','',
+           f'HTTP: {m.get("status","—")} · сеть {m.get("elapsed",0)}с · store {p.get("store_elapsed","—")}с · callback {cb.get("elapsed","—")}с',
+           f'<b>ИТОГ: {"✅ ПОЛНЫЙ ЦИКЛ ИСПРАВЕН" if ok else "⛔ ЦИКЛ НЕ ПРОШЁЛ"}</b>']
+    if not ok:lines.append(_r44_html.escape(str(p.get('error') or cb.get('error') or m.get('error') or '')[:600]))
+    return window_mark('\n'.join(lines),'Ф4070')
+
+def _r70_forward_dry_run(chat_id):
+    cid=int(chat_id);pairs=[]
+    try:pairs=list(collect_forward_pairs_for_menu() or [])
+    except Exception:pairs=[]
+    rows=[];ok_count=0;bad_count=0
+    for src,dst in pairs[:40]:
+        try:
+            effective=set(int(x) for x in (resolve_forward_targets(int(src)) or []));ok=int(dst) in effective
+        except Exception:ok=False
+        ok_count+=int(ok);bad_count+=int(not ok)
+        try:sname=get_chat_display_name(int(src));dname=get_chat_display_name(int(dst))
+        except Exception:sname=str(src);dname=str(dst)
+        rows.append(f'{"✅" if ok else "⛔"} {_r44_html.escape(str(sname)[:28])} → {_r44_html.escape(str(dname)[:28])}')
+    lines=['➡️ <b>R70 · DRY-RUN ПЕРЕСЫЛКИ</b>','',f'Настроено пар: {len(pairs)} · реально активны: {ok_count} · заблокированы: {bad_count}']
+    if rows:lines+=['']+rows
+    else:lines+=['','Пар пересылки сейчас нет.']
+    if len(pairs)>40:lines.append(f'…ещё {len(pairs)-40}')
+    lines+=['','Проверка использует тот же <code>resolve_forward_targets()</code>, что и реальная доставка. Сообщения не отправляются.']
+    return window_mark('\n'.join(lines),'Ф4071')
+
 def _r44_full_test(chat_id):
     cid=int(chat_id); results=[]
     for label,method,path,body,to in [
@@ -8109,6 +8216,7 @@ def _r44_full_test(chat_id):
         r,m=_r44_request(cid,method,path,json_body=body,timeout=to); p=m.get('payload') if isinstance(m.get('payload'),dict) else {}
         results.append((label,bool(m.get('ok') and p.get('ok',True)),m,p))
     r,m=_r44_request(cid,'GET','/internal/r44/test/mega/list',params={'path':''},timeout=45);p=m.get('payload') if isinstance(m.get('payload'),dict) else {};results.append(('MEGA',bool(m.get('ok') and p.get('ok')),m,p))
+    nonce='full-'+_r44_secrets.token_hex(5);payload=_r44_json.dumps({'full_test':True,'nonce':nonce,'chat':cid},separators=(',',':'));_,em=_r44_request(cid,'POST','/internal/r70/test/roundtrip',json_body={'nonce':nonce,'payload':payload},timeout=20);ep=em.get('payload') if isinstance(em.get('payload'),dict) else {};results.append(('R70 E2E',bool(em.get('ok') and ep.get('ok') and (ep.get('front_callback') or {}).get('ok')),em,ep))
     lines=['🩺 <b>ПОЛНЫЙ ТЕСТ #1 ↔ #2</b>','']
     for label,ok,m,p in results:
         extra=''
@@ -8300,6 +8408,10 @@ def _r45_diag_job(call,key,seq,raw):
             text=window_mark(('✅ Передано: ' if ok else '⛔ Ошибка: ')+_r44_html.escape(detail),'Ф4051');kb=_r44_test_menu_kb(cid)
         elif raw=='r44:test:full':
             text=_r44_full_test(cid);kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:r70e2e':
+            text=_r70_e2e_test(cid);kb=_r44_test_menu_kb(cid)
+        elif raw=='r44:test:forward':
+            text=_r70_forward_dry_run(cid);kb=_r44_test_menu_kb(cid)
         elif raw=='r44:test:journal':
             _r44_diag('journal_download',chat=cid)
             # Give writer a short chance to flush queued lines without blocking callbacks.
@@ -8365,6 +8477,7 @@ def _r45_test_guard(call,resolved):
         labels={
             'r44:test:status':'Проверяю состояние Render #2…','r44:test:echo':'Проверяю #1 → #2…','r44:test:reverse':'Проверяю #2 → #1…',
             'r44:test:snapshot':'Проверяю передачу SQLite…','r44:test:mega:root':'Читаю папки MEGA через Render #2…','r44:test:full':'Запускаю полный тест…',
+            'r44:test:r70e2e':'Проверяю полный цикл запись → обработка → callback…','r44:test:forward':'Проверяю реальные маршруты пересылки без отправки…',
             'r44:test:journal':'Готовлю журнал…'
         }
         if raw.startswith('r44:test:mega:d:') or raw.startswith('r44:test:mega:p:'):label='Открываю папку MEGA через Render #2…'

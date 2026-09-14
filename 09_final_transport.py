@@ -172,13 +172,13 @@ def _canon_v161_edit_retry__001(chat_id: int, message_id: int, text: str, reply_
     except Exception:
         result = 'failed'
     v177_perf_stage('render_enqueue', _v176_time.monotonic() - started)
-    if result == 'failed' and v176_process_enabled('ui_retry'):
+    if result in {'failed', 'rate_limited'} and v176_process_enabled('ui_retry'):
         try:
             pool = globals().get('GENERAL_TASK_POOL')
-            key = f'v177-ui-retry:{int(chat_id)}:{int(message_id)}'
+            key = f'r70-ui-retry:{int(chat_id)}:{int(message_id)}'
             if pool is not None:
                 pool.submit_unique(key, _v177_deferred_ui_retry, int(chat_id), int(message_id), text, reply_markup, parse_mode, purpose)
-            return 'scheduled'
+                return 'scheduled'
         except Exception:
             pass
     return result
