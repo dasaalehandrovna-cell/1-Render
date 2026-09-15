@@ -1294,7 +1294,7 @@ def _update_secret_window_countdown(chat_id: int, message_id: int, remaining: in
     if kb is None:
         return False
     try:
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        fast_ui_edit_reply_markup(chat_id, message_id, kb, purpose='message_feature_markup')
         return True
     except Exception as e:
         if 'message is not modified' not in str(e).lower():
@@ -5225,7 +5225,7 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None=None, 
                 elif ct in {'photo', 'video', 'document', 'audio', 'animation', 'voice'}:
                     _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=cid, message_id=msg_id, reply_markup=markup, attempts=1, purpose='forward_copy_retro_caption_fast')
                 else:
-                    _tg_call_retry(bot.edit_message_reply_markup, cid, msg_id, reply_markup=markup, attempts=1, purpose='forward_copy_retro_markup_fast')
+                    fast_ui_edit_reply_markup(cid, msg_id, markup, purpose='forward_copy_retro_markup_fast', attempts=1)
                 changed += 1
             except Exception as e:
                 err = str(e).lower()
@@ -5537,7 +5537,7 @@ def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id
         elif ct in {'photo', 'video', 'document', 'audio', 'animation', 'voice'}:
             _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), reply_markup=reply_markup, attempts=3, purpose='forward_copy_edit_apply_caption')
         else:
-            _tg_call_retry(bot.edit_message_reply_markup, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), reply_markup=reply_markup, attempts=3, purpose='forward_copy_edit_apply_markup')
+            fast_ui_edit_reply_markup(int(dst_chat_id), int(dst_msg_id), reply_markup, purpose='forward_copy_edit_apply_markup', attempts=3)
         try:
             schedule_config_backup_for_chats(int(dst_chat_id), delay=0.5)
         except Exception:

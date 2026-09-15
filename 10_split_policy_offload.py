@@ -4611,7 +4611,7 @@ def _r31_schedule_constructor_markup_refresh() -> None:
                 fp = globals().get('_v221_markup_fingerprint')
                 if callable(fp) and fp(row.get('markup')) == fp(after):
                     continue
-                bot.edit_message_reply_markup(chat_id=int(cid), message_id=int(mid), reply_markup=after)
+                fast_ui_edit_reply_markup(int(cid), int(mid), after, purpose='split_policy_markup')
                 rec = globals().get('v221_record_live_markup')
                 if callable(rec):
                     rec(int(cid), int(mid), after, str(row.get('text') or ''), source_markup=source)
@@ -8589,12 +8589,12 @@ except Exception:
 # v262
 
 # ---------------------------------------------------------------------------
-# R71 / очнись_3 — runtime owner switches for every user-facing HEAVY mode.
+# R71 / очнись_4 — runtime owner switches retained from очнись_3.
 #
 # Default remains R2 HEAVY.  The owner can move Google, file generation,
 # diagnostics archives and MEGA runtime/recovery work independently to R1 FAST.
 # Telegram webhook/UI/forward delivery/canonical mutation intentionally stay on R1.
-_R71_RELEASE = 'очнись_3-r71-runtime-owner-switches'
+_R71_RELEASE = 'очнись_4-r71-runtime-owner-switches'
 _R71_ROUTE_KEYS = ('google', 'files', 'diagnostics', 'mega')
 _R71_ROUTE_LABELS = {
     'google': '📊 Google / таблицы',
@@ -8735,7 +8735,7 @@ def _r70_routes_text():
     if _r71_route_is_fast('mega') and not _r71_fast_mega_ready():
         warn.append('⚠️ MEGA выбран на R1, но FAST не видит credentials/MEGAcmd.')
     lines = [
-        '🧭 <b>очнись_3 · ПЕРЕКЛЮЧАТЕЛИ R1/R2</b>', '',
+        '🧭 <b>очнись_4 · ПЕРЕКЛЮЧАТЕЛИ R1/R2</b>', '',
         'Фиксированные владельцы:',
         '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
         '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',

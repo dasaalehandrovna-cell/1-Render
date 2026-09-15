@@ -4020,15 +4020,45 @@ try:
 except Exception:
     pass
 
+def fast_ui_edit_reply_markup(chat_id: int, message_id: int, reply_markup=None, purpose: str='ui_markup', attempts: int=1):
+    """Canonical markup-only mutation for one Telegram window.
+
+    The actor generation is reserved exactly once before transport; the final Telegram
+    wrapper reuses that context instead of creating a competing generation.
+    """
+    cid = int(chat_id)
+    mid = int(message_id)
+    prepared = reply_markup
+    try:
+        fn = globals().get('_final_filter_markup')
+        if callable(fn):
+            prepared = fn(cid, prepared)
+    except Exception:
+        prepared = reply_markup
+    actor = globals().get('WINDOW_ACTOR_REGISTRY')
+    meta = {}
+    if actor is not None and cid and mid:
+        try:
+            meta = actor.reserve_markup_only(cid, mid, prepared) or {}
+        except Exception:
+            meta = {}
+    def _send_markup():
+        return _tg_call_retry(bot.edit_message_reply_markup, cid, mid, reply_markup=prepared, attempts=max(1, int(attempts or 1)), purpose=str(purpose or 'ui_markup'))
+    ctx = globals().get('window_actor_context')
+    if callable(ctx) and meta:
+        with ctx(cid, mid, int(meta.get('generation') or 0), int(meta.get('state_revision') or 0), str(meta.get('logical_window_id') or '')):
+            return _send_markup()
+    return _send_markup()
+
 def v178_edit_reply_markup_async(chat_id: int, message_id: int, reply_markup=None, purpose: str='ui_markup') -> bool:
-    """Non-blocking keyboard-only update for callback handlers in every contour."""
+    """Non-blocking canonical keyboard-only update; one actor path, one mutation."""
     cid = int(chat_id)
     mid = int(message_id)
 
     def _job():
         started = time.monotonic()
         try:
-            _tg_call_retry(bot.edit_message_reply_markup, cid, mid, reply_markup=reply_markup, attempts=1, purpose=str(purpose or 'ui_markup') + '_async')
+            fast_ui_edit_reply_markup(cid, mid, reply_markup=reply_markup, purpose=str(purpose or 'ui_markup') + '_async', attempts=1)
         except Exception:
             pass
         finally:
@@ -4167,35 +4197,78 @@ def _nav_history_push_v248(key, snap: dict) -> bool:
         pass
     return True
 
+def _nav_history_prefetch_v248(key) -> None:
+    """Warm one remote Back snapshot without putting Redis/KV RTT on the click path."""
+    with _WINDOW_NAV_HISTORY_LOCK:
+        if _WINDOW_NAV_HISTORY.get(key):
+            return
+    if key in _R22_NAV_REMOTE_PREFETCH:
+        return
+    _R22_NAV_REMOTE_PREFETCH.add(key)
+
+    def _prefetch():
+        try:
+            fn = globals().get('kv_nav_peek_v248')
+            value = fn(int(key[0]), int(key[1])) if callable(fn) else None
+            if isinstance(value, dict):
+                with _WINDOW_NAV_HISTORY_LOCK:
+                    stack = _WINDOW_NAV_HISTORY[key]
+                    if not stack:
+                        stack.append(dict(value))
+                _R22_NAV_REMOTE_HAS[key] = True
+            else:
+                _R22_NAV_REMOTE_HAS[key] = False
+        except Exception:
+            pass
+        finally:
+            _R22_NAV_REMOTE_PREFETCH.discard(key)
+    try:
+        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None and pool.submit_unique(f'r72-nav-prefetch:{int(key[0])}:{int(key[1])}', _prefetch):
+            return
+    except Exception:
+        pass
+    try:
+        threading.Thread(target=_prefetch, name=f'r72-nav-prefetch-{int(key[0])}-{int(key[1])}', daemon=True).start()
+    except Exception:
+        _R22_NAV_REMOTE_PREFETCH.discard(key)
+
 def _nav_history_peek_v248(key):
+    """R72 hot-path peek: RAM only. Remote history is warmed asynchronously."""
     with _WINDOW_NAV_HISTORY_LOCK:
         stack = _WINDOW_NAV_HISTORY.get(key) or []
         if stack:
             return dict(stack[-1])
-    fn = globals().get('kv_nav_peek_v248')
-    if callable(fn):
-        try:
-            value = fn(int(key[0]), int(key[1]))
-            return dict(value) if isinstance(value, dict) else None
-        except Exception:
-            pass
+    _nav_history_prefetch_v248(key)
     return None
 
 def _nav_history_pop_v248(key) -> bool:
+    popped = False
     with _WINDOW_NAV_HISTORY_LOCK:
         stack = _WINDOW_NAV_HISTORY.get(key) or []
         if stack:
             stack.pop()
+            popped = True
             if not stack:
                 _WINDOW_NAV_HISTORY.pop(key, None)
-            return True
-    fn = globals().get('kv_nav_pop_v248')
-    if callable(fn):
-        try:
-            return bool(fn(int(key[0]), int(key[1])))
-        except Exception:
-            pass
-    return False
+    if not popped:
+        return False
+
+    # Mirror the pop after the UI commit; never wait for KV on a Back click.
+    def _mirror_pop():
+        fn = globals().get('kv_nav_pop_v248')
+        if callable(fn):
+            try:
+                fn(int(key[0]), int(key[1]))
+            except Exception:
+                pass
+    try:
+        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        if pool is not None:
+            pool.submit_unique(f'r72-nav-pop:{int(key[0])}:{int(key[1])}', _mirror_pop)
+    except Exception:
+        pass
+    return True
 
 def _nav_history_clear_v248(chat_id: int, message_id: int) -> None:
     key = _window_nav_key(chat_id, message_id)

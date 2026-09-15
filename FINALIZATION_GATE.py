@@ -83,10 +83,18 @@ if ROLE=='fast':
 
     runtime_py={k:v for k,v in all_py.items() if k!='FINALIZATION_GATE.py'}
     joined='\n'.join(runtime_py.values())
+    # R72 gate-speed: parse each large compact module once and reuse its AST in all audits.
+    _ast_cache={}
+    def _parse_src(src):
+        tree=_ast_cache.get(src)
+        if tree is None:
+            tree=ast.parse(src)
+            _ast_cache[src]=tree
+        return tree
     runtime_ids=set()
     for src in runtime_py.values():
         try:
-            tree=ast.parse(src)
+            tree=_parse_src(src)
             runtime_ids.update(n.id for n in ast.walk(tree) if isinstance(n,ast.Name))
             runtime_ids.update(n.name for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)))
         except Exception:
@@ -103,7 +111,7 @@ if ROLE=='fast':
     ok('message_wrapper_v174_removed','def _v174_install_message_wrapper' not in joined,'old on_any_message wrapper installer')
     def assigned_ids(src):
         try:
-            tree=ast.parse(src); out=set()
+            tree=_parse_src(src); out=set()
             for n in ast.walk(tree):
                 if isinstance(n,(ast.Assign,ast.AnnAssign,ast.NamedExpr)):
                     tgts=n.targets if isinstance(n,ast.Assign) else [n.target]
@@ -145,7 +153,7 @@ if ROLE=='fast':
     def _fn_sources(src: str, wanted: set[str]):
         out={}
         try:
-            tree=ast.parse(src); lines=src.splitlines()
+            tree=_parse_src(src); lines=src.splitlines()
             for node in ast.walk(tree):
                 if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in wanted:
                     out[node.name]='\n'.join(lines[node.lineno-1:node.end_lineno])
@@ -225,7 +233,7 @@ if ROLE=='fast':
                 for case in node.cases:
                     yield from _r67_module_scope_nodes(case.body)
     for fn,src in runtime_py.items():
-        try: tree=ast.parse(src)
+        try: tree=_parse_src(src)
         except Exception: continue
         for node in _r67_module_scope_nodes(tree.body):
             if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in r67_owners:
@@ -236,7 +244,7 @@ if ROLE=='fast':
                         r67_owners[tgt.id].append((fn,node.lineno,'assign'))
             elif isinstance(node,ast.AnnAssign) and isinstance(node.target,ast.Name) and node.target.id in r67_owners:
                 r67_owners[node.target.id].append((fn,node.lineno,'assign'))
-    # R71/очнись_3 intentionally adds one final runtime router for the symbols
+    # R71/очнись_4 intentionally retains one final runtime router for the symbols
     # whose executor can be switched by the owner between R1 and R2.  Older owners
     # remain as named implementation cores; the final R71 router is the public gate.
     r71_switchable={'_google_sheets_create_category_report','contour_callback_guard','mega_upload_latest_database_backup',
@@ -274,7 +282,7 @@ if ROLE=='fast':
     def _call_name(n):
         return n.id if isinstance(n,ast.Name) else n.attr if isinstance(n,ast.Attribute) else ''
     for fn,src in runtime_py.items():
-        try: tree=ast.parse(src)
+        try: tree=_parse_src(src)
         except Exception: continue
         for owner in [n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]:
             for w in [n for n in ast.walk(owner) if isinstance(n,(ast.With,ast.AsyncWith))]:
@@ -306,7 +314,7 @@ if ROLE=='fast':
         if fn=='01_core_data.py':
             # Direct conn/lock access is allowed only inside SQLiteState itself.
             try:
-                tree=ast.parse(src)
+                tree=_parse_src(src)
                 for node in ast.walk(tree):
                     if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name not in {'__init__','_connect_read','_writer_loop','_write','_read_one','_read_all','backup_to','replace_database','close'}:
                         seg='\n'.join(src.splitlines()[node.lineno-1:node.end_lineno])
@@ -315,7 +323,7 @@ if ROLE=='fast':
             except Exception: pass
         else:
             try:
-                tree=ast.parse(src)
+                tree=_parse_src(src)
                 if any(isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name) and n.value.id=='SQLITE' and n.attr in {'lock','conn'} for n in ast.walk(tree)):
                     direct_sqlite_owners.append(fn)
             except Exception:
@@ -462,7 +470,7 @@ if ROLE=='fast':
     cg_danger={'save_data','persist_finance_chat_local_fast','finance_integrity_append','_tg_call_retry',
                '_split_cache_snapshot_to_redis_v266','_mega_run','_mega_exec_raw','run_cmd'}
     for fn,src in runtime_py.items():
-        try: tree=ast.parse(src)
+        try: tree=_parse_src(src)
         except Exception: continue
         for node in ast.walk(tree):
             if not isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)): continue
@@ -576,8 +584,38 @@ if ROLE=='fast':
     ok('och2_window_actor_serializes_one_message',
        'lock = actor.execution_lock(chat_id, message_id)' in all_py.get('05_finance_ui.py','') and 'with actor.execution_lock(cid, mid)' in final_transport,
        'direct/background renders of one Telegram message must serialize under one actor lock')
+    ok('r72_single_foreground_window_mutation',
+       'safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)\n    try:\n        bot.edit_message_reply_markup' not in final_transport and
+       "_v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')\n            try:\n                bot.edit_message_reply_markup" not in rel_src,
+       'a callback must not perform safe/full edit and then a second markup edit of the same window')
+    cb_src=all_py.get('06_commands_callbacks.py','')
+    ok('r72_back_single_decision',
+       cb_src.count("globals().get('r27_callback_is_back_navigation')") == 0 and
+       final_transport.count("globals().get('r27_callback_is_back_navigation')") == 1 and
+       'history_back_r72' in final_transport and 'Back/history was already decided by the final callback router' in cb_src,
+       'Back navigation must be classified/restored exactly once before every feature router')
+    fin_src=all_py.get('05_finance_ui.py','')
+    peek_src=_fn_sources(fin_src,{'_nav_history_peek_v248'}).get('_nav_history_peek_v248','')
+    ok('r72_back_no_sync_kv_hotpath',
+       'kv_nav_peek_v248' not in peek_src and '_nav_history_prefetch_v248(key)' in peek_src,
+       'Back hot path must be RAM-only; KV prefetch is background-only')
+    ok('r72_canonical_markup_only_path',
+       'def fast_ui_edit_reply_markup' in fin_src and
+       count(r'_tg_call_retry\(bot\.edit_message_reply_markup', joined) == 1 and count(r'(?m)^bot\.edit_message_reply_markup\s*=', joined) == 1,
+       'application markup-only edits must use fast_ui_edit_reply_markup; only helper + final binding may call bot.edit_message_reply_markup')
+    ok('r72_constructor_single_send',
+       "send_message(owner, 'Открываю Конструктор 1…')" not in final_transport and
+       "send_message(cid, 'Открываю Конструктор 2…')" not in final_transport and
+       'create the constructor panel already complete' in final_transport,
+       'constructor open must not send placeholder and immediately edit it')
+    ok('r72_single_semantic_routes',
+       "if resolved == 'runtime_watcher':" in final_transport and
+       "runtime_watcher is owned exclusively" in cb_src and
+       "journal_open is owned exclusively" in cb_src and
+       "globals().get('_v156_handle_process_toggle')" not in final_transport,
+       'known overlapping callback families must have one current semantic owner')
     ok('och2_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_3'" in core_src,
+       "BOT_DISPLAY_NAME = 'очнись_4'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')

@@ -3662,7 +3662,7 @@ def _v177_legacy_0112_migrate_recent_expense_shortcut_events(days: int=2, refres
             except Exception as exc:
                 if 'message is not modified' not in str(exc).lower():
                     try:
-                        bot.edit_message_reply_markup(chat_id=target, message_id=mid, reply_markup=expense_draft_message_keyboard(int(draft.get('id') or 0), target))
+                        fast_ui_edit_reply_markup(target, mid, expense_draft_message_keyboard(int(draft.get('id') or 0), target), purpose='expense_draft_markup')
                         updated += 1
                     except Exception:
                         refresh_failed += 1

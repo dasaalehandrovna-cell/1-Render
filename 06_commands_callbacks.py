@@ -67,22 +67,8 @@ def on_callback(call):
             except Exception:
                 pass
             return
-        # R27 must run before feature-specific extension routers (Google/tenant/etc.),
-        # otherwise their historical Back callbacks can consume the click first.
-        try:
-            _r27_back_fn = globals().get('r27_callback_is_back_navigation')
-            if callable(_r27_back_fn) and data_str != 'nav_prev' and _r27_back_fn(call, data_str):
-                if restore_previous_window(call):
-                    try: r52_diag('ON_CALLBACK_ROUTE', chat=chat_id, resolved=str(data_str)[:240], route='history_back', result='handled')
-                    except Exception: pass
-                    try:
-                        _r27_clean = globals().get('r27_cleanup_after_history_back')
-                        if callable(_r27_clean): _r27_clean(call)
-                    except Exception:
-                        pass
-                    return
-        except Exception:
-            pass
+        # R72 universal Back is decided once in _v179_dispatch_callback before
+        # any feature/legacy router.  on_callback never probes history again.
         try:
             _v149_callback = globals().get('v149_extension_callback')
             if callable(_v149_callback):
@@ -146,21 +132,7 @@ def on_callback(call):
             return
         try: r52_diag('ON_CALLBACK_CORE_CONTINUE', chat=chat_id, resolved=str(data_str)[:240])
         except Exception: pass
-        # R27 universal Back: every visible Back action first restores the actual
-        # previous snapshot. If history is unavailable (e.g. after an old deploy),
-        # the legacy callback continues below as a safe fallback.
-        try:
-            _r27_back_fn = globals().get('r27_callback_is_back_navigation')
-            if callable(_r27_back_fn) and data_str != 'nav_prev' and _r27_back_fn(call, data_str):
-                if restore_previous_window(call):
-                    try:
-                        _r27_clean = globals().get('r27_cleanup_after_history_back')
-                        if callable(_r27_clean): _r27_clean(call)
-                    except Exception:
-                        pass
-                    return
-        except Exception:
-            pass
+        # R72: Back/history was already decided by the final callback router.
         try:
             update_chat_info_from_message(call.message)
         except Exception:
@@ -171,13 +143,7 @@ def on_callback(call):
             except Exception:
                 pass
         if data_str == 'nav_prev':
-            if restore_previous_window(call):
-                try:
-                    _r27_clean = globals().get('r27_cleanup_after_history_back')
-                    if callable(_r27_clean): _r27_clean(call)
-                except Exception:
-                    pass
-                return
+            # Handled by the single R72 Back decision above.
             return
         if data_str.startswith('chat_desc_menu:'):
             if not is_owner_chat(chat_id):
@@ -1210,11 +1176,7 @@ def on_callback(call):
             kb.row(IB('🔙 Назад', callback_data='journal_back'))
             safe_edit(bot, call, build_articles_description_text(chat_id), reply_markup=kb)
             return
-        if data_str == 'journal_open':
-            if not is_owner_chat(chat_id):
-                return
-            safe_edit(bot, call, build_journal_v208_menu_text(), reply_markup=build_journal_v208_menu_keyboard(chat_id))
-            return
+        # R72: journal_open is owned exclusively by _v179_dispatch_callback.
         if data_str == 'journal_toggle_open':
             if not is_owner_chat(chat_id):
                 return
@@ -1859,17 +1821,7 @@ def on_callback(call):
             text = traffic_audit_text(scope) if 'traffic_audit_text' in globals() else '📶 Аудит трафика недоступен.'
             safe_edit(bot, call, text, reply_markup=kbt)
             return
-        if data_str == 'runtime_watcher':
-            if not is_owner_chat(chat_id):
-                return
-            kbw = types.InlineKeyboardMarkup(row_width=2)
-            kbw.row(IB('🔄 Обновить', callback_data='runtime_watcher'), IB('📜 События', callback_data='runtime_events'))
-            kbw.row(IB('☁️ Снимок Watcher в MEGA', callback_data='runtime_snapshot_now'))
-            kbw.row(IB('📦 Runtime ZIP', callback_data='runtime_export'), IB('📶 Трафик', callback_data='traffic_audit:month'))
-            kbw.row(IB('🚦 Очереди', callback_data='info_queues'), IB('🧩 Delta', callback_data='info_delta_status'))
-            kbw.row(IB('🔙 Назад в Инфо', callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB('❌ Закрыть', callback_data='info_close'))
-            safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
-            return
+        # R72: runtime_watcher is owned exclusively by the v153 diagnostic route.
         if data_str == 'runtime_events':
             if not is_owner_chat(chat_id):
                 return

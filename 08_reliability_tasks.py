@@ -1327,7 +1327,7 @@ def _canon_migrate_recent_expense_shortcut_events__001(days: int=2, refresh_mess
                         pass
                     continue
                 try:
-                    bot.edit_message_reply_markup(chat_id=target, message_id=mid, reply_markup=expense_draft_message_keyboard(int(draft.get('id') or 0), target))
+                    fast_ui_edit_reply_markup(target, mid, expense_draft_message_keyboard(int(draft.get('id') or 0), target), purpose='expense_draft_markup')
                     updated += 1
                 except Exception as exc2:
                     if _v157_process_message_missing(exc2):
@@ -16055,11 +16055,9 @@ def v215_contour_mode_callback(call, resolved: str) -> bool:
             except Exception:
                 pass
             text, kb = build_contour_mode_control(cid, uid, mode)
+            # R72: _v215_edit_or_send is the sole foreground mutation.  It already
+            # carries the new keyboard through the Window Actor; no second markup edit.
             _v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=mid, reply_markup=kb)
-            except Exception:
-                pass
         except PermissionError:
             try:
                 bot.answer_callback_query(call.id, 'Недостаточно прав для изменения режима.', show_alert=True)
@@ -18018,7 +18016,7 @@ def v221_refresh_live_contour_policy(level: int | None=None) -> int:
             after = v227_render_effective_contour_markup(source, str(row.get('text') or ''), int(cid))
             if _v221_markup_fingerprint(before) == _v221_markup_fingerprint(after):
                 continue
-            bot.edit_message_reply_markup(chat_id=int(cid), message_id=int(mid), reply_markup=after)
+            fast_ui_edit_reply_markup(int(cid), int(mid), after, purpose='live_policy_markup')
             v221_record_live_markup(int(cid), int(mid), after, str(row.get('text') or ''), source_markup=source)
             changed += 1
         except Exception:
@@ -19038,7 +19036,7 @@ def v224_refresh_chat_markup_only(chat_id: int) -> int:
             after = v227_render_effective_contour_markup(source, str(row.get('text') or ''), cid)
             if _v221_markup_fingerprint(before) == _v221_markup_fingerprint(after):
                 continue
-            bot.edit_message_reply_markup(chat_id=cid, message_id=int(mid), reply_markup=after)
+            fast_ui_edit_reply_markup(cid, int(mid), after, purpose='directive_policy_markup')
             v221_record_live_markup(cid, int(mid), after, str(row.get('text') or ''), source_markup=source)
             changed += 1
     except Exception:

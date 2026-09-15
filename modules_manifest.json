@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "4a46ec196fff411f36e8cd1bac75e0c4ccbbb1e926f8134ae7eb3756ea8a1a05",
-    "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
+    "01_core_data.py": "abd559bf6e8afc33d0fd92e9b1b645e74a461403cc703aac80281a1e27f98561",
+    "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
-    "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
-    "05_finance_ui.py": "617929277c31ae64f883301df13964b8026389e497ba9fd2b1be7a96762b94c8",
-    "06_commands_callbacks.py": "92313b1c50b9e608eea555d05f786c12e7827549094919c822b87fbd9ab0a7f8",
+    "04_messages_features.py": "f28689f66a4b29200a406bd4b56d0f6156711af676e87b54d4c343f2eb9e22e3",
+    "05_finance_ui.py": "fc1c9a877ef86f92ec52c004ef5944e5e0a82f5c004ee5463b76d01c9290f2ac",
+    "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
     "07_state_web.py": "78caa9a01fd357d1b02947b448f45f9ccc81dc4b487b73cdca047a86944b82a6",
-    "08_reliability_tasks.py": "5fefe502d6acfabfd99c4b6246a52193292760ea23a01a49038b78c0c077437d",
-    "09_final_transport.py": "c2e30643263df1b7f186f306d35409ae6c301ceaf964c945e5810b1c93247da1",
-    "10_split_policy_offload.py": "37c3cd55aef443ae361d01e0ce4c12d7a2b0f10240c5275d6413356ff8df8dab"
+    "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
+    "09_final_transport.py": "f840f662dab9503d0b521320ca1d12310344adab717cefd039a829476c07e16f",
+    "10_split_policy_offload.py": "ca1d96fd7521fe0dc4dd59c684ea34fd95c8849c83a2259339f54e8cd2cfc8a9"
   },
-  "release": "ОЧНИСЬ_3-R71-RUNTIME-OWNER-SWITCHES-FINAL",
+  "release": "ОЧНИСЬ_4-R72-SINGLE-WINDOW-ROUTING-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -277,6 +277,13 @@
     "r71_file_export_r1_r2_switch",
     "r71_diagnostics_r1_r2_switch",
     "r71_mega_r1_r2_switch",
-    "r71_credentials_parked_default_r2"
+    "r71_credentials_parked_default_r2",
+    "r72_single_foreground_window_mutation",
+    "r72_back_single_final_router_decision",
+    "r72_back_ram_hotpath_async_kv_prefetch",
+    "r72_canonical_markup_only_window_actor",
+    "r72_constructor_single_send",
+    "r72_single_semantic_callback_owners",
+    "r72_no_application_direct_reply_markup_edit"
   ]
 }

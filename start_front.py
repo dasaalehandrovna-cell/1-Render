@@ -901,7 +901,7 @@ def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
 def _scrub_fast_runtime_mega_credentials() -> None:
     """R71: park FAST MEGA execution without deleting credentials.
 
-    очнись_3 can route selected heavy modes back to Render #1 at runtime.  The
+    очнись_4 can route selected heavy modes back to Render #1 at runtime.  The
     credentials therefore stay in the process environment, while MEGA execution
     remains disabled by default until the owner explicitly selects R1 FAST.
     """
@@ -1042,7 +1042,7 @@ def main():
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
-        # R71/очнись_3: keep Google/MEGA credentials available for the runtime
+        # R71/очнись_4: keep Google/MEGA credentials available for the runtime
         # R1/R2 owner switch.  MEGA itself is still parked OFF until R1 is selected.
         _scrub_fast_runtime_mega_credentials()
 

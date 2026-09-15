@@ -2060,11 +2060,8 @@ def _canon_v220_contour_access_callback_final__001(call, resolved: str) -> bool:
     except Exception:
         pass
     _r10_kb = build_info_keyboard(cid)
+    # R72: safe_edit is the sole foreground mutation for this click.
     safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)
-    try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-    except Exception:
-        pass
     try:
         refresh_circle_menu_access_v220(level)
     except Exception as exc:
@@ -2308,11 +2305,8 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
             except Exception:
                 pass
             _r10_kb = _v223_directive_card_keyboard(target, page)
+            # R72: one click -> one foreground Window Actor mutation.
             safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-            except Exception:
-                pass
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=False)
             except Exception:
@@ -2330,11 +2324,8 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
             except Exception:
                 pass
             _r10_kb = _v223_directive_card_keyboard(target, page)
+            # R72: one click -> one foreground Window Actor mutation.
             safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-            except Exception:
-                pass
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=False)
             except Exception:
@@ -2347,11 +2338,8 @@ def v223_directive_callback_final(call, resolved: str) -> bool:
             current = bool((_v223_directive_policy(target, False).get('annotations') or {}).get(kind, True))
             set_directive_annotation_v223(target, kind, not current)
             _r10_kb = _v223_directive_card_keyboard(target, page)
+            # R72: one click -> one foreground Window Actor mutation.
             safe_edit(bot, call, _v223_directive_card_text(target), reply_markup=_r10_kb)
-            try:
-                bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-            except Exception:
-                pass
             try:
                 v224_schedule_targeted_policy_refresh(target, markup_only=True)
             except Exception:
@@ -2415,7 +2403,7 @@ def v226_refresh_annotation_markup_all() -> int:
             after = render(source, str(row.get('text') or ''), int(cid)) if callable(render) else v221_finalize_contour_markup(source, int(cid))
             if _v221_markup_fingerprint(before) == _v221_markup_fingerprint(after):
                 continue
-            bot.edit_message_reply_markup(chat_id=int(cid), message_id=int(mid), reply_markup=after)
+            fast_ui_edit_reply_markup(int(cid), int(mid), after, purpose='annotation_refresh_markup')
             v221_record_live_markup(int(cid), int(mid), after, str(row.get('text') or ''), source_markup=source)
             changed += 1
         except Exception:
@@ -2469,11 +2457,8 @@ def _v226_annotation_callback_final(call, resolved: str) -> bool:
     except Exception:
         pass
     _r10_kb = build_info_keyboard(cid)
+    # R72: one foreground mutation; global propagation remains background-only.
     safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)
-    try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=_r10_kb)
-    except Exception:
-        pass
     v226_schedule_annotation_markup_refresh_all()
     try:
         bot_journal('annotation_global_toggle_v226', cid, f'kind={kind}; enabled={int(value)}; ui_first=1; async_markup_only=1')
@@ -3499,7 +3484,7 @@ def _v212_legacy__v196_apply_target(session):
         rows = copy.deepcopy(session.get('working_rows') or [])
         token = str(session.get('token') or _v196_token_for_key(str(session.get('window_key') or ''), str(session.get('window_label') or '')))
         rows = _v196_constructor_controls(rows, token)
-        bot.edit_message_reply_markup(chat_id=int(session['target_chat_id']), message_id=int(session['target_message_id']), reply_markup=_v196_markup(rows))
+        fast_ui_edit_reply_markup(int(session['target_chat_id']), int(session['target_message_id']), _v196_markup(rows), purpose='constructor_preview_markup')
         try:
             bot_journal('ui_constructor_target_apply_v208', int(OWNER_ID or 0), f"key={session.get('window_key')} target={session.get('target_chat_id')}:{session.get('target_message_id')} rows={len(rows)} buttons={sum((len(r or []) for r in rows))} selected={session.get('selected')}")
         except Exception:
@@ -3776,13 +3761,14 @@ def _v212_legacy__v196_open_c1(call, token):
     working = _v196_apply_profile_to_base(key, base)
     label = str(cfg.get('label') or (_V196_LAST_META_BY_TOKEN.get(token) or {}).get('label') or key)
     known = list(cfg.get('known_origins') or _v196_origins(base))
-    sent = bot.send_message(cid, 'Открываю Конструктор 1…')
-    session = {'kind': 'c1', 'owner_chat_id': cid, 'panel_message_id': int(sent.message_id), 'target_chat_id': cid, 'target_message_id': mid, 'window_key': key, 'window_label': label, 'token': str(token), 'working_rows': copy.deepcopy(working), 'known_origins': known, 'opened_at': _v196_now(), 'pending': None, 'selected': None, 'freeze': True}
+    # R72 retained constructor path follows the same single-send contract.
+    session = {'kind': 'c1', 'owner_chat_id': cid, 'panel_message_id': 0, 'target_chat_id': cid, 'target_message_id': mid, 'window_key': key, 'window_label': label, 'token': str(token), 'working_rows': copy.deepcopy(working), 'known_origins': known, 'opened_at': _v196_now(), 'pending': None, 'selected': None, 'freeze': True}
     session['rearm'] = _v196_freeze_window(cid, mid)
+    sent = bot.send_message(cid, _v196_c1_text(session), reply_markup=_v196_c1_main_keyboard(session))
+    session['panel_message_id'] = int(sent.message_id)
     with _V196_LOCK:
         _V196_SESSIONS[int(sent.message_id)] = session
         _V196_PANEL_MESSAGES.add(int(sent.message_id))
-    bot.edit_message_text(_v196_c1_text(session), chat_id=cid, message_id=int(sent.message_id), reply_markup=_v196_c1_main_keyboard(session))
     _v196_answer(call)
     return True
 
@@ -4606,7 +4592,7 @@ def _v196_apply_target(session):
         return True
     try:
         rows = copy.deepcopy(session.get('working_rows') or [])
-        bot.edit_message_reply_markup(chat_id=cid, message_id=mid, reply_markup=_v196_markup(rows))
+        fast_ui_edit_reply_markup(cid, mid, _v196_markup(rows), purpose='constructor_live_preview_markup')
         return True
     except Exception as exc:
         try:
@@ -4692,14 +4678,15 @@ def _v196_open_c1(call, token):
         known = list((cfg or {}).get('known_origins') or _v196_origins(base))
         marker = str((cfg or {}).get('marker') or str(key).split(':', 1)[0])
         target_mid = owner_mid if sid == owner else _v212_find_live_target(sid, marker) if (sid, key) in _V212_LAST_BASE_BY_SCOPE_KEY else 0
-    sent = bot.send_message(owner, 'Открываю Конструктор 1…')
-    session = {'kind': 'c1', 'owner_chat_id': owner, 'panel_message_id': int(sent.message_id), 'target_scope': sid, 'target_chat_id': sid, 'target_message_id': target_mid, 'window_key': key, 'window_label': label, 'token': str(token), 'working_rows': copy.deepcopy(working), 'known_origins': known, 'opened_at': _v196_now(), 'pending': None, 'selected': None, 'freeze': bool(target_mid), 'rearm': {}}
+    # R72: create the constructor panel already complete; avoid placeholder -> edit RTT.
+    session = {'kind': 'c1', 'owner_chat_id': owner, 'panel_message_id': 0, 'target_scope': sid, 'target_chat_id': sid, 'target_message_id': target_mid, 'window_key': key, 'window_label': label, 'token': str(token), 'working_rows': copy.deepcopy(working), 'known_origins': known, 'opened_at': _v196_now(), 'pending': None, 'selected': None, 'freeze': bool(target_mid), 'rearm': {}}
     if target_mid:
         session['rearm'] = _v196_freeze_window(sid, target_mid)
+    sent = bot.send_message(owner, _v196_c1_text(session), reply_markup=_v196_c1_main_keyboard(session))
+    session['panel_message_id'] = int(sent.message_id)
     with _V196_LOCK:
         _V196_SESSIONS[int(sent.message_id)] = session
         _V196_PANEL_MESSAGES.add(int(sent.message_id))
-    bot.edit_message_text(_v196_c1_text(session), chat_id=owner, message_id=int(sent.message_id), reply_markup=_v196_c1_main_keyboard(session))
     _v196_answer(call)
     return True
 
@@ -4740,14 +4727,15 @@ def _v196_open_c2(call=None, token='', panel_message_id=None):
             if call is not None:
                 _v196_panel_edit(call, _v196_c2_stats_text(), _v196_c2_main_keyboard())
         return True
-    sent = bot.send_message(cid, 'Открываю Конструктор 2…')
+    # R72: create the constructor panel already complete; no second Telegram edit.
+    session = {'kind': 'c2', 'owner_chat_id': cid, 'panel_message_id': 0, 'target_scope': sid, 'target_chat_id': sid, 'target_message_id': 0, 'window_key': key, 'token': str(token or ''), 'opened_at': _v196_now(), 'pending': None, 'freeze': False, 'rearm': {}}
+    with _v212_scope_context(sid):
+        sent = bot.send_message(cid, _v196_c2_stats_text(), reply_markup=_v196_c2_main_keyboard())
     panel = int(sent.message_id)
-    session = {'kind': 'c2', 'owner_chat_id': cid, 'panel_message_id': panel, 'target_scope': sid, 'target_chat_id': sid, 'target_message_id': 0, 'window_key': key, 'token': str(token or ''), 'opened_at': _v196_now(), 'pending': None, 'freeze': False, 'rearm': {}}
+    session['panel_message_id'] = panel
     with _V196_LOCK:
         _V196_SESSIONS[panel] = session
         _V196_PANEL_MESSAGES.add(panel)
-    with _v212_scope_context(sid):
-        bot.edit_message_text(_v196_c2_stats_text(), chat_id=cid, message_id=panel, reply_markup=_v196_c2_main_keyboard())
     if call is not None:
         _v196_answer(call)
         return True
@@ -5123,7 +5111,7 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                         cleaned = _v221_final_filter_markup(cid, current_markup)
                         fp = globals().get('_v221_markup_fingerprint')
                         if not callable(fp) or fp(current_markup) != fp(cleaned):
-                            bot.edit_message_reply_markup(chat_id=cid, message_id=int(call.message.message_id), reply_markup=cleaned)
+                            fast_ui_edit_reply_markup(cid, int(call.message.message_id), cleaned, purpose='annotation_stale_prune_markup')
                             try:
                                 bot_journal('annotation_stale_button_pruned_v227', cid, f'kind={kind}; msg={int(call.message.message_id)}')
                             except Exception:
@@ -5148,6 +5136,28 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
             pass
         return True
     _v179_set_source_context(call, resolved)
+    # R72: one universal Back decision BEFORE every feature-specific router.
+    # Hot path is RAM-only; if there is no snapshot the same callback continues
+    # exactly once into its semantic fallback owner.
+    try:
+        _r72_back_fn = globals().get('r27_callback_is_back_navigation')
+        if callable(_r72_back_fn) and _r72_back_fn(call, resolved):
+            if restore_previous_window(call):
+                try:
+                    _r72_clean = globals().get('r27_cleanup_after_history_back')
+                    if callable(_r72_clean): _r72_clean(call)
+                except Exception:
+                    pass
+                try:
+                    bot_journal('history_back_r72', int(call.message.chat.id), f'action={resolved}; owner=final_router')
+                except Exception:
+                    pass
+                return True
+    except Exception as exc:
+        try:
+            log_error(f'R72 universal Back decision {resolved}: {exc}')
+        except Exception:
+            pass
     if resolved.startswith(('v196:c1:', 'v196:c2:')):
         ext = globals().get('v149_extension_callback')
         if callable(ext):
@@ -5157,6 +5167,24 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                 pass
             if ext(call, resolved):
                 return True
+        try:
+            bot.answer_callback_query(call.id, 'Кнопка конструктора устарела. Откройте конструктор заново.', show_alert=False)
+        except Exception:
+            pass
+        return True
+    if resolved == 'runtime_watcher':
+        fn = globals().get('_v153_extension_callback')
+        try:
+            if callable(fn) and fn(call, resolved):
+                return True
+        except Exception as exc:
+            try: log_error(f'runtime_watcher direct route r72: {exc}')
+            except Exception: pass
+        try:
+            bot.answer_callback_query(call.id, 'Watcher временно недоступен.', show_alert=False)
+        except Exception:
+            pass
+        return True
     if resolved in {'journal_open', 'journal_back', 'journal_chats_back'}:
         try:
             chat_id = int(call.message.chat.id)
@@ -5180,6 +5208,7 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                 log_error(f'journal direct route v209: {exc}')
             except Exception:
                 pass
+            return True
     if resolved.startswith('v221:owner_msg:'):
         fn = globals().get('v221_owner_message_callback_final')
         if callable(fn) and fn(call, resolved):
@@ -5771,9 +5800,6 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
     if callable(fn) and fn(call, resolved):
         return True
     fn = globals().get('_v157_handle_callback')
-    if callable(fn) and fn(call):
-        return True
-    fn = globals().get('_v156_handle_process_toggle')
     if callable(fn) and fn(call):
         return True
     fn = globals().get('_v160_handle_special_callback')
