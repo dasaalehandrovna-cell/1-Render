@@ -236,8 +236,17 @@ if ROLE=='fast':
                         r67_owners[tgt.id].append((fn,node.lineno,'assign'))
             elif isinstance(node,ast.AnnAssign) and isinstance(node.target,ast.Name) and node.target.id in r67_owners:
                 r67_owners[node.target.id].append((fn,node.lineno,'assign'))
-    r67_dup={k:v for k,v in r67_owners.items() if len(v)!=1}
+    # R71/очнись_3 intentionally adds one final runtime router for the symbols
+    # whose executor can be switched by the owner between R1 and R2.  Older owners
+    # remain as named implementation cores; the final R71 router is the public gate.
+    r71_switchable={'_google_sheets_create_category_report','contour_callback_guard','mega_upload_latest_database_backup',
+                    'persist_critical_delta_now','schedule_config_backup_for_chats','schedule_delta_backup','submit_interactive_file_job'}
+    r67_dup={k:v for k,v in r67_owners.items() if len(v)!=1 and k not in r71_switchable}
     ok('r67_single_public_runtime_owner',not r67_dup,str(r67_dup))
+    ok('r71_runtime_owner_router',
+       all(x in split_src for x in ['_R71_ROUTE_KEYS','def _r71_route_owner','def _r71_contour_callback_guard','def _r71_google_create','def _r71_submit_local_file_job']) and
+       all(k in split_src for k in ["'google'","'files'","'diagnostics'","'mega'"]),
+       'R71 owner router / all four switch groups missing')
     ok('r67_no_prev_contour_chain','_R29_PREV_CONTOUR_GUARD' not in split_src,'R29 PREV contour chain remains')
     if not _runtime_build:
         docker_src=text('Dockerfile') if (ROOT/'Dockerfile').is_file() else ''
@@ -379,10 +388,12 @@ if ROLE=='fast':
        "MAINTENANCE_TASK_POOL.submit('r68-local-sqlite-snapshot'" in core_src and
        "DELAYED_SCHEDULER.schedule('r68-local-runtime-tick'" in core_src,
        'runtime_state/local SQLite.gz must use existing background workers/scheduler')
-    ok('r49_fast_runtime_mega_scrubbed',
-       "os.environ.pop(key, None)" in start_src and "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
-       "os.environ['MEGA_ENABLED'] = '0'" in start_src,
-       'FAST must discard MEGA credentials before normal runtime')
+    ok('r71_fast_runtime_heavy_credentials_parked',
+       "os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'" in start_src and
+       "os.environ['MEGA_ENABLED'] = '0'" in start_src and
+       "runtime_heavy_credentials_parked_for_r71" in start_src and
+       "os.environ.pop('GOOGLE_SERVICE_ACCOUNT_JSON', None)" not in start_src,
+       'FAST must park MEGA OFF by default while retaining credentials for explicit R71 switch')
     replay_src=_fn_sources(start_src,{'_replay_mega_event_segments'}).get('_replay_mega_event_segments','')
     ok('r55_mega_event_replay_checkpoint_tail_safe',
        'FAST_STARTUP_MEGA_EVENT_SEGMENTS' not in start_src and
@@ -566,7 +577,7 @@ if ROLE=='fast':
        'lock = actor.execution_lock(chat_id, message_id)' in all_py.get('05_finance_ui.py','') and 'with actor.execution_lock(cid, mid)' in final_transport,
        'direct/background renders of one Telegram message must serialize under one actor lock')
     ok('och2_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_2'" in core_src,
+       "BOT_DISPLAY_NAME = 'очнись_3'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')

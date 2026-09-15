@@ -8587,3 +8587,552 @@ except Exception:
     pass
 
 # v262
+
+# ---------------------------------------------------------------------------
+# R71 / очнись_3 — runtime owner switches for every user-facing HEAVY mode.
+#
+# Default remains R2 HEAVY.  The owner can move Google, file generation,
+# diagnostics archives and MEGA runtime/recovery work independently to R1 FAST.
+# Telegram webhook/UI/forward delivery/canonical mutation intentionally stay on R1.
+_R71_RELEASE = 'очнись_3-r71-runtime-owner-switches'
+_R71_ROUTE_KEYS = ('google', 'files', 'diagnostics', 'mega')
+_R71_ROUTE_LABELS = {
+    'google': '📊 Google / таблицы',
+    'files': '📦 Файлы / Excel / CSV / JSON / SQLite',
+    'diagnostics': '🧪 Runtime / журналы / ТЗ окон',
+    'mega': '🗄 MEGA backup / recovery / runtime',
+}
+_R71_ROUTE_DEFAULTS = {k: 'heavy' for k in _R71_ROUTE_KEYS}
+_R71_ROUTE_LOCK = _split_threading.RLock() if '_split_threading' in globals() else __import__('threading').RLock()
+_R71_ROUTE_CACHE = None
+_R71_ROUTE_META_NS = 'runtime_owner_routes_r71'
+_R71_ROUTE_META_KEY = 'owners'
+
+
+def _r71_normalize_owner(value):
+    raw = str(value or '').strip().lower()
+    return 'fast' if raw in {'fast', 'r1', '1', '#1'} else 'heavy'
+
+
+def _r71_load_routes(force=False):
+    global _R71_ROUTE_CACHE
+    with _R71_ROUTE_LOCK:
+        if isinstance(_R71_ROUTE_CACHE, dict) and not force:
+            return dict(_R71_ROUTE_CACHE)
+        row = {}
+        try:
+            db = globals().get('SQLITE')
+            if db is not None and hasattr(db, 'get_meta'):
+                raw = db.get_meta(_R71_ROUTE_META_NS, _R71_ROUTE_META_KEY, {}) or {}
+                if isinstance(raw, dict):
+                    row = dict(raw)
+        except Exception:
+            row = {}
+        clean = {k: _r71_normalize_owner(row.get(k, _R71_ROUTE_DEFAULTS[k])) for k in _R71_ROUTE_KEYS}
+        _R71_ROUTE_CACHE = clean
+        return dict(clean)
+
+
+def _r71_route_owner(kind):
+    key = str(kind or '').strip().lower()
+    return _r71_load_routes().get(key, 'heavy')
+
+
+def _r71_route_is_fast(kind):
+    return _r71_route_owner(kind) == 'fast'
+
+
+def _r71_apply_runtime_side_effects():
+    """Enable local MEGA only while its owner is R1; keep R2 default isolated."""
+    use_fast = _r71_route_is_fast('mega')
+    try:
+        if 'MEGA_ENABLED' in globals():
+            globals()['MEGA_ENABLED'] = bool(use_fast)
+        if use_fast:
+            # start_front keeps credentials parked in env for this explicit switch.
+            if not str(globals().get('MEGA_EMAIL') or ''):
+                globals()['MEGA_EMAIL'] = str(_split_os.getenv('MEGA_EMAIL', '') or '')
+            if not str(globals().get('MEGA_PASSWORD') or ''):
+                globals()['MEGA_PASSWORD'] = str(_split_os.getenv('MEGA_PASSWORD', '') or '')
+            _split_os.environ['MEGA_ENABLED'] = '1'
+            _split_os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '0'
+        else:
+            _split_os.environ['MEGA_ENABLED'] = '0'
+            _split_os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'
+    except Exception:
+        pass
+
+
+def _r71_save_routes(routes, reason='switch'):
+    global _R71_ROUTE_CACHE
+    clean = {k: _r71_normalize_owner((routes or {}).get(k, _R71_ROUTE_DEFAULTS[k])) for k in _R71_ROUTE_KEYS}
+    with _R71_ROUTE_LOCK:
+        _R71_ROUTE_CACHE = dict(clean)
+        try:
+            db = globals().get('SQLITE')
+            if db is not None and hasattr(db, 'set_meta'):
+                db.set_meta(_R71_ROUTE_META_NS, _R71_ROUTE_META_KEY, dict(clean))
+        except Exception as exc:
+            try: log_error(f'R71 route persist: {exc}')
+            except Exception: pass
+    _r71_apply_runtime_side_effects()
+    try:
+        bot_journal('r71_route_change', int(OWNER_ID or 0), f'reason={reason}; routes={clean}')
+    except Exception:
+        pass
+    return dict(clean)
+
+
+def _r71_toggle_route(kind):
+    key = str(kind or '').strip().lower()
+    if key not in _R71_ROUTE_KEYS:
+        return _r71_load_routes()
+    row = _r71_load_routes()
+    row[key] = 'heavy' if row.get(key) == 'fast' else 'fast'
+    return _r71_save_routes(row, 'toggle:' + key)
+
+
+def _r71_set_all(owner):
+    val = _r71_normalize_owner(owner)
+    return _r71_save_routes({k: val for k in _R71_ROUTE_KEYS}, 'all:' + val)
+
+
+def _r71_owner_html(key):
+    return '<b>R1 FAST</b>' if _r71_route_is_fast(key) else '<b>R2 HEAVY</b>'
+
+
+def _r71_fast_google_ready():
+    try:
+        fn = globals().get('_google_service_account_info')
+        if callable(fn):
+            info = fn()
+            return bool(isinstance(info, dict) and info.get('client_email') and info.get('private_key'))
+    except Exception:
+        pass
+    try:
+        return bool(str(_split_os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON', '') or '').strip())
+    except Exception:
+        return False
+
+
+def _r71_fast_mega_ready():
+    try:
+        import shutil as _r71_shutil
+        creds = bool((str(globals().get('MEGA_EMAIL') or _split_os.getenv('MEGA_EMAIL', '') or '').strip() and str(globals().get('MEGA_PASSWORD') or _split_os.getenv('MEGA_PASSWORD', '') or '').strip()) or str(_split_os.getenv('MEGA_SESSION', '') or '').strip())
+        return creds and _r71_shutil.which('mega-ls') is not None and _r71_shutil.which('mega-get') is not None
+    except Exception:
+        return False
+
+
+def _r70_routes_text():
+    h = dict(_SPLIT_STATE.get('worker_health') or {}); st = dict(h.get('state') or {})
+    worker_ok = bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200, 300)
+    try: wa_stats = dict(WINDOW_ACTOR_REGISTRY.stats() or {})
+    except Exception: wa_stats = {}
+    warn = []
+    if _r71_route_is_fast('google') and not _r71_fast_google_ready():
+        warn.append('⚠️ Google выбран на R1, но локальный service account сейчас не найден.')
+    if _r71_route_is_fast('mega') and not _r71_fast_mega_ready():
+        warn.append('⚠️ MEGA выбран на R1, но FAST не видит credentials/MEGAcmd.')
+    lines = [
+        '🧭 <b>очнись_3 · ПЕРЕКЛЮЧАТЕЛИ R1/R2</b>', '',
+        'Фиксированные владельцы:',
+        '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
+        '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
+        '🔒 Реальная доставка пересылки — <b>R1 FAST</b>',
+        '🔒 Canonical business mutation — <b>R1 FAST</b>', '',
+        'Переключаемые режимы:',
+        f'📊 Google / тяжёлые таблицы — {_r71_owner_html("google")}',
+        f'📦 File export / Excel / CSV / JSON / SQLite — {_r71_owner_html("files")}',
+        f'🧪 Runtime / журналы / ТЗ окон — {_r71_owner_html("diagnostics")}',
+        f'🗄 MEGA backup / recovery / runtime — {_r71_owner_html("mega")}', '',
+        'Синхронизация состояния R1 → R2 остаётся включённой независимо от выбора: это зеркало/страховка, а не владелец пользовательской операции.',
+        f'R2 сейчас: {"✅ доступен" if worker_ok else "⛔ недоступен"} · очередь {int(h.get("queue_size") or 0)} · Google {int(h.get("google_queue_size") or 0)}',
+        f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}',
+        f'Window Actor R1: окон {int(wa_stats.get("windows") or 0)} · markup-only {int(wa_stats.get("markup_only") or 0)} · no-op {int(wa_stats.get("noops") or 0)}',
+    ]
+    if warn:
+        lines += ['', *warn]
+    lines += ['', 'Нажатие переключателя меняет <b>реального исполнителя</b>, а не только подпись. По умолчанию после обновления всё тяжёлое остаётся на R2.']
+    return window_mark('\n'.join(lines), 'Ф4072')
+
+
+def _r71_route_button(key):
+    owner = _r71_route_owner(key)
+    prefix = '🟢 #1' if owner == 'fast' else '🛰 #2'
+    short = {'google':'Google','files':'Файлы','diagnostics':'Диагн.','mega':'MEGA'}[key]
+    return IB(f'{prefix} · {short}', callback_data=f'r71:route:{key}')
+
+
+def _r70_routes_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(_r71_route_button('google'), _r71_route_button('files'))
+    kb.row(_r71_route_button('diagnostics'), _r71_route_button('mega'))
+    kb.row(IB('🟢 ВСЁ тяжёлое → #1', callback_data='r71:all:fast'), IB('🛰 ВСЁ тяжёлое → #2', callback_data='r71:all:heavy'))
+    kb.row(IB('🧪 Тест #1 ↔ #2', callback_data='r44:test:open'), IB('🔄 Render #2', callback_data='r10:worker:refresh'))
+    kb.row(IB('🔙 Render #2', callback_data='r10:worker:status'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+# --- real file/diagnostic execution routing ---------------------------------
+_R71_REMOTE_FILE_SUBMIT = submit_interactive_file_job
+
+
+def _r71_job_group(kind, label='', args=(), kwargs=None):
+    kind_s = str(kind or 'file')
+    label_s = str(label or '').casefold()
+    k = dict(kwargs or {})
+    if kind_s in {'runtime','journal','journal_current','window_markers','window_tz','window_tz_archive'} or kind_s.startswith('window_'):
+        return 'diagnostics'
+    delivery = str(k.get('delivery') or '').casefold()
+    a = list(args or ())
+    if kind_s in {'period_export','xlsx'} and len(a) > 7:
+        delivery = str(a[7] or delivery).casefold()
+    elif kind_s == 'exact_export' and len(a) > 9:
+        delivery = str(a[9] or delivery).casefold()
+    if delivery == 'google' or 'google' in label_s:
+        return 'google'
+    return 'files'
+
+
+def _r71_local_tabl_lsx(recipient_chat_id, target_chat_id):
+    path = None
+    try:
+        _file_job_progress('R1 FAST · собираю Excel', force=True)
+        path = create_tabl_lsx_file(int(target_chat_id), today_key())
+        _file_job_progress('R1 FAST · отправляю Excel', force=True)
+        display = _split_os.path.basename(path)
+        fobj = file_bytesio_named(path, display)
+        if not fobj:
+            raise RuntimeError('Excel создан, но не удалось открыть файл')
+        _tg_call_retry(bot.send_document, int(recipient_chat_id), fobj, caption=f'📊 Таблица LSX ({excel_table_style_caption(int(target_chat_id))}) за последние 4 недели Чт–Ср: {get_chat_display_name(int(target_chat_id))}', timeout=120, purpose='r71_local_tabl_lsx')
+        return True
+    except Exception as exc:
+        try: log_error(f'R71 local tabl_lsx: {exc}')
+        except Exception: pass
+        return False
+    finally:
+        if path:
+            try: _split_os.remove(path)
+            except Exception: pass
+
+
+def _r71_local_file_func(kind, func):
+    kind_s = str(kind or '')
+    if kind_s in {'period_export','xlsx'}:
+        return globals().get('_canon_send_export_for_chat_to__001') or globals().get('_SEND_EXPORT_CORE') or func
+    if kind_s == 'exact_export':
+        return globals().get('_canon_send_exact_range_export__001') or globals().get('_EXACT_EXPORT_CORE') or func
+    if kind_s == 'tabl_lsx':
+        return _r71_local_tabl_lsx
+    return func
+
+
+def _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs):
+    cid = int(chat_id); kind_s = str(kind or 'file'); label_s = str(label or 'Задача')
+    key = _r21_file_job_key(cid, kind_s)
+    now_m = time.monotonic()
+    with _FILE_JOB_LOCK:
+        if isinstance(_FILE_JOB_STATE.get(key), dict):
+            return (False, 'Такая задача уже выполняется')
+        meta = {'key':key,'chat_id':cid,'kind':kind_s,'label':label_s,'queued_monotonic':now_m,'started_monotonic':0.0,'phase':'R1 FAST · в фоне','status_msg_id':None,'last_ui_monotonic':0.0}
+        _FILE_JOB_STATE[key] = meta
+    try:
+        text = _v159_file_status_text(label_s, '0:00', 'R1 FAST · в фоне') if callable(globals().get('_v159_file_status_text')) else f'⏳ {label_s}\nЭтап: R1 FAST · в фоне'
+        msg = bot.send_message(cid, text)
+        mid = int(getattr(msg, 'message_id', 0) or 0)
+        if mid:
+            with _FILE_JOB_LOCK:
+                if isinstance(_FILE_JOB_STATE.get(key), dict): _FILE_JOB_STATE[key]['status_msg_id'] = mid
+            meta['status_msg_id'] = mid
+    except Exception:
+        pass
+    local_func = _r71_local_file_func(kind_s, func)
+    try:
+        ok = bool(EXPORT_TASK_POOL.submit_unique(key, _r21_interactive_file_dispatch_runner, dict(meta), local_func, args, kwargs))
+    except Exception:
+        ok = False
+    if not ok:
+        with _FILE_JOB_LOCK: _FILE_JOB_STATE.pop(key, None)
+        return (False, 'Очередь фоновых задач заполнена')
+    try: _v160_schedule(f'v160:file-tick:{key}', internal_timer_seconds('process_status_refresh', 10.0), _file_job_tick, key)
+    except Exception: pass
+    try: bot_journal('r71_local_file_queued', cid, f'kind={kind_s}; owner=R1_FAST')
+    except Exception: pass
+    return (True, 'Запущено на R1 FAST')
+
+
+def submit_interactive_file_job(chat_id:int, kind:str, label:str, func, *args, **kwargs):
+    group = _r71_job_group(kind, label, args, kwargs)
+    if _r71_route_is_fast(group):
+        return _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs)
+    return _R71_REMOTE_FILE_SUBMIT(chat_id, kind, label, func, *args, **kwargs)
+
+
+# --- Google execution routing -----------------------------------------------
+_R71_REMOTE_GOOGLE_CREATE = _r38_google_submit_report
+
+
+def _r71_google_create(title, rows, layout='category', annotations_override=None, include_annotations=True, **kwargs):
+    if not _r71_route_is_fast('google'):
+        return _R71_REMOTE_GOOGLE_CREATE(title, rows, layout=layout, annotations_override=annotations_override, include_annotations=include_annotations, **kwargs)
+    creator = globals().get('_canon_google_sheets_create_category_report__001')
+    if not callable(creator):
+        raise RuntimeError('R1 Google creator unavailable')
+    target_chat_id = kwargs.get('target_chat_id')
+    tenant_id = kwargs.get('tenant_id')
+    url = creator(title, rows, layout=layout, annotations_override=annotations_override, include_annotations=include_annotations, tenant_id=tenant_id, target_chat_id=target_chat_id)
+    recipient = kwargs.get('recipient_chat_id') or target_chat_id
+    if bool(kwargs.get('notify_result', False)) and recipient:
+        try: bot.send_message(int(recipient), f'✅ 📊 Google Excel готов на R1 FAST\n{str(title or "Google Excel")[:180]}\n\n{url}', disable_web_page_preview=True)
+        except Exception: pass
+    try: _SPLIT_STATE['google_last_ok'] = _r33_time.time(); _SPLIT_STATE['google_last_error'] = ''
+    except Exception: pass
+    return str(url)
+
+
+_v262_split_google_sheets_create_category_report = _r71_google_create
+_google_sheets_create_category_report = _r71_google_create
+
+
+# --- MEGA execution routing --------------------------------------------------
+_R71_REMOTE_SCHEDULE_DELTA = schedule_delta_backup
+_R71_REMOTE_CRITICAL_DELTA = persist_critical_delta_now
+_R71_REMOTE_FULL_BACKUP = schedule_full_backup_only
+_R71_REMOTE_MEGA_UPLOAD_DB = mega_upload_latest_database_backup
+_R71_REMOTE_CONFIG_BACKUP = schedule_config_backup_for_chats
+_R71_REMOTE_MEGA_BROWSER_REQUEST = globals().get('_v265_peer_mega_request')
+_R71_REMOTE_MEGA_DOWNLOAD = globals().get('_v265_heavy_download_mega_file')
+
+
+def schedule_delta_backup(chat_id=None, delay=None, reason='change'):
+    if _r71_route_is_fast('mega'):
+        fn = globals().get('_canon_schedule_delta_backup__003') or globals().get('_canon_schedule_delta_backup__002')
+        if callable(fn): return fn(chat_id, delay=delay, reason=reason)
+    return _R71_REMOTE_SCHEDULE_DELTA(chat_id, delay=delay, reason=reason)
+
+
+def persist_critical_delta_now(chat_id):
+    if _r71_route_is_fast('mega'):
+        fn = globals().get('_canon_persist_critical_delta_now__003') or globals().get('_canon_persist_critical_delta_now__002')
+        if callable(fn): return fn(int(chat_id))
+    return _R71_REMOTE_CRITICAL_DELTA(int(chat_id))
+
+
+def schedule_full_backup_only(chat_id, delay=3.0):
+    if _r71_route_is_fast('mega'):
+        fn = globals().get('_V176_ORIG_FULL_BACKUP')
+        if callable(fn): return fn(int(chat_id), delay)
+    return _R71_REMOTE_FULL_BACKUP(int(chat_id), delay)
+
+
+def mega_upload_latest_database_backup(force=False):
+    if _r71_route_is_fast('mega'):
+        fn = globals().get('_canon_mega_upload_latest_database_backup__002') or globals().get('_canon_mega_upload_latest_database_backup__001')
+        if callable(fn): return fn(bool(force))
+    return _R71_REMOTE_MEGA_UPLOAD_DB(bool(force))
+
+
+def schedule_config_backup_for_chats(*chat_ids, delay=3.0):
+    if _r71_route_is_fast('mega'):
+        fn = globals().get('_canon_schedule_config_backup_for_chats__002') or globals().get('_canon_schedule_config_backup_for_chats__001')
+        if callable(fn): return fn(*chat_ids, delay=delay)
+    return _R71_REMOTE_CONFIG_BACKUP(*chat_ids, delay=delay)
+
+
+def _r71_mega_parent(path):
+    p = str(path or '/').strip() or '/'
+    if p == '/': return '/'
+    q = p.rstrip('/')
+    parent = q.rsplit('/', 1)[0] if '/' in q else ''
+    return parent or '/'
+
+
+def _r71_mega_child(path, name):
+    p = str(path or '/').strip() or '/'
+    n = str(name or '').strip().strip('/')
+    if p == '/': return '/' + n
+    return p.rstrip('/') + '/' + n
+
+
+def _r71_local_mega_list(path):
+    if not _r71_fast_mega_ready():
+        raise RuntimeError('R1 MEGA: credentials или MEGAcmd недоступны')
+    login = globals().get('mega_login_if_needed')
+    if callable(login): login(control_plane=True)
+    runner = globals().get('_mega_run')
+    if not callable(runner): raise RuntimeError('R1 MEGA runner unavailable')
+    path = str(path or '/').strip() or '/'
+    plain = runner('mega-ls', [path], timeout=90, check=False, control_plane=True)
+    if int(getattr(plain, 'returncode', 1) or 0) != 0:
+        raise RuntimeError(str(getattr(plain, 'stderr', '') or getattr(plain, 'stdout', '') or 'mega-ls failed')[:700])
+    names = [x.rstrip('/') for x in str(getattr(plain, 'stdout', '') or '').splitlines() if str(x).strip()]
+    longr = runner('mega-ls', ['-l', path], timeout=90, check=False, control_plane=True)
+    long_lines = [x for x in str(getattr(longr, 'stdout', '') or '').splitlines() if str(x).strip()] if int(getattr(longr, 'returncode', 1) or 0) == 0 else []
+    entries = []
+    for i, raw_name in enumerate(names[:500]):
+        name = str(raw_name).strip()
+        if not name: continue
+        kind = 'file'
+        if i < len(long_lines):
+            first = str(long_lines[i]).lstrip()[:1].lower()
+            if first == 'd': kind = 'dir'
+        if str(raw_name).rstrip().endswith('/'): kind = 'dir'
+        entries.append({'path':_r71_mega_child(path, name),'name':name,'type':kind})
+    return {'ok':True,'path':path,'parent':_r71_mega_parent(path),'entries':entries,'configured_root':str(globals().get('MEGA_BACKUP_DIR') or ''),'owner':'R1_FAST'}
+
+
+def _v265_peer_mega_request(path):
+    if _r71_route_is_fast('mega'):
+        return _r71_local_mega_list(path)
+    if callable(_R71_REMOTE_MEGA_BROWSER_REQUEST):
+        return _R71_REMOTE_MEGA_BROWSER_REQUEST(path)
+    raise RuntimeError('Render #2 MEGA browser unavailable')
+
+
+def _v265_heavy_download_mega_file(remote, workdir):
+    if not _r71_route_is_fast('mega'):
+        if callable(_R71_REMOTE_MEGA_DOWNLOAD): return _R71_REMOTE_MEGA_DOWNLOAD(remote, workdir)
+        raise RuntimeError('Render #2 MEGA download unavailable')
+    if not _r71_fast_mega_ready(): raise RuntimeError('R1 MEGA unavailable')
+    login = globals().get('mega_login_if_needed')
+    if callable(login): login(control_plane=True)
+    runner = globals().get('_mega_run')
+    if not callable(runner): raise RuntimeError('R1 MEGA runner unavailable')
+    _split_os.makedirs(str(workdir), exist_ok=True)
+    res = runner('mega-get', [str(remote), str(workdir)], timeout=360, check=False, control_plane=True)
+    if int(getattr(res, 'returncode', 1) or 0) != 0:
+        raise RuntimeError(str(getattr(res, 'stderr', '') or getattr(res, 'stdout', '') or 'mega-get failed')[:700])
+    name = str(remote or '').rstrip('/').rsplit('/', 1)[-1] or 'mega_restore.bin'
+    target = _split_os.path.join(str(workdir), name)
+    if _split_os.path.isfile(target): return target
+    files = [x for x in _split_os.listdir(str(workdir)) if _split_os.path.isfile(_split_os.path.join(str(workdir), x))]
+    if len(files) == 1: return _split_os.path.join(str(workdir), files[0])
+    raise RuntimeError('R1 MEGA скачал файл, но локальный путь не найден')
+
+
+# --- callback owner switch ---------------------------------------------------
+_R71_CONTOUR_CORE = contour_callback_guard
+
+
+def _r71_contour_callback_guard(call, resolved):
+    raw = str(resolved or '')
+    if not raw.startswith('r71:'):
+        return bool(_R71_CONTOUR_CORE(call, raw)) if callable(_R71_CONTOUR_CORE) else False
+    try:
+        cid = int(call.message.chat.id); uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
+    except Exception:
+        return True
+    if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+        try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+        except Exception: pass
+        return True
+    try: bot.answer_callback_query(call.id)
+    except Exception: pass
+    if raw.startswith('r71:route:'):
+        _r71_toggle_route(raw.rsplit(':', 1)[-1])
+    elif raw == 'r71:all:fast':
+        _r71_set_all('fast')
+    elif raw == 'r71:all:heavy':
+        _r71_set_all('heavy')
+    try: safe_edit(bot, call, _r70_routes_text(), reply_markup=_r70_routes_keyboard(), parse_mode='HTML')
+    except Exception: pass
+    return True
+
+
+contour_callback_guard = _r71_contour_callback_guard
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r71:route:*', 'Ф4072')
+    WINDOW_MARKER_CONSTANTS.setdefault('r71:all:*', 'Ф4072')
+except Exception:
+    pass
+
+_r71_load_routes(force=True)
+_r71_apply_runtime_side_effects()
+try:
+    bot_journal('r71_runtime_owner_switches_loaded', int(OWNER_ID or 0), f'routes={_r71_load_routes()}; default=R2; Telegram core fixed=R1')
+except Exception:
+    pass
+
+# R71 parity for scheduled Google jobs and Google setup/test/info.
+_R71_REMOTE_GOOGLE_QUERY_SUBMIT = _r40_google_query_submit
+_R71_REMOTE_GOOGLE_WAIT = _r40_google_wait
+_R71_REMOTE_GOOGLE_TEST = _split_tenant_google_test
+_R71_REMOTE_GOOGLE_INFO = _r7_google_worker_info
+_R71_LOCAL_GOOGLE_RESULTS = {}
+_R71_LOCAL_GOOGLE_RESULTS_LOCK = _split_threading.RLock() if '_split_threading' in globals() else __import__('threading').RLock()
+
+
+def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,end_rid=0,layout='category',include_annotations=True,notify_result=False,recipient_chat_id=None):
+    if not _r71_route_is_fast('google'):
+        return _R71_REMOTE_GOOGLE_QUERY_SUBMIT(title,target_chat_id,start_key,end_key,start_rid,end_rid,layout=layout,include_annotations=include_annotations,notify_result=notify_result,recipient_chat_id=recipient_chat_id)
+    jid = 'r71local-' + __import__('secrets').token_hex(10)
+    ok = False; url = ''; err = ''
+    try:
+        rows = build_exact_category_stats_xlsx_rows(int(target_chat_id), str(start_key), int(start_rid or 0), str(end_key), int(end_rid or 0))
+        url = _r71_google_create(title, rows, layout=layout, annotations_override={}, include_annotations=include_annotations, target_chat_id=int(target_chat_id), recipient_chat_id=int(recipient_chat_id or target_chat_id), notify_result=bool(notify_result))
+        ok = bool(url)
+    except Exception as exc:
+        err = f'{type(exc).__name__}: {str(exc)[:700]}'
+    with _R71_LOCAL_GOOGLE_RESULTS_LOCK:
+        _R71_LOCAL_GOOGLE_RESULTS[jid] = (bool(ok), str(url or ''), str(err or ''), _r33_time.time())
+        cutoff = _r33_time.time() - 3600
+        for key, row in list(_R71_LOCAL_GOOGLE_RESULTS.items()):
+            if float((row or (False,'','',0))[3] or 0) < cutoff:
+                _R71_LOCAL_GOOGLE_RESULTS.pop(key, None)
+    return jid
+
+
+def _r40_google_wait(jid, timeout=900):
+    key = str(jid or '')
+    if key.startswith('r71local-'):
+        with _R71_LOCAL_GOOGLE_RESULTS_LOCK:
+            row = _R71_LOCAL_GOOGLE_RESULTS.pop(key, None)
+        if row:
+            return bool(row[0]), str(row[1]), str(row[2])
+        return False, '', 'R1 Google local result not found'
+    return _R71_REMOTE_GOOGLE_WAIT(jid, timeout=timeout)
+
+
+def _split_tenant_google_test(tenant_id):
+    if _r71_route_is_fast('google'):
+        fn = globals().get('tenant_google_test')
+        if callable(fn):
+            ok, text = fn(str(tenant_id))
+            text = str(text or '')
+            if ok and 'R1 FAST' not in text:
+                text = text.replace('✅', '✅ R1 FAST ·', 1)
+            return bool(ok), text
+        return False, '❌ R1 Google test unavailable'
+    return _R71_REMOTE_GOOGLE_TEST(tenant_id)
+
+
+def _r7_google_worker_info(fetch=True):
+    if _r71_route_is_fast('google'):
+        try:
+            info = _google_service_account_info()
+            return {'ok':True, 'service_email':str(info.get('client_email') or ''), 'owner':'R1 FAST'}
+        except Exception as exc:
+            return {'ok':False, 'error':str(exc)[:500], 'owner':'R1 FAST'}
+    return _R71_REMOTE_GOOGLE_INFO(fetch)
+
+
+# R71 lets an explicit MEGA→R1 owner choice supersede the old storage-only gate.
+_R71_EXTERNAL_ACCESS_CORE = globals().get('external_access_allowed_v233')
+_R71_MEGA_CONTOUR_CORE = globals().get('mega_contour_enabled_v234')
+
+
+def external_access_allowed_v233(category='other_http'):
+    cat = str(category or 'other_http').strip().casefold()
+    if _r71_route_is_fast('mega') and cat in {'mega','mega_put','mega_get','mega_critical','mega_backup','mega_control'}:
+        return True
+    return bool(_R71_EXTERNAL_ACCESS_CORE(category)) if callable(_R71_EXTERNAL_ACCESS_CORE) else True
+
+
+def mega_contour_enabled_v234():
+    if _r71_route_is_fast('mega'):
+        return True
+    return bool(_R71_MEGA_CONTOUR_CORE()) if callable(_R71_MEGA_CONTOUR_CORE) else False
+
+
+# v262

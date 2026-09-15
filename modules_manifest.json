@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "d175b9910d2bb9374cc177c7e55c3f7f50463f04b38021bc9fc616a1b11f5248",
+    "01_core_data.py": "4a46ec196fff411f36e8cd1bac75e0c4ccbbb1e926f8134ae7eb3756ea8a1a05",
     "02_transport_safety.py": "e1da27b97a0d5a28233c8a6dba440834864698324e55769981ea0a5aed80913b",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "3d27895d50494377a7d62793cdb0f3dbf8db22ce73074d787f5f598dc2ed7530",
@@ -23,9 +23,9 @@
     "07_state_web.py": "78caa9a01fd357d1b02947b448f45f9ccc81dc4b487b73cdca047a86944b82a6",
     "08_reliability_tasks.py": "5fefe502d6acfabfd99c4b6246a52193292760ea23a01a49038b78c0c077437d",
     "09_final_transport.py": "c2e30643263df1b7f186f306d35409ae6c301ceaf964c945e5810b1c93247da1",
-    "10_split_policy_offload.py": "63ac7cd77a7b4d62820d9a2e6ad7ccf33f9a3d500ff7b62705bc61ca6b8bca17"
+    "10_split_policy_offload.py": "37c3cd55aef443ae361d01e0ce4c12d7a2b0f10240c5275d6413356ff8df8dab"
   },
-  "release": "ОЧНИСЬ_2-WINDOW-ACTOR-MARKUP-DIFF-FINAL",
+  "release": "ОЧНИСЬ_3-R71-RUNTIME-OWNER-SWITCHES-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -271,6 +271,12 @@
     "och2_window_actor_state_revision",
     "och2_global_markup_diff",
     "och2_stale_callback_guard",
-    "och2_per_window_serialization"
+    "och2_per_window_serialization",
+    "r71_runtime_owner_switches",
+    "r71_google_r1_r2_switch",
+    "r71_file_export_r1_r2_switch",
+    "r71_diagnostics_r1_r2_switch",
+    "r71_mega_r1_r2_switch",
+    "r71_credentials_parked_default_r2"
   ]
 }
