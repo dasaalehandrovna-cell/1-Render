@@ -68,7 +68,8 @@ if ROLE=='fast':
         if got!=sha: hash_bad.append(rel)
         lines=p.read_text(encoding='utf-8',errors='replace').splitlines()
         marker=str(markers.get(rel) or '')
-        if marker and (not lines or marker not in lines[0] or marker not in lines[-1]): marker_bad.append(rel)
+        expected_marker = '# ' + marker if marker else ''
+        if marker and (not lines or lines[0].strip() != expected_marker or lines[-1].strip() != expected_marker): marker_bad.append(rel)
     ok('manifest_sha256',not hash_bad,','.join(hash_bad[:8]))
     ok('module_markers',not marker_bad,','.join(marker_bad[:8]))
 
@@ -614,8 +615,8 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och2_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_5'" in core_src,
+    ok('och6_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_6'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
@@ -642,6 +643,17 @@ if ROLE=='fast':
        'Сброс не удаляет финансы, пересылки, напоминания, задачи, чаты или сохранённые файлы.' in split_src and
        "row[feature] = False" in split_src,
        'factory reset must only reset the four presentation switches, never business data')
+    ok('r74_strict_module_marker_parity',
+       "lines[0].strip() != expected_marker" in text('FINALIZATION_GATE.py') and "lines[-1].strip() != expected_marker" in text('FINALIZATION_GATE.py'),
+       'package gate must use the same exact first/last marker contract as bot.py startup validation')
+    ok('r74_info_live_map_index',
+       "callback_data='r74:map:open'" in split_src and "callback_data='r74:map:download:map'" in split_src and
+       "callback_data='r74:map:download:index'" in split_src and 'def _r74_build_machine_index' in split_src and
+       'def _r74_build_master_map' in split_src,
+       'Info must expose a live MASTER map and machine index generated from current runtime sources')
+    ok('r74_map_index_async_delivery',
+       "submit(f'r74-artifact-{cid}-{artifact}', _job)" in split_src and "_tg_call_retry(bot.send_document" in split_src,
+       'map/index document generation and Telegram delivery must stay off the callback hot path')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

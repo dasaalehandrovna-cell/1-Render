@@ -9191,10 +9191,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_5')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_5')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9575,7 +9575,7 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
                 cb = _r73_cb(b)
                 if cb in {'r31:toggle:tz_markers', 'r31:toggle:constructors'}:
                     continue
-                if cb == 'r73:factory:open':
+                if cb in {'r73:factory:open', 'r74:map:open'}:
                     continue
                 kept.append(b)
             if kept:
@@ -9586,7 +9586,8 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
             if any((_r73_cb(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in str(getattr(b, 'text', '') if not isinstance(b, dict) else b.get('text', '')).casefold()) for b in (row or [])):
                 insert_at = i
                 break
-        rows.insert(insert_at, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
+        rows.insert(insert_at, [IB('🗺 Карта / индекс бота', callback_data='r74:map:open')])
+        rows.insert(insert_at + 1, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
         if callable(set_fn):
             return set_fn(kb, rows)
         out = types.InlineKeyboardMarkup(row_width=1)
@@ -9594,7 +9595,9 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
             out.row(*row)
         return out
     except Exception:
-        try: kb.row(IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open'))
+        try:
+            kb.row(IB('🗺 Карта / индекс бота', callback_data='r74:map:open'))
+            kb.row(IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open'))
         except Exception: pass
         return kb
 
@@ -9706,4 +9709,280 @@ try:
 except Exception:
     pass
 
-# v262 / очнись_5
+# R74 / очнись_6 — live MASTER map + machine index inside Info.
+# The artifacts are generated from the exact runtime sources on demand, so they
+# cannot silently drift away from the deployed code.  Telegram document delivery
+# is asynchronous and never blocks the callback/window hot path.
+import ast as _r74_ast
+import json as _r74_json
+import io as _r74_io
+import os as _r74_os
+from pathlib import Path as _r74_Path
+import re as _r74_re
+import tempfile as _r74_tempfile
+import threading as _r74_threading
+import time as _r74_time
+
+_R74_RUNTIME_PARTS = tuple(globals().get('MODULAR_SOURCE_PARTS') or (
+    '01_core_data.py','02_transport_safety.py','03_diagnostics_memory.py','04_messages_features.py',
+    '05_finance_ui.py','06_commands_callbacks.py','07_state_web.py','08_reliability_tasks.py',
+    '09_final_transport.py','10_split_policy_offload.py'))
+_R74_MODULE_PURPOSE = {
+    '01_core_data.py': 'данные, SQLite, финансы, Window Actor, durability',
+    '02_transport_safety.py': 'Telegram/MEGA/peer safety и transport guards',
+    '03_diagnostics_memory.py': 'диагностика, память, окно/очереди',
+    '04_messages_features.py': 'сообщения, пересылка, пользовательские функции',
+    '05_finance_ui.py': 'финансовые окна, таблицы, экспорт',
+    '06_commands_callbacks.py': 'команды и legacy callback semantics',
+    '07_state_web.py': 'state/web endpoints, restore, delivery',
+    '08_reliability_tasks.py': 'reliability, reminders, contour policy',
+    '09_final_transport.py': 'финальный Telegram owner, final router, transport bindings',
+    '10_split_policy_offload.py': 'FAST↔HEAVY policy, R1/R2, Info extensions, release overlays',
+}
+
+
+def _r74_root():
+    try:
+        return _r74_Path(str(globals().get('_MODULAR_ROOT') or _r74_Path(__file__).resolve().parent))
+    except Exception:
+        return _r74_Path.cwd()
+
+
+def _r74_callback_expr(value):
+    try:
+        if isinstance(value, _r74_ast.Constant) and isinstance(value.value, str):
+            return value.value
+        return _r74_ast.unparse(value)
+    except Exception:
+        return '<dynamic>'
+
+
+def _r74_build_machine_index():
+    root = _r74_root()
+    files = {}
+    callback_patterns = []
+    telegram_handlers = []
+    http_routes = []
+    total_functions = 0
+    total_classes = 0
+    for rel in _R74_RUNTIME_PARTS:
+        path = root / rel
+        row = {'exists': path.is_file(), 'bytes': 0, 'functions': [], 'classes': [], 'callback_data': [], 'telegram_handlers': [], 'http_routes': []}
+        if not path.is_file():
+            files[rel] = row
+            continue
+        src = path.read_text(encoding='utf-8', errors='replace')
+        row['bytes'] = len(src.encode('utf-8'))
+        try:
+            tree = _r74_ast.parse(src, filename=rel)
+        except Exception as exc:
+            row['parse_error'] = f'{type(exc).__name__}: {exc}'
+            files[rel] = row
+            continue
+        for node in _r74_ast.walk(tree):
+            if isinstance(node, (_r74_ast.FunctionDef, _r74_ast.AsyncFunctionDef)):
+                row['functions'].append({'name': node.name, 'line': int(getattr(node, 'lineno', 0) or 0), 'async': isinstance(node, _r74_ast.AsyncFunctionDef)})
+            elif isinstance(node, _r74_ast.ClassDef):
+                row['classes'].append({'name': node.name, 'line': int(getattr(node, 'lineno', 0) or 0)})
+            elif isinstance(node, _r74_ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == 'callback_data':
+                        item = {'file': rel, 'line': int(getattr(node, 'lineno', 0) or 0), 'expr': _r74_callback_expr(kw.value)}
+                        row['callback_data'].append(item)
+                        callback_patterns.append(item)
+                fn = node.func
+                attr = fn.attr if isinstance(fn, _r74_ast.Attribute) else ''
+                if attr in {'message_handler','callback_query_handler','edited_message_handler','channel_post_handler'}:
+                    item = {'file': rel, 'line': int(getattr(node, 'lineno', 0) or 0), 'kind': attr}
+                    row['telegram_handlers'].append(item); telegram_handlers.append(item)
+        # Include web decorators/routes that are easier and safer to recognize textually.
+        for m in _r74_re.finditer(r"(?m)^\s*@[^\n]*(?:route|get|post|put|delete)\s*\(([^\n]*)", src):
+            item = {'file': rel, 'line': src.count('\n', 0, m.start()) + 1, 'expr': m.group(0).strip()[:300]}
+            row['http_routes'].append(item); http_routes.append(item)
+        row['functions'].sort(key=lambda x: (x['line'], x['name']))
+        row['classes'].sort(key=lambda x: (x['line'], x['name']))
+        total_functions += len(row['functions']); total_classes += len(row['classes'])
+        files[rel] = row
+    unique_cb = sorted({str(x.get('expr') or '') for x in callback_patterns})
+    callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
+    return {
+        'schema': 1,
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6'),
+        'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
+        'runtime_root': str(root),
+        'runtime_parts': list(_R74_RUNTIME_PARTS),
+        'counts': {
+            'runtime_parts': len(_R74_RUNTIME_PARTS),
+            'functions': total_functions,
+            'classes': total_classes,
+            'callback_data_occurrences': len(callback_patterns),
+            'callback_data_unique_expr': len(unique_cb),
+            'telegram_handler_registrations': len(telegram_handlers),
+            'callback_handler_registrations': callback_handler_count,
+            'http_route_decorators': len(http_routes),
+        },
+        'ownership': {
+            'telegram_ingress': '#1 FAST only',
+            'telegram_output': '#1 FAST only',
+            'window_actor': '#1 FAST only',
+            'heavy_default': '#2 HEAVY',
+            'r1_r2_runtime_switch': 'Google / files-export / diagnostics / MEGA',
+        },
+        'critical_contracts': [
+            '1 callback = 1 semantic owner = 1 foreground window mutation',
+            'all visible window edits pass through the canonical Window Actor path',
+            'Back decision is made once at the top final router and RAM is the hot path',
+            'Telegram has one ingress owner and one final output owner on #1 FAST',
+            'module first/last markers must exactly match modules_manifest.json',
+            'every visible legacy bot name is normalized to BOT_DISPLAY_NAME',
+        ],
+        'callback_unique_expr': unique_cb,
+        'telegram_handlers': telegram_handlers,
+        'http_routes': http_routes,
+        'files': files,
+    }
+
+
+def _r74_build_master_map(index=None):
+    idx = index if isinstance(index, dict) else _r74_build_machine_index()
+    c = idx.get('counts') or {}
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_6')
+    lines = [
+        f'# MASTER-КАРТА · {bot_name}', '',
+        f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
+        '## КРИТИЧЕСКИЙ ПУТЬ',
+        'Telegram update → #1 FAST ingress → final callback router → semantic owner → Window Actor → final Telegram transport.',
+        'Тяжёлая работа по умолчанию → #2 HEAVY; выбранные режимы можно переключать R1/R2.', '',
+        '## КРИТИЧЕСКИЕ КОНТРАКТЫ',
+    ]
+    for item in idx.get('critical_contracts') or []:
+        lines.append(f'- {item}')
+    lines += ['', '## RUNTIME-МОДУЛИ']
+    for rel in _R74_RUNTIME_PARTS:
+        row=(idx.get('files') or {}).get(rel) or {}
+        lines.append(f"- `{rel}` — {_R74_MODULE_PURPOSE.get(rel,'runtime')} · functions={len(row.get('functions') or [])} · callbacks={len(row.get('callback_data') or [])}")
+    lines += [
+        '', '## ФАКТИЧЕСКИЕ СЧЁТЧИКИ',
+        f"- Runtime parts: {c.get('runtime_parts',0)}",
+        f"- Functions: {c.get('functions',0)}",
+        f"- Classes: {c.get('classes',0)}",
+        f"- callback_data occurrences: {c.get('callback_data_occurrences',0)}",
+        f"- unique callback expressions: {c.get('callback_data_unique_expr',0)}",
+        f"- Telegram handler registrations: {c.get('telegram_handler_registrations',0)}",
+        f"- callback handler registrations: {c.get('callback_handler_registrations',0)}",
+        f"- HTTP route decorators: {c.get('http_route_decorators',0)}",
+        '', '## БЫСТРАЯ КАРТА ПРАВОК',
+        '- Данные / SQLite / Window Actor → `01_core_data.py`',
+        '- Финансовые окна / экспорт → `05_finance_ui.py`',
+        '- Команды и legacy callbacks → `06_commands_callbacks.py`',
+        '- Restore/web/state → `07_state_web.py`',
+        '- Reliability / contours → `08_reliability_tasks.py`',
+        '- Финальный Telegram router/transport → `09_final_transport.py`',
+        '- FAST↔HEAVY, R1/R2, Info overlays → `10_split_policy_offload.py`',
+        '', '## ДИАГНОСТИЧЕСКИЙ МАРШРУТ ДЛЯ КНОПКИ',
+        '1. Найти `callback_data` в машинном индексе.',
+        '2. Проверить, где кнопка создаётся и какой semantic owner её принимает.',
+        '3. Проверить final callback router и contour guard.',
+        '4. Проверить ровно одну foreground-мутацию Window Actor.',
+        '5. Проверить отсутствие прямого application-level `edit_message_reply_markup`.',
+        '6. Для Back проверить единственный history/fallback decision.',
+        '', '## INFO',
+        'Эта карта и JSON-индекс генерируются заново из текущего runtime при каждом скачивании из меню «Инфо → Карта / индекс бота».',
+    ]
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def _r74_map_menu_text():
+    # Hot path stays trivial: the expensive AST/source scan happens only inside
+    # the asynchronous download job, never while opening an Info window.
+    return window_mark(
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}\n\n"
+        f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
+        "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
+        "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
+        "Оба документа строятся из текущего runtime в фоновой задаче только при скачивании.\n"
+        "Открытие этого окна не сканирует исходники.", 'Ф90')
+
+
+def _r74_map_menu_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB('📥 MASTER-карта (.md)', callback_data='r74:map:download:map'))
+    kb.row(IB('📥 Машинный индекс (.json)', callback_data='r74:map:download:index'))
+    kb.row(IB('🔙 В Инфо', callback_data='r74:map:back_info'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+def _r74_send_artifact(chat_id, kind):
+    cid = int(chat_id)
+    artifact = 'index' if str(kind) == 'index' else 'map'
+    def _job():
+        try:
+            idx = _r74_build_machine_index()
+            if artifact == 'index':
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}.json"
+                payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}"
+            else:
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}_RU.md"
+                payload = _r74_build_master_map(idx)
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}"
+            buf = _r74_io.BytesIO(payload.encode('utf-8'))
+            buf.name = name
+            _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
+            try: bot_journal('r74_map_artifact_sent', cid, f'kind={artifact}; bytes={len(payload.encode("utf-8"))}')
+            except Exception: pass
+        except Exception as exc:
+            try: send_and_auto_delete(cid, f'⚠️ Не удалось сформировать {"индекс" if artifact == "index" else "карту"}: {type(exc).__name__}', 15)
+            except Exception: pass
+            try: log_error(f'r74 artifact {artifact}: {exc}')
+            except Exception: pass
+    submit = globals().get('submit_unique')
+    if callable(submit):
+        try:
+            submit(f'r74-artifact-{cid}-{artifact}', _job)
+            return
+        except Exception:
+            pass
+    _r74_threading.Thread(target=_job, daemon=True, name=f'r74-{artifact}-{cid}').start()
+
+
+_R74_CONTOUR_CORE = contour_callback_guard
+
+def _r74_contour_callback_guard(call, resolved):
+    raw = str(resolved or '')
+    if raw.startswith('r74:map:'):
+        try:
+            cid = int(call.message.chat.id)
+            uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
+        except Exception:
+            return True
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+            except Exception: pass
+            return True
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        if raw == 'r74:map:open':
+            safe_edit(bot, call, _r74_map_menu_text(), reply_markup=_r74_map_menu_keyboard())
+            return True
+        if raw == 'r74:map:back_info':
+            safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
+            return True
+        if raw == 'r74:map:download:map':
+            _r74_send_artifact(cid, 'map')
+            return True
+        if raw == 'r74:map:download:index':
+            _r74_send_artifact(cid, 'index')
+            return True
+        return True
+    return bool(_R74_CONTOUR_CORE(call, raw)) if callable(_R74_CONTOUR_CORE) else False
+
+contour_callback_guard = _r74_contour_callback_guard
+
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}; live_source_index=on")
+except Exception:
+    pass
+
+# v262
