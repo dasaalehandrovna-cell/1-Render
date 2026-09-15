@@ -615,8 +615,33 @@ if ROLE=='fast':
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
     ok('och2_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_4'" in core_src,
+       "BOT_DISPLAY_NAME = 'очнись_5'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
+    ok('r73_identity_normalization',
+       'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
+       final_transport.count('_final_bot_identity_text(') >= 4,
+       'all visible legacy bot names must normalize to BOT_DISPLAY_NAME before Telegram send/edit')
+    ok('r73_factory_three_scopes_four_off',
+       "_R73_FEATURES = ('constructors', 'descriptions', 'tz', 'markers')" in split_src and
+       "_R73_FACTORY_DEFAULTS = {key: False for key in _R73_FEATURES}" in split_src and
+       all(x in split_src for x in ["'owner': '👤 Основной владелец'", "'circle1': '1️⃣ Контур 1'", "'circle2': '2️⃣ Контур 2'"]),
+       'factory profiles must be independent owner/circle1/circle2 with all four presentation features OFF by default')
+    ok('r73_factory_info_controls',
+       "callback_data='r73:factory:open'" in split_src and
+       "callback_data=f'r73:factory:toggle:{skey}:{feature}'" in split_src and
+       "callback_data=f'r73:factory:reset_do:{skey}'" in split_src and
+       'Заводские настройки / интерфейс' in split_src,
+       'Info must expose per-scope factory reset and each individual feature toggle')
+    ok('r73_factory_final_render_gate',
+       'def _r73_filter_features_markup' in split_src and
+       '_r73_is_injected_constructor_button' in split_src and
+       "cb == 'v171:desc'" in split_src and "cb == 'v160:tz_capture'" in split_src and "cb == 'v160:marker_capture'" in split_src and
+       'def v227_render_effective_contour_markup' in split_src,
+       'factory feature visibility must be enforced after legacy/profile/annotation augmentation')
+    ok('r73_factory_reset_non_destructive',
+       'Сброс не удаляет финансы, пересылки, напоминания, задачи, чаты или сохранённые файлы.' in split_src and
+       "row[feature] = False" in split_src,
+       'factory reset must only reset the four presentation switches, never business data')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

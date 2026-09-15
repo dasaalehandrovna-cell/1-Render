@@ -3802,7 +3802,7 @@ def _r70_routes_text():
     except Exception:
         wa_stats = {}
     lines=[
-        '🧭 <b>очнись_2 · ВЛАДЕЛЬЦЫ ПРОЦЕССОВ R1/R2</b>','',
+        f'🧭 <b>{BOT_DISPLAY_NAME} · ВЛАДЕЛЬЦЫ ПРОЦЕССОВ R1/R2</b>','',
         '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
         '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
         '🔒 Реальная доставка пересылки — <b>R1 FAST</b>',
@@ -3815,7 +3815,7 @@ def _r70_routes_text():
         f'R2 сейчас: {"✅ доступен" if worker_ok else "⛔ недоступен"} · очередь {int(h.get("queue_size") or 0)} · Google {int(h.get("google_queue_size") or 0)}',
         f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}',
         f'Window Actor: окон {int(wa_stats.get("windows") or 0)} · markup-only {int(wa_stats.get("markup_only") or 0)} · no-op {int(wa_stats.get("noops") or 0)} · stale render {int(wa_stats.get("stale_renders") or 0)} · stale callback {int(wa_stats.get("stale_callbacks") or 0)}','',
-        'очнись_2 намеренно не разрешает переключать Telegram UI/forward delivery на R2: у этих путей должен быть ровно один владелец, иначе снова возможны дубли окон/сообщений.',
+        f'{BOT_DISPLAY_NAME} намеренно не разрешает переключать Telegram UI/forward delivery на R2: у этих путей должен быть ровно один владелец, иначе снова возможны дубли окон/сообщений.',
         'Для сравнения R1↔R2 используйте 🧪 Тест #1 ↔ #2 и E2E.'
     ]
     return window_mark('\n'.join(lines),'Ф4072')
@@ -5187,22 +5187,42 @@ def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -
         except Exception: pass
         _r49_render_info_after_redis(int(chat_id), int(message_id))
 
+def _r29_info_text_finalize(chat_id: int, value: str) -> str:
+    fn = globals().get('_r73_info_text_decorate')
+    if callable(fn):
+        try:
+            return str(fn(int(chat_id), str(value or '')))[:3900]
+        except Exception:
+            pass
+    return str(value or '')[:3900]
+
+
+def _r29_info_keyboard_finalize(chat_id: int, kb):
+    fn = globals().get('_r73_info_keyboard_decorate')
+    if callable(fn):
+        try:
+            return fn(int(chat_id), kb)
+        except Exception:
+            pass
+    return kb
+
+
 def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
     cid = int(chat_id)
     if cid != int(OWNER_ID or 0):
         try:
-            return str(_R29_LEGACY_INFO_TEXT(cid, *args, **kwargs)) if callable(_R29_LEGACY_INFO_TEXT) else 'ℹ️ Инфо'
+            return _r29_info_text_finalize(cid, str(_R29_LEGACY_INFO_TEXT(cid, *args, **kwargs)) if callable(_R29_LEGACY_INFO_TEXT) else 'ℹ️ Инфо')
         except Exception:
-            return 'ℹ️ Инфо'
+            return _r29_info_text_finalize(cid, 'ℹ️ Инфо')
     mode = r30_info_menu_mode(cid, False)
     if mode == 'old':
         try:
-            return str(_R29_LEGACY_INFO_TEXT(cid, *args, **kwargs)) if callable(_R29_LEGACY_INFO_TEXT) else 'ℹ️ Инфо'
+            return _r29_info_text_finalize(cid, str(_R29_LEGACY_INFO_TEXT(cid, *args, **kwargs)) if callable(_R29_LEGACY_INFO_TEXT) else 'ℹ️ Инфо')
         except Exception:
-            return 'ℹ️ Инфо'
+            return _r29_info_text_finalize(cid, 'ℹ️ Инфо')
     if mode == R31_MENU_MODE_THIRD:
-        return _r31_third_info_text(cid)
-    return window_mark(
+        return _r29_info_text_finalize(cid, _r31_third_info_text(cid))
+    return _r29_info_text_finalize(cid, window_mark(
         'ℹ️ ИНФО · R66\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
@@ -5210,7 +5230,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
         '🛰 HEAVY: тяжёлая работа после UI.\n'
         '🔒 Директивный режим: бизнес-логика владельца не переключается контуром.',
         'Ф89'
-    )
+    ))
 
 
 def _r29_build_info_keyboard(chat_id: int):
@@ -5233,12 +5253,12 @@ def _r29_build_info_keyboard(chat_id: int):
                     kb = set_fn(kb, rows)
         except Exception:
             pass
-        return kb
+        return _r29_info_keyboard_finalize(cid, kb)
     mode = r30_info_menu_mode(cid, False)
     if mode == 'old':
-        return _r49_info_inject_redis_toggle(_r30_legacy_info_keyboard_with_controls(cid), cid)
+        return _r29_info_keyboard_finalize(cid, _r49_info_inject_redis_toggle(_r30_legacy_info_keyboard_with_controls(cid), cid))
     if mode == R31_MENU_MODE_THIRD:
-        return _r49_info_inject_redis_toggle(_r31_third_info_keyboard(cid), cid)
+        return _r29_info_keyboard_finalize(cid, _r49_info_inject_redis_toggle(_r31_third_info_keyboard(cid), cid))
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(IB('📊 Состояние', callback_data='r29:info:status'), IB('🔗 Интеграции', callback_data='r29:info:integrations'))
     kb.row(IB('⚙️ Настройки', callback_data='r29:info:settings'), IB('📁 Журналы', callback_data='r29:info:journals'))
@@ -5248,7 +5268,7 @@ def _r29_build_info_keyboard(chat_id: int):
         kb.row(IB('🧩 Конструкторы', callback_data='r31:constructors:open'))
     kb.row(_r30_menu_mode_button(cid))
     kb.row(IB('🔙 Назад', callback_data='nav_prev'), IB('❌ Закрыть', callback_data='info_close'))
-    return _r49_info_inject_redis_toggle(kb, cid)
+    return _r29_info_keyboard_finalize(cid, _r49_info_inject_redis_toggle(kb, cid))
 
 
 build_info_text = _r29_build_info_text
@@ -8594,7 +8614,7 @@ except Exception:
 # Default remains R2 HEAVY.  The owner can move Google, file generation,
 # diagnostics archives and MEGA runtime/recovery work independently to R1 FAST.
 # Telegram webhook/UI/forward delivery/canonical mutation intentionally stay on R1.
-_R71_RELEASE = 'очнись_4-r71-runtime-owner-switches'
+_R71_RELEASE = f'{BOT_DISPLAY_NAME}-r71-runtime-owner-switches'
 _R71_ROUTE_KEYS = ('google', 'files', 'diagnostics', 'mega')
 _R71_ROUTE_LABELS = {
     'google': '📊 Google / таблицы',
@@ -8735,7 +8755,7 @@ def _r70_routes_text():
     if _r71_route_is_fast('mega') and not _r71_fast_mega_ready():
         warn.append('⚠️ MEGA выбран на R1, но FAST не видит credentials/MEGAcmd.')
     lines = [
-        '🧭 <b>очнись_4 · ПЕРЕКЛЮЧАТЕЛИ R1/R2</b>', '',
+        f'🧭 <b>{BOT_DISPLAY_NAME} · ПЕРЕКЛЮЧАТЕЛИ R1/R2</b>', '',
         'Фиксированные владельцы:',
         '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
         '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
@@ -9136,3 +9156,554 @@ def mega_contour_enabled_v234():
 
 
 # v262
+
+# ---------------------------------------------------------------------------
+# R73 / очнись_5 — factory UI profiles + independent visibility switches.
+#
+# Contract:
+#   * three independent scopes: primary owner, Circle 1, Circle 2;
+#   * factory defaults are OFF for Constructors, Descriptions, Window TZ, Markers;
+#   * reset changes presentation/control settings only; business data is untouched;
+#   * one final visibility filter is applied after legacy/profile/annotation layers.
+# ---------------------------------------------------------------------------
+_R73_FACTORY_KEY = 'factory_ui_profiles_r73'
+_R73_FEATURES = ('constructors', 'descriptions', 'tz', 'markers')
+_R73_FEATURE_LABELS = {
+    'constructors': '🧩 Конструкторы',
+    'descriptions': 'ℹ️ Описания окон',
+    'tz': '📝 ТЗ окон',
+    'markers': '🏷 Маркеры',
+}
+_R73_SCOPE_LABELS = {
+    'owner': '👤 Основной владелец',
+    'circle1': '1️⃣ Контур 1',
+    'circle2': '2️⃣ Контур 2',
+}
+_R73_FACTORY_DEFAULTS = {key: False for key in _R73_FEATURES}
+
+
+def _r73_factory_root(create=True):
+    try:
+        gs = data.setdefault('_global_settings', {}) if create else (data.get('_global_settings') or {})
+    except Exception:
+        return {}
+    root = gs.get(_R73_FACTORY_KEY)
+    if not isinstance(root, dict):
+        if not create:
+            return {}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_5')}
+        gs[_R73_FACTORY_KEY] = root
+    root['schema'] = max(1, int(root.get('schema') or 1))
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_5')
+    for scope in ('owner', 'circle1', 'circle2'):
+        row = root.get(scope)
+        if not isinstance(row, dict):
+            row = {}
+            root[scope] = row
+        for feature, default in _R73_FACTORY_DEFAULTS.items():
+            row.setdefault(feature, bool(default))
+    return root
+
+
+def _r73_scope_key_for_chat(chat_id):
+    try:
+        cid = int(chat_id or 0)
+    except Exception:
+        cid = 0
+    if cid and cid == int(OWNER_ID or 0):
+        return 'owner'
+    try:
+        level = int(circle_level_for_chat(cid))
+        return 'circle2' if level == 2 else 'circle1'
+    except Exception:
+        return 'circle1'
+
+
+def _r73_feature_enabled(feature, chat_id=None, scope=None):
+    key = str(feature or '').strip().casefold()
+    if key == 'description':
+        key = 'descriptions'
+    if key == 'marker':
+        key = 'markers'
+    if key not in _R73_FEATURES:
+        return False
+    skey = str(scope or '').strip().casefold() or _r73_scope_key_for_chat(chat_id if chat_id is not None else int(OWNER_ID or 0))
+    if skey not in {'owner', 'circle1', 'circle2'}:
+        skey = 'owner'
+    try:
+        return bool((_r73_factory_root(True).get(skey) or {}).get(key, False))
+    except Exception:
+        return False
+
+
+def _r73_set_feature(scope, feature, enabled, persist=True):
+    skey = str(scope or '').strip().casefold()
+    key = str(feature or '').strip().casefold()
+    if key == 'description':
+        key = 'descriptions'
+    if key == 'marker':
+        key = 'markers'
+    if skey not in {'owner', 'circle1', 'circle2'} or key not in _R73_FEATURES:
+        raise ValueError('unknown factory scope/feature')
+    root = _r73_factory_root(True)
+    row = root.setdefault(skey, {})
+    row[key] = bool(enabled)
+    row['updated_at'] = time.time()
+    row['updated_by'] = int(OWNER_ID or 0)
+    # Keep the legacy Constructor master consistent for owner windows and old menus.
+    if skey == 'owner' and key == 'constructors':
+        try:
+            _v196_flags()['enabled'] = bool(enabled)
+        except Exception:
+            pass
+    if persist:
+        try:
+            _r31_persist_global_background(f'r73_{skey}_{key}_{int(bool(enabled))}')
+        except Exception:
+            pass
+    return bool(row[key])
+
+
+def _r73_factory_reset(scope, persist=True):
+    skey = str(scope or '').strip().casefold()
+    if skey not in {'owner', 'circle1', 'circle2'}:
+        raise ValueError('unknown factory scope')
+    root = _r73_factory_root(True)
+    row = root.setdefault(skey, {})
+    for feature in _R73_FEATURES:
+        row[feature] = False
+    row['updated_at'] = time.time()
+    row['updated_by'] = int(OWNER_ID or 0)
+    row['factory_reset_at'] = time.time()
+    if skey == 'owner':
+        try:
+            _v196_flags()['enabled'] = False
+        except Exception:
+            pass
+    if persist:
+        try:
+            _r31_persist_global_background(f'r73_factory_reset_{skey}')
+        except Exception:
+            pass
+    return dict(row)
+
+
+def _r73_cb(button):
+    try:
+        if isinstance(button, dict):
+            return str(button.get('callback_data') or '')
+        return str(getattr(button, 'callback_data', '') or '')
+    except Exception:
+        return ''
+
+
+def _r73_is_injected_constructor_button(cb):
+    raw = str(cb or '')
+    try:
+        return bool(__import__('re').fullmatch(r'v196:c[12]:[0-9a-fA-F]{8,40}', raw))
+    except Exception:
+        return False
+
+
+def _r73_filter_features_markup(reply_markup, chat_id):
+    if reply_markup is None:
+        return None
+    try:
+        cid = int(chat_id or 0)
+    except Exception:
+        return reply_markup
+    try:
+        import copy as _r73_copy
+        kb = _r73_copy.deepcopy(reply_markup)
+    except Exception:
+        kb = reply_markup
+    try:
+        rows_fn = globals().get('_v221_markup_rows')
+        set_fn = globals().get('_v221_set_markup_rows')
+        rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or getattr(kb, 'inline_keyboard', None) or [])
+        show_ctor = _r73_feature_enabled('constructors', cid)
+        show_desc = _r73_feature_enabled('descriptions', cid)
+        show_tz = _r73_feature_enabled('tz', cid)
+        show_markers = _r73_feature_enabled('markers', cid)
+        clean = []
+        for row in rows:
+            keep = []
+            for button in list(row or []):
+                cb = _r73_cb(button)
+                if (not show_ctor) and _r73_is_injected_constructor_button(cb):
+                    continue
+                if (not show_desc) and cb == 'v171:desc':
+                    continue
+                if (not show_tz) and cb == 'v160:tz_capture':
+                    continue
+                if (not show_markers) and cb == 'v160:marker_capture':
+                    continue
+                keep.append(button)
+            if keep:
+                clean.append(keep)
+        if callable(set_fn):
+            return set_fn(kb, clean)
+        try:
+            kb.keyboard = clean
+        except Exception:
+            try: kb.inline_keyboard = clean
+            except Exception: pass
+        return kb
+    except Exception:
+        return reply_markup
+
+
+# Factory profile is authoritative for TZ / marker visibility. Per-chat directive
+# policy is still an additional local gate for Circle 1/2.
+def circle_annotation_global_enabled_v219(kind: str, chat_id: int | None=None) -> bool:
+    key = 'markers' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker', 'markers'} else 'tz'
+    cid = int(chat_id if chat_id is not None else int(OWNER_ID or 0))
+    return bool(_r73_feature_enabled(key, cid))
+
+
+def circle_annotation_button_enabled_v219(kind: str, chat_id: int | None=None) -> bool:
+    key = 'markers' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker', 'markers'} else 'tz'
+    cid = int(chat_id if chat_id is not None else int(OWNER_ID or 0))
+    base = bool(_r73_feature_enabled(key, cid))
+    if not base:
+        return False
+    try:
+        if _v215_circle_business_chat(cid) and directive_chat_enabled_v223(cid):
+            local_key = 'iz_mr' if key == 'markers' else 'tz'
+            return bool(directive_annotation_allowed_v223(cid, local_key))
+    except Exception:
+        pass
+    return base
+
+
+def annotation_visibility_state_v226(kind: str, chat_id: int) -> dict:
+    cid = int(chat_id)
+    local_key = 'iz_mr' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker', 'markers'} else 'tz'
+    feature_key = 'markers' if local_key == 'iz_mr' else 'tz'
+    global_on = bool(_r73_feature_enabled(feature_key, cid))
+    try:
+        directive = bool(directive_chat_enabled_v223(cid))
+    except Exception:
+        directive = False
+    local_on = True
+    if directive:
+        try:
+            local_on = bool(directive_annotation_allowed_v223(cid, local_key))
+        except Exception:
+            local_on = True
+    try:
+        circle = bool(_v215_circle_business_chat(cid))
+    except Exception:
+        circle = False
+    return {'kind': local_key, 'circle': circle, 'global': global_on, 'directive': directive, 'local': local_on, 'effective': bool(global_on and local_on)}
+
+
+# Constructor profiles are scope-aware. OFF means the stock source keyboard is
+# rendered for that scope; saved constructor designs are retained and become
+# active again only after the scope switch is explicitly enabled.
+_R73_PROFILE_APPLY_CORE = globals().get('_v196_apply_profile_to_base')
+def _r73_apply_profile_to_base(key, base):
+    try:
+        sid = int(_v212_scope_id())
+    except Exception:
+        sid = int(OWNER_ID or 0)
+    if not _r73_feature_enabled('constructors', sid):
+        try:
+            return copy.deepcopy(base)
+        except Exception:
+            return base
+    return _R73_PROFILE_APPLY_CORE(key, base) if callable(_R73_PROFILE_APPLY_CORE) else base
+_v196_apply_profile_to_base = _r73_apply_profile_to_base
+
+# Force the constructor/profile layer to resolve the same explicit chat scope that
+# the final Telegram renderer is processing.  This makes Circle 1/2 switches real,
+# not dependent on whichever state_context happened to be active.
+_R73_AUGMENT_CORE = globals().get('_v160_augment_markup')
+def _r73_augment_markup(reply_markup, text: str, chat_id=None):
+    if chat_id is None or not callable(_R73_AUGMENT_CORE):
+        return _R73_AUGMENT_CORE(reply_markup, text, chat_id) if callable(_R73_AUGMENT_CORE) else reply_markup
+    try:
+        ctx = globals().get('_v212_scope_context')
+        if ctx is not None:
+            with ctx(int(chat_id)):
+                return _R73_AUGMENT_CORE(reply_markup, text, int(chat_id))
+    except Exception:
+        pass
+    return _R73_AUGMENT_CORE(reply_markup, text, int(chat_id))
+_v160_augment_markup = _r73_augment_markup
+
+
+# Final render fence, after Constructor/profile/annotation layers.
+_R73_RENDER_CORE = globals().get('v227_render_effective_contour_markup')
+def v227_render_effective_contour_markup(source_markup, text: str, chat_id: int):
+    rendered = _R73_RENDER_CORE(source_markup, text, int(chat_id)) if callable(_R73_RENDER_CORE) else source_markup
+    return _r73_filter_features_markup(rendered, int(chat_id))
+
+
+def _r73_schedule_live_refresh(reason='settings'):
+    def _job():
+        try:
+            lock = globals().get('_V221_LIVE_MARKUP_LOCK')
+            reg = globals().get('_V221_LIVE_MARKUP')
+            if lock is None or not isinstance(reg, dict):
+                return
+            with lock:
+                items = [(k, dict(v or {})) for k, v in reg.items()]
+        except Exception:
+            return
+        changed = 0
+        for (cid, mid), row in items:
+            try:
+                source = row.get('source_markup') if row.get('source_markup') is not None else row.get('markup')
+                after = v227_render_effective_contour_markup(source, str(row.get('text') or ''), int(cid))
+                fp = globals().get('_v221_markup_fingerprint')
+                if callable(fp) and fp(row.get('markup')) == fp(after):
+                    continue
+                fast_ui_edit_reply_markup(int(cid), int(mid), after, purpose='r73_factory_refresh')
+                rec = globals().get('v221_record_live_markup')
+                if callable(rec):
+                    rec(int(cid), int(mid), after, str(row.get('text') or ''), source_markup=source)
+                changed += 1
+            except Exception:
+                continue
+        try:
+            bot_journal('r73_factory_live_refresh', int(OWNER_ID or 0), f'reason={reason}; changed={changed}')
+        except Exception:
+            pass
+    try:
+        pool = globals().get('GENERAL_TASK_POOL')
+        submit_unique = getattr(pool, 'submit_unique', None) if pool is not None else None
+        if callable(submit_unique):
+            submit_unique('r73-factory-refresh', _job)
+            return
+    except Exception:
+        pass
+    try:
+        threading.Thread(target=_job, daemon=True, name='r73-factory-refresh').start()
+    except Exception:
+        pass
+
+
+def _r73_scope_summary(scope):
+    row = (_r73_factory_root(True).get(str(scope)) or {})
+    on = sum(1 for feature in _R73_FEATURES if bool(row.get(feature, False)))
+    return f'{on}/{len(_R73_FEATURES)} ВКЛ'
+
+
+def _r73_factory_main_text():
+    lines = [
+        f'🏭 ЗАВОДСКИЕ НАСТРОЙКИ · {BOT_DISPLAY_NAME}', '',
+        'Три профиля независимы: основной владелец, Контур 1 и Контур 2.',
+        'Заводской профиль: Конструкторы, Описания окон, ТЗ окон и Маркеры — ВЫКЛ.', '',
+        'Сброс не удаляет финансы, пересылки, напоминания, задачи, чаты или сохранённые файлы.',
+        'Сохранённые дизайны Конструктора не удаляются: при выключенном Конструкторе они просто не применяются.', '',
+    ]
+    for scope in ('owner', 'circle1', 'circle2'):
+        lines.append(f'{_R73_SCOPE_LABELS[scope]}: {_r73_scope_summary(scope)}')
+    return window_mark('\n'.join(lines), 'Ф89')
+
+
+def _r73_factory_main_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for scope in ('owner', 'circle1', 'circle2'):
+        kb.row(IB(f'{_R73_SCOPE_LABELS[scope]} · {_r73_scope_summary(scope)}', callback_data=f'r73:factory:scope:{scope}'))
+    kb.row(IB('🔙 В Инфо', callback_data='r73:factory:back_info'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+def _r73_factory_scope_text(scope):
+    skey = str(scope)
+    row = (_r73_factory_root(True).get(skey) or {})
+    lines = [f'🏭 {_R73_SCOPE_LABELS.get(skey, skey)} · {BOT_DISPLAY_NAME}', '', 'Переключатели этого профиля:']
+    for feature in _R73_FEATURES:
+        lines.append(f"{('✅ ВКЛ' if bool(row.get(feature, False)) else '⬜ ВЫКЛ')} · {_R73_FEATURE_LABELS[feature]}")
+    lines += ['', '♻️ Сброс этого профиля вернёт все четыре переключателя в ВЫКЛ.', 'Бизнес-данные не удаляются.']
+    return window_mark('\n'.join(lines), 'Ф89')
+
+
+def _r73_factory_scope_keyboard(scope):
+    skey = str(scope)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for feature in _R73_FEATURES:
+        enabled = _r73_feature_enabled(feature, scope=skey)
+        kb.row(IB(f"{('✅ ВКЛ' if enabled else '⬜ ВЫКЛ')} · {_R73_FEATURE_LABELS[feature]}", callback_data=f'r73:factory:toggle:{skey}:{feature}'))
+    kb.row(IB('♻️ Сбросить до заводских', callback_data=f'r73:factory:reset_ask:{skey}'))
+    kb.row(IB('🔙 К профилям', callback_data='r73:factory:open'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+def _r73_factory_reset_text(scope):
+    return window_mark(
+        f'⚠️ СБРОС · {_R73_SCOPE_LABELS.get(str(scope), str(scope))}\n\n'
+        'Будут выключены только четыре интерфейсных функции:\n'
+        '• Конструкторы\n• Описания окон\n• ТЗ окон\n• Маркеры\n\n'
+        'Финансы, пересылка, напоминания, задачи и чаты не удаляются.\n\nПодтвердить?',
+        'Ф89')
+
+
+def _r73_factory_reset_keyboard(scope):
+    skey = str(scope)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB('✅ Да, сбросить', callback_data=f'r73:factory:reset_do:{skey}'))
+    kb.row(IB('🔙 Отмена', callback_data=f'r73:factory:scope:{skey}'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+# Info injection for all three Info layouts (new / old / third).
+def _r73_info_text_decorate(chat_id: int, base: str):
+    cid = int(chat_id)
+    value = str(base or 'ℹ️ Инфо')
+    if cid == int(OWNER_ID or 0):
+        line = f'🏭 Заводские профили UI: владелец {_r73_scope_summary("owner")} · К1 {_r73_scope_summary("circle1")} · К2 {_r73_scope_summary("circle2")}'
+        if line not in value:
+            value = (value.rstrip() + '\n\n' + line).strip()
+    return value[:3900]
+
+
+def _r73_info_keyboard_decorate(chat_id: int, kb):
+    cid = int(chat_id)
+    if cid != int(OWNER_ID or 0):
+        return kb
+    try:
+        rows_fn = globals().get('_v177_info_rows')
+        set_fn = globals().get('_v177_info_set_rows')
+        rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or getattr(kb, 'inline_keyboard', None) or [])
+        clean = []
+        for row in rows:
+            kept = []
+            for b in row or []:
+                cb = _r73_cb(b)
+                if cb in {'r31:toggle:tz_markers', 'r31:toggle:constructors'}:
+                    continue
+                if cb == 'r73:factory:open':
+                    continue
+                kept.append(b)
+            if kept:
+                clean.append(kept)
+        rows = clean
+        insert_at = len(rows)
+        for i, row in enumerate(rows):
+            if any((_r73_cb(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in str(getattr(b, 'text', '') if not isinstance(b, dict) else b.get('text', '')).casefold()) for b in (row or [])):
+                insert_at = i
+                break
+        rows.insert(insert_at, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
+        if callable(set_fn):
+            return set_fn(kb, rows)
+        out = types.InlineKeyboardMarkup(row_width=1)
+        for row in rows:
+            out.row(*row)
+        return out
+    except Exception:
+        try: kb.row(IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open'))
+        except Exception: pass
+        return kb
+
+
+# Keep the historical constructor center status aligned with the new owner profile.
+def _r73_r31_constructors_enabled():
+    return bool(_r73_feature_enabled('constructors', scope='owner'))
+_r31_constructors_enabled = _r73_r31_constructors_enabled
+try:
+    _v196_flags()['enabled'] = bool(_r73_feature_enabled('constructors', scope='owner'))
+except Exception:
+    pass
+
+
+_R73_CONTOUR_CORE = contour_callback_guard
+
+def _r73_contour_callback_guard(call, resolved):
+    raw = str(resolved or '')
+    try:
+        cid = int(call.message.chat.id)
+        uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
+    except Exception:
+        return bool(_R73_CONTOUR_CORE(call, raw)) if callable(_R73_CONTOUR_CORE) else False
+
+    # Stale visibility buttons are blocked at the semantic gate as well as the renderer.
+    blocked_feature = ''
+    if raw == 'v171:desc' and not _r73_feature_enabled('descriptions', cid):
+        blocked_feature = 'Описания окон'
+    elif raw == 'v160:tz_capture' and not _r73_feature_enabled('tz', cid):
+        blocked_feature = 'ТЗ окон'
+    elif raw == 'v160:marker_capture' and not _r73_feature_enabled('markers', cid):
+        blocked_feature = 'Маркеры'
+    elif _r73_is_injected_constructor_button(raw) and not _r73_feature_enabled('constructors', cid):
+        blocked_feature = 'Конструкторы'
+    if blocked_feature:
+        try: bot.answer_callback_query(call.id, f'{blocked_feature}: ВЫКЛ в профиле этого контура.', show_alert=False)
+        except Exception: pass
+        _r73_schedule_live_refresh('stale_' + blocked_feature)
+        return True
+
+    if raw.startswith('r73:factory:'):
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+            except Exception: pass
+            return True
+        parts = raw.split(':')
+        action = parts[2] if len(parts) > 2 else ''
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        if action == 'open':
+            safe_edit(bot, call, _r73_factory_main_text(), reply_markup=_r73_factory_main_keyboard())
+            return True
+        if action == 'back_info':
+            safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
+            return True
+        if action == 'scope' and len(parts) > 3:
+            scope = parts[3]
+            safe_edit(bot, call, _r73_factory_scope_text(scope), reply_markup=_r73_factory_scope_keyboard(scope))
+            return True
+        if action == 'toggle' and len(parts) > 4:
+            scope, feature = parts[3], parts[4]
+            value = _r73_set_feature(scope, feature, not _r73_feature_enabled(feature, scope=scope), persist=True)
+            try: bot.answer_callback_query(call.id, f"{_R73_FEATURE_LABELS.get(feature, feature)}: {'ВКЛ' if value else 'ВЫКЛ'}")
+            except Exception: pass
+            safe_edit(bot, call, _r73_factory_scope_text(scope), reply_markup=_r73_factory_scope_keyboard(scope))
+            _r73_schedule_live_refresh(f'toggle_{scope}_{feature}')
+            return True
+        if action == 'reset_ask' and len(parts) > 3:
+            scope = parts[3]
+            safe_edit(bot, call, _r73_factory_reset_text(scope), reply_markup=_r73_factory_reset_keyboard(scope))
+            return True
+        if action == 'reset_do' and len(parts) > 3:
+            scope = parts[3]
+            _r73_factory_reset(scope, persist=True)
+            try: bot.answer_callback_query(call.id, 'Заводской профиль восстановлен.')
+            except Exception: pass
+            safe_edit(bot, call, _r73_factory_scope_text(scope), reply_markup=_r73_factory_scope_keyboard(scope))
+            _r73_schedule_live_refresh(f'reset_{scope}')
+            try: bot_journal('r73_factory_reset', cid, f'scope={scope}; features=all_off')
+            except Exception: pass
+            return True
+        return True
+
+    # Compatibility for old Info keyboards that may remain open after deploy.
+    if raw == 'r31:toggle:constructors' and cid == int(OWNER_ID or 0) and uid == int(OWNER_ID or 0):
+        value = _r73_set_feature('owner', 'constructors', not _r73_feature_enabled('constructors', scope='owner'), persist=True)
+        try: bot.answer_callback_query(call.id, 'Конструкторы: ' + ('ВКЛ' if value else 'ВЫКЛ'))
+        except Exception: pass
+        safe_edit(bot, call, _r73_factory_scope_text('owner'), reply_markup=_r73_factory_scope_keyboard('owner'))
+        _r73_schedule_live_refresh('legacy_constructor_toggle')
+        return True
+    if raw == 'r31:toggle:tz_markers' and cid == int(OWNER_ID or 0) and uid == int(OWNER_ID or 0):
+        value = not (_r73_feature_enabled('tz', scope='owner') and _r73_feature_enabled('markers', scope='owner'))
+        _r73_set_feature('owner', 'tz', value, persist=False)
+        _r73_set_feature('owner', 'markers', value, persist=True)
+        try: bot.answer_callback_query(call.id, 'ТЗ окон и маркеры: ' + ('ВКЛ' if value else 'ВЫКЛ'))
+        except Exception: pass
+        safe_edit(bot, call, _r73_factory_scope_text('owner'), reply_markup=_r73_factory_scope_keyboard('owner'))
+        _r73_schedule_live_refresh('legacy_tz_marker_toggle')
+        return True
+
+    return bool(_R73_CONTOUR_CORE(call, raw)) if callable(_R73_CONTOUR_CORE) else False
+
+contour_callback_guard = _r73_contour_callback_guard
+
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r73:factory:*', 'Ф89')
+    bot_journal('r73_factory_profiles_loaded', int(OWNER_ID or 0), f'name={BOT_DISPLAY_NAME}; defaults=constructors/descriptions/tz/markers_off; scopes=owner,circle1,circle2')
+except Exception:
+    pass
+
+# v262 / очнись_5

@@ -6022,10 +6022,20 @@ def _native_telegram(method, *args, **kwargs):
     return method(bot, *args, **kwargs)
 
 
+def _final_bot_identity_text(value):
+    """Presentation fence: every visible legacy bot name becomes this release name."""
+    raw = str(value or '')
+    try:
+        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_5')
+        return re.sub(r'очнись_\d+', name, raw, flags=re.I)
+    except Exception:
+        return raw
+
+
 def _final_send_message(chat_id, text, *args, **kwargs):
     cid = int(chat_id)
     source_markup = kwargs.get('reply_markup')
-    decorated, token = _v161_tokenize_text(str(text or ''), cid, None)
+    decorated, token = _v161_tokenize_text(_final_bot_identity_text(text), cid, None)
     prepared = _final_prepare_markup(cid, source_markup, decorated)
     # очнись_2: every newly created inline window starts at actor revision 1.
     stamp = globals().get('window_actor_stamp_markup')
@@ -6058,7 +6068,7 @@ def _final_edit_message_text(text, *args, **kwargs):
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else args[1] if len(args) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
     parse_mode = kwargs.get('parse_mode')
-    decorated, token = _v161_tokenize_text(str(text or ''), cid, mid)
+    decorated, token = _v161_tokenize_text(_final_bot_identity_text(text), cid, mid)
     source_markup = kwargs.get('reply_markup')
     prepared = _final_prepare_markup(cid, source_markup, decorated)
 
@@ -6170,7 +6180,7 @@ def _final_edit_message_caption(*args, **kwargs):
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
     parse_mode = kwargs.get('parse_mode')
-    decorated, token = _v161_tokenize_text(str(caption or ''), cid, mid)
+    decorated, token = _v161_tokenize_text(_final_bot_identity_text(caption), cid, mid)
     source_markup = kwargs.get('reply_markup')
     prepared = _final_prepare_markup(cid, source_markup, decorated)
     actor = globals().get('WINDOW_ACTOR_REGISTRY')

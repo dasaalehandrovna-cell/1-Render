@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "abd559bf6e8afc33d0fd92e9b1b645e74a461403cc703aac80281a1e27f98561",
+    "01_core_data.py": "b138d00cfb3f0ec46daa893208f8e365e2afd583927032406dce8e3bcc02fcdf",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
     "04_messages_features.py": "f28689f66a4b29200a406bd4b56d0f6156711af676e87b54d4c343f2eb9e22e3",
@@ -22,10 +22,10 @@
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
     "07_state_web.py": "78caa9a01fd357d1b02947b448f45f9ccc81dc4b487b73cdca047a86944b82a6",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "f840f662dab9503d0b521320ca1d12310344adab717cefd039a829476c07e16f",
-    "10_split_policy_offload.py": "ca1d96fd7521fe0dc4dd59c684ea34fd95c8849c83a2259339f54e8cd2cfc8a9"
+    "09_final_transport.py": "87dc601bf43b2b3929a74a8654b391bc62b6f0d9067aa18bd6e383202b4335a9",
+    "10_split_policy_offload.py": "42599f5c6e10dd4e8a29954801f1218845f7ccf44ab57685bf91f06045708170"
   },
-  "release": "ОЧНИСЬ_4-R72-SINGLE-WINDOW-ROUTING-FINAL",
+  "release": "ОЧНИСЬ_5-R73-FACTORY-UI-PROFILES-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -284,6 +284,13 @@
     "r72_canonical_markup_only_window_actor",
     "r72_constructor_single_send",
     "r72_single_semantic_callback_owners",
-    "r72_no_application_direct_reply_markup_edit"
+    "r72_no_application_direct_reply_markup_edit",
+    "och5_current_release_name_fence",
+    "r73_factory_profiles_owner_circle1_circle2",
+    "r73_factory_independent_constructors_descriptions_tz_markers",
+    "r73_factory_four_features_default_off",
+    "r73_factory_scope_reset_non_destructive",
+    "r73_final_visibility_fence",
+    "r73_live_window_refresh_via_actor"
   ]
 }
