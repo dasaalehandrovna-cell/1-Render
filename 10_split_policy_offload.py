@@ -7634,7 +7634,7 @@ try: app.view_functions['split_front_export_result_r7']=_r40_export_result_handl
 except Exception: pass
 
 
-def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
+def _r77_r40_status_edit_core(chat_id,msg_id,text,purpose='r40_file_status'):
     if not msg_id: return
     try:
         fn=globals().get('_tg_call_retry')
@@ -9191,10 +9191,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_9')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_9')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9753,7 +9753,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# R75 / очнись_9 — hard feature-visibility fence + expanded "Жук-нарывник".
+# R75 / очнись_10 — hard feature-visibility fence + expanded "Жук-нарывник".
 #
 # The journal of 2026-09-15 proved that all four switches were OFF while late
 # markup-only/restore paths repeatedly reintroduced v171:desc.  R75 therefore
@@ -9965,7 +9965,7 @@ try:
 except Exception:
     pass
 
-# R74 / очнись_9 — live MASTER map + machine index inside Info.
+# R74 / очнись_10 — live MASTER map + machine index inside Info.
 # The artifacts are generated from the exact runtime sources on demand, so they
 # cannot silently drift away from the deployed code.  Telegram document delivery
 # is asynchronous and never blocks the callback/window hot path.
@@ -10063,7 +10063,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_9'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10102,7 +10102,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_9')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_10')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10152,7 +10152,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10175,13 +10175,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10237,13 +10237,13 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}; live_source_index=on")
 except Exception:
     pass
 
 
 # ---------------------------------------------------------------------------
-# R76 / очнись_9 — deterministic UI pipeline + Back/Main fix + scoped refresh
+# R76 / очнись_10 — deterministic UI pipeline + Back/Main fix + scoped refresh
 # + semantic button dedupe + lightweight latency profiler.
 #
 # Contract:
@@ -10597,7 +10597,7 @@ except Exception:
     pass
 
 
-# R77 / очнись_9 — finance hot-path isolation + callback queue separation
+# R77 / очнись_10 — finance hot-path isolation + callback queue separation
 # User-visible finance commit is: incremental RAM -> one SQLite commit -> one UI repaint.
 # Canonical full-ledger reconciliation remains durable but is latest-wins background work.
 _R77_FIN_STATS_LOCK = threading.RLock()
@@ -10777,7 +10777,6 @@ except Exception:
 
 # R77: HEAVY progress text is cosmetic.  When interactive/finance lanes are busy,
 # skip that 12-second progress repaint instead of competing for the same Telegram chat.
-_R77_PREV_R40_STATUS_EDIT = _r40_status_edit
 _R77_PROGRESS_SKIPPED = 0
 
 def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
@@ -10800,6 +10799,6 @@ def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
             except Exception:
                 pass
             return False
-    return _R77_PREV_R40_STATUS_EDIT(chat_id,msg_id,text,purpose)
+    return _r77_r40_status_edit_core(chat_id,msg_id,text,purpose)
 
 # v262

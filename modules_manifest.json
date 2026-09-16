@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "655404f20542a46a38c43725f967ffdb9d3cda0368e80725955bf25b6267bd41",
+    "01_core_data.py": "c54f96f7fe97d72f4c12f928df8625dd4ae357f4bd16427fdd39303a9daaf732",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "bc257532d9559df9d351bc217fd9d455c308955201582ab09bcf16d1061512f1",
@@ -22,10 +22,10 @@
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
     "07_state_web.py": "d1c72dc5c0a039d7c015a5689c162d061d02a5d64cb2e2829752e0ecc55515a0",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "a7fd3c2e8b7ca9b2666c73c7078df3d2b97b8fbaba163d3ebdd88d9b1a5f94d5",
-    "10_split_policy_offload.py": "1336898d6b23af9454e6d7b1b17fe35cc13c532f7db669da4338d898d4193206"
+    "09_final_transport.py": "11d0b5b3dd5612f1490e944f8929d0f5679815c690c09d5e4400045562d43d36",
+    "10_split_policy_offload.py": "704a807c9eb743f5a1bc9d3df77264e779e86f3ba66c6c1316bff8353f268b20"
   },
-  "release": "ОЧНИСЬ_9-R77-FINANCE-HOTPATH-ISOLATION",
+  "release": "ОЧНИСЬ_10-R78-FINALIZATION-ONLY-STATUS-OWNER",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -313,6 +313,9 @@
     "r77_forward_finance_skip_duplicate_persist",
     "r77_fin_forward_parallel_workers_three",
     "r77_beetle_fin_queue_profiler",
-    "r77_heavy_progress_defer_when_ui_busy"
+    "r77_heavy_progress_defer_when_ui_busy",
+    "r78_no_prev_status_alias",
+    "r78_one_public_one_core_status_edit",
+    "och10_display_identity"
   ]
 }

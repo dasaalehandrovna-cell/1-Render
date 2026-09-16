@@ -618,8 +618,8 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och9_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_9'" in core_src,
+    ok('och10_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_10'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
@@ -730,6 +730,12 @@ if ROLE=='fast':
        "'callback_durable': _stats('CALLBACK_DURABLE_TASK_POOL')" in split_src and
        "'finance_maint': _stats('FINANCE_MAINT_TASK_POOL')" in split_src,
        'beetle must expose FIN reconcile plus ACK/durable/journal/forward queue pressure')
+    ok('r78_status_edit_finalization_only',
+       '_R77_PREV_R40_STATUS_EDIT' not in split_src and
+       count(r'(?m)^def _r40_status_edit\(', split_src) == 1 and
+       count(r'(?m)^def _r77_r40_status_edit_core\(', split_src) == 1 and
+       'return _r77_r40_status_edit_core(chat_id,msg_id,text,purpose)' in split_src,
+       'R77 HEAVY progress defer must use one canonical core + one public owner, never PREV/ORIG/BASE capture')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')
