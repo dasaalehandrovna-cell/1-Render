@@ -618,8 +618,8 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och10_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_10'" in core_src,
+    ok('och11_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_11'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
@@ -736,6 +736,37 @@ if ROLE=='fast':
        count(r'(?m)^def _r77_r40_status_edit_core\(', split_src) == 1 and
        'return _r77_r40_status_edit_core(chat_id,msg_id,text,purpose)' in split_src,
        'R77 HEAVY progress defer must use one canonical core + one public owner, never PREV/ORIG/BASE capture')
+    ok('r79_ui_only_volatile_owner_switch',
+       '_R79_UI_ONLY = False' in split_src and
+       'def r79_ui_only_enabled' in split_src and
+       "callback_data='r79:ui_only:toggle'" in split_src and
+       "callback_data='r79:ui_only:test'" in split_src,
+       'UI-ONLY must be volatile and expose owner toggle + pure test window')
+    ok('r79_executor_and_timer_fence',
+       "globals().get('_r79_ui_only_should_block_pool')" in core_src and
+       "globals().get('_r79_ui_only_should_block_timer')" in core_src and
+       "retry_at = time.time() + 5.0" in core_src,
+       'all shared executors must honor UI-ONLY and delayed timers must defer, not disappear')
+    ok('r79_logging_lock_bypass',
+       "globals().get('r79_ui_only_enabled')" in web_src and
+       "def _canon_log_info__001" in web_src and
+       "def r52_diag" in core_src,
+       'UI-ONLY must bypass verbose INFO/R52 writes that can block on logging handler lock')
+    ok('r79_hot_snapshot_bypass',
+       "def r52_hot_pool_snapshot" in core_src and "return {}" in _fn_sources(core_src,{'r52_hot_pool_snapshot'}).get('r52_hot_pool_snapshot',''),
+       'UI-ONLY must avoid evaluating expensive pool snapshots before no-op diagnostics')
+    ok('r79_noncallback_business_block',
+       'R79 UI-ONLY is a strict A/B interface mode' in final_transport and
+       "_note('message_blocked'" in final_transport,
+       'non-callback business messages must not execute in UI-ONLY')
+    ok('r79_semantic_mutation_guard',
+       "if r79_ui_only_enabled() and not _r79_ui_only_is_navigation_callback(raw):" in split_src and
+       "_r79_ui_only_note_block('callback_blocked'" in split_src,
+       'mutating callbacks must be blocked before feature routers in UI-ONLY')
+    ok('r79_heavy_progress_suppressed',
+       "if r79_ui_only_enabled():" in _fn_sources(split_src,{'_r40_status_edit'}).get('_r40_status_edit',''),
+       'HEAVY progress edits must not compete with pure UI test')
+
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

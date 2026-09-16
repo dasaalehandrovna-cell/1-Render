@@ -136,6 +136,12 @@ _V176_ORIG_MEMORY_GUARD = globals().get('memory_guard_tick')
 
 def _canon_bot_journal__001(action: str, chat_id=None, detail: str='', level: str='INFO'):
     """Final journal gate: one public implementation, no v176→v153→core wrapper chain."""
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            return None
+    except Exception:
+        pass
     action_s = str(action or '')
     level_s = str(level or 'INFO')
     if level_s.upper() not in {'ERROR', 'CRITICAL'}:
@@ -5909,6 +5915,16 @@ _FINAL_NATIVE_PROCESS_NEW_UPDATES = telebot.TeleBot.process_new_updates
 
 def _final_dispatch_non_callback_once(update):
     msg = getattr(update, 'message', None)
+    # R79 UI-ONLY is a strict A/B interface mode: non-callback business updates
+    # are swallowed before message/task/reminder/finance/forward handlers.
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            _note = globals().get('_r79_ui_only_note_block')
+            if callable(_note): _note('message_blocked', 'non_callback', getattr(update,'update_id',''), type(msg).__name__ if msg is not None else 'update')
+            return True
+    except Exception:
+        pass
     if msg is not None:
         try:
             if _v221_capture_owner_message(msg):
@@ -6035,7 +6051,7 @@ def _final_bot_identity_text(value):
     """Presentation fence: every visible legacy bot name becomes this release name."""
     raw = str(value or '')
     try:
-        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10')
+        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11')
         return re.sub(r'очнись_\d+', name, raw, flags=re.I)
     except Exception:
         return raw

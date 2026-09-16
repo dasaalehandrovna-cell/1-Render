@@ -8844,6 +8844,12 @@ def _canon_log_error__001(message):
         return _V153_ORIG_LOG_ERROR(v153_redact_text(message))
 
 def _canon_log_info__001(message):
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            return None
+    except Exception:
+        pass
     safe = v153_redact_text(message)
     try:
         text = str(safe or '')
@@ -8856,6 +8862,12 @@ def _canon_log_info__001(message):
         return _V153_ORIG_LOG_INFO(safe)
 
 def _v177_legacy_0007_bot_journal(action, chat_id=None, detail='', level='INFO'):
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            return None
+    except Exception:
+        pass
     if callable(_V153_ORIG_BOT_JOURNAL):
         return _V153_ORIG_BOT_JOURNAL(str(action), chat_id, v153_sanitize(detail), str(level))
 try:

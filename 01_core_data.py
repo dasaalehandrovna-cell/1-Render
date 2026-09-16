@@ -476,6 +476,14 @@ def _r52_safe_diag_value(name, value, limit=700):
         return '<unprintable>'
 
 def r52_diag(event: str, **fields):
+    # R79 UI-ONLY: forensic logging itself can contend on Python logging locks.
+    # In pure-UI A/B mode keep the hot path free of diagnostic writes.
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            return
+    except Exception:
+        pass
     if not R52_FORENSIC_BUTTON_LOG:
         return
     try:
@@ -528,6 +536,14 @@ class KeyedTaskPool:
 
     def submit(self, key, func, *args, **kwargs) -> bool:
         key = str(key)
+        try:
+            _gate = globals().get('_r79_ui_only_should_block_pool')
+            if callable(_gate) and _gate(self.name, key, func, args, kwargs):
+                _note = globals().get('_r79_ui_only_note_block')
+                if callable(_note): _note('pool', self.name, key, getattr(func,'__name__',type(func).__name__))
+                return True
+        except Exception:
+            pass
         with self._lock:
             if self._pending >= self.max_pending:
                 self._rejected += 1
@@ -551,6 +567,14 @@ class KeyedTaskPool:
         submit() semantics remain unchanged for finance/forward/business queues.
         """
         key = str(key)
+        try:
+            _gate = globals().get('_r79_ui_only_should_block_pool')
+            if callable(_gate) and _gate(self.name, key, func, args, kwargs):
+                _note = globals().get('_r79_ui_only_note_block')
+                if callable(_note): _note('pool_unique', self.name, key, getattr(func,'__name__',type(func).__name__))
+                return True
+        except Exception:
+            pass
         with self._lock:
             if key in self._active_keys or bool(self._by_key.get(key)):
                 return False
@@ -599,7 +623,17 @@ class KeyedTaskPool:
             if _r52_pool_key_interesting(key):
                 r52_diag('POOL_WORKER_START', pool=self.name, key=key, wait=wait, func=getattr(func,'__name__',type(func).__name__), pending=self._pending, active=self._active_workers)
             try:
-                func(*args, **kwargs)
+                _skip = False
+                try:
+                    _gate = globals().get('_r79_ui_only_should_block_pool')
+                    _skip = bool(callable(_gate) and _gate(self.name, key, func, args, kwargs))
+                    if _skip:
+                        _note = globals().get('_r79_ui_only_note_block')
+                        if callable(_note): _note('pool_queued', self.name, key, getattr(func,'__name__',type(func).__name__))
+                except Exception:
+                    _skip = False
+                if not _skip:
+                    func(*args, **kwargs)
                 with self._lock:
                     self._completed += 1
             except Exception as exc:
@@ -691,6 +725,14 @@ class LatestKeyedTaskPool:
         is intentionally discarded before execution.
         """
         key = str(key)
+        try:
+            _gate = globals().get('_r79_ui_only_should_block_pool')
+            if callable(_gate) and _gate(self.name, key, func, args, kwargs):
+                _note = globals().get('_r79_ui_only_note_block')
+                if callable(_note): _note('latest', self.name, key, getattr(func,'__name__',type(func).__name__))
+                return 1
+        except Exception:
+            pass
         replaced_callback = None
         with self._lock:
             if key not in self._active_keys and len(self._active_keys) >= self.max_pending_keys:
@@ -752,7 +794,17 @@ class LatestKeyedTaskPool:
                 # If a newer render arrived before this task actually got CPU time,
                 # discard this stale task without touching Telegram.
                 if self.is_latest(key, seq):
-                    func(*args, **kwargs)
+                    _skip = False
+                    try:
+                        _gate = globals().get('_r79_ui_only_should_block_pool')
+                        _skip = bool(callable(_gate) and _gate(self.name, key, func, args, kwargs))
+                        if _skip:
+                            _note = globals().get('_r79_ui_only_note_block')
+                            if callable(_note): _note('latest_queued', self.name, key, getattr(func,'__name__',type(func).__name__))
+                    except Exception:
+                        _skip = False
+                    if not _skip:
+                        func(*args, **kwargs)
                 with self._lock:
                     self._completed += 1
             except Exception as exc:
@@ -876,6 +928,24 @@ class DelayedTaskScheduler:
                 if int(self._versions.get(key, 0)) != int(version):
                     continue
                 self._deadlines.pop(key, None)
+
+            # R79 UI-ONLY defers already-armed internal timers instead of destroying
+            # them.  When the test switch is turned OFF they resume automatically.
+            try:
+                _gate = globals().get('_r79_ui_only_should_block_timer')
+                if callable(_gate) and _gate(key, func, args, kwargs):
+                    _note = globals().get('_r79_ui_only_note_block')
+                    if callable(_note): _note('timer_deferred', 'scheduler', key, getattr(func,'__name__',type(func).__name__))
+                    with self._cv:
+                        if int(self._versions.get(key, 0)) == int(version):
+                            retry_at = time.time() + 5.0
+                            self._seq += 1
+                            self._deadlines[key] = retry_at
+                            heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
+                            self._cv.notify_all()
+                    continue
+            except Exception:
+                pass
 
             # One stable executor key per logical timer.  schedule() is already latest-wins
             # for a key, so allowing multiple concurrent executor copies is both wasteful
@@ -1643,6 +1713,12 @@ def r25_trace_current():
     }
 
 def r25_trace_stage(stage: str, elapsed=None, detail: str='', emit: bool=True):
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            return
+    except Exception:
+        pass
     ctx = r25_trace_current()
     update_id = ctx.get('update_id') or ''
     if update_id:
@@ -1662,6 +1738,12 @@ def r25_trace_end():
     except Exception: pass
 
 def r52_hot_pool_snapshot():
+    try:
+        _ui_only = globals().get('r79_ui_only_enabled')
+        if callable(_ui_only) and _ui_only():
+            return {}
+    except Exception:
+        pass
     rows={}
     for nm in ('NAVIGATION_TASK_POOL','FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','CALLBACK_DURABLE_TASK_POOL','CALLBACK_JOURNAL_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','FINANCE_MAINT_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
         try:
@@ -2124,7 +2206,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_10'
+BOT_DISPLAY_NAME = 'очнись_11'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""

@@ -9181,6 +9181,173 @@ _R73_SCOPE_LABELS = {
 }
 _R73_FACTORY_DEFAULTS = {key: False for key in _R73_FEATURES}
 
+# ---------------------------------------------------------------------------
+# R79 / очнись_11 — volatile UI-ONLY A/B diagnostic mode.
+#
+# This switch intentionally does NOT persist.  A process restart always returns
+# to normal mode.  In UI-ONLY, only the interactive callback/navigation lane,
+# callback ACK and direct canonical Telegram render remain alive.  Business
+# pools, durability/journal side jobs, backup/export/forward/finance workers and
+# delayed business timers are suppressed/deferred so the owner can compare pure
+# window latency with the full runtime.
+# ---------------------------------------------------------------------------
+_R79_UI_ONLY_LOCK = threading.RLock()
+_R79_UI_ONLY = False
+_R79_UI_ONLY_CHANGED_AT = 0.0
+_R79_UI_ONLY_STATS = {
+    'enabled_count': 0, 'disabled_count': 0, 'blocked_total': 0,
+    'pool': 0, 'pool_unique': 0, 'pool_queued': 0,
+    'latest': 0, 'latest_queued': 0, 'timer_deferred': 0,
+    'callback_blocked': 0, 'message_blocked': 0,
+}
+_R79_UI_ONLY_RECENT = []
+_R79_TEST_STATE = {}
+_R79_UI_ALLOWED_POOLS = {'fast-ui', 'nav-ui', 'callback-ack'}
+
+
+def r79_ui_only_enabled():
+    with _R79_UI_ONLY_LOCK:
+        return bool(_R79_UI_ONLY)
+
+
+def _r79_ui_only_note_block(kind, lane='', key='', func=''):
+    with _R79_UI_ONLY_LOCK:
+        k = str(kind or 'blocked')
+        _R79_UI_ONLY_STATS['blocked_total'] = int(_R79_UI_ONLY_STATS.get('blocked_total') or 0) + 1
+        _R79_UI_ONLY_STATS[k] = int(_R79_UI_ONLY_STATS.get(k) or 0) + 1
+        _R79_UI_ONLY_RECENT.append({
+            'ts': round(time.time(), 3), 'kind': k, 'lane': str(lane or '')[:40],
+            'key': str(key or '')[:100], 'func': str(func or '')[:80],
+        })
+        if len(_R79_UI_ONLY_RECENT) > 24:
+            del _R79_UI_ONLY_RECENT[:-24]
+
+
+def _r79_ui_only_should_block_pool(pool_name, key='', func=None, args=(), kwargs=None):
+    if not r79_ui_only_enabled():
+        return False
+    name = str(pool_name or '').strip().casefold()
+    # Only the actual user navigation/callback lane and ACK survive.
+    # Live R67 foreground rendering is synchronous and does not need window-render.
+    return name not in _R79_UI_ALLOWED_POOLS
+
+
+def _r79_ui_only_should_block_timer(key='', func=None, args=(), kwargs=None):
+    if not r79_ui_only_enabled():
+        return False
+    # All delayed internal processes are deferred.  UI-ONLY callbacks themselves
+    # do not rely on delayed timers.
+    return True
+
+
+def _r79_ui_only_is_navigation_callback(value):
+    raw = _r75_base_callback(value) if '_r75_base_callback' in globals() else str(value or '')
+    low = str(raw or '').strip().casefold()
+    if low.startswith('r79:ui_only:'):
+        return True
+    if low in {'none', 'nav_prev', 'info_close', 'aux_close', 'journal_back', 'fw_back_src'}:
+        return True
+    # Explicit mutations/tasks are blocked even if their labels happen to contain
+    # words such as menu/open.
+    mutating = (
+        'toggle', 'save', 'delete', 'remove', 'reset_do', 'confirm', 'apply',
+        'execute', 'run_now', 'backup_now', 'restore_now', 'upload', 'download',
+        'sync_now', 'send_now', 'probe_all', 'clear', 'purge', 'rebuild', 'retry',
+        'create', ':add', ':edit', ':del', ':done', ':start', ':stop',
+    )
+    if any(token in low for token in mutating):
+        return False
+    # Window transitions / pagination / read-only status screens.
+    navigation = (
+        'info', 'menu', 'open', 'list', 'status', 'routes', 'scope', 'page',
+        'prev', 'next', 'today', 'back', 'calendar', 'journal', 'watcher',
+        'queues', 'diagnostic', 'map', 'beetle', 'factory', 'history', 'view',
+        'removed_list', 'forward_menu', 'finmode_menu',
+    )
+    return any(token in low for token in navigation)
+
+
+def _r79_set_ui_only(enabled):
+    global _R79_UI_ONLY, _R79_UI_ONLY_CHANGED_AT
+    value = bool(enabled)
+    with _R79_UI_ONLY_LOCK:
+        _R79_UI_ONLY = value
+        _R79_UI_ONLY_CHANGED_AT = time.time()
+        key = 'enabled_count' if value else 'disabled_count'
+        _R79_UI_ONLY_STATS[key] = int(_R79_UI_ONLY_STATS.get(key) or 0) + 1
+    return value
+
+
+def r79_ui_only_snapshot():
+    with _R79_UI_ONLY_LOCK:
+        return {
+            'enabled': bool(_R79_UI_ONLY),
+            'changed_at': float(_R79_UI_ONLY_CHANGED_AT or 0.0),
+            'stats': dict(_R79_UI_ONLY_STATS),
+            'recent': list(_R79_UI_ONLY_RECENT[-10:]),
+        }
+
+
+def _r79_ui_only_text():
+    snap = r79_ui_only_snapshot()
+    enabled = bool(snap.get('enabled'))
+    st = snap.get('stats') or {}
+    lines = [
+        f'🧪 UI-ONLY · {BOT_DISPLAY_NAME}', '',
+        f"Режим: {'✅ ВКЛ · ЧИСТЫЙ ИНТЕРФЕЙС' if enabled else '⬜ ВЫКЛ · ПОЛНЫЙ БОТ'}", '',
+        'UI-ONLY нужен только для A/B-диагностики тормозов.',
+        'Когда ВКЛ, остаются: callback/навигация, ACK, построение окна, Window Actor и Telegram render.',
+        'Не запускаются новые: FIN, пересылки, задачи, напоминания, export, backup/snapshot, Peer/HEAVY work, journal/durable sidejobs и внутренние timers.',
+        'Тяжёлая BTNTRACE/R52 INFO-запись также отключается, чтобы исключить logging-lock.', '',
+        'Уже выполняющаяся задача не обрывается посередине: она может закончиться. Новая работа блокируется.',
+        'После рестарта режим всегда ВЫКЛ. При выключении отложенные scheduler timers возобновляются.', '',
+        f"Заблокировано внутренних запусков: {int(st.get('blocked_total') or 0)}",
+        f"Timers отложено: {int(st.get('timer_deferred') or 0)} · callbacks действий: {int(st.get('callback_blocked') or 0)}",
+        '', 'Для чистого эталона откройте «Тестовое окно» и несколько раз меняйте только текст/кнопки.',
+    ]
+    return window_mark('\n'.join(lines), 'Ф91')
+
+
+def _r79_ui_only_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    enabled = r79_ui_only_enabled()
+    kb.row(IB(('🟢 Выключить UI-ONLY' if enabled else '🧪 Включить UI-ONLY'), callback_data='r79:ui_only:toggle'))
+    kb.row(IB('⚡ Тестовое окно', callback_data='r79:ui_only:test'))
+    kb.row(IB('🔄 Обновить статус', callback_data='r79:ui_only:open'))
+    kb.row(IB('🔙 В Инфо', callback_data='r79:ui_only:back_info'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+def _r79_test_text(chat_id):
+    cid = int(chat_id)
+    row = _R79_TEST_STATE.setdefault(cid, {'text': 0, 'buttons': 0, 'clicks': 0, 'last_mono': 0.0})
+    row['clicks'] = int(row.get('clicks') or 0) + 1
+    now_m = time.monotonic()
+    delta = 0.0 if not row.get('last_mono') else max(0.0, now_m - float(row.get('last_mono') or 0.0))
+    row['last_mono'] = now_m
+    return window_mark(
+        f"⚡ ЧИСТОЕ ТЕСТОВОЕ ОКНО · {BOT_DISPLAY_NAME}\n\n"
+        f"Текст-вариант: {int(row.get('text') or 0)}\n"
+        f"Кнопки-вариант: {int(row.get('buttons') or 0)}\n"
+        f"Нажатий: {int(row.get('clicks') or 0)}\n"
+        f"Интервал от прошлого render: {delta:.3f} с\n\n"
+        'Здесь нет FIN/forward/SQLite/snapshot/Peer-задач. Только RAM → canonical render → Telegram.',
+        'Ф92')
+
+
+def _r79_test_keyboard(chat_id):
+    cid = int(chat_id)
+    row = _R79_TEST_STATE.setdefault(cid, {'text': 0, 'buttons': 0, 'clicks': 0, 'last_mono': 0.0})
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    if int(row.get('buttons') or 0) % 2 == 0:
+        kb.row(IB('📝 Текст', callback_data='r79:ui_only:test_text'), IB('🔘 Кнопки', callback_data='r79:ui_only:test_buttons'))
+        kb.row(IB('1', callback_data='r79:ui_only:test_1'), IB('2', callback_data='r79:ui_only:test_2'), IB('3', callback_data='r79:ui_only:test_3'))
+    else:
+        kb.row(IB('🔘 Кнопки B', callback_data='r79:ui_only:test_buttons'), IB('📝 Текст B', callback_data='r79:ui_only:test_text'))
+        kb.row(IB('A', callback_data='r79:ui_only:test_1'), IB('B', callback_data='r79:ui_only:test_2'))
+    kb.row(IB('🔙 UI-ONLY', callback_data='r79:ui_only:open'), IB('🔙 В Инфо', callback_data='r79:ui_only:back_info'))
+    return kb
+
 
 def _r73_factory_root(create=True):
     try:
@@ -9191,10 +9358,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9598,6 +9765,9 @@ def _r73_info_text_decorate(chat_id: int, base: str):
         line = f'🏭 Заводские профили UI: владелец {_r73_scope_summary("owner")} · К1 {_r73_scope_summary("circle1")} · К2 {_r73_scope_summary("circle2")}'
         if line not in value:
             value = (value.rstrip() + '\n\n' + line).strip()
+        ui_line = f"🧪 UI-ONLY: {'ВКЛ' if r79_ui_only_enabled() else 'ВЫКЛ'} · volatile A/B"
+        if ui_line not in value:
+            value = (value.rstrip() + '\n' + ui_line).strip()
     return value[:3900]
 
 
@@ -9616,7 +9786,7 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
                 cb = _r73_cb(b)
                 if cb in {'r31:toggle:tz_markers', 'r31:toggle:constructors'}:
                     continue
-                if cb in {'r73:factory:open', 'r74:map:open', 'r75:beetle:open'}:
+                if cb in {'r73:factory:open', 'r74:map:open', 'r75:beetle:open', 'r79:ui_only:open'}:
                     continue
                 kept.append(b)
             if kept:
@@ -9627,9 +9797,10 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
             if any((_r73_cb(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in str(getattr(b, 'text', '') if not isinstance(b, dict) else b.get('text', '')).casefold()) for b in (row or [])):
                 insert_at = i
                 break
-        rows.insert(insert_at, [IB('🪲 Жук-нарывник R75', callback_data='r75:beetle:open')])
-        rows.insert(insert_at + 1, [IB('🗺 Карта / индекс бота', callback_data='r74:map:open')])
-        rows.insert(insert_at + 2, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
+        rows.insert(insert_at, [IB(f"🧪 UI-ONLY · {'ВКЛ' if r79_ui_only_enabled() else 'ВЫКЛ'}", callback_data='r79:ui_only:open')])
+        rows.insert(insert_at + 1, [IB('🪲 Жук-нарывник R75', callback_data='r75:beetle:open')])
+        rows.insert(insert_at + 2, [IB('🗺 Карта / индекс бота', callback_data='r74:map:open')])
+        rows.insert(insert_at + 3, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
         if callable(set_fn):
             return set_fn(kb, rows)
         out = types.InlineKeyboardMarkup(row_width=1)
@@ -9638,6 +9809,7 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
         return out
     except Exception:
         try:
+            kb.row(IB(f"🧪 UI-ONLY · {'ВКЛ' if r79_ui_only_enabled() else 'ВЫКЛ'}", callback_data='r79:ui_only:open'))
             kb.row(IB('🪲 Жук-нарывник R75', callback_data='r75:beetle:open'))
             kb.row(IB('🗺 Карта / индекс бота', callback_data='r74:map:open'))
             kb.row(IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open'))
@@ -9664,6 +9836,41 @@ def _r73_contour_callback_guard(call, resolved):
         uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
     except Exception:
         return bool(_R73_CONTOUR_CORE(call, raw)) if callable(_R73_CONTOUR_CORE) else False
+
+    # R79 owner-only volatile UI-ONLY control and pure RAM test window.
+    if raw.startswith('r79:ui_only:'):
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+            except Exception: pass
+            return True
+        action = raw.split(':', 2)[2] if raw.count(':') >= 2 else 'open'
+        if action == 'toggle':
+            value = _r79_set_ui_only(not r79_ui_only_enabled())
+            try: bot.answer_callback_query(call.id, 'UI-ONLY: ' + ('ВКЛ' if value else 'ВЫКЛ'))
+            except Exception: pass
+            safe_edit(bot, call, _r79_ui_only_text(), reply_markup=_r79_ui_only_keyboard())
+            return True
+        if action == 'back_info':
+            safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
+            return True
+        if action in {'test', 'test_text', 'test_buttons', 'test_1', 'test_2', 'test_3'}:
+            row = _R79_TEST_STATE.setdefault(cid, {'text': 0, 'buttons': 0, 'clicks': 0, 'last_mono': 0.0})
+            if action in {'test_text', 'test_1', 'test_2', 'test_3'}:
+                row['text'] = int(row.get('text') or 0) + 1
+            if action == 'test_buttons':
+                row['buttons'] = int(row.get('buttons') or 0) + 1
+            safe_edit(bot, call, _r79_test_text(cid), reply_markup=_r79_test_keyboard(cid))
+            return True
+        safe_edit(bot, call, _r79_ui_only_text(), reply_markup=_r79_ui_only_keyboard())
+        return True
+
+    # In UI-ONLY only read-only/window-transition callbacks are allowed to reach
+    # feature routers.  Business mutations/tasks are acknowledged but not executed.
+    if r79_ui_only_enabled() and not _r79_ui_only_is_navigation_callback(raw):
+        _r79_ui_only_note_block('callback_blocked', 'callback', raw, 'semantic_guard')
+        try: bot.answer_callback_query(call.id, '🧪 UI-ONLY: действие отключено; тестируется только интерфейс.', show_alert=False)
+        except Exception: pass
+        return True
 
     # Stale visibility buttons are blocked at the semantic gate as well as the renderer.
     blocked_feature = ''
@@ -9753,7 +9960,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# R75 / очнись_10 — hard feature-visibility fence + expanded "Жук-нарывник".
+# R75 / очнись_11 — hard feature-visibility fence + expanded "Жук-нарывник".
 #
 # The journal of 2026-09-15 proved that all four switches were OFF while late
 # markup-only/restore paths repeatedly reintroduced v171:desc.  R75 therefore
@@ -9965,7 +10172,7 @@ try:
 except Exception:
     pass
 
-# R74 / очнись_10 — live MASTER map + machine index inside Info.
+# R74 / очнись_11 — live MASTER map + machine index inside Info.
 # The artifacts are generated from the exact runtime sources on demand, so they
 # cannot silently drift away from the deployed code.  Telegram document delivery
 # is asynchronous and never blocks the callback/window hot path.
@@ -10063,7 +10270,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_10'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10102,7 +10309,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_10')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_11')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10152,7 +10359,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_11'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10175,13 +10382,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_11'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_11'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_11'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_11'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10237,13 +10444,13 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_10'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_11'}; live_source_index=on")
 except Exception:
     pass
 
 
 # ---------------------------------------------------------------------------
-# R76 / очнись_10 — deterministic UI pipeline + Back/Main fix + scoped refresh
+# R76 / очнись_11 — deterministic UI pipeline + Back/Main fix + scoped refresh
 # + semantic button dedupe + lightweight latency profiler.
 #
 # Contract:
@@ -10597,7 +10804,7 @@ except Exception:
     pass
 
 
-# R77 / очнись_10 — finance hot-path isolation + callback queue separation
+# R77 / очнись_11 — finance hot-path isolation + callback queue separation
 # User-visible finance commit is: incremental RAM -> one SQLite commit -> one UI repaint.
 # Canonical full-ledger reconciliation remains durable but is latest-wins background work.
 _R77_FIN_STATS_LOCK = threading.RLock()
@@ -10756,7 +10963,10 @@ def _r75_beetle_text():
     base = str(_R77_BEETLE_CORE() if callable(_R77_BEETLE_CORE) else '')
     snap = r77_pipeline_snapshot()
     f = snap.get('finance_reconcile') or {}
+    _r79 = r79_ui_only_snapshot() if 'r79_ui_only_snapshot' in globals() else {'enabled': False, 'stats': {}}
+    _r79s = _r79.get('stats') or {}
     lines = [
+        '', f"🧪 R79 UI-ONLY: {'ВКЛ' if _r79.get('enabled') else 'ВЫКЛ'} · blocked {int(_r79s.get('blocked_total') or 0)} · timers {int(_r79s.get('timer_deferred') or 0)}",
         '', '🚦 R77 FIN / QUEUE PIPELINE',
         f"FIN reconcile: scheduled {int(f.get('scheduled') or 0)} · runs {int(f.get('runs') or 0)} · persist {int(f.get('persisted') or 0)} · clean skip {int(f.get('skipped_clean') or 0)} · last {f.get('last_ms',0)} ms",
         f"HEAVY progress пропущено при busy UI: {int(snap.get('heavy_progress_skipped') or 0)}",
@@ -10781,6 +10991,10 @@ _R77_PROGRESS_SKIPPED = 0
 
 def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
     global _R77_PROGRESS_SKIPPED
+    if r79_ui_only_enabled():
+        _R77_PROGRESS_SKIPPED += 1
+        _r79_ui_only_note_block('pool', 'heavy-progress', f'{chat_id}:{msg_id}', str(purpose or ''))
+        return False
     if str(purpose or '') in {'r40_file_progress','r41_file_progress'}:
         busy = False
         for _nm in ('FAST_UI_TASK_POOL','NAVIGATION_TASK_POOL','FINANCE_TASK_POOL','FIN_FORWARD_TASK_POOL'):
