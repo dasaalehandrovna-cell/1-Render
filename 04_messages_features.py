@@ -4144,7 +4144,11 @@ def handle_finance_text(msg):
             schedule_financial_window_refresh(chat_id, entry_day, reason='record_commit_fast_r15', delay=0.01)
         except Exception:
             pass
-        schedule_finalize(chat_id, entry_day)
+        _r77_reconcile = globals().get('schedule_finance_reconcile_r77')
+        if callable(_r77_reconcile):
+            _r77_reconcile(chat_id, entry_day, reason='record_add', delay=0.45)
+        else:
+            schedule_finalize(chat_id, entry_day)
         return True
     except Exception as e:
         log_error(f'[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}')
@@ -4300,6 +4304,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             store['_finance_hotpath_pending_normalize_r16']=True
             store['_finance_fast_generation_r16']=int(store.get('_finance_fast_generation_r16',0) or 0)+1
             store.pop('_finance_day_balance_cache_r16',None)
+    added_by_hotpath = False
     if need_add:
         shadow_msg = None
         if source_msg is not None and callable(globals().get('_v260_make_forward_shadow')):
@@ -4310,6 +4315,9 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
         if shadow_msg is None:
             shadow_msg=type('ForwardShadowMsg',(),{'message_id':dst_msg_id,'date':getattr(source_msg,'date',int(time.time())) if source_msg is not None else int(time.time()),'forward_source_msg_id':getattr(source_msg,'message_id',dst_msg_id) if source_msg is not None else dst_msg_id})()
         result_rec=add_record_to_chat(dst_chat_id,amount,note,owner,source_msg=shadow_msg,day_key=entry_day,usd_amount=comp.get('usd_amount'),usd_note=comp.get('usd_note',''),usd_only=comp.get('usd_only',False),source_finance_text=comp.get('source_finance_text',text))
+        # _finance_add_record_base already performed the authoritative local SQLite commit.
+        # Do not immediately deep-copy and persist the same chat a second time.
+        added_by_hotpath = isinstance(result_rec, dict)
         changed=True
     if isinstance(result_rec, dict):
         with locked_chat(dst_chat_id):
@@ -4321,7 +4329,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 for _ledger,_rec in _finance_record_lists(int(dst_chat_id)):
                     if isinstance(_rec,dict): ensure_finance_record_uid(int(dst_chat_id),_rec)
             except Exception: pass
-        if 'persist_finance_chat_local_fast' in globals() and not persist_finance_chat_local_fast(dst_chat_id):
+        if (not added_by_hotpath) and 'persist_finance_chat_local_fast' in globals() and not persist_finance_chat_local_fast(dst_chat_id):
             log_error(f'[FWD FINANCE LOCAL PERSIST FAILED] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id}')
             return False
         if changed and before is not None:
@@ -4333,7 +4341,11 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
     except Exception: pass
     try: schedule_financial_window_refresh(dst_chat_id,str(entry_day),reason='forward_finance_exact_once_v260')
     except Exception: pass
-    schedule_finalize(dst_chat_id,entry_day)
+    _r77_reconcile = globals().get('schedule_finance_reconcile_r77')
+    if callable(_r77_reconcile):
+        _r77_reconcile(dst_chat_id, entry_day, reason='forward_finance', delay=0.55)
+    else:
+        schedule_finalize(dst_chat_id,entry_day)
     return result_rec if isinstance(result_rec,dict) else False
 
 

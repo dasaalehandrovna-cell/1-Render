@@ -4433,7 +4433,7 @@ def _r19_post_update_cleanup(update_id, update_chat_id, update_type, wait, start
 
 
 def _r19_schedule_post_update_cleanup(update_id, update_chat_id, update_type, wait, started, success, durable_cloud):
-    pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+    pool = globals().get('CALLBACK_JOURNAL_TASK_POOL') or globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
     if pool is not None:
         try:
             if pool.submit(f'cleanup:{update_id}', _r19_post_update_cleanup, update_id, update_chat_id, update_type, wait, started, success, durable_cloud):
@@ -4621,7 +4621,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
         with _R48_NAV_COALESCE_LOCK:
             if _r48_coalesce_key in _R48_NAV_INFLIGHT:
                 UPDATE_DISPATCHER.finish(update_id, True, 'coalesced_safe_navigation_r48')
-                try: UI_CLEANUP_TASK_POOL.submit(f'r48-coalesced:{update_id}', _r48_mark_coalesced_callback_durable, payload, update_id, update_chat_id)
+                try: (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r48-coalesced:{update_id}', _r48_mark_coalesced_callback_durable, payload, update_id, update_chat_id)
                 except Exception: pass
                 try: log_info(f'R48 NAV COALESCE update={update_id} chat={update_chat_id} key={_r48_coalesce_key}')
                 except Exception: pass
@@ -4643,8 +4643,8 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             except Exception:
                 pass
             try:
-                UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-running:{update_id}', _r22_callback_inbox_mark_background, update_id, 'running', '')
-                UI_CLEANUP_TASK_POOL.submit(f'r22-journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, 'callback_query', wait, False)
+                (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-inbox-running:{update_id}', _r22_callback_inbox_mark_background, update_id, 'running', '')
+                (globals().get('CALLBACK_JOURNAL_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, 'callback_query', wait, False)
             except Exception:
                 pass
             success = False
@@ -4661,15 +4661,15 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                 except Exception: pass
                 success = True
                 try:
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-done:{update_id}', _r22_callback_inbox_mark_background, update_id, 'done', '')
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-event-commit:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, True, '')
+                    (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-inbox-done:{update_id}', _r22_callback_inbox_mark_background, update_id, 'done', '')
+                    (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-event-commit:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, True, '')
                 except Exception:
                     pass
             except Exception as exc:
                 error_text = str(exc)
                 try:
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-inbox-failed:{update_id}', _r22_callback_inbox_mark_background, update_id, 'failed', error_text)
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-event-failed:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, False, error_text)
+                    (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-inbox-failed:{update_id}', _r22_callback_inbox_mark_background, update_id, 'failed', error_text)
+                    (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-event-failed:{update_id}', _r22_callback_commit_background, update_id, update_chat_id, False, error_text)
                 except Exception:
                     pass
                 try:
@@ -4718,12 +4718,12 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
                 except Exception:
                     pass
             try:
-                UI_CLEANUP_TASK_POOL.submit(
+                (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(
                     f'r67-turbo-superseded:{update_id}',
                     _r22_callback_inbox_mark_background,
                     update_id, 'done', 'superseded_navigation_r67_turbo'
                 )
-                UI_CLEANUP_TASK_POOL.submit(
+                (globals().get('CALLBACK_DURABLE_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(
                     f'r67-turbo-event:{update_id}',
                     _r22_callback_commit_background,
                     update_id, update_chat_id, True, 'superseded_navigation_r67_turbo'
@@ -4948,7 +4948,7 @@ def telegram_webhook():
                 upd_type = 'edited_message' if 'edited_message' in payload else 'message' if 'message' in payload else 'callback_query' if 'callback_query' in payload else 'other'
                 if upd_type == 'callback_query':
                     cid_j = _extract_update_chat_id(payload)
-                    UI_CLEANUP_TASK_POOL.submit(f'r22-webhook-journal:{payload.get("update_id", time.time_ns())}', bot_journal, 'webhook_update', cid_j, upd_type)
+                    (globals().get('CALLBACK_JOURNAL_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'r22-webhook-journal:{payload.get("update_id", time.time_ns())}', bot_journal, 'webhook_update', cid_j, upd_type)
                 else:
                     bot_journal('webhook_update', _extract_update_chat_id(payload), upd_type)
             except Exception:
@@ -5057,7 +5057,7 @@ def telegram_webhook():
                 _v260_webhook_inbox_mark(update_id, 'external_running' if durable_cloud else 'running')
                 if update_type == 'callback_query':
                     try:
-                        UI_CLEANUP_TASK_POOL.submit(f'journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, update_type, wait, durable_cloud)
+                        (globals().get('CALLBACK_JOURNAL_TASK_POOL') or UI_CLEANUP_TASK_POOL).submit(f'journal-start:{update_id}', _r19_update_journal_start, update_id, update_chat_id, update_type, wait, durable_cloud)
                     except Exception:
                         pass
                 else:

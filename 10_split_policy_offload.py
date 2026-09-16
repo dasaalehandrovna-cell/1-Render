@@ -9191,10 +9191,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_8')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_9')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_8')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_9')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9753,7 +9753,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# R75 / очнись_8 — hard feature-visibility fence + expanded "Жук-нарывник".
+# R75 / очнись_9 — hard feature-visibility fence + expanded "Жук-нарывник".
 #
 # The journal of 2026-09-15 proved that all four switches were OFF while late
 # markup-only/restore paths repeatedly reintroduced v171:desc.  R75 therefore
@@ -9965,7 +9965,7 @@ try:
 except Exception:
     pass
 
-# R74 / очнись_8 — live MASTER map + machine index inside Info.
+# R74 / очнись_9 — live MASTER map + machine index inside Info.
 # The artifacts are generated from the exact runtime sources on demand, so they
 # cannot silently drift away from the deployed code.  Telegram document delivery
 # is asynchronous and never blocks the callback/window hot path.
@@ -10063,7 +10063,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_8'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_9'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10102,7 +10102,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_8')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_9')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10152,7 +10152,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10175,13 +10175,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10237,13 +10237,13 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_9'}; live_source_index=on")
 except Exception:
     pass
 
 
 # ---------------------------------------------------------------------------
-# R76 / очнись_8 — deterministic UI pipeline + Back/Main fix + scoped refresh
+# R76 / очнись_9 — deterministic UI pipeline + Back/Main fix + scoped refresh
 # + semantic button dedupe + lightweight latency profiler.
 #
 # Contract:
@@ -10595,5 +10595,211 @@ try:
     bot_journal('r76_ui_pipeline_loaded', int(OWNER_ID or 0), 'back_main=semantic_main; dedupe=final; factory_refresh=scoped_latest_wins; fast_verbose_journal=off; profiler=beetle')
 except Exception:
     pass
+
+
+# R77 / очнись_9 — finance hot-path isolation + callback queue separation
+# User-visible finance commit is: incremental RAM -> one SQLite commit -> one UI repaint.
+# Canonical full-ledger reconciliation remains durable but is latest-wins background work.
+_R77_FIN_STATS_LOCK = threading.RLock()
+_R77_FIN_STATS = {
+    'scheduled': 0,
+    'runs': 0,
+    'skipped_clean': 0,
+    'persisted': 0,
+    'errors': 0,
+    'last_ms': 0.0,
+    'last_reason': '',
+}
+
+
+def _r77_finance_reconcile_job(chat_id: int, reason: str='finance_hotpath'):
+    cid = int(chat_id)
+    started = time.monotonic()
+    dirty = False
+    try:
+        with locked_chat(cid):
+            store = get_chat_store(cid)
+            dirty = bool(store.get('_finance_hotpath_pending_normalize_r16') or store.get('_finance_hotpath_pending_normalize_r15'))
+            if dirty:
+                normalize_chat_records(cid)
+                store = get_chat_store(cid)
+                store.pop('_finance_hotpath_pending_normalize_r15', None)
+                store.pop('_finance_hotpath_pending_normalize_r16', None)
+                store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
+                try:
+                    _r7_rebuild_month_short_ids_after_normalize(cid, store)
+                except Exception:
+                    pass
+                try:
+                    _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store))
+                except Exception:
+                    pass
+        if dirty:
+            if callable(globals().get('persist_finance_chat_local_fast')):
+                persist_finance_chat_local_fast(cid)
+            try:
+                schedule_quick_backup(cid, MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS)
+            except Exception:
+                pass
+            try:
+                schedule_finance_postcommit_background_v243(cid, reason=f'r77:{reason}', delay=0.45)
+            except Exception:
+                pass
+        with _R77_FIN_STATS_LOCK:
+            _R77_FIN_STATS['runs'] += 1
+            _R77_FIN_STATS['persisted'] += int(bool(dirty))
+            _R77_FIN_STATS['skipped_clean'] += int(not dirty)
+            _R77_FIN_STATS['last_ms'] = round((time.monotonic()-started)*1000.0, 2)
+            _R77_FIN_STATS['last_reason'] = str(reason or '')[:120]
+        try:
+            bot_journal('r77_finance_reconcile_done', cid, f'reason={reason}; dirty={int(bool(dirty))}; elapsed_ms={(time.monotonic()-started)*1000.0:.1f}')
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        with _R77_FIN_STATS_LOCK:
+            _R77_FIN_STATS['errors'] += 1
+            _R77_FIN_STATS['last_ms'] = round((time.monotonic()-started)*1000.0, 2)
+            _R77_FIN_STATS['last_reason'] = str(reason or '')[:120]
+        try:
+            log_error(f'R77 finance reconcile {cid}: {exc}')
+        except Exception:
+            pass
+        return False
+
+
+def schedule_finance_reconcile_r77(chat_id: int, day_key: str | None=None, reason: str='finance_hotpath', delay: float=0.45):
+    """Coalesce full finance normalization behind the already-durable user commit.
+
+    This path intentionally performs no Telegram repaint.  The caller already scheduled
+    the one foreground repaint from the incremental committed state.
+    """
+    cid = int(chat_id)
+    key = f'r77-fin-reconcile:{cid}'
+    with _R77_FIN_STATS_LOCK:
+        _R77_FIN_STATS['scheduled'] += 1
+        _R77_FIN_STATS['last_reason'] = str(reason or '')[:120]
+    def _fire():
+        pool = globals().get('FINANCE_MAINT_TASK_POOL') or globals().get('FINANCE_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+        submitted = False
+        try:
+            if pool is not None and hasattr(pool, 'submit_unique'):
+                submitted = bool(pool.submit_unique(f'finance-maint:{cid}', _r77_finance_reconcile_job, cid, str(reason or 'finance_hotpath')))
+            elif pool is not None and hasattr(pool, 'submit'):
+                submitted = bool(pool.submit(f'finance-maint:{cid}', _r77_finance_reconcile_job, cid, str(reason or 'finance_hotpath')))
+        except Exception:
+            submitted = False
+        if not submitted:
+            # Never inline a full-ledger normalize into the user's callback/message thread.
+            try:
+                DELAYED_SCHEDULER.schedule(key, 0.35, _fire)
+            except Exception:
+                pass
+    try:
+        DELAYED_SCHEDULER.cancel(key)
+        DELAYED_SCHEDULER.schedule(key, max(0.25, min(2.0, float(delay or 0.45))), _fire)
+        return True
+    except Exception:
+        _fire()
+        return True
+
+
+# R77 ACK: do not perform a Telegram network round-trip in the Waitress/callback hot path.
+# The installed pyTelegramBotAPI does not accept timeout= on answer_callback_query; the
+# tracked native wrapper strips any old hint and the dedicated ACK pool owns the socket.
+def _r77_schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float | None=None):
+    callback_id = str(callback_id or '')
+    if not callback_id:
+        return False
+    try:
+        with _CALLBACK_ACK_LOCK:
+            _callback_ack_prune_locked()
+            row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
+            row['chat_id'] = int(chat_id) if chat_id is not None else row.get('chat_id')
+            row['ts'] = time.time()
+            if row.get('answered') or row.get('inflight'):
+                return True
+        pool = globals().get('CALLBACK_ACK_TASK_POOL')
+        if pool is not None and hasattr(pool, 'submit_unique'):
+            return bool(pool.submit_unique(f'callback-receipt-ack:{callback_id}', _answer_callback_query_quiet, callback_id, chat_id))
+    except Exception:
+        pass
+    return False
+
+schedule_callback_receipt_ack = _r77_schedule_callback_receipt_ack
+
+
+def r77_pipeline_snapshot():
+    with _R77_FIN_STATS_LOCK:
+        fin = dict(_R77_FIN_STATS)
+    def _stats(name):
+        try:
+            pool = globals().get(name)
+            return pool.stats() if pool is not None and hasattr(pool, 'stats') else {}
+        except Exception:
+            return {}
+    return {
+        'finance_reconcile': fin,
+        'callback_ack': _stats('CALLBACK_ACK_TASK_POOL'),
+        'callback_durable': _stats('CALLBACK_DURABLE_TASK_POOL'),
+        'callback_journal': _stats('CALLBACK_JOURNAL_TASK_POOL'),
+        'finance': _stats('FINANCE_TASK_POOL'),
+        'finance_maint': _stats('FINANCE_MAINT_TASK_POOL'),
+        'fin_forward': _stats('FIN_FORWARD_TASK_POOL'),
+        'heavy_progress_skipped': int(globals().get('_R77_PROGRESS_SKIPPED') or 0),
+    }
+
+
+_R77_BEETLE_CORE = _r75_beetle_text
+
+def _r75_beetle_text():
+    base = str(_R77_BEETLE_CORE() if callable(_R77_BEETLE_CORE) else '')
+    snap = r77_pipeline_snapshot()
+    f = snap.get('finance_reconcile') or {}
+    lines = [
+        '', '🚦 R77 FIN / QUEUE PIPELINE',
+        f"FIN reconcile: scheduled {int(f.get('scheduled') or 0)} · runs {int(f.get('runs') or 0)} · persist {int(f.get('persisted') or 0)} · clean skip {int(f.get('skipped_clean') or 0)} · last {f.get('last_ms',0)} ms",
+        f"HEAVY progress пропущено при busy UI: {int(snap.get('heavy_progress_skipped') or 0)}",
+    ]
+    for key, label in (('callback_ack','ACK'),('callback_durable','Durable'),('callback_journal','Journal'),('finance','FIN'),('finance_maint','FIN-maint'),('fin_forward','FIN-forward')):
+        st = snap.get(key) or {}
+        if st:
+            lines.append(f"{label}: active {int(st.get('active') or 0)} · pending {int(st.get('pending') or 0)} · maxwait {st.get('max_wait',0)}s")
+    joined = (base.rstrip() + "\n" + "\n".join(lines)).strip()
+    return window_mark(joined[-3850:], 'Ф90')
+
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r77:finance-pipeline','Ф90')
+    bot_journal('r77_finance_pipeline_loaded', int(OWNER_ID or 0), 'one foreground finance persist+repaint; reconcile=background latest-wins; callback ack/durable/journal isolated; fin-forward workers=3')
+except Exception:
+    pass
+
+
+# R77: HEAVY progress text is cosmetic.  When interactive/finance lanes are busy,
+# skip that 12-second progress repaint instead of competing for the same Telegram chat.
+_R77_PREV_R40_STATUS_EDIT = _r40_status_edit
+_R77_PROGRESS_SKIPPED = 0
+
+def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
+    global _R77_PROGRESS_SKIPPED
+    if str(purpose or '') in {'r40_file_progress','r41_file_progress'}:
+        busy = False
+        for _nm in ('FAST_UI_TASK_POOL','NAVIGATION_TASK_POOL','FINANCE_TASK_POOL','FIN_FORWARD_TASK_POOL'):
+            try:
+                _pool = globals().get(_nm)
+                _st = _pool.stats() if _pool is not None and hasattr(_pool,'stats') else {}
+                if int(_st.get('active') or 0) > 0 or int(_st.get('pending') or 0) > 0:
+                    busy = True
+                    break
+            except Exception:
+                continue
+        if busy:
+            _R77_PROGRESS_SKIPPED += 1
+            try:
+                bot_journal('r77_heavy_progress_deferred', int(chat_id), f'purpose={purpose}; skipped={_R77_PROGRESS_SKIPPED}')
+            except Exception:
+                pass
+            return False
+    return _R77_PREV_R40_STATUS_EDIT(chat_id,msg_id,text,purpose)
 
 # v262

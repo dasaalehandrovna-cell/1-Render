@@ -518,10 +518,11 @@ if ROLE=='fast':
        'older renders must not overwrite newer navigation')
     ack_direct_src=_fn_sources(rel_src,{'_canon_schedule_callback_receipt_ack__001'}).get('_canon_schedule_callback_receipt_ack__001','')
     render_direct_src=_fn_sources(rel_src,{'_canon_fast_ui_edit_message_text__001'}).get('_canon_fast_ui_edit_message_text__001','')
-    ok('r67_direct_ack_before_all_queues',
-       '_tracked_answer_callback_query(callback_id, show_alert=False, timeout=ack_timeout)' in ack_direct_src and
-       ack_direct_src.find('_tracked_answer_callback_query') < ack_direct_src.find('CALLBACK_ACK_TASK_POOL.submit_unique'),
-       'every callback must receive a direct native ACK before any internal queue; ACK pool is fallback only')
+    ok('r77_ack_isolated_pool_first',
+       'def _r77_schedule_callback_receipt_ack' in split_src and
+       "pool.submit_unique(f'callback-receipt-ack:{callback_id}'" in split_src and
+       'schedule_callback_receipt_ack = _r77_schedule_callback_receipt_ack' in split_src,
+       'callback ACK network I/O must be isolated in the dedicated ACK pool, never performed in the Waitress/callback hot path')
     ok('r67_direct_navigation_no_pool_hop',
        "if selected_pool is globals().get('NAVIGATION_TASK_POOL')" in web_src and
        "UPDATE_DISPATCHER.mark_enqueued(update_id, 'direct-nav', selected_key)" in web_src and
@@ -538,9 +539,10 @@ if ROLE=='fast':
        'return max(0.02, min(0.08, requested))' in core_src and
        str(env.get('FAST_TELEGRAM_CHAT_GAP','')) == '0.03',
        'direct callback Telegram gap must default around 30ms while retaining 429 cooldown')
-    ok('r67_direct_ack_timeout',
-       "kwargs.setdefault('timeout', 3)" in all_py.get('05_finance_ui.py','') and "R70_DIRECT_ACK_TIMEOUT','0.45'" in ack_direct_src and 'max(0.25,min(1.25' in ack_direct_src,
-       'direct ACK must default to ~450ms and fall back to the bounded ACK pool without blocking rendering')
+    ok('r77_ack_pytelegrambotapi_compatible',
+       "kwargs.pop('timeout', None)" in all_py.get('05_finance_ui.py','') and
+       "kwargs.setdefault('timeout', 3)" not in all_py.get('05_finance_ui.py',''),
+       'answer_callback_query must never receive the unsupported timeout kwarg')
     r70_safe_src=_fn_sources(rel_src,{'_canon_safe_edit__001'}).get('_canon_safe_edit__001','')
     r70_render_src=_fn_sources(rel_src,{'_r22_execute_window_render'}).get('_r22_execute_window_render','')
     r70_retry_src=_fn_sources(final_transport,{'_canon_v161_edit_retry__001'}).get('_canon_v161_edit_retry__001','')
@@ -616,8 +618,8 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och8_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_8'" in core_src,
+    ok('och9_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_9'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
@@ -697,6 +699,37 @@ if ROLE=='fast':
     ok('r76_beetle_latency_profiler',
        'def r76_ui_profile_snapshot' in split_src and 'R76 ПРОФИЛЬ ОТРИСОВКИ' in split_src and 'transport_recent' in split_src and 'callback_recent' in split_src,
        'beetle must expose callback total, transport time, filter time, dedupe and refresh counters')
+    ok('r77_callback_service_lanes_split',
+       "CALLBACK_DURABLE_TASK_POOL = KeyedTaskPool('callback-durable'" in core_src and
+       "CALLBACK_JOURNAL_TASK_POOL = KeyedTaskPool('callback-journal'" in core_src and
+       "globals().get('CALLBACK_DURABLE_TASK_POOL')" in web_src and
+       "globals().get('CALLBACK_JOURNAL_TASK_POOL')" in web_src,
+       'callback durable bookkeeping and diagnostic journal work must not share the old single-worker ui-cleanup lane')
+    ok('r77_finance_one_foreground_commit_repaint',
+       "globals().get('schedule_finance_reconcile_r77')" in all_py.get('04_messages_features.py','') and
+       "reason='record_add'" in all_py.get('04_messages_features.py','') and
+       'def schedule_finance_reconcile_r77' in split_src and
+       'This path intentionally performs no Telegram repaint' in split_src,
+       'new finance input must commit/repaint once; full normalize/persist is coalesced behind the user-visible path without a second repaint')
+    ok('r77_forward_add_skips_duplicate_persist',
+       'added_by_hotpath = isinstance(result_rec, dict)' in all_py.get('04_messages_features.py','') and
+       "if (not added_by_hotpath) and 'persist_finance_chat_local_fast'" in all_py.get('04_messages_features.py','') and
+       "reason='forward_finance'" in all_py.get('04_messages_features.py',''),
+       'new forwarded finance rows must not immediately persist the same destination chat twice')
+    ok('r77_finance_maintenance_isolated_latest_wins',
+       "FINANCE_MAINT_TASK_POOL = KeyedTaskPool('finance-maint'" in core_src and
+       "DELAYED_SCHEDULER.cancel(key)" in split_src and
+       "pool.submit_unique(f'finance-maint:{cid}'" in split_src and
+       'Never inline a full-ledger normalize into the user' in split_src,
+       'full-ledger reconcile must be latest-wins background work on its own pool')
+    ok('r77_fin_forward_parallel_default',
+       "FIN_FORWARD_WORKERS', 3, 1, 8" in core_src,
+       'financial forwarding destinations should run in parallel by default instead of a single global worker')
+    ok('r77_beetle_fin_queue_profiler',
+       'def r77_pipeline_snapshot' in split_src and 'R77 FIN / QUEUE PIPELINE' in split_src and
+       "'callback_durable': _stats('CALLBACK_DURABLE_TASK_POOL')" in split_src and
+       "'finance_maint': _stats('FINANCE_MAINT_TASK_POOL')" in split_src,
+       'beetle must expose FIN reconcile plus ACK/durable/journal/forward queue pressure')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

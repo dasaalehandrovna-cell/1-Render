@@ -1353,13 +1353,18 @@ FAST_UI_TASK_POOL = KeyedTaskPool('fast-ui', _env_int('FAST_UI_WORKERS', 2, 2, 8
 NAVIGATION_TASK_POOL = LatestKeyedTaskPool('nav-ui', _env_int('NAVIGATION_UI_WORKERS', 4, 2, 6), _env_int('NAVIGATION_UI_MAX_PENDING', 256, 32, 1000))
 # R22: Telegram editMessageText/caption runs here, never inside callback workers.
 WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool('window-render', _env_int('WINDOW_RENDER_WORKERS', 2, 2, 12), _env_int('WINDOW_RENDER_MAX_PENDING_KEYS', 256, 32, 1000))
-CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 2, 1, 3), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
-UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 1, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
+CALLBACK_ACK_TASK_POOL = KeyedTaskPool('callback-ack', _env_int('CALLBACK_ACK_WORKERS', 2, 1, 4), _env_int('CALLBACK_ACK_MAX_PENDING', 600, 50, 3000))
+# R77: callback durability and diagnostic journal work must never share one single-worker lane.
+# The old ui-cleanup queue accumulated 10-15s of stale work and later competed for data/chat locks.
+CALLBACK_DURABLE_TASK_POOL = KeyedTaskPool('callback-durable', _env_int('CALLBACK_DURABLE_WORKERS', 2, 1, 6), _env_int('CALLBACK_DURABLE_MAX_PENDING', 1200, 100, 4000))
+CALLBACK_JOURNAL_TASK_POOL = KeyedTaskPool('callback-journal', _env_int('CALLBACK_JOURNAL_WORKERS', 1, 1, 3), _env_int('CALLBACK_JOURNAL_MAX_PENDING', 1200, 100, 4000))
+UI_CLEANUP_TASK_POOL = KeyedTaskPool('ui-cleanup', _env_int('UI_CLEANUP_WORKERS', 2, 1, 4), _env_int('UI_CLEANUP_MAX_PENDING', 1200, 100, 4000))
 UI_DELETE_TASK_POOL = KeyedTaskPool('ui-delete', _env_int('UI_DELETE_WORKERS', 1, 1, 4), _env_int('UI_DELETE_MAX_PENDING', 1200, 100, 4000))
 RECOVERY_TASK_POOL = KeyedTaskPool('recovery', _env_int('RECOVERY_WORKERS', 1, 1, 3), _env_int('RECOVERY_MAX_PENDING', 300, 50, 1500))
 REMINDER_TASK_POOL = KeyedTaskPool('reminder', _env_int('REMINDER_WORKERS', 1, 1, 3), _env_int('REMINDER_MAX_PENDING', 250, 20, 1000))
 FINANCE_TASK_POOL = KeyedTaskPool('finance', _env_int('FINANCE_WORKERS', 2, 2, 8), _env_int('FINANCE_MAX_PENDING', 400, 50, 2000))
-FIN_FORWARD_TASK_POOL = KeyedTaskPool('fin-forward', _env_int('FIN_FORWARD_WORKERS', 1, 1, 6), _env_int('FIN_FORWARD_MAX_PENDING', 500, 50, 2500))
+FINANCE_MAINT_TASK_POOL = KeyedTaskPool('finance-maint', _env_int('FINANCE_MAINT_WORKERS', 1, 1, 3), _env_int('FINANCE_MAINT_MAX_PENDING', 300, 50, 1500))
+FIN_FORWARD_TASK_POOL = KeyedTaskPool('fin-forward', _env_int('FIN_FORWARD_WORKERS', 3, 1, 8), _env_int('FIN_FORWARD_MAX_PENDING', 500, 50, 2500))
 FORWARD_TASK_POOL = KeyedTaskPool('forward', _env_int('FORWARD_WORKERS', 1, 1, 6), _env_int('FORWARD_MAX_PENDING', 500, 50, 2500))
 BACKUP_TASK_POOL = KeyedTaskPool('backup', _env_int('BACKUP_WORKERS', 1, 1, 2), _env_int('BACKUP_MAX_PENDING', 120, 20, 500))
 DELTA_TASK_POOL = KeyedTaskPool('delta', _env_int('DELTA_WORKERS', 1, 1, 2), _env_int('DELTA_MAX_PENDING', 300, 30, 1200))
@@ -1658,7 +1663,7 @@ def r25_trace_end():
 
 def r52_hot_pool_snapshot():
     rows={}
-    for nm in ('NAVIGATION_TASK_POOL','FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
+    for nm in ('NAVIGATION_TASK_POOL','FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','CALLBACK_DURABLE_TASK_POOL','CALLBACK_JOURNAL_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','FINANCE_MAINT_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
         try:
             pool=globals().get(nm)
             if pool is not None and hasattr(pool,'stats'): rows[nm]=pool.stats()
@@ -2119,7 +2124,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_8'
+BOT_DISPLAY_NAME = 'очнись_9'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""

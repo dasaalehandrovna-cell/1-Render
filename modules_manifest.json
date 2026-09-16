@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "b79aa7b6446169a1b9e79009394bf9ce19d0cd7d9bb72619861f7ede0fc44b37",
+    "01_core_data.py": "655404f20542a46a38c43725f967ffdb9d3cda0368e80725955bf25b6267bd41",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
-    "04_messages_features.py": "f28689f66a4b29200a406bd4b56d0f6156711af676e87b54d4c343f2eb9e22e3",
-    "05_finance_ui.py": "fc1c9a877ef86f92ec52c004ef5944e5e0a82f5c004ee5463b76d01c9290f2ac",
+    "04_messages_features.py": "bc257532d9559df9d351bc217fd9d455c308955201582ab09bcf16d1061512f1",
+    "05_finance_ui.py": "43f1821e5554e2a64a90a9ceea062a47b24da52e9aa3c3e99ae5c1ebd4dbd486",
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
-    "07_state_web.py": "78caa9a01fd357d1b02947b448f45f9ccc81dc4b487b73cdca047a86944b82a6",
+    "07_state_web.py": "d1c72dc5c0a039d7c015a5689c162d061d02a5d64cb2e2829752e0ecc55515a0",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "eb445cfdb9c7c64d0aa35b4596dcf0f82a90a26c69758de36eadf7330db6950c",
-    "10_split_policy_offload.py": "dd4419cb5a8c9614fb578076d6b004ea5b5e7f92b71948a8bb96677271851c98"
+    "09_final_transport.py": "a7fd3c2e8b7ca9b2666c73c7078df3d2b97b8fbaba163d3ebdd88d9b1a5f94d5",
+    "10_split_policy_offload.py": "1336898d6b23af9454e6d7b1b17fe35cc13c532f7db669da4338d898d4193206"
   },
-  "release": "ОЧНИСЬ_8-R76-DETERMINISTIC-UI-PIPELINE",
+  "release": "ОЧНИСЬ_9-R77-FINANCE-HOTPATH-ISOLATION",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -237,9 +237,7 @@
     "r67_turbo_latest_wins_navigation_actor",
     "r67_turbo_superseded_navigation_durable_close",
     "r67_turbo_100ms_fast_telegram_edit_gap",
-    "r67_turbo_bounded_callback_ack_timeout",
     "r67_turbo_business_fifo_unchanged",
-    "r67_direct_native_callback_ack_before_internal_queues",
     "r67_direct_navigation_in_webhook_request",
     "r67_direct_callback_render_without_window_actor",
     "r67_business_order_preserved_after_direct_visual_ack",
@@ -261,7 +259,6 @@
     "r70_single_replacement_owner",
     "r70_no_generic_failed_sendmessage",
     "r70_ambiguous_edit_retry_same_message",
-    "r70_direct_ack_450ms_fallback",
     "r70_forward_effective_runtime_status",
     "r70_sqlite_snapshot_singleflight",
     "r70_heavy_scratch_roundtrip_e2e",
@@ -307,6 +304,15 @@
     "r76_scoped_latest_wins_factory_refresh",
     "r76_fast_ui_no_verbose_journal_lock",
     "r76_beetle_latency_profiler",
-    "r76_single_markup_build_no_final_reaugment"
+    "r76_single_markup_build_no_final_reaugment",
+    "och9_current_release_name_fence",
+    "r77_callback_ack_pool_isolated_no_timeout_kwarg",
+    "r77_callback_durable_journal_split_lanes",
+    "r77_finance_one_foreground_commit_repaint",
+    "r77_finance_latest_wins_background_reconcile",
+    "r77_forward_finance_skip_duplicate_persist",
+    "r77_fin_forward_parallel_workers_three",
+    "r77_beetle_fin_queue_profiler",
+    "r77_heavy_progress_defer_when_ui_busy"
   ]
 }
