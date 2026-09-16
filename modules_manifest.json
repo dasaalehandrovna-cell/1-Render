@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "16e5f2c0b33f14b2c1986a3fc6b23e40635bafe00320f8236ac98f31b3cb81b8",
+    "01_core_data.py": "588a41a9ecfbc3ec6e8ae55c3114ed405c2423936a85ea37b15b8bc599fe61a2",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
-    "03_diagnostics_memory.py": "9f0958a4b480d3ce06a967740bac4cdfc5c9ae4b7c7ebd3e1bc8ab962e1e6ffc",
+    "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "f28689f66a4b29200a406bd4b56d0f6156711af676e87b54d4c343f2eb9e22e3",
     "05_finance_ui.py": "fc1c9a877ef86f92ec52c004ef5944e5e0a82f5c004ee5463b76d01c9290f2ac",
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
     "07_state_web.py": "78caa9a01fd357d1b02947b448f45f9ccc81dc4b487b73cdca047a86944b82a6",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "79cc7c54ef181816bf4b825f64a8668f1a245414aa96aa615a722b367d99c913",
-    "10_split_policy_offload.py": "e18ec2129db3b3ccdeaf16a99b40da6462e713a70d0422b4774ec56e0a06ef60"
+    "09_final_transport.py": "4a3a2f09a0fc4eab7af9631749821d9bf46a86e4fb7e2ac298849d2d4118a421",
+    "10_split_policy_offload.py": "bb410de66b9ab6e8312178af75408d2e29216c40b5477b6b8ef50555aea4b588"
   },
-  "release": "ОЧНИСЬ_6-R74-STARTUP-MARKER-LIVE-MAP-INDEX-FINAL",
+  "release": "ОЧНИСЬ_7-R75-HARD-FEATURE-FENCE-BEETLE-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -296,6 +296,11 @@
     "r74_strict_module_marker_parity",
     "r74_info_live_master_map",
     "r74_info_live_machine_index",
-    "r74_async_map_index_delivery"
+    "r74_async_map_index_delivery",
+    "r75_final_transport_feature_visibility_fence",
+    "r75_window_actor_revision_callback_normalization",
+    "r75_disabled_feature_semantic_gate",
+    "r75_feature_leak_producer_stage_scope_forensics",
+    "r75_factory_off_never_resurrects_constructor_description_tz_marker"
   ]
 }

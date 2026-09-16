@@ -163,6 +163,7 @@ if ROLE=='fast':
         return out
 
     core_src=all_py.get('01_core_data.py','')
+    diag_src=all_py.get('03_diagnostics_memory.py','')
     msg_src=all_py.get('04_messages_features.py','')
     web_src=all_py.get('07_state_web.py','')
     rel_src=all_py.get('08_reliability_tasks.py','')
@@ -615,8 +616,8 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och6_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_6'" in core_src,
+    ok('och7_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_7'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
@@ -654,6 +655,27 @@ if ROLE=='fast':
     ok('r74_map_index_async_delivery',
        "submit(f'r74-artifact-{cid}-{artifact}', _job)" in split_src and "_tg_call_retry(bot.send_document" in split_src,
        'map/index document generation and Telegram delivery must stay off the callback hot path')
+    ok('r75_final_transport_hard_feature_fence',
+       'def _r75_transport_feature_fence' in split_src and
+       "fence = globals().get('_r75_transport_feature_fence')" in final_transport and
+       "stage='edit_message_reply_markup'" in final_transport and
+       "stage='edit_message_text'" in final_transport and
+       "stage='send_message'" in final_transport,
+       'all send/edit/markup-only Telegram mutations must cross the hard four-feature fence')
+    ok('r75_actor_revision_callback_normalization',
+       'def _r75_base_callback' in split_src and 'window_actor_strip_callback_token' in split_src and
+       'resolve_short_callback' in split_src and 'cb = _r75_base_callback(_r73_cb(button))' in split_src,
+       'feature filtering must recognize callbacks even after Window Actor ~w revision stamping or short-callback indirection')
+    ok('r75_augment_and_semantic_double_fence',
+       "return _r73_filter_features_markup(result, int(chat_id))" in split_src and
+       'def _r75_contour_callback_guard' in split_src and
+       'r75_disabled_feature_callback_blocked' in split_src,
+       'disabled presentation features must be filtered after augmentation and blocked before semantic routing')
+    ok('r75_beetle_feature_leak_forensics',
+       'r75_feature_leak_blocked' in split_src and 'producer' in split_src and 'by_stage' in split_src and
+       'feature_visibility_fence_r75' in diag_src and "callback_data='r75:beetle:open'" in split_src and
+       'def _r75_beetle_text' in split_src,
+       'expanded bug-trap diagnostics must record producer/stage/scope/feature, expose counters in max diagnostics and be visible from Info')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

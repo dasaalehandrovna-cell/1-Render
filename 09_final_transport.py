@@ -5984,17 +5984,26 @@ _FINAL_NATIVE_DELETE = _FINAL_NATIVE_TELEBOT.delete_message
 _FINAL_NATIVE_SEND_DOCUMENT = _FINAL_NATIVE_TELEBOT.send_document
 
 
-def _final_filter_markup(chat_id, reply_markup):
+def _final_filter_markup(chat_id, reply_markup, stage='final_filter', message_id=None):
+    prepared = reply_markup
     try:
         fn = globals().get('v221_final_reply_markup')
         if callable(fn):
-            return fn(int(chat_id), reply_markup)
+            prepared = fn(int(chat_id), prepared)
     except Exception:
         pass
-    return reply_markup
+    # R75 HARD FENCE: this is deliberately below every legacy/profile/restore/
+    # markup-only path.  No Telegram mutation can bypass the four OFF switches.
+    try:
+        fence = globals().get('_r75_transport_feature_fence')
+        if callable(fence):
+            prepared = fence(prepared, int(chat_id), stage=str(stage or 'final_filter'), message_id=message_id)
+    except Exception:
+        pass
+    return prepared
 
 
-def _final_prepare_markup(chat_id, reply_markup, text=''):
+def _final_prepare_markup(chat_id, reply_markup, text='', stage='prepare', message_id=None):
     prepared = reply_markup
     try:
         fn = globals().get('v227_render_effective_contour_markup')
@@ -6006,7 +6015,7 @@ def _final_prepare_markup(chat_id, reply_markup, text=''):
                 prepared = fn(prepared, str(text or ''), int(chat_id))
     except Exception:
         prepared = reply_markup
-    return _final_filter_markup(chat_id, prepared)
+    return _final_filter_markup(chat_id, prepared, stage=stage, message_id=message_id)
 
 
 def _final_record_transport(chat_id, message_id, reply_markup, text='', source_markup=None):
@@ -6026,7 +6035,7 @@ def _final_bot_identity_text(value):
     """Presentation fence: every visible legacy bot name becomes this release name."""
     raw = str(value or '')
     try:
-        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6')
+        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7')
         return re.sub(r'очнись_\d+', name, raw, flags=re.I)
     except Exception:
         return raw
@@ -6036,7 +6045,7 @@ def _final_send_message(chat_id, text, *args, **kwargs):
     cid = int(chat_id)
     source_markup = kwargs.get('reply_markup')
     decorated, token = _v161_tokenize_text(_final_bot_identity_text(text), cid, None)
-    prepared = _final_prepare_markup(cid, source_markup, decorated)
+    prepared = _final_prepare_markup(cid, source_markup, decorated, stage='send_message')
     # очнись_2: every newly created inline window starts at actor revision 1.
     stamp = globals().get('window_actor_stamp_markup')
     if callable(stamp):
@@ -6070,7 +6079,7 @@ def _final_edit_message_text(text, *args, **kwargs):
     parse_mode = kwargs.get('parse_mode')
     decorated, token = _v161_tokenize_text(_final_bot_identity_text(text), cid, mid)
     source_markup = kwargs.get('reply_markup')
-    prepared = _final_prepare_markup(cid, source_markup, decorated)
+    prepared = _final_prepare_markup(cid, source_markup, decorated, stage='edit_message_text', message_id=mid)
 
     actor = globals().get('WINDOW_ACTOR_REGISTRY')
     actor_meta = {}
@@ -6182,7 +6191,7 @@ def _final_edit_message_caption(*args, **kwargs):
     parse_mode = kwargs.get('parse_mode')
     decorated, token = _v161_tokenize_text(_final_bot_identity_text(caption), cid, mid)
     source_markup = kwargs.get('reply_markup')
-    prepared = _final_prepare_markup(cid, source_markup, decorated)
+    prepared = _final_prepare_markup(cid, source_markup, decorated, stage='edit_message_caption', message_id=mid)
     actor = globals().get('WINDOW_ACTOR_REGISTRY')
     actor_meta = {}
     if actor is not None and cid and mid:
@@ -6234,7 +6243,7 @@ def _final_edit_message_reply_markup(*args, **kwargs):
     message_id = kwargs.get('message_id') if kwargs.get('message_id') is not None else positional[1] if len(positional) > 1 else None
     cid = int(chat_id or 0); mid = int(message_id or 0)
     source_markup = kwargs.get('reply_markup') if 'reply_markup' in kwargs else positional[2] if len(positional) > 2 else None
-    prepared = _final_filter_markup(cid, source_markup)
+    prepared = _final_filter_markup(cid, source_markup, stage='edit_message_reply_markup', message_id=mid)
     actor = globals().get('WINDOW_ACTOR_REGISTRY')
     actor_meta = {}
     if actor is not None and cid and mid:

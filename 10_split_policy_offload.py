@@ -9191,10 +9191,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9297,8 +9297,35 @@ def _r73_cb(button):
         return ''
 
 
+def _r75_base_callback(value):
+    """Return the semantic callback without Window Actor revision/short indirection."""
+    raw = str(value or '').strip()
+    try:
+        strip_fn = globals().get('window_actor_strip_callback_token')
+        if callable(strip_fn):
+            raw = str((strip_fn(raw) or (raw, 0))[0] or raw)
+    except Exception:
+        pass
+    try:
+        resolve_fn = globals().get('resolve_short_callback')
+        if callable(resolve_fn):
+            raw = str(resolve_fn(raw) or raw)
+    except Exception:
+        pass
+    try:
+        strip_fn = globals().get('window_actor_strip_callback_token')
+        if callable(strip_fn):
+            raw = str((strip_fn(raw) or (raw, 0))[0] or raw)
+    except Exception:
+        pass
+    return raw
+
+
 def _r73_is_injected_constructor_button(cb):
-    raw = str(cb or '')
+    raw = _r75_base_callback(cb)
+    # Working-window constructor launchers are v196:c1:<window-token> / c2:<window-token>.
+    # Any stamped copy (~wN) must still be recognized.  Constructor panels themselves are
+    # semantically blocked when the profile is OFF, so stale panels cannot reactivate it.
     try:
         return bool(__import__('re').fullmatch(r'v196:c[12]:[0-9a-fA-F]{8,40}', raw))
     except Exception:
@@ -9329,7 +9356,7 @@ def _r73_filter_features_markup(reply_markup, chat_id):
         for row in rows:
             keep = []
             for button in list(row or []):
-                cb = _r73_cb(button)
+                cb = _r75_base_callback(_r73_cb(button))
                 if (not show_ctor) and _r73_is_injected_constructor_button(cb):
                     continue
                 if (not show_desc) and cb == 'v171:desc':
@@ -9420,16 +9447,30 @@ _v196_apply_profile_to_base = _r73_apply_profile_to_base
 # not dependent on whichever state_context happened to be active.
 _R73_AUGMENT_CORE = globals().get('_v160_augment_markup')
 def _r73_augment_markup(reply_markup, text: str, chat_id=None):
-    if chat_id is None or not callable(_R73_AUGMENT_CORE):
-        return _R73_AUGMENT_CORE(reply_markup, text, chat_id) if callable(_R73_AUGMENT_CORE) else reply_markup
-    try:
-        ctx = globals().get('_v212_scope_context')
-        if ctx is not None:
-            with ctx(int(chat_id)):
-                return _R73_AUGMENT_CORE(reply_markup, text, int(chat_id))
-    except Exception:
-        pass
-    return _R73_AUGMENT_CORE(reply_markup, text, int(chat_id))
+    if not callable(_R73_AUGMENT_CORE):
+        result = reply_markup
+    elif chat_id is None:
+        result = _R73_AUGMENT_CORE(reply_markup, text, chat_id)
+    else:
+        result = None
+        try:
+            ctx = globals().get('_v212_scope_context')
+            if ctx is not None:
+                with ctx(int(chat_id)):
+                    result = _R73_AUGMENT_CORE(reply_markup, text, int(chat_id))
+        except Exception:
+            result = None
+        if result is None:
+            result = _R73_AUGMENT_CORE(reply_markup, text, int(chat_id))
+    # R75: filter immediately after every augmentation too.  This is not the last fence;
+    # final Telegram transport applies the same policy again so later markup-only paths
+    # cannot resurrect a hidden feature.
+    if chat_id is not None:
+        try:
+            return _r73_filter_features_markup(result, int(chat_id))
+        except Exception:
+            pass
+    return result
 _v160_augment_markup = _r73_augment_markup
 
 
@@ -9575,7 +9616,7 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
                 cb = _r73_cb(b)
                 if cb in {'r31:toggle:tz_markers', 'r31:toggle:constructors'}:
                     continue
-                if cb in {'r73:factory:open', 'r74:map:open'}:
+                if cb in {'r73:factory:open', 'r74:map:open', 'r75:beetle:open'}:
                     continue
                 kept.append(b)
             if kept:
@@ -9586,8 +9627,9 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
             if any((_r73_cb(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in str(getattr(b, 'text', '') if not isinstance(b, dict) else b.get('text', '')).casefold()) for b in (row or [])):
                 insert_at = i
                 break
-        rows.insert(insert_at, [IB('🗺 Карта / индекс бота', callback_data='r74:map:open')])
-        rows.insert(insert_at + 1, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
+        rows.insert(insert_at, [IB('🪲 Жук-нарывник R75', callback_data='r75:beetle:open')])
+        rows.insert(insert_at + 1, [IB('🗺 Карта / индекс бота', callback_data='r74:map:open')])
+        rows.insert(insert_at + 2, [IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open')])
         if callable(set_fn):
             return set_fn(kb, rows)
         out = types.InlineKeyboardMarkup(row_width=1)
@@ -9596,6 +9638,7 @@ def _r73_info_keyboard_decorate(chat_id: int, kb):
         return out
     except Exception:
         try:
+            kb.row(IB('🪲 Жук-нарывник R75', callback_data='r75:beetle:open'))
             kb.row(IB('🗺 Карта / индекс бота', callback_data='r74:map:open'))
             kb.row(IB('🏭 Заводские настройки / интерфейс', callback_data='r73:factory:open'))
         except Exception: pass
@@ -9709,7 +9752,220 @@ try:
 except Exception:
     pass
 
-# R74 / очнись_6 — live MASTER map + machine index inside Info.
+# ---------------------------------------------------------------------------
+# R75 / очнись_7 — hard feature-visibility fence + expanded "Жук-нарывник".
+#
+# The journal of 2026-09-15 proved that all four switches were OFF while late
+# markup-only/restore paths repeatedly reintroduced v171:desc.  R75 therefore
+# moves the authoritative decision to the final Telegram boundary and records
+# exactly which late producer attempted to resurrect a disabled feature.
+# ---------------------------------------------------------------------------
+_R75_FEATURE_CALLBACKS = {
+    'v171:desc': 'descriptions',
+    'v160:tz_capture': 'tz',
+    'v160:marker_capture': 'markers',
+}
+_R75_FEATURE_FENCE_LOCK = threading.RLock()
+_R75_FEATURE_FENCE_STATS = {
+    'checked': 0,
+    'drops': 0,
+    'by_feature': {key: 0 for key in _R73_FEATURES},
+    'by_stage': {},
+    'recent': [],
+}
+
+
+def _r75_feature_for_callback(callback):
+    base = _r75_base_callback(callback)
+    if base in _R75_FEATURE_CALLBACKS:
+        return _R75_FEATURE_CALLBACKS[base]
+    if _r73_is_injected_constructor_button(base):
+        return 'constructors'
+    return ''
+
+
+def _r75_transport_feature_fence(reply_markup, chat_id, stage='final_transport', message_id=None):
+    """Last-chance visibility policy.  Must run immediately before Telegram API."""
+    if reply_markup is None:
+        return None
+    try:
+        cid = int(chat_id or 0)
+    except Exception:
+        return reply_markup
+    if not cid:
+        return reply_markup
+    try:
+        import copy as _r75_copy
+        kb = _r75_copy.deepcopy(reply_markup)
+    except Exception:
+        kb = reply_markup
+    rows_fn = globals().get('_v221_markup_rows')
+    set_fn = globals().get('_v221_set_markup_rows')
+    try:
+        rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or getattr(kb, 'inline_keyboard', None) or [])
+    except Exception:
+        rows = []
+    clean = []
+    removed = []
+    for row in rows:
+        keep = []
+        for button in list(row or []):
+            raw = _r73_cb(button)
+            base = _r75_base_callback(raw)
+            feature = _r75_feature_for_callback(base)
+            if feature and not _r73_feature_enabled(feature, cid):
+                removed.append({'feature': feature, 'callback': base[:120], 'raw': str(raw)[:120]})
+                continue
+            keep.append(button)
+        if keep:
+            clean.append(keep)
+    if callable(set_fn):
+        kb = set_fn(kb, clean)
+    else:
+        try:
+            kb.keyboard = clean
+        except Exception:
+            try:
+                kb.inline_keyboard = clean
+            except Exception:
+                pass
+    stage_name = str(stage or 'final_transport')[:80]
+    with _R75_FEATURE_FENCE_LOCK:
+        _R75_FEATURE_FENCE_STATS['checked'] = int(_R75_FEATURE_FENCE_STATS.get('checked') or 0) + 1
+        if removed:
+            _R75_FEATURE_FENCE_STATS['drops'] = int(_R75_FEATURE_FENCE_STATS.get('drops') or 0) + len(removed)
+            by_stage = _R75_FEATURE_FENCE_STATS.setdefault('by_stage', {})
+            by_stage[stage_name] = int(by_stage.get(stage_name) or 0) + len(removed)
+            by_feature = _R75_FEATURE_FENCE_STATS.setdefault('by_feature', {})
+            for item in removed:
+                f = str(item.get('feature') or '')
+                by_feature[f] = int(by_feature.get(f) or 0) + 1
+            recent = _R75_FEATURE_FENCE_STATS.setdefault('recent', [])
+            recent.append({'at': time.time(), 'chat_id': cid, 'message_id': int(message_id or 0), 'scope': _r73_scope_key_for_chat(cid), 'stage': stage_name, 'removed': removed[:12]})
+            del recent[:-60]
+    if removed:
+        detail = {
+            'scope': _r73_scope_key_for_chat(cid),
+            'stage': stage_name,
+            'removed': removed[:12],
+            'settings': {f: int(_r73_feature_enabled(f, cid)) for f in _R73_FEATURES},
+        }
+        try:
+            caller_fn = globals().get('_window_diag_caller')
+            if callable(caller_fn):
+                detail['producer'] = str(caller_fn() or '')[:180]
+        except Exception:
+            pass
+        try:
+            emit = globals().get('_window_diag_emit')
+            if callable(emit):
+                emit('r75_feature_leak_blocked', cid, int(message_id or 0) or None, detail, 'WARN')
+        except Exception:
+            pass
+        try:
+            bot_journal('r75_feature_leak_blocked', cid, __import__('json').dumps(detail, ensure_ascii=False, separators=(',', ':'), default=str)[:1800], 'WARN')
+        except Exception:
+            pass
+    return kb
+
+
+def r75_feature_fence_snapshot():
+    with _R75_FEATURE_FENCE_LOCK:
+        try:
+            import copy as _r75_copy
+            return _r75_copy.deepcopy(_R75_FEATURE_FENCE_STATS)
+        except Exception:
+            return dict(_R75_FEATURE_FENCE_STATS)
+
+
+def _r75_beetle_text():
+    snap = r75_feature_fence_snapshot()
+    by_feature = snap.get('by_feature') or {}
+    by_stage = snap.get('by_stage') or {}
+    lines = [
+        f'🪲 ЖУК-НАРЫВНИК R75 · {BOT_DISPLAY_NAME}', '',
+        'Ловит попытки вернуть выключенные Конструкторы, Описания, ТЗ и Маркеры.',
+        'Проверка стоит прямо перед Telegram API и отдельно перед semantic-router.', '',
+        f"Проверок финального фильтра: {int(snap.get('checked') or 0)}",
+        f"Заблокировано кнопок: {int(snap.get('drops') or 0)}",
+        f"Конструкторы: {int(by_feature.get('constructors') or 0)} · Описания: {int(by_feature.get('descriptions') or 0)}",
+        f"ТЗ: {int(by_feature.get('tz') or 0)} · Маркеры: {int(by_feature.get('markers') or 0)}",
+    ]
+    if by_stage:
+        lines += ['', 'Откуда пытались пройти:']
+        for stage, count in sorted(by_stage.items(), key=lambda kv: int(kv[1] or 0), reverse=True)[:8]:
+            lines.append(f'• {stage}: {int(count or 0)}')
+    recent = list(snap.get('recent') or [])[-8:]
+    if recent:
+        lines += ['', 'Последние блокировки:']
+        for row in reversed(recent):
+            rem = row.get('removed') or []
+            features = ','.join(sorted({str(x.get('feature') or '') for x in rem if x.get('feature')})) or '—'
+            cbs = ', '.join(str(x.get('callback') or '')[:38] for x in rem[:3]) or '—'
+            lines.append(f"• {row.get('stage','?')} · {row.get('scope','?')} · {features} · {cbs}")
+    lines += ['', 'В полном журнале события `r75_feature_leak_blocked` содержат producer, stage, scope, callback и фактическое состояние всех четырёх переключателей.']
+    return window_mark('\n'.join(lines)[:3800], 'Ф89')
+
+
+def _r75_beetle_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB('🔄 Обновить', callback_data='r75:beetle:open'))
+    kb.row(IB('🔙 В Инфо', callback_data='r75:beetle:back_info'), IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+# Semantic stale-button fence.  This lives above every feature router and reports
+# which disabled feature received a callback, while the final transport fence
+# separately guarantees that such a button cannot be newly sent again.
+_R75_CONTOUR_CORE = contour_callback_guard
+
+def _r75_contour_callback_guard(call, resolved):
+    raw = _r75_base_callback(resolved)
+    try:
+        cid = int(call.message.chat.id)
+        uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
+    except Exception:
+        return bool(_R75_CONTOUR_CORE(call, raw)) if callable(_R75_CONTOUR_CORE) else False
+    if raw.startswith('r75:beetle:'):
+        if cid != int(OWNER_ID or 0) or uid != int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id, 'Только основной владелец.', show_alert=True)
+            except Exception: pass
+            return True
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        if raw == 'r75:beetle:back_info':
+            safe_edit(bot, call, build_info_text(cid), reply_markup=build_info_keyboard(cid))
+        else:
+            safe_edit(bot, call, _r75_beetle_text(), reply_markup=_r75_beetle_keyboard())
+        return True
+    feature = _r75_feature_for_callback(raw)
+    if feature and not _r73_feature_enabled(feature, cid):
+        try:
+            bot.answer_callback_query(call.id, f'{_R73_FEATURE_LABELS.get(feature, feature)}: ВЫКЛ.', show_alert=False)
+        except Exception:
+            pass
+        try:
+            detail = {'feature': feature, 'callback': raw[:160], 'scope': _r73_scope_key_for_chat(cid), 'message_id': int(call.message.message_id)}
+            emit = globals().get('_window_diag_emit')
+            if callable(emit):
+                emit('r75_disabled_feature_callback_blocked', cid, int(call.message.message_id), detail, 'WARN')
+            bot_journal('r75_disabled_feature_callback_blocked', cid, __import__('json').dumps(detail, ensure_ascii=False, separators=(',', ':'))[:1200], 'WARN')
+        except Exception:
+            pass
+        _r73_schedule_live_refresh('r75_stale_' + feature)
+        return True
+    return bool(_R75_CONTOUR_CORE(call, raw)) if callable(_R75_CONTOUR_CORE) else False
+
+contour_callback_guard = _r75_contour_callback_guard
+
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r75:feature-fence', 'Ф89')
+    WINDOW_MARKER_CONSTANTS.setdefault('r75:beetle:*', 'Ф89')
+    bot_journal('r75_feature_visibility_fence_loaded', int(OWNER_ID or 0), 'final_transport=hard; callback_tokens=normalized; beetle=producer+stage+scope+feature')
+except Exception:
+    pass
+
+# R74 / очнись_7 — live MASTER map + machine index inside Info.
 # The artifacts are generated from the exact runtime sources on demand, so they
 # cannot silently drift away from the deployed code.  Telegram document delivery
 # is asynchronous and never blocks the callback/window hot path.
@@ -9807,7 +10063,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_6'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -9846,7 +10102,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_6')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_7')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -9896,7 +10152,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -9919,13 +10175,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -9981,7 +10237,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_6'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}; live_source_index=on")
 except Exception:
     pass
 

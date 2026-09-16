@@ -454,8 +454,15 @@ def window_diagnostic_snapshot() -> dict:
         counters = dict(_WINDOW_DIAG_COUNTERS)
         events_count = len(_WINDOW_DIAG_EVENTS)
     active = [x for x in states if not bool(x.get('deleted'))]
-    suspicious_names = {'window_stale_edit_apply', 'window_transport_stale_request', 'window_recreated', 'window_duplicate_marker_candidate', 'window_edit_target_missing', 'window_edit_failed', 'window_send_failed', 'window_delete_failed', 'window_registry_changed'}
-    return {'enabled': bool(WINDOW_DIAGNOSTICS_ENABLED), 'installed': bool(_WINDOW_DIAG_INSTALLED), 'events_in_memory': events_count, 'tracked_windows': len(states), 'active_windows': len(active), 'deleted_windows_retained': len(states) - len(active), 'last_sequence': int(_WINDOW_DIAG_SEQ), 'counters': counters, 'suspicious_total': sum((int(counters.get(name, 0) or 0) for name in suspicious_names)), 'active_by_marker': dict(sorted({m: sum((1 for x in active if str(x.get('marker') or '') == m)) for m in {str(x.get('marker') or '') for x in active if x.get('marker')}}.items()))}
+    suspicious_names = {'window_stale_edit_apply', 'window_transport_stale_request', 'window_recreated', 'window_duplicate_marker_candidate', 'window_edit_target_missing', 'window_edit_failed', 'window_send_failed', 'window_delete_failed', 'window_registry_changed', 'r75_feature_leak_blocked', 'r75_disabled_feature_callback_blocked'}
+    feature_fence = {}
+    try:
+        fn = globals().get('r75_feature_fence_snapshot')
+        if callable(fn):
+            feature_fence = fn() or {}
+    except Exception:
+        feature_fence = {}
+    return {'enabled': bool(WINDOW_DIAGNOSTICS_ENABLED), 'installed': bool(_WINDOW_DIAG_INSTALLED), 'events_in_memory': events_count, 'tracked_windows': len(states), 'active_windows': len(active), 'deleted_windows_retained': len(states) - len(active), 'last_sequence': int(_WINDOW_DIAG_SEQ), 'counters': counters, 'suspicious_total': sum((int(counters.get(name, 0) or 0) for name in suspicious_names)), 'active_by_marker': dict(sorted({m: sum((1 for x in active if str(x.get('marker') or '') == m)) for m in {str(x.get('marker') or '') for x in active if x.get('marker')}}.items())), 'feature_visibility_fence_r75': feature_fence}
 
 def window_diagnostic_tail(limit: int=500) -> list[dict]:
     try:
