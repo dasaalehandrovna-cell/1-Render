@@ -5226,7 +5226,7 @@ def _r29_build_info_text(chat_id: int, *args, **kwargs) -> str:
         'ℹ️ ИНФО · R66\n\n'
         'Меню собрано по разделам, чтобы служебные кнопки не занимали несколько экранов.\n'
         'Доступны три режима Info: Новое, Старое и Третий вариант.\n\n'
-        '⚡ FAST UI: callback не ждёт Telegram; рендер идёт отдельной latest-wins очередью.\n'
+        '⚡ FAST UI: один Window Actor и один canonical Telegram edit; фоновые обновления — latest-wins.\n'
         '🛰 HEAVY: тяжёлая работа после UI.\n'
         '🔒 Директивный режим: бизнес-логика владельца не переключается контуром.',
         'Ф89'
@@ -9191,10 +9191,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_8')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_8')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9706,7 +9706,7 @@ def _r73_contour_callback_guard(call, resolved):
             try: bot.answer_callback_query(call.id, f"{_R73_FEATURE_LABELS.get(feature, feature)}: {'ВКЛ' if value else 'ВЫКЛ'}")
             except Exception: pass
             safe_edit(bot, call, _r73_factory_scope_text(scope), reply_markup=_r73_factory_scope_keyboard(scope))
-            _r73_schedule_live_refresh(f'toggle_{scope}_{feature}')
+            _r73_schedule_live_refresh(f'toggle_{scope}_{feature}', scope=scope, feature=feature, exclude=(cid, int(call.message.message_id)))
             return True
         if action == 'reset_ask' and len(parts) > 3:
             scope = parts[3]
@@ -9718,7 +9718,7 @@ def _r73_contour_callback_guard(call, resolved):
             try: bot.answer_callback_query(call.id, 'Заводской профиль восстановлен.')
             except Exception: pass
             safe_edit(bot, call, _r73_factory_scope_text(scope), reply_markup=_r73_factory_scope_keyboard(scope))
-            _r73_schedule_live_refresh(f'reset_{scope}')
+            _r73_schedule_live_refresh(f'reset_{scope}', scope=scope, exclude=(cid, int(call.message.message_id)))
             try: bot_journal('r73_factory_reset', cid, f'scope={scope}; features=all_off')
             except Exception: pass
             return True
@@ -9730,7 +9730,7 @@ def _r73_contour_callback_guard(call, resolved):
         try: bot.answer_callback_query(call.id, 'Конструкторы: ' + ('ВКЛ' if value else 'ВЫКЛ'))
         except Exception: pass
         safe_edit(bot, call, _r73_factory_scope_text('owner'), reply_markup=_r73_factory_scope_keyboard('owner'))
-        _r73_schedule_live_refresh('legacy_constructor_toggle')
+        _r73_schedule_live_refresh('legacy_constructor_toggle', scope='owner', feature='constructors', exclude=(cid, int(call.message.message_id)))
         return True
     if raw == 'r31:toggle:tz_markers' and cid == int(OWNER_ID or 0) and uid == int(OWNER_ID or 0):
         value = not (_r73_feature_enabled('tz', scope='owner') and _r73_feature_enabled('markers', scope='owner'))
@@ -9739,7 +9739,7 @@ def _r73_contour_callback_guard(call, resolved):
         try: bot.answer_callback_query(call.id, 'ТЗ окон и маркеры: ' + ('ВКЛ' if value else 'ВЫКЛ'))
         except Exception: pass
         safe_edit(bot, call, _r73_factory_scope_text('owner'), reply_markup=_r73_factory_scope_keyboard('owner'))
-        _r73_schedule_live_refresh('legacy_tz_marker_toggle')
+        _r73_schedule_live_refresh('legacy_tz_marker_toggle', scope='owner', exclude=(cid, int(call.message.message_id)))
         return True
 
     return bool(_R73_CONTOUR_CORE(call, raw)) if callable(_R73_CONTOUR_CORE) else False
@@ -9753,7 +9753,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# R75 / очнись_7 — hard feature-visibility fence + expanded "Жук-нарывник".
+# R75 / очнись_8 — hard feature-visibility fence + expanded "Жук-нарывник".
 #
 # The journal of 2026-09-15 proved that all four switches were OFF while late
 # markup-only/restore paths repeatedly reintroduced v171:desc.  R75 therefore
@@ -9965,7 +9965,7 @@ try:
 except Exception:
     pass
 
-# R74 / очнись_7 — live MASTER map + machine index inside Info.
+# R74 / очнись_8 — live MASTER map + machine index inside Info.
 # The artifacts are generated from the exact runtime sources on demand, so they
 # cannot silently drift away from the deployed code.  Telegram document delivery
 # is asynchronous and never blocks the callback/window hot path.
@@ -10063,7 +10063,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_7'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_8'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10102,7 +10102,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_7')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_8')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10152,7 +10152,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10175,13 +10175,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10237,7 +10237,362 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_7'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_8'}; live_source_index=on")
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# R76 / очнись_8 — deterministic UI pipeline + Back/Main fix + scoped refresh
+# + semantic button dedupe + lightweight latency profiler.
+#
+# Contract:
+#   * back_main is MAIN, never history; only nav_prev/real Back uses history;
+#   * final Telegram keyboard has one semantic action once (Window Actor ~wN ignored);
+#   * factory toggle refresh is scope-targeted, delayed/latest-wins and excludes the
+#     window already redrawn by the foreground click;
+#   * fast UI skips verbose per-call journal writes; R76 profiler records timings
+#     without taking the data journal lock on the click hot path.
+# ---------------------------------------------------------------------------
+_R76_UI_LOCK = threading.RLock()
+_R76_UI_STATS = {
+    'semantic_drops': 0,
+    'semantic_windows': 0,
+    'refresh_runs': 0,
+    'refresh_changed': 0,
+    'refresh_scanned': 0,
+    'refresh_excluded': 0,
+    'refresh_by_scope': {},
+    'filter_ms_total': 0.0,
+    'filter_calls': 0,
+    'transport_recent': [],
+}
+
+
+def _r76_semantic_callback(value):
+    raw = _r75_base_callback(value)
+    low = str(raw or '').strip().casefold()
+    if low.endswith(':back_main'):
+        return '__main__'
+    if low == 'nav_prev':
+        return '__previous__'
+    return str(raw or '').strip()
+
+
+def _r76_button_text(button):
+    try:
+        if isinstance(button, dict):
+            return str(button.get('text') or '')
+        return str(getattr(button, 'text', '') or '')
+    except Exception:
+        return ''
+
+
+def _r76_button_url(button):
+    try:
+        if isinstance(button, dict):
+            return str(button.get('url') or '')
+        return str(getattr(button, 'url', '') or '')
+    except Exception:
+        return ''
+
+
+def _r76_semantic_key(button, row_index=0, col_index=0):
+    raw = _r73_cb(button)
+    base = _r76_semantic_callback(raw)
+    # 'none' and empty callbacks are frequently used as inert labels; do not collapse
+    # unrelated informational buttons merely because their callback is intentionally inert.
+    if base and base.casefold() not in {'none', 'noop'}:
+        return ('cb', base)
+    url = _r76_button_url(button)
+    if url:
+        return ('url', url)
+    return ('inert', int(row_index), int(col_index), _r76_button_text(button), str(raw or ''))
+
+
+def _r76_semantic_dedupe_markup(reply_markup, chat_id=0, stage='final'):
+    if reply_markup is None:
+        return None
+    rows_fn = globals().get('_v221_markup_rows')
+    set_fn = globals().get('_v221_set_markup_rows')
+    try:
+        rows = list(rows_fn(reply_markup) or []) if callable(rows_fn) else list(getattr(reply_markup, 'keyboard', None) or getattr(reply_markup, 'inline_keyboard', None) or [])
+    except Exception:
+        return reply_markup
+    seen = set()
+    duplicate_positions = []
+    for ri, row in enumerate(rows):
+        for ci, button in enumerate(list(row or [])):
+            key = _r76_semantic_key(button, ri, ci)
+            if key[0] == 'inert':
+                continue
+            if key in seen:
+                duplicate_positions.append((ri, ci, key))
+            else:
+                seen.add(key)
+    if not duplicate_positions:
+        return reply_markup
+    try:
+        import copy as _r76_copy
+        kb = _r76_copy.deepcopy(reply_markup)
+        rows2 = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or getattr(kb, 'inline_keyboard', None) or [])
+    except Exception:
+        return reply_markup
+    seen = set(); clean=[]; drops=0
+    for ri, row in enumerate(rows2):
+        keep=[]
+        for ci, button in enumerate(list(row or [])):
+            key=_r76_semantic_key(button, ri, ci)
+            if key[0] != 'inert' and key in seen:
+                drops += 1
+                continue
+            if key[0] != 'inert':
+                seen.add(key)
+            keep.append(button)
+        if keep:
+            clean.append(keep)
+    if callable(set_fn):
+        kb=set_fn(kb, clean)
+    else:
+        try: kb.keyboard=clean
+        except Exception:
+            try: kb.inline_keyboard=clean
+            except Exception: pass
+    with _R76_UI_LOCK:
+        _R76_UI_STATS['semantic_drops'] = int(_R76_UI_STATS.get('semantic_drops') or 0) + int(drops)
+        _R76_UI_STATS['semantic_windows'] = int(_R76_UI_STATS.get('semantic_windows') or 0) + 1
+    try:
+        emit=globals().get('_window_diag_emit')
+        if callable(emit):
+            emit('r76_semantic_button_dedupe', int(chat_id or 0) or None, None, {'stage':str(stage), 'drops':drops}, 'INFO')
+    except Exception:
+        pass
+    return kb
+
+
+# MAIN is not Back-history.  The final router already asks this function before every
+# semantic owner, so excluding :back_main here makes it reach its real main-window owner.
+_R76_R27_BACK_CORE = r27_callback_is_back_navigation
+
+def r27_callback_is_back_navigation(call, data_str: str) -> bool:
+    raw = _r76_semantic_callback(data_str)
+    if raw == '__main__':
+        return False
+    if raw == '__previous__':
+        return True
+    try:
+        return bool(_R76_R27_BACK_CORE(call, raw)) if callable(_R76_R27_BACK_CORE) else False
+    except Exception:
+        return False
+
+
+# Copy-on-write R75 fence: most windows contain no disabled feature button.  Do not
+# deepcopy the whole keyboard unless there is actually something to remove.
+_R76_R75_FENCE_CORE = _r75_transport_feature_fence
+
+def _r75_transport_feature_fence(reply_markup, chat_id, stage='final_transport', message_id=None):
+    if reply_markup is None:
+        return None
+    started = time.monotonic()
+    try:
+        cid=int(chat_id or 0)
+    except Exception:
+        cid=0
+    if not cid:
+        return reply_markup
+    rows_fn=globals().get('_v221_markup_rows')
+    try:
+        rows=list(rows_fn(reply_markup) or []) if callable(rows_fn) else list(getattr(reply_markup,'keyboard',None) or getattr(reply_markup,'inline_keyboard',None) or [])
+    except Exception:
+        rows=[]
+    leak=False
+    for row in rows:
+        for button in list(row or []):
+            feature=_r75_feature_for_callback(_r73_cb(button))
+            if feature and not _r73_feature_enabled(feature, cid):
+                leak=True; break
+        if leak: break
+    if leak:
+        out=_R76_R75_FENCE_CORE(reply_markup, cid, stage=stage, message_id=message_id)
+    else:
+        out=reply_markup
+        # Preserve useful checked counter without journal/diagnostic work on hot path.
+        try:
+            with _R75_FEATURE_FENCE_LOCK:
+                _R75_FEATURE_FENCE_STATS['checked']=int(_R75_FEATURE_FENCE_STATS.get('checked') or 0)+1
+        except Exception:
+            pass
+    elapsed=(time.monotonic()-started)*1000.0
+    with _R76_UI_LOCK:
+        _R76_UI_STATS['filter_calls']=int(_R76_UI_STATS.get('filter_calls') or 0)+1
+        _R76_UI_STATS['filter_ms_total']=float(_R76_UI_STATS.get('filter_ms_total') or 0.0)+elapsed
+    return out
+
+
+# One final semantic dedupe for ALL Telegram markup paths, including markup-only.
+_R76_FINAL_FILTER_CORE = _final_filter_markup
+
+def _final_filter_markup(chat_id, reply_markup, stage='final_filter', message_id=None):
+    started=time.monotonic()
+    prepared=_R76_FINAL_FILTER_CORE(chat_id, reply_markup, stage=stage, message_id=message_id)
+    prepared=_r76_semantic_dedupe_markup(prepared, int(chat_id or 0), stage=stage)
+    elapsed=(time.monotonic()-started)*1000.0
+    # Only slow local filtering is interesting; keep diagnostics lock-free otherwise.
+    if elapsed >= 15.0:
+        try:
+            emit=globals().get('_window_diag_emit')
+            if callable(emit): emit('r76_slow_local_markup', int(chat_id or 0) or None, int(message_id or 0) or None, {'stage':str(stage),'ms':round(elapsed,1)}, 'WARN')
+        except Exception: pass
+    return prepared
+
+
+# The FAST UI renderer already performs the single canonical augmentation before it
+# reserves a Window Actor generation.  The old final transport tried to call v227
+# again with an incompatible argument order, paid a caught TypeError on every full edit,
+# and would have double-augmented if that call ever succeeded.  Final transport now only
+# applies the hard visibility/dedupe fence to the already-built markup.
+def _final_prepare_markup(chat_id, reply_markup, text='', stage='prepare', message_id=None):
+    return _final_filter_markup(int(chat_id or 0), reply_markup, stage=stage, message_id=message_id)
+
+
+# R73 refresh v2: only the affected scope, latest-wins after a short user-idle delay,
+# and never repaint the exact window already changed synchronously by the click.
+def _r73_schedule_live_refresh(reason='settings', scope=None, feature=None, exclude=None):
+    reason_s=str(reason or 'settings')
+    scope_s=str(scope or '').strip().casefold()
+    if scope_s not in {'owner','circle1','circle2'}:
+        import re as _r76_re
+        m=_r76_re.search(r'(?:toggle_|reset_)(owner|circle1|circle2)', reason_s)
+        scope_s=m.group(1) if m else ''
+        if not scope_s and reason_s.startswith('legacy_'):
+            scope_s='owner'
+    try:
+        excluded=(int(exclude[0]), int(exclude[1])) if exclude else None
+    except Exception:
+        excluded=None
+    key=f'r76-r73-refresh:{scope_s or "all"}'
+
+    def _job():
+        try:
+            lock=globals().get('_V221_LIVE_MARKUP_LOCK'); reg=globals().get('_V221_LIVE_MARKUP')
+            if lock is None or not isinstance(reg, dict): return
+            with lock:
+                items=[(k,dict(v or {})) for k,v in reg.items()]
+        except Exception:
+            return
+        changed=0; scanned=0; skipped=0
+        for (cid,mid),row in items:
+            try:
+                cid=int(cid); mid=int(mid)
+                if scope_s and _r73_scope_key_for_chat(cid) != scope_s:
+                    continue
+                if excluded and (cid,mid)==excluded:
+                    skipped += 1; continue
+                scanned += 1
+                source=row.get('source_markup') if row.get('source_markup') is not None else row.get('markup')
+                after=v227_render_effective_contour_markup(source, str(row.get('text') or ''), cid)
+                after=_r76_semantic_dedupe_markup(after, cid, stage='r76_scoped_refresh')
+                fp=globals().get('_v221_markup_fingerprint')
+                if callable(fp) and fp(row.get('markup')) == fp(after):
+                    continue
+                fast_ui_edit_reply_markup(cid, mid, after, purpose='r76_factory_refresh')
+                rec=globals().get('v221_record_live_markup')
+                if callable(rec): rec(cid, mid, after, str(row.get('text') or ''), source_markup=source)
+                changed += 1
+            except Exception:
+                continue
+        with _R76_UI_LOCK:
+            _R76_UI_STATS['refresh_runs']=int(_R76_UI_STATS.get('refresh_runs') or 0)+1
+            _R76_UI_STATS['refresh_changed']=int(_R76_UI_STATS.get('refresh_changed') or 0)+changed
+            _R76_UI_STATS['refresh_scanned']=int(_R76_UI_STATS.get('refresh_scanned') or 0)+scanned
+            _R76_UI_STATS['refresh_excluded']=int(_R76_UI_STATS.get('refresh_excluded') or 0)+skipped
+            d=_R76_UI_STATS.setdefault('refresh_by_scope',{})
+            d[scope_s or 'all']=int(d.get(scope_s or 'all') or 0)+1
+        try: bot_journal('r76_scoped_factory_refresh', int(OWNER_ID or 0), f'reason={reason_s}; scope={scope_s or "all"}; scanned={scanned}; excluded={skipped}; changed={changed}')
+        except Exception: pass
+
+    try:
+        DELAYED_SCHEDULER.cancel(key)
+        DELAYED_SCHEDULER.schedule(key, 0.45, _job)
+        return
+    except Exception:
+        pass
+    try:
+        pool=globals().get('GENERAL_TASK_POOL')
+        submit=getattr(pool,'submit_unique',None) if pool is not None else None
+        if callable(submit): submit(key,_job); return
+    except Exception: pass
+    try: threading.Thread(target=_job,daemon=True,name='r76-r73-refresh').start()
+    except Exception: pass
+
+
+# Lightweight Telegram hot-path profiler.  It does not write the verbose journal for
+# each fast UI call; it keeps a small in-RAM ring shown by the beetle.
+_R76_TG_CALL_CORE = _tg_call_retry
+
+def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwargs):
+    started=time.monotonic(); ok_flag=False; err=''
+    try:
+        result=_R76_TG_CALL_CORE(func,*args,attempts=attempts,purpose=purpose,**kwargs)
+        ok_flag=True
+        return result
+    except Exception as exc:
+        err=f'{type(exc).__name__}:{str(exc)[:120]}'
+        raise
+    finally:
+        try:
+            is_fast=bool(_is_fast_ui_purpose(purpose))
+        except Exception:
+            is_fast=False
+        name=str(getattr(func,'__name__',func))[:80]
+        if is_fast or name in {'_final_edit_message_text','_final_edit_message_reply_markup','_final_send_message'}:
+            row={'at':time.time(),'purpose':str(purpose)[:90],'func':name,'ms':round((time.monotonic()-started)*1000.0,1),'ok':int(ok_flag),'error':err}
+            with _R76_UI_LOCK:
+                recent=_R76_UI_STATS.setdefault('transport_recent',[]); recent.append(row); del recent[:-40]
+
+
+def r76_ui_profile_snapshot():
+    with _R76_UI_LOCK:
+        try:
+            import copy as _r76_copy
+            out=_r76_copy.deepcopy(_R76_UI_STATS)
+        except Exception:
+            out=dict(_R76_UI_STATS)
+    calls=max(1,int(out.get('filter_calls') or 0))
+    out['filter_avg_ms']=round(float(out.get('filter_ms_total') or 0.0)/calls,2)
+    try:
+        perf=list(globals().get('_V176_PERF') or [])[-12:]
+        out['callback_recent']=[{'action':str(x.get('action') or '')[:80],'ms':round(float(x.get('elapsed') or 0.0)*1000.0,1)} for x in perf]
+    except Exception:
+        out['callback_recent']=[]
+    return out
+
+
+_R76_BEETLE_CORE = _r75_beetle_text
+
+def _r75_beetle_text():
+    base=str(_R76_BEETLE_CORE() if callable(_R76_BEETLE_CORE) else '')
+    snap=r76_ui_profile_snapshot()
+    lines=['', '⚡ R76 ПРОФИЛЬ ОТРИСОВКИ',
+           f"Semantic-дубли удалены: {int(snap.get('semantic_drops') or 0)} в {int(snap.get('semantic_windows') or 0)} окнах",
+           f"Factory refresh: запусков {int(snap.get('refresh_runs') or 0)} · просмотрено {int(snap.get('refresh_scanned') or 0)} · изменено {int(snap.get('refresh_changed') or 0)} · исключено текущее {int(snap.get('refresh_excluded') or 0)}",
+           f"Средний локальный final-filter: {snap.get('filter_avg_ms',0)} ms"]
+    cb=list(snap.get('callback_recent') or [])[-5:]
+    if cb:
+        lines.append('Последние callback total:')
+        for x in reversed(cb): lines.append(f"• {x.get('action') or '—'} · {x.get('ms')} ms")
+    tr=list(snap.get('transport_recent') or [])[-5:]
+    if tr:
+        lines.append('Последние Telegram transport:')
+        for x in reversed(tr): lines.append(f"• {x.get('purpose') or x.get('func')} · {x.get('ms')} ms · {'OK' if x.get('ok') else 'ERR'}")
+    # Keep Telegram text under its hard limit while retaining the newest profiler data.
+    joined=(base.rstrip()+"\n"+'\n'.join(lines)).strip()
+    return window_mark(joined[-3850:], 'Ф89')
+
+
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r76:ui-pipeline','Ф89')
+    bot_journal('r76_ui_pipeline_loaded', int(OWNER_ID or 0), 'back_main=semantic_main; dedupe=final; factory_refresh=scoped_latest_wins; fast_verbose_journal=off; profiler=beetle')
 except Exception:
     pass
 

@@ -616,8 +616,8 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och7_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_7'" in core_src,
+    ok('och8_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_8'" in core_src,
        'user-visible bot name must follow очнись_(number) rule')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
@@ -676,6 +676,27 @@ if ROLE=='fast':
        'feature_visibility_fence_r75' in diag_src and "callback_data='r75:beetle:open'" in split_src and
        'def _r75_beetle_text' in split_src,
        'expanded bug-trap diagnostics must record producer/stage/scope/feature, expose counters in max diagnostics and be visible from Info')
+    ok('r76_back_main_bypasses_history',
+       "if raw == '__main__':\n        return False" in split_src and "if raw == '__previous__':\n        return True" in split_src,
+       'Back/Main must reach its main-window semantic owner; only Previous uses history')
+    ok('r76_final_semantic_button_dedupe',
+       'def _r76_semantic_dedupe_markup' in split_src and "return ('cb', base)" in split_src and
+       'prepared=_r76_semantic_dedupe_markup' in split_src,
+       'final transport must collapse duplicate semantic actions after Window Actor token normalization')
+    ok('r76_single_markup_build_no_final_reaugment',
+       "def _final_prepare_markup(chat_id, reply_markup, text='', stage='prepare', message_id=None):" in split_src and
+       "return _final_filter_markup(int(chat_id or 0), reply_markup, stage=stage, message_id=message_id)" in split_src,
+       'FAST UI augmentation must happen once; final transport must not re-augment or pay the old caught TypeError path')
+    ok('r76_scoped_latest_wins_factory_refresh',
+       "def _r73_schedule_live_refresh(reason='settings', scope=None, feature=None, exclude=None)" in split_src and
+       "DELAYED_SCHEDULER.schedule(key, 0.45, _job)" in split_src and "if excluded and (cid,mid)==excluded" in split_src,
+       'factory toggles must refresh only affected scope after idle and never repaint the foreground window twice')
+    ok('r76_fast_ui_no_verbose_journal_lock',
+       "verbose_telegram_journal_enabled() and (not _is_fast_ui_purpose(purpose))" in core_src,
+       'fast UI Telegram calls must not pay verbose journal/data-lock cost')
+    ok('r76_beetle_latency_profiler',
+       'def r76_ui_profile_snapshot' in split_src and 'R76 ПРОФИЛЬ ОТРИСОВКИ' in split_src and 'transport_recent' in split_src and 'callback_recent' in split_src,
+       'beetle must expose callback total, transport time, filter time, dedupe and refresh counters')
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

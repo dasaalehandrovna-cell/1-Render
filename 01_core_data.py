@@ -2119,7 +2119,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_7'
+BOT_DISPLAY_NAME = 'очнись_8'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -8859,7 +8859,7 @@ def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwar
                 ui_gap = effective_fast_telegram_gap() if _is_fast_ui_purpose(purpose) else 0.35
                 _telegram_rate_limit_chat(chat_id, min_gap=ui_gap)
             try:
-                if verbose_telegram_journal_enabled():
+                if verbose_telegram_journal_enabled() and (not _is_fast_ui_purpose(purpose)):
                     bot_journal('telegram_api_call', chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
             except Exception:
                 pass

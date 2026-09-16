@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "588a41a9ecfbc3ec6e8ae55c3114ed405c2423936a85ea37b15b8bc599fe61a2",
+    "01_core_data.py": "b79aa7b6446169a1b9e79009394bf9ce19d0cd7d9bb72619861f7ede0fc44b37",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "f28689f66a4b29200a406bd4b56d0f6156711af676e87b54d4c343f2eb9e22e3",
@@ -22,10 +22,10 @@
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
     "07_state_web.py": "78caa9a01fd357d1b02947b448f45f9ccc81dc4b487b73cdca047a86944b82a6",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "4a3a2f09a0fc4eab7af9631749821d9bf46a86e4fb7e2ac298849d2d4118a421",
-    "10_split_policy_offload.py": "bb410de66b9ab6e8312178af75408d2e29216c40b5477b6b8ef50555aea4b588"
+    "09_final_transport.py": "eb445cfdb9c7c64d0aa35b4596dcf0f82a90a26c69758de36eadf7330db6950c",
+    "10_split_policy_offload.py": "dd4419cb5a8c9614fb578076d6b004ea5b5e7f92b71948a8bb96677271851c98"
   },
-  "release": "ОЧНИСЬ_7-R75-HARD-FEATURE-FENCE-BEETLE-FINAL",
+  "release": "ОЧНИСЬ_8-R76-DETERMINISTIC-UI-PIPELINE",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -301,6 +301,12 @@
     "r75_window_actor_revision_callback_normalization",
     "r75_disabled_feature_semantic_gate",
     "r75_feature_leak_producer_stage_scope_forensics",
-    "r75_factory_off_never_resurrects_constructor_description_tz_marker"
+    "r75_factory_off_never_resurrects_constructor_description_tz_marker",
+    "r76_back_main_main_not_history",
+    "r76_final_semantic_button_dedupe",
+    "r76_scoped_latest_wins_factory_refresh",
+    "r76_fast_ui_no_verbose_journal_lock",
+    "r76_beetle_latency_profiler",
+    "r76_single_markup_build_no_final_reaugment"
   ]
 }
