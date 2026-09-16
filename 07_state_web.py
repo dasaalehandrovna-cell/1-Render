@@ -4735,36 +4735,33 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             except Exception:
                 pass
 
-        # R67 DIRECT UI: safe/idempotent navigation has no internal task-pool hop.
-        # The callback ACK has already been sent directly above; execute the tiny nav
-        # handler now in the webhook request so its edit reaches Telegram immediately.
-        # State-changing/business callbacks keep their ordered lanes below.
+        # OCH11.1 FAST PURE UI: even safe navigation is a real latest-wins actor.
+        # Waitress only admits + ACKs + enqueues; it never executes business/UI code.
+        # This prevents SQLite/logging/background contention from holding the webhook.
         if selected_pool is globals().get('NAVIGATION_TASK_POOL'):
             try:
-                UPDATE_DISPATCHER.mark_enqueued(update_id, 'direct-nav', selected_key)
-                r52_diag('R67_DIRECT_NAV_START', update=update_id, chat=update_chat_id, key=selected_key, action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240])
+                _seq = selected_pool.submit_latest(selected_key, _process_callback, on_replaced=_r67_turbo_superseded_navigation)
+                _r52_enqueued = bool(_seq)
+                if _r52_enqueued:
+                    UPDATE_DISPATCHER.mark_enqueued(update_id, 'nav-ui-latest', selected_key)
+                r52_diag('OCH11_NAV_ENQUEUE', update=update_id, chat=update_chat_id, key=selected_key, seq=int(_seq or 0), action=str(((payload or {}).get('callback_query') or {}).get('data') or '')[:240])
             except Exception:
-                pass
-            _process_callback()
-            _r52_enqueued = True
-            try:
-                r52_diag('R67_DIRECT_NAV_DONE', update=update_id, chat=update_chat_id, key=selected_key)
-            except Exception:
-                pass
+                _r52_enqueued = False
         else:
             _r52_enqueued = selected_pool.submit(selected_key, _process_callback)
             try:
                 r52_diag('CALLBACK_ENQUEUE_RESULT', update=update_id, chat=update_chat_id, pool=getattr(selected_pool,'name','?'), key=selected_key, queued=int(bool(_r52_enqueued)), pool_stats=selected_pool.stats() if hasattr(selected_pool,'stats') else {}, dispatcher=UPDATE_DISPATCHER.stats())
             except Exception:
                 pass
-            if not _r52_enqueued:
-                if _r48_coalesce_key:
-                    try:
-                        with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
-                    except Exception: pass
-                UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{selected_pool.name}_queue_full')
-                return ('BUSY', 503)
-            UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
+            if _r52_enqueued:
+                UPDATE_DISPATCHER.mark_enqueued(update_id, selected_pool.name, selected_key)
+        if not _r52_enqueued:
+            if _r48_coalesce_key:
+                try:
+                    with _R48_NAV_COALESCE_LOCK: _R48_NAV_INFLIGHT.discard(_r48_coalesce_key)
+                except Exception: pass
+            UPDATE_DISPATCHER.release_failed_enqueue(update_id, f'{getattr(selected_pool, "name", "callback")}_queue_full')
+            return ('BUSY', 503)
     elif claim_state == 'done':
         # Keep the local durable row healthy if Telegram redelivered after a network race.
         try:
@@ -5558,7 +5555,7 @@ def _r57_startup_keyboard(details: bool = False):
 
 def _r57_startup_compact_text() -> str:
     source, _trace = _r57_restore_source_info()
-    return f"✅ Бот запущен · R65 · {VERSION}\nВосстановление: {source}"
+    return f"✅ {BOT_DISPLAY_NAME} запущен · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
     source, trace = _r57_restore_source_info()
@@ -5573,7 +5570,7 @@ def _r57_startup_details_text() -> str:
     except Exception:
         task_stats = {}
     details = [
-        f"🤖 R65 · {VERSION}",
+        f"🤖 {BOT_DISPLAY_NAME} · {VERSION}",
         f"Восстановление: {source}",
         f"Правки: {STARTUP_RELEASE_SUMMARY}",
         f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",
@@ -8844,12 +8841,6 @@ def _canon_log_error__001(message):
         return _V153_ORIG_LOG_ERROR(v153_redact_text(message))
 
 def _canon_log_info__001(message):
-    try:
-        _ui_only = globals().get('r79_ui_only_enabled')
-        if callable(_ui_only) and _ui_only():
-            return None
-    except Exception:
-        pass
     safe = v153_redact_text(message)
     try:
         text = str(safe or '')
@@ -8862,12 +8853,6 @@ def _canon_log_info__001(message):
         return _V153_ORIG_LOG_INFO(safe)
 
 def _v177_legacy_0007_bot_journal(action, chat_id=None, detail='', level='INFO'):
-    try:
-        _ui_only = globals().get('r79_ui_only_enabled')
-        if callable(_ui_only) and _ui_only():
-            return None
-    except Exception:
-        pass
     if callable(_V153_ORIG_BOT_JOURNAL):
         return _V153_ORIG_BOT_JOURNAL(str(action), chat_id, v153_sanitize(detail), str(level))
 try:

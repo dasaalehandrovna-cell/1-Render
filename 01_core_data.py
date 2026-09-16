@@ -454,7 +454,7 @@ window_locks = defaultdict(threading.Lock)
 
 # R52 forensic button diagnostics.  This is intentionally log-only: it does not
 # touch SQLite/Redis/MEGA and therefore cannot become another correctness dependency.
-R52_FORENSIC_BUTTON_LOG = str(os.getenv('R52_FORENSIC_BUTTON_LOG', '1') or '1').strip().lower() not in {'0','false','no','off'}
+R52_FORENSIC_BUTTON_LOG = str(os.getenv('R52_FORENSIC_BUTTON_LOG', '0') or '0').strip().lower() not in {'0','false','no','off'}
 R52_FORENSIC_HEARTBEAT_SECONDS = max(1.0, min(10.0, float(os.getenv('R52_FORENSIC_HEARTBEAT_SECONDS', '2') or '2')))
 _R52_LAST_CALLBACK_MONO = 0.0
 _R52_DIAG_LOCK = threading.RLock()
@@ -476,14 +476,6 @@ def _r52_safe_diag_value(name, value, limit=700):
         return '<unprintable>'
 
 def r52_diag(event: str, **fields):
-    # R79 UI-ONLY: forensic logging itself can contend on Python logging locks.
-    # In pure-UI A/B mode keep the hot path free of diagnostic writes.
-    try:
-        _ui_only = globals().get('r79_ui_only_enabled')
-        if callable(_ui_only) and _ui_only():
-            return
-    except Exception:
-        pass
     if not R52_FORENSIC_BUTTON_LOG:
         return
     try:
@@ -536,14 +528,6 @@ class KeyedTaskPool:
 
     def submit(self, key, func, *args, **kwargs) -> bool:
         key = str(key)
-        try:
-            _gate = globals().get('_r79_ui_only_should_block_pool')
-            if callable(_gate) and _gate(self.name, key, func, args, kwargs):
-                _note = globals().get('_r79_ui_only_note_block')
-                if callable(_note): _note('pool', self.name, key, getattr(func,'__name__',type(func).__name__))
-                return True
-        except Exception:
-            pass
         with self._lock:
             if self._pending >= self.max_pending:
                 self._rejected += 1
@@ -567,14 +551,6 @@ class KeyedTaskPool:
         submit() semantics remain unchanged for finance/forward/business queues.
         """
         key = str(key)
-        try:
-            _gate = globals().get('_r79_ui_only_should_block_pool')
-            if callable(_gate) and _gate(self.name, key, func, args, kwargs):
-                _note = globals().get('_r79_ui_only_note_block')
-                if callable(_note): _note('pool_unique', self.name, key, getattr(func,'__name__',type(func).__name__))
-                return True
-        except Exception:
-            pass
         with self._lock:
             if key in self._active_keys or bool(self._by_key.get(key)):
                 return False
@@ -623,17 +599,7 @@ class KeyedTaskPool:
             if _r52_pool_key_interesting(key):
                 r52_diag('POOL_WORKER_START', pool=self.name, key=key, wait=wait, func=getattr(func,'__name__',type(func).__name__), pending=self._pending, active=self._active_workers)
             try:
-                _skip = False
-                try:
-                    _gate = globals().get('_r79_ui_only_should_block_pool')
-                    _skip = bool(callable(_gate) and _gate(self.name, key, func, args, kwargs))
-                    if _skip:
-                        _note = globals().get('_r79_ui_only_note_block')
-                        if callable(_note): _note('pool_queued', self.name, key, getattr(func,'__name__',type(func).__name__))
-                except Exception:
-                    _skip = False
-                if not _skip:
-                    func(*args, **kwargs)
+                func(*args, **kwargs)
                 with self._lock:
                     self._completed += 1
             except Exception as exc:
@@ -725,14 +691,6 @@ class LatestKeyedTaskPool:
         is intentionally discarded before execution.
         """
         key = str(key)
-        try:
-            _gate = globals().get('_r79_ui_only_should_block_pool')
-            if callable(_gate) and _gate(self.name, key, func, args, kwargs):
-                _note = globals().get('_r79_ui_only_note_block')
-                if callable(_note): _note('latest', self.name, key, getattr(func,'__name__',type(func).__name__))
-                return 1
-        except Exception:
-            pass
         replaced_callback = None
         with self._lock:
             if key not in self._active_keys and len(self._active_keys) >= self.max_pending_keys:
@@ -794,17 +752,7 @@ class LatestKeyedTaskPool:
                 # If a newer render arrived before this task actually got CPU time,
                 # discard this stale task without touching Telegram.
                 if self.is_latest(key, seq):
-                    _skip = False
-                    try:
-                        _gate = globals().get('_r79_ui_only_should_block_pool')
-                        _skip = bool(callable(_gate) and _gate(self.name, key, func, args, kwargs))
-                        if _skip:
-                            _note = globals().get('_r79_ui_only_note_block')
-                            if callable(_note): _note('latest_queued', self.name, key, getattr(func,'__name__',type(func).__name__))
-                    except Exception:
-                        _skip = False
-                    if not _skip:
-                        func(*args, **kwargs)
+                    func(*args, **kwargs)
                 with self._lock:
                     self._completed += 1
             except Exception as exc:
@@ -928,24 +876,6 @@ class DelayedTaskScheduler:
                 if int(self._versions.get(key, 0)) != int(version):
                     continue
                 self._deadlines.pop(key, None)
-
-            # R79 UI-ONLY defers already-armed internal timers instead of destroying
-            # them.  When the test switch is turned OFF they resume automatically.
-            try:
-                _gate = globals().get('_r79_ui_only_should_block_timer')
-                if callable(_gate) and _gate(key, func, args, kwargs):
-                    _note = globals().get('_r79_ui_only_note_block')
-                    if callable(_note): _note('timer_deferred', 'scheduler', key, getattr(func,'__name__',type(func).__name__))
-                    with self._cv:
-                        if int(self._versions.get(key, 0)) == int(version):
-                            retry_at = time.time() + 5.0
-                            self._seq += 1
-                            self._deadlines[key] = retry_at
-                            heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
-                            self._cv.notify_all()
-                    continue
-            except Exception:
-                pass
 
             # One stable executor key per logical timer.  schedule() is already latest-wins
             # for a key, so allowing multiple concurrent executor copies is both wasteful
@@ -1713,12 +1643,6 @@ def r25_trace_current():
     }
 
 def r25_trace_stage(stage: str, elapsed=None, detail: str='', emit: bool=True):
-    try:
-        _ui_only = globals().get('r79_ui_only_enabled')
-        if callable(_ui_only) and _ui_only():
-            return
-    except Exception:
-        pass
     ctx = r25_trace_current()
     update_id = ctx.get('update_id') or ''
     if update_id:
@@ -1738,12 +1662,6 @@ def r25_trace_end():
     except Exception: pass
 
 def r52_hot_pool_snapshot():
-    try:
-        _ui_only = globals().get('r79_ui_only_enabled')
-        if callable(_ui_only) and _ui_only():
-            return {}
-    except Exception:
-        pass
     rows={}
     for nm in ('NAVIGATION_TASK_POOL','FAST_UI_TASK_POOL','WINDOW_RENDER_TASK_POOL','CALLBACK_ACK_TASK_POOL','CALLBACK_DURABLE_TASK_POOL','CALLBACK_JOURNAL_TASK_POOL','UI_TASK_POOL','UI_CLEANUP_TASK_POOL','RECOVERY_TASK_POOL','FINANCE_TASK_POOL','FINANCE_MAINT_TASK_POOL','DELTA_TASK_POOL','BACKGROUND_TASK_POOL'):
         try:
@@ -2206,7 +2124,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_11'
+BOT_DISPLAY_NAME = 'очнись_11.1'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2396,6 +2314,34 @@ _owner_json_restore_prompts = {}
 _owner_json_restore_prompt_lock = threading.RLock()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
+# OCH11.1: stdout/logging must never hold a Telegram callback or Window Actor.
+# Every ordinary info/error line is enqueued with put_nowait and emitted by one
+# background writer.  The in-RAM forensic ring remains independent.
+_FAST_LOG_QUEUE = queue.Queue(maxsize=max(2000, min(50000, int(os.getenv('FAST_LOG_QUEUE_MAX','12000') or '12000'))))
+_FAST_LOG_STATS = {'queued':0,'dropped':0,'written':0}
+def _fast_log_worker_v111():
+    while True:
+        level, message = _FAST_LOG_QUEUE.get()
+        try:
+            if str(level).upper() == 'ERROR': logger.error(message)
+            elif str(level).upper() == 'WARNING': logger.warning(message)
+            else: logger.info(message)
+            _FAST_LOG_STATS['written'] = int(_FAST_LOG_STATS.get('written') or 0) + 1
+        except Exception:
+            pass
+        finally:
+            _FAST_LOG_QUEUE.task_done()
+def _fast_log_enqueue_v111(level, message):
+    try:
+        _FAST_LOG_QUEUE.put_nowait((str(level or 'INFO'), str(message or '')))
+        _FAST_LOG_STATS['queued'] = int(_FAST_LOG_STATS.get('queued') or 0) + 1
+        return True
+    except queue.Full:
+        _FAST_LOG_STATS['dropped'] = int(_FAST_LOG_STATS.get('dropped') or 0) + 1
+        return False
+    except Exception:
+        return False
+threading.Thread(target=_fast_log_worker_v111, name='fast-log-writer-1', daemon=True).start()
 BOT_ERROR_LOG = deque(maxlen=200)
 error_log_lock = threading.RLock()
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None, threaded=False)
@@ -2414,8 +2360,10 @@ class SQLiteState:
         self.lock = R25TracedRLock('sqlite-writer-internal')
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=1.5)
         self.conn.row_factory = sqlite3.Row
-        self.read_lock = R25TracedRLock('sqlite-read')
-        self.read_conn = None
+        self.read_lock = R25TracedRLock('sqlite-read-admin')
+        self.read_conn = None  # compatibility handle; OCH11.1 reads use thread-local connections
+        self._read_tls = threading.local()
+        self._read_generation = 0
         self._init_db()
         self._open_reader()
         self._writer_cv = threading.Condition(threading.RLock())
@@ -2526,28 +2474,47 @@ class SQLiteState:
             cur.execute("CREATE TABLE IF NOT EXISTS cold_fields (chat_id TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(chat_id, k))")
             self.conn.commit()
 
+    def _new_reader_v111(self):
+        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=1.5)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute('PRAGMA busy_timeout=1500')
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('PRAGMA cache_size=-2048')
+            conn.execute('PRAGMA mmap_size=33554432')
+        except Exception:
+            pass
+        return conn
+
     def _open_reader(self):
-        """R48: dedicated query-only WAL reader so reads never queue behind Python writer lock."""
+        """OCH11.1: invalidate thread-local WAL readers after DB replacement."""
         with self.read_lock:
-            old = self.read_conn
-            self.read_conn = sqlite3.connect(self.path, check_same_thread=False, timeout=1.5)
-            self.read_conn.row_factory = sqlite3.Row
-            try:
-                self.read_conn.execute('PRAGMA busy_timeout=1500')
-                self.read_conn.execute('PRAGMA query_only=ON')
-            except Exception:
-                pass
+            self._read_generation = int(self._read_generation or 0) + 1
+            old = getattr(self._read_tls, 'conn', None)
             if old is not None:
                 try: old.close()
                 except Exception: pass
+            self._read_tls.conn = self._new_reader_v111()
+            self._read_tls.generation = self._read_generation
+            self.read_conn = self._read_tls.conn
+
+    def _reader_v111(self):
+        conn = getattr(self._read_tls, 'conn', None)
+        generation = int(getattr(self._read_tls, 'generation', -1) or -1)
+        if conn is None or generation != int(self._read_generation or 0):
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+            conn = self._new_reader_v111()
+            self._read_tls.conn = conn
+            self._read_tls.generation = int(self._read_generation or 0)
+        return conn
 
     def _read_one(self, sql: str, params=()):
-        with self.read_lock:
-            return self.read_conn.execute(sql, tuple(params)).fetchone()
+        return self._reader_v111().execute(sql, tuple(params)).fetchone()
 
     def _read_all(self, sql: str, params=()):
-        with self.read_lock:
-            return self.read_conn.execute(sql, tuple(params)).fetchall()
+        return self._reader_v111().execute(sql, tuple(params)).fetchall()
 
     def _dump(self, obj) -> str:
         return json.dumps(obj, ensure_ascii=False, separators=(',', ':'))
@@ -2719,7 +2686,7 @@ class SQLiteState:
                     try:
                         try: source.execute('PRAGMA busy_timeout=250')
                         except Exception: pass
-                        source.backup(dest, pages=64, sleep=0.005)
+                        source.backup(dest, pages=max(256, int(os.getenv('SQLITE_SNAPSHOT_PAGES','4096') or '4096')), sleep=max(0.0, float(os.getenv('SQLITE_SNAPSHOT_SLEEP_SEC','0.001') or '0.001')))
                         dest.commit()
                     finally:
                         try: dest.close()
@@ -2750,11 +2717,13 @@ class SQLiteState:
             raise FileNotFoundError(source_path)
         def _replace(_conn):
             with self.read_lock:
+                self._read_generation = int(self._read_generation or 0) + 1
                 try:
-                    if self.read_conn is not None:
-                        self.read_conn.close()
+                    _local_reader = getattr(self._read_tls, 'conn', None)
+                    if _local_reader is not None: _local_reader.close()
                 except Exception:
                     pass
+                self._read_tls.conn = None
                 self.read_conn = None
             try:
                 self.conn.close()
@@ -3055,14 +3024,17 @@ def _import_legacy_global_json_to_db(path: str=DATA_FILE, force: bool=False) -> 
     return True
 
 def _v177_legacy_0002_log_info(msg: str):
-    logger.info(msg)
+    # OCH11.1: never block application threads on logging.Handler.lock.
+    if not _fast_log_enqueue_v111('INFO', msg):
+        try: r26_diag_trace_line('LOG_DROP info ' + str(msg)[:500])
+        except Exception: pass
 try:
     _v177_legacy_0002_log_info.__name__ = 'log_info'
 except Exception:
     pass
 
 def _v177_legacy_0003_log_error(msg: str):
-    logger.error(msg)
+    _fast_log_enqueue_v111('ERROR', msg)
     try:
         if 'bot_journal' in globals():
             bot_journal('error', None, str(msg), 'ERROR')
@@ -3853,8 +3825,10 @@ def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str='', lev
         _fws = FORWARD_TASK_POOL.stats()
         _ds = DELTA_TASK_POOL.stats() if 'DELTA_TASK_POOL' in globals() else {}
         row = {'ts': _journal_ts(), 'level': str(level or 'INFO'), 'action': str(action or '')[:160], 'chat_id': str(chat_id) if chat_id is not None else '', 'chat_name': '', 'detail': str(detail or '')[:3000], 'thread': threading.current_thread().name, 'profile': active_bot_behavior_profile() if 'data' in globals() and isinstance(data, dict) else 'startup', 'bot_version': str(globals().get('VERSION') or 'startup'), 'render_commit': str(os.getenv('RENDER_GIT_COMMIT', '') or ''), 'webhook_pending': _ws.get('pending', 0), 'webhook_active': _ws.get('active', 0), 'ui_pending': _uis.get('pending', 0), 'ui_active': _uis.get('active', 0), 'finance_pending': _fs.get('pending', 0), 'finance_active': _fs.get('active', 0), 'forward_pending': _fws.get('pending', 0), 'forward_active': _fws.get('active', 0), 'delta_pending': _ds.get('pending', 0), 'general_pending': GENERAL_TASK_POOL.stats().get('pending', 0), 'backup_pending': BACKUP_TASK_POOL.stats().get('pending', 0), 'runtime_phase': str((globals().get('_RUNTIME_STATE') or {}).get('phase') or ''), 'runtime_ready': bool((globals().get('_RUNTIME_STATE') or {}).get('ready', False))}
+        # OCH11.1: journal metadata may not contend with live UI for data/chat state.
+        # Name resolution is optional and disabled by default; chat_id remains canonical.
         try:
-            if chat_id is not None:
+            if chat_id is not None and str(os.getenv('JOURNAL_RESOLVE_CHAT_NAME','0') or '0').lower() in {'1','true','yes','on'}:
                 row['chat_name'] = get_chat_display_name(int(chat_id))
         except Exception:
             pass
@@ -14851,7 +14825,7 @@ def _lowram_business_busy() -> bool:
     except Exception:
         return True
 
-R24_LOWRAM_EVICT_RSS_MB = max(260.0, min(450.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '340') or '340')))
+R24_LOWRAM_EVICT_RSS_MB = max(320.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '430') or '430')))
 
 def _r24_lowram_release_if_pressure(chat_id):
     try:
@@ -16319,14 +16293,21 @@ def chat_xlsx_file(chat_id: int) -> str:
 def chat_meta_file(chat_id: int) -> str:
     return f'csv_meta_{chat_id}.json'
 
+_CHAT_STORE_FAST_CACHE_V111 = {}
+
 def get_chat_store(chat_id: int) -> dict:
-    """
-    Хранилище данных одного чата.
-    Добавлено поле "known_chats" для отображения названий/username в меню пересылки.
-    """
+    """OCH11.1 hot lookup: lock only on first/create/replace, not on every UI read."""
+    _cid = int(chat_id); _key = str(_cid)
+    try:
+        chats_now = data.get('chats', {}) if isinstance(data, dict) else {}
+        store_now = chats_now.get(_key) if isinstance(chats_now, dict) else None
+        if store_now is not None and _CHAT_STORE_FAST_CACHE_V111.get(_key) is store_now:
+            return store_now
+    except Exception:
+        pass
     with data_lock:
         chats = data.setdefault('chats', {})
-        store = chats.setdefault(str(chat_id), {'info': {}, 'known_chats': {}, 'balance': 0, 'next_id': 1, 'active_windows': {}, 'edit_wait': None, 'edit_target': None, 'current_view_day': today_key(), 'finance_mode': False, 'settings': {'auto_add': True, 'quick_balance_enabled': False, 'quick_balance_behavior': 'normal', 'quick_balance_user_selected': False, 'hidden_finance': False, 'auto_backup_enabled': True, 'auto_backup_to_chat_enabled': True, 'auto_backup_to_channel_enabled': True, 'auto_backup_to_mega_enabled': True, 'journal_enabled': True, 'buttons_current_window': True, 'forward_copy_edit_mode': 'slash', 'main_article_buttons_enabled': False, 'main_financial_value_buttons_enabled': False, 'gomonk_enabled': False, 'gomonk_entries': [], 'remaining_with_gomonk': True, 'usd_gomonk_enabled': False, 'usd_gomonk_entries': [], 'usd_remaining_with_gomonk': True, 'usd_display_enabled': False, 'currency_mode': 'ars', 'remaining_show_ost_label': True}})
+        store = chats.setdefault(_key, {'info': {}, 'known_chats': {}, 'balance': 0, 'next_id': 1, 'active_windows': {}, 'edit_wait': None, 'edit_target': None, 'current_view_day': today_key(), 'finance_mode': False, 'settings': {'auto_add': True, 'quick_balance_enabled': False, 'quick_balance_behavior': 'normal', 'quick_balance_user_selected': False, 'hidden_finance': False, 'auto_backup_enabled': True, 'auto_backup_to_chat_enabled': True, 'auto_backup_to_channel_enabled': True, 'auto_backup_to_mega_enabled': True, 'journal_enabled': True, 'buttons_current_window': True, 'forward_copy_edit_mode': 'slash', 'main_article_buttons_enabled': False, 'main_financial_value_buttons_enabled': False, 'gomonk_enabled': False, 'gomonk_entries': [], 'remaining_with_gomonk': True, 'usd_gomonk_enabled': False, 'usd_gomonk_entries': [], 'usd_remaining_with_gomonk': True, 'usd_display_enabled': False, 'currency_mode': 'ars', 'remaining_show_ost_label': True}})
         if LOWRAM_ENABLED and (not isinstance(store, ColdChatStore)):
             store = _lowram_wrap_store(int(chat_id), store)
             chats[str(chat_id)] = store
@@ -16360,6 +16341,7 @@ def get_chat_store(chat_id: int) -> dict:
             store['settings']['auto_add'] = True
         if 'known_chats' not in store:
             store['known_chats'] = {}
+        _CHAT_STORE_FAST_CACHE_V111[_key] = store
         return store
 
 def _chat_identity_key(cid: int, info: dict | None=None) -> str:

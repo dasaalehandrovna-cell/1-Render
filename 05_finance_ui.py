@@ -266,7 +266,7 @@ def currency_mode(chat_id: int) -> str:
         if mode not in {'ars', 'ars_usd', 'usd'}:
             mode = 'ars_usd' if bool(settings.get('usd_display_enabled', False)) else 'ars'
             settings['currency_mode'] = mode
-        _ensure_currency_ledgers(store)
+        # OCH11.1: reading window currency must not fault full cold ARS/USD histories from SQLite.
         return mode
     except Exception:
         return 'ars'

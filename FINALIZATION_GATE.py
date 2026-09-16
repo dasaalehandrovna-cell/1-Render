@@ -175,7 +175,7 @@ if ROLE=='fast':
     ok('r48_visual_counter_ram_only','save_data(' not in core_fns.get('bump_quick_balance_recreate_counter',''),'visual counter must not persist on every message')
     ok('r48_no_whole_handler_chat_lock','telegram_execution_chat_lock' not in rel_fns.get('_execute_telegram_payload_core','') and 'with locked_chat' not in rel_fns.get('_execute_telegram_payload_core',''),'whole Telegram handler must not hold chat lock')
     ok('r48_peer_health_ram_only','SQLITE.' not in split_fns.get('_split_snapshot_meta',''),'peer health must not touch SQLite')
-    ok('r48_sqlite_dedicated_reader', all(x in core_src for x in ["R25TracedRLock('sqlite-read')",'PRAGMA query_only=ON','def _read_one','def _read_all']),'query-only SQLite reader channel missing')
+    ok('r48_sqlite_dedicated_reader', all(x in core_src for x in ['self._read_tls = threading.local()', 'PRAGMA query_only=ON','def _reader_v111','def _read_one','def _read_all']),'thread-local query-only SQLite reader channels missing')
     ok('r48_single_finance_persist_owner', count(r'(?m)^def persist_finance_chat_local_fast\(',joined)==1 and count(r'(?m)^\s*persist_finance_chat_local_fast\s*=',joined)==0,'finance persistence must have one direct owner')
     ok('r48_finance_persist_guard','held_by_current_thread' in _fn_sources(msg_src,{'persist_finance_chat_local_fast'}).get('persist_finance_chat_local_fast',''),'finance persist must reject SQLite while chat lock is held')
     ok('r48_navigation_coalesce', all(x in web_src for x in ['_R48_NAV_INFLIGHT','def _r48_nav_coalesce_key','R48 NAV COALESCE']),'safe navigation coalescing missing')
@@ -523,11 +523,12 @@ if ROLE=='fast':
        "pool.submit_unique(f'callback-receipt-ack:{callback_id}'" in split_src and
        'schedule_callback_receipt_ack = _r77_schedule_callback_receipt_ack' in split_src,
        'callback ACK network I/O must be isolated in the dedicated ACK pool, never performed in the Waitress/callback hot path')
-    ok('r67_direct_navigation_no_pool_hop',
+    ok('och111_navigation_latest_actor',
        "if selected_pool is globals().get('NAVIGATION_TASK_POOL')" in web_src and
-       "UPDATE_DISPATCHER.mark_enqueued(update_id, 'direct-nav', selected_key)" in web_src and
-       '_process_callback()' in web_src and 'R67_DIRECT_NAV_START' in web_src,
-       'safe navigation must execute directly in the webhook request after direct ACK')
+       'selected_pool.submit_latest(selected_key, _process_callback' in web_src and
+       "UPDATE_DISPATCHER.mark_enqueued(update_id, 'nav-ui-latest', selected_key)" in web_src and
+       'OCH11_NAV_ENQUEUE' in web_src and 'R67_DIRECT_NAV_START' not in web_src,
+       'Waitress must enqueue safe navigation to the latest-wins actor and return without executing the callback inline')
     ok('r67_direct_callback_render_no_window_pool',
        'if direct_callback:' in render_direct_src and '_r22_execute_window_render(payload)' in render_direct_src and
        render_direct_src.find('_r22_execute_window_render(payload)') < render_direct_src.find('WINDOW_RENDER_TASK_POOL.submit_latest'),
@@ -588,6 +589,24 @@ if ROLE=='fast':
     ok('och2_window_actor_serializes_one_message',
        'lock = actor.execution_lock(chat_id, message_id)' in all_py.get('05_finance_ui.py','') and 'with actor.execution_lock(cid, mid)' in final_transport,
        'direct/background renders of one Telegram message must serialize under one actor lock')
+    ok('och111_async_logging_hotpath',
+       '_FAST_LOG_QUEUE = queue.Queue' in core_src and '_fast_log_enqueue_v111' in core_src and "R52_FORENSIC_BUTTON_LOG', '0'" in core_src and 'logger.info(msg)' not in _fn_sources(core_src,{'_v177_legacy_0002_log_info'}).get('_v177_legacy_0002_log_info',''),
+       'hot-path info logging must be non-blocking and verbose forensic stdout disabled by default')
+    ok('och111_thread_local_sqlite_reads',
+       'self._read_tls = threading.local()' in core_src and 'def _reader_v111' in core_src and 'return self._reader_v111().execute' in core_src,
+       'SQLite reads must use independent thread-local WAL readers instead of one global read mutex')
+    ok('och111_chat_store_fast_cache',
+       '_CHAT_STORE_FAST_CACHE_V111' in core_src and "_CHAT_STORE_FAST_CACHE_V111.get(_key) is store_now" in core_src,
+       'existing initialized chat stores must return without reacquiring global data_lock')
+    ok('och111_no_cold_ledger_fault_on_currency_read',
+       '_ensure_currency_ledgers(store)\n        return mode' not in all_py.get('05_finance_ui.py','') and 'reading window currency must not fault full cold ARS/USD histories' in all_py.get('05_finance_ui.py',''),
+       'window registration/currency labels must not load cold finance histories')
+    ok('och111_start_noop_secret_save',
+       "if bool(settings.get('total_secret_mode', False)) == target:" in all_py.get('04_messages_features.py','') and 'save_data(data, chat_ids=[int(chat_id)])' in all_py.get('04_messages_features.py',''),
+       '/start must not serialize the whole state merely to write false over false')
+    ok('och111_redis_checkpoint_yields_to_ui',
+       'def _och111_hot_ui_busy' in split_src and 'if _och111_hot_ui_busy():' in split_src and "Timer(5.0, _r64_periodic_redis_snapshot_fire_v271)" in split_src,
+       'periodic full SQLite/Redis checkpoint must defer while any user-facing lane is active')
     ok('r72_single_foreground_window_mutation',
        'safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)\n    try:\n        bot.edit_message_reply_markup' not in final_transport and
        "_v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')\n            try:\n                bot.edit_message_reply_markup" not in rel_src,
@@ -618,11 +637,11 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och11_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_11'" in core_src,
-       'user-visible bot name must follow очнись_(number) rule')
+    ok('och111_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_11.1'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_11.1')
     ok('r73_identity_normalization',
-       'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+'" in final_transport and
+       'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,
        'all visible legacy bot names must normalize to BOT_DISPLAY_NAME before Telegram send/edit')
     ok('r73_factory_three_scopes_four_off',
@@ -736,37 +755,6 @@ if ROLE=='fast':
        count(r'(?m)^def _r77_r40_status_edit_core\(', split_src) == 1 and
        'return _r77_r40_status_edit_core(chat_id,msg_id,text,purpose)' in split_src,
        'R77 HEAVY progress defer must use one canonical core + one public owner, never PREV/ORIG/BASE capture')
-    ok('r79_ui_only_volatile_owner_switch',
-       '_R79_UI_ONLY = False' in split_src and
-       'def r79_ui_only_enabled' in split_src and
-       "callback_data='r79:ui_only:toggle'" in split_src and
-       "callback_data='r79:ui_only:test'" in split_src,
-       'UI-ONLY must be volatile and expose owner toggle + pure test window')
-    ok('r79_executor_and_timer_fence',
-       "globals().get('_r79_ui_only_should_block_pool')" in core_src and
-       "globals().get('_r79_ui_only_should_block_timer')" in core_src and
-       "retry_at = time.time() + 5.0" in core_src,
-       'all shared executors must honor UI-ONLY and delayed timers must defer, not disappear')
-    ok('r79_logging_lock_bypass',
-       "globals().get('r79_ui_only_enabled')" in web_src and
-       "def _canon_log_info__001" in web_src and
-       "def r52_diag" in core_src,
-       'UI-ONLY must bypass verbose INFO/R52 writes that can block on logging handler lock')
-    ok('r79_hot_snapshot_bypass',
-       "def r52_hot_pool_snapshot" in core_src and "return {}" in _fn_sources(core_src,{'r52_hot_pool_snapshot'}).get('r52_hot_pool_snapshot',''),
-       'UI-ONLY must avoid evaluating expensive pool snapshots before no-op diagnostics')
-    ok('r79_noncallback_business_block',
-       'R79 UI-ONLY is a strict A/B interface mode' in final_transport and
-       "_note('message_blocked'" in final_transport,
-       'non-callback business messages must not execute in UI-ONLY')
-    ok('r79_semantic_mutation_guard',
-       "if r79_ui_only_enabled() and not _r79_ui_only_is_navigation_callback(raw):" in split_src and
-       "_r79_ui_only_note_block('callback_blocked'" in split_src,
-       'mutating callbacks must be blocked before feature routers in UI-ONLY')
-    ok('r79_heavy_progress_suppressed',
-       "if r79_ui_only_enabled():" in _fn_sources(split_src,{'_r40_status_edit'}).get('_r40_status_edit',''),
-       'HEAVY progress edits must not compete with pure UI test')
-
     if _require_info:
         rules_src=text('INFO/PROJECT_RULES.md')
         history_src=text('INFO/CHANGELOG.md')

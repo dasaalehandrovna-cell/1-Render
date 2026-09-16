@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "625a191aeff1ec2093abe088ea91ff771ae86e02f887156be38d5ca549126436",
+    "01_core_data.py": "8505453a27e2c10fb2d44804e3df5049e27928a1b2c87ca3b425a2a409984b93",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
-    "04_messages_features.py": "bc257532d9559df9d351bc217fd9d455c308955201582ab09bcf16d1061512f1",
-    "05_finance_ui.py": "43f1821e5554e2a64a90a9ceea062a47b24da52e9aa3c3e99ae5c1ebd4dbd486",
+    "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
+    "05_finance_ui.py": "171f9496546a25fc38e6bc6cb3e0fd62a76c0da98cb1c41ecf73a9cb60a7369d",
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
-    "07_state_web.py": "af2590537ebed16a079a58266f7a30546794edc843f074f8a604cf966790aff1",
+    "07_state_web.py": "3f1c2622bf50e1ac7b61257df3d9a56ccca3e554abaaa67cd85bfd4e10ea6931",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "e218ba379a1ca50a0b44742d46d6e4160819d06870d2ab7c2e5f47792f5d4eb6",
-    "10_split_policy_offload.py": "f8870a3fcd7517ce64d6c40dd1a43a93c2113d13e71e3a0bd0c9f92a5668bcd5"
+    "09_final_transport.py": "b3a9144c638f85cbd10032f63b335bd9141a00459936c105ebededd6e9c92183",
+    "10_split_policy_offload.py": "bec5324e618bf4792340bfa7dc1b31078b8682f703b890733768a95bbe7eb859"
   },
-  "release": "ОЧНИСЬ_11-R79-UI-ONLY-A-B-DIAGNOSTIC",
+  "release": "ОЧНИСЬ_11.1-FAST-PURE-UI-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -317,13 +317,12 @@
     "r78_no_prev_status_alias",
     "r78_one_public_one_core_status_edit",
     "och10_display_identity",
-    "r79_volatile_ui_only_owner_switch",
-    "r79_shared_executor_business_fence",
-    "r79_delayed_timer_defer_resume",
-    "r79_logging_lock_bypass",
-    "r79_noncallback_business_block",
-    "r79_semantic_mutation_guard",
-    "r79_pure_ram_test_window",
-    "r79_heavy_progress_suppressed_in_ui_only"
+    "och111_navigation_latest_actor",
+    "och111_async_logging",
+    "och111_thread_local_sqlite_reads",
+    "och111_chat_store_hot_cache",
+    "och111_no_cold_ledger_fault",
+    "och111_redis_checkpoint_yields_to_ui",
+    "och111_ready_identity"
   ]
 }
