@@ -424,16 +424,17 @@ if ROLE=='fast':
        'def _r61_fetch_redis_inspect_direct' in split_src and "raw.startswith('r60:redis:')" in split_src and
        'STARTUP_REOPEN_WINDOWS' in rel_src,
        'Info must expose explicit Redis modes/direct inspector and deploy must not reopen windows by default')
-    ok('r64_fast_owned_restore_snapshot_verify',
-       'def r64_publish_restore_snapshot_v271' in split_src and
-       "reason='manual_restore:'" in split_src and 'Redis verify: sha256 mismatch' in split_src and
-       'r64_publish_restore_snapshot_v271' in web_src and 'redis_required' in web_src and 'redis_ok' in web_src,
-       'manual restore must synchronously seal and verify full SQLite in Redis directly from FAST')
-    ok('r64_fast_periodic_redis_checkpoint',
-       'def r64_schedule_fast_redis_snapshot_v271' in split_src and
-       "r64_schedule_fast_redis_snapshot_v271('logical_save')" in split_src and
-       "_split_cache_snapshot_to_redis_v266('periodic_fast_checkpoint', verify=True" in split_src,
-       'FAST must independently refresh the Redis full snapshot after normal SQLite changes')
+    restore_seal_src=_fn_sources(split_src,{'r64_publish_restore_snapshot_v271'}).get('r64_publish_restore_snapshot_v271','')
+    redis_sched_src=_fn_sources(split_src,{'r64_schedule_fast_redis_snapshot_v271'}).get('r64_schedule_fast_redis_snapshot_v271','')
+    redis_fire_src=_fn_sources(split_src,{'_r64_periodic_redis_snapshot_fire_v271'}).get('_r64_periodic_redis_snapshot_fire_v271','')
+    ok('och12_manual_restore_seals_on_heavy_mega',
+       "globals().get('_split_push_snapshot_now_v263')" in restore_seal_src and 'sync_mega=True' in restore_seal_src and '_split_cache_snapshot_to_redis_v266' not in restore_seal_src,
+       'manual restore may build one explicit handoff image, but its durable seal must be HEAVY/MEGA rather than FAST Redis')
+    ok('och12_fast_full_redis_checkpoint_disabled',
+       'full Redis snapshots are disabled on FAST' in redis_sched_src and 'return False' in redis_sched_src and
+       'FAST never builds periodic full SQLite/Redis checkpoints' in redis_fire_src and
+       str(env.get('LOCAL_SQLITE_SNAPSHOT_ENABLED','')) == '0',
+       'FAST must own no periodic full SQLite/Redis snapshot path in OCH12')
     ok('r64_redis_snapshot_event_cutoff',
        "'event_cutoff_score': float(capture_started)" in split_src and
        'client.zrangebyscore' in start_src and 'events_tail=' in start_src,
@@ -604,9 +605,22 @@ if ROLE=='fast':
     ok('och111_start_noop_secret_save',
        "if bool(settings.get('total_secret_mode', False)) == target:" in all_py.get('04_messages_features.py','') and 'save_data(data, chat_ids=[int(chat_id)])' in all_py.get('04_messages_features.py',''),
        '/start must not serialize the whole state merely to write false over false')
-    ok('och111_redis_checkpoint_yields_to_ui',
-       'def _och111_hot_ui_busy' in split_src and 'if _och111_hot_ui_busy():' in split_src and "Timer(5.0, _r64_periodic_redis_snapshot_fire_v271)" in split_src,
-       'periodic full SQLite/Redis checkpoint must defer while any user-facing lane is active')
+    r34_events_src=_fn_sources(split_src,{'_r34_post_events'}).get('_r34_post_events','')
+    r43_cache_src=_fn_sources(split_src,{'_r43_store_events_redis'}).get('_r43_store_events_redis','')
+    capsule_push_src=_fn_sources(split_src,{'_r20_capsule_push_now'}).get('_r20_capsule_push_now','')
+    ok('och12_heavy_ack_before_redis_cache',
+       "requests.post(base+endpoint" in r34_events_src and 'HEAVY durable revision behind' in r34_events_src and
+       r34_events_src.find('_r43_store_events_redis(events)') > r34_events_src.find('durable revision behind') and
+       'R43_FAST_AUTHORITY' not in r34_events_src,
+       'HEAVY durable ACK must decide event success; Redis mirror runs only afterwards and cannot be an authority')
+    ok('och12_redis_event_cache_bounded',
+       "R43_REDIS_EVENT_MAXLEN','2000'" in r43_cache_src and "R43_REDIS_EVENT_TTL_SEC','86400'" in r43_cache_src and
+       'maxlen=maxlen' in r43_cache_src and 'pipe.expire(_R43_EVENT_STREAM_KEY,ttl)' in r43_cache_src,
+       'FAST Redis event cache must be bounded to a small maxlen and TTL suitable for a 25MB service')
+    ok('och12_capsule_heavy_first_redis_optional',
+       capsule_push_src.find("requests.post(base + '/internal/capsule'") < capsule_push_src.find('_r20_capsule_store_redis') and
+       'if worker_ok:' in capsule_push_src and "if redis_ok or worker_ok" not in capsule_push_src,
+       'capsule success must require HEAVY; Redis is best-effort cache only')
     ok('r72_single_foreground_window_mutation',
        'safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)\n    try:\n        bot.edit_message_reply_markup' not in final_transport and
        "_v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')\n            try:\n                bot.edit_message_reply_markup" not in rel_src,
@@ -637,9 +651,9 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    ok('och111_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_11.1'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_11.1')
+    ok('och12_display_name',
+       "BOT_DISPLAY_NAME = 'очнись_12'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,

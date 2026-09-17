@@ -1633,45 +1633,22 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
 
 
 def r64_publish_restore_snapshot_v271(reason='restore'):
-    """Synchronously seal a successful manual restore into Redis on FAST.
+    """OCH12: seal a manual restore on HEAVY/MEGA, never in FAST Redis.
 
-    Returns a structured result so every restore path can report whether the new
-    canonical SQLite was actually recoverable before telling the owner it is sealed.
+    FAST may create one explicit restore handoff image, but it no longer owns any
+    periodic/full Redis checkpoint.  The HEAVY service verifies/promotes the image.
     """
+    fn = globals().get('_split_push_snapshot_now_v263')
+    if not callable(fn):
+        return {'required': True, 'ok': False, 'detail': 'HEAVY snapshot handoff is unavailable'}
     try:
-        import runtime_config as _r64_rc
-        st = dict(_r64_rc.redis_runtime_state() or {})
+        ok = bool(fn('manual_restore:' + str(reason or 'restore')[:120], sync_mega=True))
+        detail = 'HEAVY/MEGA restore checkpoint confirmed' if ok else str((_R32_EVENT_STATE or {}).get('last_error') or 'HEAVY snapshot handoff failed')[:300]
+        try: bot_journal('och12_restore_heavy_snapshot', int(OWNER_ID or 0), f'ok={int(ok)}; reason={str(reason)[:120]}; detail={detail}')
+        except Exception: pass
+        return {'required': True, 'ok': ok, 'detail': detail, 'backend': 'heavy-mega'}
     except Exception as exc:
-        return {'required': False, 'ok': False, 'detail': f'runtime_config: {type(exc).__name__}: {str(exc)[:180]}'}
-    required = bool(st.get('master_enabled') and st.get('configured'))
-    if not required:
-        return {'required': False, 'ok': False, 'detail': 'Redis recovery not configured in Render'}
-    ok = bool(_split_cache_snapshot_to_redis_v266(
-        reason='manual_restore:' + str(reason or 'restore')[:120],
-        verify=True, use_render_url=True,
-    ))
-    detail = 'Redis full SQLite snapshot verified' if ok else str(_SPLIT_STATE.get('redis_fallback_last_error') or 'unknown Redis snapshot error')[:300]
-    try:
-        bot_journal('r64_restore_redis_snapshot', int(OWNER_ID or 0), f'ok={int(ok)}; reason={str(reason)[:120]}; detail={detail}')
-    except Exception:
-        pass
-    if not ok and _r61_effective_redis_url():
-        try:
-            retry_fn = globals().get('r64_schedule_fast_redis_snapshot_v271')
-            if callable(retry_fn): retry_fn('manual_restore_retry')
-        except Exception:
-            pass
-    return {
-        'required': True, 'ok': ok, 'detail': detail,
-        'size': int(_SPLIT_STATE.get('redis_fallback_last_size') or 0),
-        'sha256': str(_SPLIT_STATE.get('redis_fallback_last_sha256') or '')[:64],
-    }
-
-
-_R64_REDIS_SNAPSHOT_TIMER = None
-_R64_REDIS_SNAPSHOT_LOCK = _split_threading.RLock()
-_R64_REDIS_SNAPSHOT_DIRTY = False
-_R64_REDIS_SNAPSHOT_LAST_AT = 0.0
+        return {'required': True, 'ok': False, 'detail': f'{type(exc).__name__}: {str(exc)[:260]}', 'backend': 'heavy-mega'}
 
 def _och111_hot_ui_busy():
     try:
@@ -1689,53 +1666,18 @@ def _och111_hot_ui_busy():
     return False
 
 def _r64_periodic_redis_snapshot_fire_v271():
-    global _R64_REDIS_SNAPSHOT_TIMER, _R64_REDIS_SNAPSHOT_DIRTY, _R64_REDIS_SNAPSHOT_LAST_AT
+    """OCH12: FAST never builds periodic full SQLite/Redis checkpoints."""
+    global _R64_REDIS_SNAPSHOT_TIMER, _R64_REDIS_SNAPSHOT_DIRTY
     with _R64_REDIS_SNAPSHOT_LOCK:
         _R64_REDIS_SNAPSHOT_TIMER = None
-        dirty = bool(_R64_REDIS_SNAPSHOT_DIRTY)
         _R64_REDIS_SNAPSHOT_DIRTY = False
-    if not dirty or not _r61_effective_redis_url():
-        return
-    # OCH11.1: full SQLite/Redis checkpoint is lowest priority. Never start it while
-    # a callback/window/start task is live. Re-arm without stealing disk/CPU from UI.
-    if _och111_hot_ui_busy():
-        with _R64_REDIS_SNAPSHOT_LOCK:
-            _R64_REDIS_SNAPSHOT_DIRTY = True
-            if _R64_REDIS_SNAPSHOT_TIMER is None:
-                _R64_REDIS_SNAPSHOT_TIMER = _split_threading.Timer(5.0, _r64_periodic_redis_snapshot_fire_v271)
-                _R64_REDIS_SNAPSHOT_TIMER.daemon = True
-                _R64_REDIS_SNAPSHOT_TIMER.start()
-        return
-    ok = bool(_split_cache_snapshot_to_redis_v266('periodic_fast_checkpoint', verify=True, use_render_url=False))
-    now = _split_time.time()
-    if ok:
-        _R64_REDIS_SNAPSHOT_LAST_AT = now
-        return
-    # Keep one bounded retry armed.  The latest SQLite stays authoritative locally.
-    with _R64_REDIS_SNAPSHOT_LOCK:
-        _R64_REDIS_SNAPSHOT_DIRTY = True
-        if _R64_REDIS_SNAPSHOT_TIMER is None:
-            _R64_REDIS_SNAPSHOT_TIMER = _split_threading.Timer(30.0, _r64_periodic_redis_snapshot_fire_v271)
-            _R64_REDIS_SNAPSHOT_TIMER.daemon = True
-            _R64_REDIS_SNAPSHOT_TIMER.start()
+    _SPLIT_STATE['redis_fallback_last_reason'] = 'OCH12 cache-only Redis; full checkpoint owned by HEAVY'
+    return False
 
 def r64_schedule_fast_redis_snapshot_v271(reason='state_change'):
-    """Debounced FAST-owned Redis checkpoint; never runs in the Telegram hot path."""
-    global _R64_REDIS_SNAPSHOT_TIMER, _R64_REDIS_SNAPSHOT_DIRTY
-    if not _r61_effective_redis_url():
-        return False
-    with _R64_REDIS_SNAPSHOT_LOCK:
-        _R64_REDIS_SNAPSHOT_DIRTY = True
-        now = _split_time.time()
-        since = max(0.0, now - float(_R64_REDIS_SNAPSHOT_LAST_AT or 0.0))
-        delay = 12.0 if since >= 60.0 else max(12.0, 60.0 - since)
-        if _R64_REDIS_SNAPSHOT_TIMER is not None:
-            return True
-        _R64_REDIS_SNAPSHOT_TIMER = _split_threading.Timer(delay, _r64_periodic_redis_snapshot_fire_v271)
-        _R64_REDIS_SNAPSHOT_TIMER.daemon = True
-        _R64_REDIS_SNAPSHOT_TIMER.start()
-    return True
-
+    """OCH12 compatibility entry: full Redis snapshots are disabled on FAST."""
+    _SPLIT_STATE['redis_fallback_last_reason'] = 'OCH12 disabled on FAST: ' + str(reason or '')[:120]
+    return False
 
 def _split_ping_once():
     base = _split_peer_base()
@@ -2732,32 +2674,29 @@ def _r20_capsule_push_now(reason='state_change'):
         max_bytes = 8 * 1024 * 1024
         if len(packed) > max_bytes:
             raise RuntimeError(f'capsule too large: {len(packed)}')
-        seq = int(payload.get('user_state_seq') or 0)
-        gen = int(payload.get('config_generation') or 0)
-        # Shared Redis is the fastest durable witness and survives either Render being redeployed.
-        redis_ok, redis_detail = _r20_capsule_store_redis(payload, packed)
-        worker_ok = False; worker_detail = ''
+        seq = int(payload.get('user_state_seq') or 0); gen = int(payload.get('config_generation') or 0)
+        worker_ok=False; worker_detail='HEAVY peer not configured'
         base, secret = _split_peer_base(), _split_secret()
         if base and secret:
             try:
-                r = requests.post(base + '/internal/capsule', data=packed,
-                    headers={**_split_headers('vys-262-front-capsule-r20'), 'Content-Type':'application/json', 'Content-Encoding':'gzip'}, timeout=3.0)
+                r=requests.post(base + '/internal/capsule', data=packed,
+                    headers={**_split_headers('och12-front-capsule'), 'Content-Type':'application/json', 'Content-Encoding':'gzip'}, timeout=3.0)
                 worker_ok = 200 <= r.status_code < 300
                 worker_detail = f'HTTP {r.status_code}' if worker_ok else f'HTTP {r.status_code}: {r.text[:120]}'
             except Exception as exc:
-                worker_detail = f'{type(exc).__name__}: {str(exc)[:140]}'
-        if redis_ok or worker_ok:
-            _R20_CAPSULE_LAST_GEN_SENT = max(_R20_CAPSULE_LAST_GEN_SENT, gen)
-            _R20_CAPSULE_LAST_SEQ_SENT = max(_R20_CAPSULE_LAST_SEQ_SENT, seq)
-            _SPLIT_STATE['capsule_last_ok'] = _split_time.time()
-            _SPLIT_STATE['capsule_last_error'] = ''
-            _SPLIT_STATE['capsule_last_seq'] = seq
-            _SPLIT_STATE['capsule_last_generation'] = gen
+                worker_detail=f'{type(exc).__name__}: {str(exc)[:140]}'
+        redis_ok, redis_detail = _r20_capsule_store_redis(payload, packed)
+        _SPLIT_STATE['capsule_redis_cache_ok']=bool(redis_ok)
+        _SPLIT_STATE['capsule_redis_cache_detail']=str(redis_detail)[:180]
+        if worker_ok:
+            _R20_CAPSULE_LAST_GEN_SENT=max(_R20_CAPSULE_LAST_GEN_SENT,gen); _R20_CAPSULE_LAST_SEQ_SENT=max(_R20_CAPSULE_LAST_SEQ_SENT,seq)
+            _SPLIT_STATE['capsule_last_ok']=_split_time.time(); _SPLIT_STATE['capsule_last_error']=''
+            _SPLIT_STATE['capsule_last_seq']=seq; _SPLIT_STATE['capsule_last_generation']=gen
             return True
-        _SPLIT_STATE['capsule_last_error'] = f'redis={redis_detail}; worker={worker_detail}'[:240]
+        _SPLIT_STATE['capsule_last_error']=f'heavy={worker_detail}; redis-cache={redis_detail}'[:240]
     except Exception as exc:
-        _SPLIT_STATE['capsule_last_error'] = f'{type(exc).__name__}: {str(exc)[:220]}'
-        try: log_error('R20 durable capsule: ' + _SPLIT_STATE['capsule_last_error'])
+        _SPLIT_STATE['capsule_last_error']=f'{type(exc).__name__}: {str(exc)[:220]}'
+        try: log_error('OCH12 capsule: '+_SPLIT_STATE['capsule_last_error'])
         except Exception: pass
     return False
 
@@ -6257,48 +6196,32 @@ def _r43_event_redis_client():
         return None
 
 def _r43_store_events_redis(events):
+    """Best-effort bounded Redis mirror. Never an authority in OCH12."""
     c=_r43_event_redis_client()
     if c is None: return False,'Redis unavailable'
     try:
+        maxlen=max(200,min(5000,int(_r32_os.getenv('R43_REDIS_EVENT_MAXLEN','2000') or '2000')))
+        ttl=max(3600,min(604800,int(_r32_os.getenv('R43_REDIS_EVENT_TTL_SEC','86400') or '86400')))
         pipe=c.pipeline(transaction=False)
         for ev in events or []:
             raw=_r32_json.dumps(ev,ensure_ascii=False,separators=(',',':'),default=str)
-            pipe.xadd(_R43_EVENT_STREAM_KEY,{'e':raw},maxlen=50000,approximate=True)
-        pipe.expire(_R43_EVENT_STREAM_KEY,7*24*3600)
+            pipe.xadd(_R43_EVENT_STREAM_KEY,{'e':raw},maxlen=maxlen,approximate=True)
+        pipe.expire(_R43_EVENT_STREAM_KEY,ttl)
         pipe.execute()
-        return True,f'redis-stream events={len(events or [])}'
+        return True,f'redis-cache events={len(events or [])} maxlen={maxlen} ttl={ttl}'
     except Exception as exc:
         return False,f'{type(exc).__name__}: {str(exc)[:180]}'
+    finally:
+        try: c.close()
+        except Exception: pass
 
 def _r34_post_events(events, wire, large=False):
-    # R43: Redis on FAST is the durable event authority. HEAVY is only a best-effort
-    # warm mirror and must never stall finance/user mutations.
-    if str(_r32_os.getenv('R43_FAST_AUTHORITY','1') or '1').strip().lower() in {'1','true','yes','on'}:
-        rok,rdetail=_r43_store_events_redis(events)
-        if not rok:
-            raise RuntimeError('R43 durable event stream unavailable: '+str(rdetail)[:180])
-        max_rev=max([int(x.get('revision') or 0) for x in events] or [0])
-        base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
-        if base and secret:
-            try:
-                endpoint='/internal/state/event-large' if large else '/internal/state/events'
-                requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r43-state-mirror','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=1.5)
-            except Exception:
-                pass
-        _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),max_rev)
-        _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),max_rev)
-        _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events)
-        _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
-        _R32_EVENT_STATE['bytes']=int(_R32_EVENT_STATE.get('bytes') or 0)+len(wire)
-        _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
-        st=globals().get('_SPLIT_STATE')
-        if isinstance(st,dict):
-            st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1; st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''; st['r34_event_last_revision_acked']=max_rev; st['r35_event_last_revision_applied_peer']=max_rev
-        return True
+    """OCH12: HEAVY ACK owns durability; Redis is a bounded optional mirror."""
     base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
-    if not base or not secret: raise RuntimeError('R34 peer URL/secret not configured')
+    if not base or not secret:
+        raise RuntimeError('OCH12 HEAVY peer URL/secret not configured')
     endpoint='/internal/state/event-large' if large else '/internal/state/events'
-    r=requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'per-r34-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(120.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','90') or '90'))))
+    r=requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'och12-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(120.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','90') or '90'))))
     if r.status_code==413 and not large:
         if len(events)>1:
             mid=max(1,len(events)//2)
@@ -6306,25 +6229,34 @@ def _r34_post_events(events, wire, large=False):
             _r34_post_events(events[mid:],_r34_encode_events(events[mid:]),False)
             return True
         return _r34_post_events(events,wire,True)
-    if not (200 <= r.status_code < 300): raise RuntimeError(f'HEAVY state events HTTP {r.status_code}: {r.text[:220]}')
+    if not (200 <= r.status_code < 300):
+        raise RuntimeError(f'OCH12 HEAVY state events HTTP {r.status_code}: {r.text[:220]}')
     try:
         payload=r.json() if r.content else {}
-        ack=int(payload.get('durable_revision') or payload.get('max_revision') or max([int(x.get('revision') or 0) for x in events] or [0]))
-        applied_ack=int(payload.get('applied_revision') or (ack if bool(payload.get('apply_ok',True)) else 0))
     except Exception:
-        ack=max([int(x.get('revision') or 0) for x in events] or [0]); applied_ack=0
+        payload={}
+    if not isinstance(payload,dict) or not bool(payload.get('ok')):
+        raise RuntimeError('OCH12 HEAVY ACK missing/invalid: '+str(payload)[:220])
+    max_rev=max([int(x.get('revision') or 0) for x in events] or [0])
+    ack=int(payload.get('durable_revision') or payload.get('max_revision') or 0)
+    if ack < max_rev:
+        raise RuntimeError(f'OCH12 HEAVY durable revision behind: ack={ack} required={max_rev}')
+    applied_ack=int(payload.get('applied_revision') or (ack if bool(payload.get('apply_ok',True)) else 0))
+    # Cache mirror is deliberately after the required HEAVY ACK and cannot fail the batch.
+    redis_ok,redis_detail=_r43_store_events_redis(events)
     _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),ack)
     _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),applied_ack)
     _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events)
     _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
     _R32_EVENT_STATE['bytes']=int(_R32_EVENT_STATE.get('bytes') or 0)+len(wire)
     _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
+    _R32_EVENT_STATE['redis_cache_ok']=bool(redis_ok); _R32_EVENT_STATE['redis_cache_detail']=str(redis_detail)[:180]
     st=globals().get('_SPLIT_STATE')
     if isinstance(st,dict):
         st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1
-        st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=_R32_EVENT_Q.qsize(); st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''; st['r34_event_last_revision_acked']=ack; st['r35_event_last_revision_applied_peer']=applied_ack
+        st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=_R32_EVENT_Q.qsize(); st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''
+        st['r34_event_last_revision_acked']=ack; st['r35_event_last_revision_applied_peer']=applied_ack; st['redis_event_cache_ok']=bool(redis_ok)
     return True
-
 
 def _r32_send_packet(packet):
     packets=list(packet.get('packets') or [])
@@ -9216,10 +9148,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9778,7 +9710,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# R75 / очнись_11.1 — hard feature-visibility fence + expanded "Жук-нарывник".
+# R75 / очнись_12 — hard feature-visibility fence + expanded "Жук-нарывник".
 #
 # The journal of 2026-09-15 proved that all four switches were OFF while late
 # markup-only/restore paths repeatedly reintroduced v171:desc.  R75 therefore
@@ -9990,7 +9922,7 @@ try:
 except Exception:
     pass
 
-# R74 / очнись_11.1 — live MASTER map + machine index inside Info.
+# R74 / очнись_12 — live MASTER map + machine index inside Info.
 # The artifacts are generated from the exact runtime sources on demand, so they
 # cannot silently drift away from the deployed code.  Telegram document delivery
 # is asynchronous and never blocks the callback/window hot path.
@@ -10088,7 +10020,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10127,7 +10059,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10177,7 +10109,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10200,13 +10132,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10262,13 +10194,13 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_11.1'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}; live_source_index=on")
 except Exception:
     pass
 
 
 # ---------------------------------------------------------------------------
-# R76 / очнись_11.1 — deterministic UI pipeline + Back/Main fix + scoped refresh
+# R76 / очнись_12 — deterministic UI pipeline + Back/Main fix + scoped refresh
 # + semantic button dedupe + lightweight latency profiler.
 #
 # Contract:
@@ -10622,7 +10554,7 @@ except Exception:
     pass
 
 
-# R77 / очнись_11.1 — finance hot-path isolation + callback queue separation
+# R77 / очнись_12 — finance hot-path isolation + callback queue separation
 # User-visible finance commit is: incremental RAM -> one SQLite commit -> one UI repaint.
 # Canonical full-ledger reconciliation remains durable but is latest-wins background work.
 _R77_FIN_STATS_LOCK = threading.RLock()
@@ -10827,6 +10759,6 @@ def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
     return _r77_r40_status_edit_core(chat_id,msg_id,text,purpose)
 
 
-# OCH11.1 FINALIZATION ONLY — FAST PURE UI release marker.
+# OCH12 FINALIZATION ONLY — FAST PURE UI release marker.
 # Webhook/ACK/navigation are isolated from persistence/logging/snapshot contention.
 # v262

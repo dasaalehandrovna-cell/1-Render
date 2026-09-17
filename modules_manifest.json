@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "8505453a27e2c10fb2d44804e3df5049e27928a1b2c87ca3b425a2a409984b93",
+    "01_core_data.py": "c5dbeac16b89f46045101039adc36cd31cd34574dc033726d7a6e9667ba16267",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
-    "05_finance_ui.py": "171f9496546a25fc38e6bc6cb3e0fd62a76c0da98cb1c41ecf73a9cb60a7369d",
+    "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
-    "07_state_web.py": "3f1c2622bf50e1ac7b61257df3d9a56ccca3e554abaaa67cd85bfd4e10ea6931",
+    "07_state_web.py": "c660ac94e63c6f220ed394fe15d1f853e1b9e7444d772d5fcefb16508adb9bd2",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "b3a9144c638f85cbd10032f63b335bd9141a00459936c105ebededd6e9c92183",
-    "10_split_policy_offload.py": "bec5324e618bf4792340bfa7dc1b31078b8682f703b890733768a95bbe7eb859"
+    "09_final_transport.py": "56808d419f07384b454c501ebc34893079637ad841cdd5e88704340168ac51e8",
+    "10_split_policy_offload.py": "3525d4750c873bfb21825a84223a4689794cb1f00d1176e606e9a4cc98f668c6"
   },
-  "release": "ОЧНИСЬ_11.1-FAST-PURE-UI-FINAL",
+  "release": "ОЧНИСЬ_12-HEAVY-ACK-REDIS-CACHE-FINAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -322,7 +322,11 @@
     "och111_thread_local_sqlite_reads",
     "och111_chat_store_hot_cache",
     "och111_no_cold_ledger_fault",
-    "och111_redis_checkpoint_yields_to_ui",
-    "och111_ready_identity"
+    "och12_fast_no_periodic_full_snapshot",
+    "och12_heavy_ack_authority",
+    "och12_redis_bounded_best_effort_cache",
+    "och12_capsule_heavy_first",
+    "och12_legacy_redis_full_image_cleanup",
+    "och12_ready_identity"
   ]
 }

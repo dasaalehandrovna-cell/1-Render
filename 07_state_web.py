@@ -4735,7 +4735,7 @@ def _r22_accept_callback_fast(payload: dict, update_id, update_chat_id, update_k
             except Exception:
                 pass
 
-        # OCH11.1 FAST PURE UI: even safe navigation is a real latest-wins actor.
+        # OCH12 FAST PURE UI: even safe navigation is a real latest-wins actor.
         # Waitress only admits + ACKs + enqueues; it never executes business/UI code.
         # This prevents SQLite/logging/background contention from holding the webhook.
         if selected_pool is globals().get('NAVIGATION_TASK_POOL'):

@@ -2124,7 +2124,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_11.1'
+BOT_DISPLAY_NAME = 'очнись_12'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2314,7 +2314,7 @@ _owner_json_restore_prompts = {}
 _owner_json_restore_prompt_lock = threading.RLock()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
-# OCH11.1: stdout/logging must never hold a Telegram callback or Window Actor.
+# OCH12: stdout/logging must never hold a Telegram callback or Window Actor.
 # Every ordinary info/error line is enqueued with put_nowait and emitted by one
 # background writer.  The in-RAM forensic ring remains independent.
 _FAST_LOG_QUEUE = queue.Queue(maxsize=max(2000, min(50000, int(os.getenv('FAST_LOG_QUEUE_MAX','12000') or '12000'))))
@@ -2361,7 +2361,7 @@ class SQLiteState:
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=1.5)
         self.conn.row_factory = sqlite3.Row
         self.read_lock = R25TracedRLock('sqlite-read-admin')
-        self.read_conn = None  # compatibility handle; OCH11.1 reads use thread-local connections
+        self.read_conn = None  # compatibility handle; OCH12 reads use thread-local connections
         self._read_tls = threading.local()
         self._read_generation = 0
         self._init_db()
@@ -2487,7 +2487,7 @@ class SQLiteState:
         return conn
 
     def _open_reader(self):
-        """OCH11.1: invalidate thread-local WAL readers after DB replacement."""
+        """OCH12: invalidate thread-local WAL readers after DB replacement."""
         with self.read_lock:
             self._read_generation = int(self._read_generation or 0) + 1
             old = getattr(self._read_tls, 'conn', None)
@@ -3024,7 +3024,7 @@ def _import_legacy_global_json_to_db(path: str=DATA_FILE, force: bool=False) -> 
     return True
 
 def _v177_legacy_0002_log_info(msg: str):
-    # OCH11.1: never block application threads on logging.Handler.lock.
+    # OCH12: never block application threads on logging.Handler.lock.
     if not _fast_log_enqueue_v111('INFO', msg):
         try: r26_diag_trace_line('LOG_DROP info ' + str(msg)[:500])
         except Exception: pass
@@ -3825,7 +3825,7 @@ def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str='', lev
         _fws = FORWARD_TASK_POOL.stats()
         _ds = DELTA_TASK_POOL.stats() if 'DELTA_TASK_POOL' in globals() else {}
         row = {'ts': _journal_ts(), 'level': str(level or 'INFO'), 'action': str(action or '')[:160], 'chat_id': str(chat_id) if chat_id is not None else '', 'chat_name': '', 'detail': str(detail or '')[:3000], 'thread': threading.current_thread().name, 'profile': active_bot_behavior_profile() if 'data' in globals() and isinstance(data, dict) else 'startup', 'bot_version': str(globals().get('VERSION') or 'startup'), 'render_commit': str(os.getenv('RENDER_GIT_COMMIT', '') or ''), 'webhook_pending': _ws.get('pending', 0), 'webhook_active': _ws.get('active', 0), 'ui_pending': _uis.get('pending', 0), 'ui_active': _uis.get('active', 0), 'finance_pending': _fs.get('pending', 0), 'finance_active': _fs.get('active', 0), 'forward_pending': _fws.get('pending', 0), 'forward_active': _fws.get('active', 0), 'delta_pending': _ds.get('pending', 0), 'general_pending': GENERAL_TASK_POOL.stats().get('pending', 0), 'backup_pending': BACKUP_TASK_POOL.stats().get('pending', 0), 'runtime_phase': str((globals().get('_RUNTIME_STATE') or {}).get('phase') or ''), 'runtime_ready': bool((globals().get('_RUNTIME_STATE') or {}).get('ready', False))}
-        # OCH11.1: journal metadata may not contend with live UI for data/chat state.
+        # OCH12: journal metadata may not contend with live UI for data/chat state.
         # Name resolution is optional and disabled by default; chat_id remains canonical.
         try:
             if chat_id is not None and str(os.getenv('JOURNAL_RESOLVE_CHAT_NAME','0') or '0').lower() in {'1','true','yes','on'}:
@@ -14177,7 +14177,7 @@ def _r68_write_local_runtime_state(event: str='heartbeat') -> bool:
         return False
 
 def _r68_write_local_sqlite_snapshot(reason: str='heartbeat', force: bool=False) -> bool:
-    if str(os.getenv('LOCAL_SQLITE_SNAPSHOT_ENABLED', '1') or '1').strip().lower() not in {'1','true','yes','on','да'}:
+    if str(os.getenv('LOCAL_SQLITE_SNAPSHOT_ENABLED', '0') or '1').strip().lower() not in {'1','true','yes','on','да'}:
         return False
     min_interval = max(15.0, min(3600.0, float(os.getenv('LOCAL_SQLITE_SNAPSHOT_MIN_INTERVAL_SEC', '120') or '120')))
     now_mono = time.monotonic()
@@ -16296,7 +16296,7 @@ def chat_meta_file(chat_id: int) -> str:
 _CHAT_STORE_FAST_CACHE_V111 = {}
 
 def get_chat_store(chat_id: int) -> dict:
-    """OCH11.1 hot lookup: lock only on first/create/replace, not on every UI read."""
+    """OCH12 hot lookup: lock only on first/create/replace, not on every UI read."""
     _cid = int(chat_id); _key = str(_cid)
     try:
         chats_now = data.get('chats', {}) if isinstance(data, dict) else {}

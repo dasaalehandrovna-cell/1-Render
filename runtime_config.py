@@ -18,6 +18,8 @@ CONFIG_VERSION = "vys-262-r69-runtime-gate-mode-fix"
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R43_FAST_AUTHORITY": "0",
+    "R43_REDIS_EVENT_MAXLEN": "2000",
+    "R43_REDIS_EVENT_TTL_SEC": "86400",
     # Process / role
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
@@ -104,7 +106,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "LOCAL_RUNTIME_STATE_ENABLED": "1",
     "LOCAL_RUNTIME_STATE_FILE": "/tmp/vys262_fast_local/runtime_state.json",
     "LOCAL_RUNTIME_STATE_INTERVAL_SEC": "45",
-    "LOCAL_SQLITE_SNAPSHOT_ENABLED": "1",
+    "LOCAL_SQLITE_SNAPSHOT_ENABLED": "0",
     "LOCAL_SQLITE_SNAPSHOT_FILE": "/tmp/vys262_fast_local/state.sqlite3.gz",
     "LOCAL_SQLITE_SNAPSHOT_MIN_INTERVAL_SEC": "120",
     "LOCAL_SQLITE_SNAPSHOT_COMPRESS_LEVEL": "1",
