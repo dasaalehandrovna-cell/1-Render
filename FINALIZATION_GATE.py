@@ -445,8 +445,9 @@ if ROLE=='fast':
        'Render ENV / code runtime Info views missing')
     ok('r59_redis_runtime_refresh',
        'def key_value_refresh_runtime_v248' in core_src and 'def _r59_fast_redis_probe' in split_src and
-       'vys-262-r61-render-owned-redis-control' in split_src and 'PING=PONG' in split_src,
-       'runtime Redis refresh / PING verification missing')
+       'FAST: Redis CACHE ON; PING=PONG' in split_src and "HEAVY: Redis удалён" in split_src and
+       "/internal/runtime/redis" not in _fn_sources(split_src,{'_r49_apply_redis_runtime_job'}).get('_r49_apply_redis_runtime_job',''),
+       'FAST-only Redis runtime refresh / PING verification missing or HEAVY Redis call remains')
     ok('r49_fast_ui_latest_wins_queue',
        "WINDOW_RENDER_TASK_POOL = LatestKeyedTaskPool" in core_src and
        'WINDOW_RENDER_TASK_POOL.submit_latest' in rel_src and '_r22_execute_window_render' in rel_src,
@@ -652,7 +653,7 @@ if ROLE=='fast':
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       "BOT_DISPLAY_NAME = 'очнись_12.2'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
        'user-visible bot and READY message must identify as очнись_12')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
@@ -796,7 +797,7 @@ if ROLE=='fast':
        '/internal/r65/mega/list' in final_transport and '/internal/r65/mega/file' in final_transport and
        'def _v265_heavy_download_mega_file' in final_transport and
        "globals().get('r64_publish_restore_snapshot_v271')" in web_src,
-       'manual MEGA browser/restore must use HEAVY and seal selected restore into Redis')
+       'manual MEGA browser/restore must use HEAVY and seal selected restore into HEAVY/MEGA')
 
 
     # R66: every Telegram main window is independent; opening/navigating one

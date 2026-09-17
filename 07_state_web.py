@@ -9687,43 +9687,36 @@ def _v241_restore_storage_barrier_end(epoch: int, success: bool) -> None:
         pass
 
 def _v153_backup_before_restore() -> str:
-    """Always create a local safety copy; try durable witnesses without blocking restore.
-
-    v240 Recovery Authority is intentionally independent of the normal storage mode.
-    """
+    """Require HEAVY->MEGA pre-restore durability before any destructive restore."""
     _recovery_was_active = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
-    folder = _v153_tempfile.mkdtemp(prefix='v240_pre_restore_')
+    folder = _v153_tempfile.mkdtemp(prefix='v242_pre_restore_')
     raw = _v153_os.path.join(folder, 'pre_restore.sqlite3')
-    SQLITE.backup_to(raw)
     gz = raw + '.gz'
-    with open(raw, 'rb') as fin, _v153_gzip.open(gz, 'wb', compresslevel=5) as fout:
-        _v153_shutil.copyfileobj(fin, fout, 1024 * 1024)
-    errors = []
-    durable = False
     try:
-        if mega_is_configured():
-            durable = bool(mega_put_replace(gz, f"{MEGA_BACKUP_DIR.rstrip('/')}/database/pre_restore", f"pre_restore_{now_local().strftime('%Y%m%d_%H%M%S')}.sqlite3.gz", archive_previous=False))
-            if not durable:
-                errors.append('MEGA pre_restore returned false')
-    except Exception as exc:
-        errors.append('MEGA: ' + str(exc)[:220])
-    if not durable:
-        try:
-            if bool(globals().get('telegram_durable_available_v237_1', lambda: False)()):
-                snap_fn = globals().get('telegram_upload_sqlite_snapshot_v234')
-                durable = bool(callable(snap_fn) and snap_fn(force=True))
-                if not durable:
-                    errors.append('Telegram pre_restore returned false')
-        except Exception as exc:
-            errors.append('Telegram: ' + str(exc)[:220])
-    SQLITE.set_meta('restore_control_v240', 'last_pre_restore', {'at': now_local().isoformat(timespec='microseconds'), 'durable': bool(durable), 'errors': errors[-4:], 'local_path': raw})
-    try:
-        bot_journal('pre_restore_v240', int(OWNER_ID or 0) or None, f"durable={int(durable)}; errors={' | '.join(errors)[:500]}", 'INFO' if durable else 'WARN')
+        SQLITE.backup_to(raw)
+        with open(raw, 'rb') as fin, _v153_gzip.open(gz, 'wb', compresslevel=5) as fout:
+            _v153_shutil.copyfileobj(fin, fout, 1024 * 1024)
+        base_fn=globals().get('_split_peer_base'); headers_fn=globals().get('_split_headers')
+        base=str(base_fn() if callable(base_fn) else '').rstrip('/')
+        if not base or not callable(headers_fn):
+            raise RuntimeError('Render #2 недоступен: pre_restore нельзя закрепить в MEGA')
+        with open(gz,'rb') as fh: payload=fh.read()
+        headers={**headers_fn('ochnis-12.2-pre-restore'),'Content-Type':'application/gzip','X-Pre-Restore-Reason':'manual_restore'}
+        response=requests.post(base+'/internal/pre-restore/upload',data=payload,headers=headers,timeout=240)
+        try: body=response.json() if response.content else {}
+        except Exception: body={}
+        if not (200 <= int(response.status_code) < 300 and bool((body or {}).get('ok')) and bool((body or {}).get('mega_stored'))):
+            raise RuntimeError(f'HEAVY/MEGA pre_restore HTTP {response.status_code}: {str(body or response.text)[:300]}')
+        SQLITE.set_meta('restore_control_v240','last_pre_restore',{'at':now_local().isoformat(timespec='microseconds'),'durable':True,'backend':'heavy-mega','size':int((body or {}).get('size') or len(payload)),'sha256':str((body or {}).get('sha256') or ''),'remote_file':str((body or {}).get('filename') or ''),'local_path':raw})
+        try: bot_journal('pre_restore_v242', int(OWNER_ID or 0) or None, f"durable=1; backend=heavy-mega; file={str((body or {}).get('filename') or '')[:180]}", 'INFO')
+        except Exception: pass
+        return folder
     except Exception:
-        pass
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(_recovery_was_active or globals().get('_V241_RESTORE_ACTIVE', False))
-    return folder
+        _v153_shutil.rmtree(folder, ignore_errors=True)
+        raise
+    finally:
+        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(_recovery_was_active or globals().get('_V241_RESTORE_ACTIVE', False))
 
 def _v153_apply_global_restore(raw: str) -> None:
     SQLITE.replace_database(raw)
@@ -10071,23 +10064,23 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
             restored_failed = _v153_restore_failed_tasks_from_db(str(row['raw']), set((int(x) for x in (row.get('manifest') or {}).get('chat_ids') or [])))
         constitution_result = _v240_restore_reanchor_guaranteed(f'gz_restore:{scope}:{mode}')
         remote_ok = bool(constitution_result.get('remote_confirmed_v240', True))
-        redis_fn = globals().get('r64_publish_restore_snapshot_v271')
-        redis_result = redis_fn(f'gz_restore:{scope}:{mode}') if callable(redis_fn) else {'required': False, 'ok': False, 'detail': 'R64 Redis seal helper unavailable'}
-        redis_required = bool((redis_result or {}).get('required'))
-        redis_ok = bool((redis_result or {}).get('ok'))
+        seal_fn = globals().get('r64_publish_restore_snapshot_v271')
+        seal_result = seal_fn(f'gz_restore:{scope}:{mode}') if callable(seal_fn) else {'required': False, 'ok': False, 'detail': 'HEAVY/MEGA seal helper unavailable'}
+        checkpoint_required = bool((seal_result or {}).get('required'))
+        checkpoint_ok = bool((seal_result or {}).get('ok'))
         suffix = '' if remote_ok else '\n⚠️ Remote re-anchor временно pending; восстановленное состояние уже принято локально.'
-        if redis_required and redis_ok:
-            suffix += f"\n🧠 Redis: full SQLite snapshot проверен ({int((redis_result or {}).get('size') or 0)} B)."
-            headline = '✅ Восстановление завершено и закреплено в Redis.'
-        elif redis_required:
-            suffix += '\n⛔ Redis snapshot НЕ закреплён: ' + str((redis_result or {}).get('detail') or 'unknown')[:320]
-            headline = '⚠️ База восстановлена локально, но Redis recovery НЕ закреплён.'
+        if checkpoint_required and checkpoint_ok:
+            suffix += '\n☁️ HEAVY/MEGA: полный SQLite snapshot проверен и закреплён.'
+            headline = '✅ Восстановление завершено и закреплено в HEAVY/MEGA.'
+        elif checkpoint_required:
+            suffix += '\n⛔ HEAVY/MEGA snapshot НЕ закреплён: ' + str((seal_result or {}).get('detail') or 'unknown')[:320]
+            headline = '⚠️ База восстановлена локально, но HEAVY/MEGA checkpoint НЕ закреплён.'
         else:
-            suffix += '\nℹ️ Redis recovery не настроен в Render.'
+            suffix += '\nℹ️ HEAVY/MEGA checkpoint не требуется.'
             headline = '✅ Восстановление завершено.'
         safe_edit(bot, call, f"{headline}\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\nFailed-задач восстановлено: {restored_failed}." + suffix)
         restore_success = True
-        bot_journal('v240_restore_applied', int(row['chat_id']), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}; constitution=1; remote_confirmed={int(remote_ok)}; redis_required={int(redis_required)}; redis_ok={int(redis_ok)}; epoch={restore_epoch}")
+        bot_journal('v240_restore_applied', int(row['chat_id']), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}; constitution=1; remote_confirmed={int(remote_ok)}; checkpoint_required={int(checkpoint_required)}; checkpoint_ok={int(checkpoint_ok)}; epoch={restore_epoch}")
     except Exception as exc:
         safe_edit(bot, call, f'❌ Восстановление остановлено:\n{v153_redact_text(exc)[:800]}')
         bot_journal('v153_restore_failed', int(row['chat_id']), v153_redact_text(exc), 'ERROR')
@@ -11156,13 +11149,13 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
             except Exception:
                 pass
             save_data(data, full=True)
-            redis_row = {'required': False, 'ok': False, 'detail': 'helper unavailable'}
+            checkpoint_row = {'required': False, 'ok': False, 'detail': 'helper unavailable'}
             try:
                 seal = globals().get('r64_publish_restore_snapshot_v271')
                 if callable(seal):
-                    redis_row = dict(seal('owner_selected_mega_database_r65') or redis_row)
-            except Exception as _r65_redis_exc:
-                redis_row = {'required': True, 'ok': False, 'detail': f'{type(_r65_redis_exc).__name__}: {str(_r65_redis_exc)[:220]}'}
+                    checkpoint_row = dict(seal('owner_selected_mega_database_r65') or checkpoint_row)
+            except Exception as _r65_seal_exc:
+                checkpoint_row = {'required': True, 'ok': False, 'detail': f'{type(_r65_seal_exc).__name__}: {str(_r65_seal_exc)[:220]}'}
             reanchor = _v240_restore_reanchor_guaranteed('owner_selected_mega_database_r65') or {}
             try:
                 rec = globals().get('_reminder_boot_reconcile_v241')
@@ -11177,9 +11170,9 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
                 'source_records': int(semantic.get('total_records') or 0),
                 'generation': str(active.get('generation') or ''),
                 'remote_confirmed': bool(reanchor.get('remote_confirmed_v242', False)),
-                'redis_required': bool(redis_row.get('required')),
-                'redis_ok': bool(redis_row.get('ok')),
-                'redis_detail': str(redis_row.get('detail') or '')[:300],
+                'checkpoint_required': bool(checkpoint_row.get('required')),
+                'checkpoint_ok': bool(checkpoint_row.get('ok')),
+                'checkpoint_detail': str(checkpoint_row.get('detail') or '')[:300],
             }
         finally:
             _v153_shutil.rmtree(work, ignore_errors=True)

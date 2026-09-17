@@ -5078,70 +5078,34 @@ def _r49_render_info_after_redis(chat_id: int, message_id: int):
     _r60_render_redis_menu(chat_id,message_id)
 
 def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -> None:
-    """R59 transactional Redis switch with real connectivity verification.
-
-    The callback itself never waits for Redis.  This detached job changes HEAVY and
-    FAST, refreshes import-time FAST consumers, and verifies PING on both sides.
-    """
+    """OCH12.2: Redis runtime switch belongs to FAST only; HEAVY has no Redis client."""
     enabled = bool(enabled)
     ok = False
     detail = ''
-    base = ''
-    headers = {}
     try:
-        base = globals().get('_split_peer_base', lambda: '')()
-        secret = globals().get('_split_secret', lambda: '')()
-        if not base or not secret:
-            raise RuntimeError('Render #2 peer is not configured')
-        headers_fn = globals().get('_split_headers')
-        headers = dict(headers_fn('vys-262-r61-render-owned-redis-control') or {}) if callable(headers_fn) else {'X-Peer-Secret': secret}
-
-        # HEAVY first.  Its endpoint now validates its own Render master switch,
-        # configured URL and an actual short PING before reporting enabled=True.
-        response = __import__('requests').post(
-            base.rstrip('/') + '/internal/runtime/redis',
-            json={'enabled': enabled}, headers=headers, timeout=(2.0, 5.0))
-        try: payload = response.json() if response.content else {}
-        except Exception: payload = {}
-        peer_state = (payload or {}).get('redis') or {}
-        if not (200 <= int(response.status_code) < 300 and bool(payload.get('ok'))):
-            peer_error = str((payload or {}).get('error') or peer_state.get('error') or response.text or '')[:260]
-            raise RuntimeError(f'HEAVY HTTP {response.status_code}: {peer_error}')
-        if bool(peer_state.get('enabled')) != enabled:
-            raise RuntimeError(str(peer_state.get('error') or 'HEAVY Redis state did not match request')[:220])
-
         import runtime_config as _r49_runtime_config
         local_state = _r49_runtime_config.set_redis_runtime_enabled(enabled)
         _r59_refresh_fast_redis_consumers()
         if bool(local_state.get('enabled')) != enabled:
             raise RuntimeError(str(local_state.get('error') or 'FAST Redis state did not match request')[:220])
-
         if enabled:
             ping_ok, ping_detail = _r59_fast_redis_probe()
             if not ping_ok:
                 raise RuntimeError(ping_detail)
-            # Also force the native Key Value client to re-read the new runtime URL.
             kv_ping = globals().get('key_value_ping_v248')
             if callable(kv_ping) and not bool(kv_ping(force=True)):
                 raise RuntimeError('FAST KeyValue PING failed after runtime refresh')
-            detail = 'FAST + HEAVY: Redis CACHE ON; PING=PONG'
+            detail = 'FAST: Redis CACHE ON; PING=PONG · HEAVY: Redis удалён'
         else:
-            detail = 'FAST + HEAVY: Redis runtime OFF'
+            detail = 'FAST: Redis runtime OFF · HEAVY: Redis удалён'
         ok = True
     except Exception as exc:
         detail = f'{type(exc).__name__}: {str(exc)[:280]}'
-        # Enabling is transactional.  Any failure rolls both sides back to OFF.
         if enabled:
             try:
                 import runtime_config as _r49_runtime_config
                 _r49_runtime_config.set_redis_runtime_enabled(False)
                 _r59_refresh_fast_redis_consumers()
-            except Exception:
-                pass
-            try:
-                if base and headers:
-                    __import__('requests').post(base.rstrip('/') + '/internal/runtime/redis',
-                                                json={'enabled': False}, headers=headers, timeout=(1.5, 3.0))
             except Exception:
                 pass
     finally:
@@ -7975,8 +7939,8 @@ def _r44_front_redis():
     except Exception: pass
     return None
 
-def _r44_mode(chat_id): return str(_R44_TEST_MODE.get(int(chat_id),'direct') or 'direct')
-def _r44_set_mode(chat_id,mode): _R44_TEST_MODE[int(chat_id)]='redis' if str(mode)=='redis' else 'direct'; return _r44_mode(chat_id)
+def _r44_mode(chat_id): return 'direct'
+def _r44_set_mode(chat_id,mode): _R44_TEST_MODE[int(chat_id)]='direct'; return 'direct'
 
 def _r44_request(chat_id, method, path, *, json_body=None, params=None, timeout=20, stream=False):
     cid=int(chat_id); mode=_r44_mode(cid); base=_r44_peer_base(); start=_r44_time.monotonic()
@@ -8056,24 +8020,23 @@ def _r44_token_get(tok):
 def _r44_test_menu_text(chat_id,remote=None):
     cid=int(chat_id); mode=_r44_mode(cid); rc=_r44_front_redis(); redis_front='✅' if rc is not None else '⛔'
     peer=_r44_peer_base() or '—'; host=_r44_re.sub(r'^https?://','',peer).split('/')[0]
-    lines=['🧪 <b>ТЕСТ #1 FAST ↔ #2 HEAVY</b>','',f'Режим теста: <b>{"Redis handshake" if mode=="redis" else "прямой HTTP"}</b>',f'FAST Redis: {redis_front}',f'HEAVY URL: <code>{_r44_html.escape(host[:80])}</code>']
+    lines=['🧪 <b>ТЕСТ #1 FAST ↔ #2 HEAVY</b>','',f'Режим теста: <b>прямой HTTP</b>',f'FAST Redis: {redis_front}',f'HEAVY Redis: удалён',f'HEAVY URL: <code>{_r44_html.escape(host[:80])}</code>']
     if isinstance(remote,dict):
         lines+=['',f'HEAVY: {"✅ отвечает" if remote.get("ok") else "⛔ ошибка"}']
         if remote.get('status') is not None: lines.append(f'HTTP: {remote.get("status")} · {remote.get("elapsed",0)}с')
-        if mode=='redis': lines.append(f'Общий Redis: {"✅ один и тот же" if remote.get("redis_verified") else "⛔ не подтверждён"}')
         p=remote.get('payload') if isinstance(remote.get('payload'),dict) else {}
         if p:
             lines.append(f'MEGA #2: {"✅" if p.get("mega_ok") else "🟠"} · <code>{_r44_html.escape(str(p.get("mega_root") or "—")[:90])}</code>')
-            lines.append(f'Redis #2: {"✅" if p.get("redis_ok") else "⛔"} · configured={int(bool(p.get("redis_configured")))}')
+            lines.append('Redis #2: удалён')
             lines.append(f'Front виден #2: {"✅" if p.get("front_configured") else "⛔"}')
-    lines+=['','Здесь тестируется реальная связь, MEGA и общий Redis. Производственный транспорт заданий этим переключателем не меняется.']
+    lines+=['','Здесь тестируется реальная связь FAST ↔ HEAVY и MEGA. Redis существует только на FAST как необязательный cache.']
     return window_mark('\n'.join(lines),'Ф4044')
 
 def _r44_test_menu_kb(chat_id):
     cid=int(chat_id); kb=types.InlineKeyboardMarkup(row_width=2); mode=_r44_mode(cid)
     kb.row(IB('🔗 #1 → #2 HTTP',callback_data='r44:test:echo'),IB('↩️ #2 → #1',callback_data='r44:test:reverse'))
     kb.row(IB('📁 MEGA #2',callback_data='r44:test:mega:root'),IB('🗃 Снимок БД',callback_data='r44:test:snapshot'))
-    kb.row(IB(('🧠 Redis: ВКЛ' if mode=='redis' else '🧠 Redis: ВЫКЛ'),callback_data='r44:test:redis_toggle'),IB('🩺 Полный тест',callback_data='r44:test:full'))
+    kb.row(IB('🧠 Redis FAST',callback_data='r60:redis:menu'),IB('🩺 Полный тест',callback_data='r44:test:full'))
     kb.row(IB('🧬 R70 E2E запись↔ответ',callback_data='r44:test:r70e2e'),IB('➡️ Dry-run пересылки',callback_data='r44:test:forward'))
     kb.row(IB('📜 Последние события',callback_data='r44:test:tail'),IB('📥 Скачать журнал',callback_data='r44:test:journal'))
     kb.row(IB('🔄 Статус #2',callback_data='r44:test:status'))
@@ -8453,7 +8416,9 @@ def _r45_test_guard(call,resolved):
         if raw in {'r44:test:open','r45:test:open'}:
             safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
         if raw in {'r44:test:redis_toggle','r45:test:redis_toggle'}:
-            _r44_set_mode(cid,'direct' if _r44_mode(cid)=='redis' else 'redis');safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
+            try: bot.answer_callback_query(call.id,'Redis на Render #2 удалён. Redis FAST настраивается отдельно.',show_alert=True)
+            except Exception: pass
+            safe_edit(bot,call,_r44_test_menu_text(cid),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
         if raw in {'r44:test:tail','r45:test:tail'}:
             safe_edit(bot,call,_r44_render_tail(),reply_markup=_r44_test_menu_kb(cid),parse_mode='HTML');return True
         labels={
@@ -9148,10 +9113,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10020,7 +9985,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10059,7 +10024,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10109,7 +10074,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10132,13 +10097,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10194,7 +10159,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}; live_source_index=on")
 except Exception:
     pass
 

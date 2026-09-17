@@ -4272,9 +4272,6 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
         backup_fn = globals().get('_v153_backup_before_restore')
         if not callable(backup_fn):
             raise RuntimeError('pre_restore backup helper недоступен')
-        durable_ready = bool(globals().get('telegram_durable_primary_v234', lambda: False)())
-        if not durable_ready and callable(globals().get('mega_is_configured')) and (not mega_is_configured()):
-            raise RuntimeError('Внешнее durable-хранилище не настроено — восстановление остановлено')
         pre_restore_dir = backup_fn()
         bot_journal('restore_pre_backup_owner_prompt_v184', int(owner_chat_id), f'file={fname}')
         begin_restore = globals().get('_v241_restore_storage_barrier_begin')
@@ -4999,18 +4996,19 @@ def reset_chat_data(chat_id: int):
 
 
 def _r64_restore_redis_seal_text(reason: str) -> str:
+    # Legacy function name kept for callback compatibility; OCH12.2 durability is HEAVY -> MEGA.
     fn = globals().get('r64_publish_restore_snapshot_v271')
     if not callable(fn):
-        return '\n⚠️ Redis recovery helper недоступен.'
+        return '\n⚠️ HEAVY/MEGA checkpoint helper недоступен.'
     try:
         row = fn(str(reason or 'restore')) or {}
     except Exception as exc:
-        return f'\n⛔ Redis snapshot НЕ закреплён: {type(exc).__name__}: {str(exc)[:220]}'
+        return f'\n⛔ HEAVY/MEGA snapshot НЕ закреплён: {type(exc).__name__}: {str(exc)[:220]}'
     if not row.get('required'):
-        return '\nℹ️ Redis recovery не настроен в Render.'
+        return '\nℹ️ HEAVY/MEGA checkpoint не требуется.'
     if row.get('ok'):
-        return f"\n🧠 Redis: full SQLite snapshot проверен ({int(row.get('size') or 0)} B)."
-    return '\n⛔ Redis snapshot НЕ закреплён: ' + str(row.get('detail') or 'unknown')[:300]
+        return '\n☁️ HEAVY/MEGA: полный SQLite snapshot проверен и закреплён.'
+    return '\n⛔ HEAVY/MEGA snapshot НЕ закреплён: ' + str(row.get('detail') or 'unknown')[:300]
 
 
 def handle_document(msg):
@@ -5072,19 +5070,13 @@ def handle_document(msg):
             begin_restore = globals().get('_v241_restore_storage_barrier_begin')
             if callable(begin_restore):
                 restore_epoch = int(begin_restore() or 0)
-            try:
-                backup_fn = globals().get('_v153_backup_before_restore')
-                if callable(backup_fn):
-                    backup_dir = str(backup_fn() or '')
-                    bot_journal('restore_pre_backup_ok_v240', chat_id, f'file={fname}')
-                else:
-                    bot_journal('restore_pre_backup_unavailable_v240', chat_id, f'file={fname}', 'WARN')
-            except Exception as pre_exc:
-                log_error(f'pre_restore best-effort before file restore: {pre_exc}')
-                try:
-                    bot_journal('restore_pre_backup_failed_v240', chat_id, str(pre_exc)[:400], 'WARN')
-                except Exception:
-                    pass
+            backup_fn = globals().get('_v153_backup_before_restore')
+            if not callable(backup_fn):
+                raise RuntimeError('pre_restore backup helper недоступен')
+            backup_dir = str(backup_fn() or '')
+            if not backup_dir:
+                raise RuntimeError('HEAVY/MEGA pre_restore не подтверждён')
+            bot_journal('restore_pre_backup_ok_v242', chat_id, f'file={fname}; backend=heavy-mega')
             if fname == 'csv_meta.json':
                 os.replace(tmp_path, CSV_META_FILE)
                 _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})

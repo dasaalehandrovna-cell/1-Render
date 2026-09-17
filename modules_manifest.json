@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "c5dbeac16b89f46045101039adc36cd31cd34574dc033726d7a6e9667ba16267",
+    "01_core_data.py": "be6252fd18ee60f17de711fc70ca63f724ebee71f17a326c19884b13b4baf91d",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
-    "06_commands_callbacks.py": "f388605544abafe38bdc5d9e8348c5c01308e3985ad9f11638c04adfbcb5672d",
-    "07_state_web.py": "c660ac94e63c6f220ed394fe15d1f853e1b9e7444d772d5fcefb16508adb9bd2",
+    "06_commands_callbacks.py": "b1b1f1c53ba3c0bd82229558910a8ee388419536199051f8a3f5c8f1decf01c9",
+    "07_state_web.py": "0245a917ac95afac0982983274ac5592fb1cdab990411372e6a1addb9f8eaba8",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "56808d419f07384b454c501ebc34893079637ad841cdd5e88704340168ac51e8",
-    "10_split_policy_offload.py": "3525d4750c873bfb21825a84223a4689794cb1f00d1176e606e9a4cc98f668c6"
+    "09_final_transport.py": "a6420f2dabc47bbd3c91067ede063eecb6f049a92636c0cda27955bbde371105",
+    "10_split_policy_offload.py": "4308dc5af7e14849eb69215d45b623db9605ce28f830415bfc9fff6be1bfa86d"
   },
-  "release": "ОЧНИСЬ_12-HEAVY-ACK-REDIS-CACHE-FINAL",
+  "release": "ОЧНИСЬ_12.2-HEAVY-NO-REDIS-MEGA-RESTORE-FIX",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",

@@ -5343,8 +5343,8 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
             def _job():
                 try:
                     rep = _v242_restore_selected_mega_database(token, cid)
-                    redis_note = '✅' if rep.get('redis_ok') else ('—' if rep.get('redis_required') is False else '⛔')
-                    send_and_auto_delete(cid, f"✅ База MEGA восстановлена через #2. records={rep.get('source_records')} · новая generation={rep.get('generation') or 'LOCAL-PENDING'} · Redis={redis_note}", 180)
+                    checkpoint_note = '✅' if rep.get('checkpoint_ok') else ('—' if rep.get('checkpoint_required') is False else '⛔')
+                    send_and_auto_delete(cid, f"✅ База MEGA восстановлена через #2. records={rep.get('source_records')} · новая generation={rep.get('generation') or 'LOCAL-PENDING'} · HEAVY/MEGA checkpoint={checkpoint_note}", 180)
                     try:
                         schedule_startup_main_windows(delay=0.5)
                     except Exception:
@@ -6035,7 +6035,7 @@ def _final_bot_identity_text(value):
     """Presentation fence: every visible legacy bot name becomes this release name."""
     raw = str(value or '')
     try:
-        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12')
+        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')
         return re.sub(r'очнись_\d+(?:\.\d+)?', name, raw, flags=re.I)
     except Exception:
         return raw
