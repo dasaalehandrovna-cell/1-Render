@@ -351,7 +351,7 @@ if ROLE=='fast':
        'LOCAL_RESTORE_TRACE_FILE' in cfg_src and '_r68_write_restore_trace_file' in start_src and
        'restore_trace' in web_src and 'RESTORE TRACE R68' in core_src,
        'R68 restore source/revision trace file or Watcher integration missing')
-    # OCH12.5: Redis FULL+TAIL is assembled first. If Render MEGA_ENABLED=1,
+    # OCH12.6: Redis FULL+TAIL is assembled first. If Render MEGA_ENABLED=1,
     # FAST compares only compact_v80/head.json and downloads fixed latest/tail only
     # when MEGA proves newer or Redis/local recovery is unavailable. No tree scans.
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
@@ -461,9 +461,13 @@ if ROLE=='fast':
        "requests.post(base+endpoint" in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events','') and
        '_r43_store_events_redis' not in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events',''),
        'active state-event sender must go to HEAVY, not FAST Redis/MEGA')
-    ok('r49_manual_restore_reanchor_heavy_mega',
-       "sync_mega=True" in web_src and '/internal/restore/failed-tasks' in web_src,
-       'manual restore must re-anchor/restore MEGA artifacts through HEAVY')
+    ok('r82_manual_restore_failed_tasks_nonfatal',
+       'def _v153_failed_tasks_pending_store' in web_src and
+       'def _v153_retry_pending_failed_tasks' in web_src and
+       "timeout=(2.0,8.0)" in web_src and
+       'return 0' in _fn_sources(web_src,{'_v153_restore_failed_tasks_from_db'}).get('_v153_restore_failed_tasks_from_db','') and
+       "raise RuntimeError(f'HEAVY failed-task restore HTTP" not in _fn_sources(web_src,{'_v153_restore_failed_tasks_from_db'}).get('_v153_restore_failed_tasks_from_db',''),
+       'failed-task artifacts must be durable-pending/nonfatal when R2 is unavailable')
     ok('r49_watchdog_http_ack_state',
        'HTTP_200_SENT / INTERNAL_PROCESSING' in core_src and 'HTTP_NOT_ACKED / TELEGRAM_MAY_RETRY' in core_src and 'Telegram will retry until 2xx' not in core_src,
        'watchdog must distinguish already-ACKed HTTP from Telegram retry risk')
@@ -685,7 +689,7 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
-    # OCH12.5 / R81: every command/message must be locally admitted before any remote witness.
+    # OCH12.6 / R81: every command/message must be locally admitted before any remote witness.
     webhook_src=_fn_sources(web_src,{'telegram_webhook'}).get('telegram_webhook','')
     preboot_src=_fn_sources(web_src,{'_r54_replay_preboot_webhooks'}).get('_r54_replay_preboot_webhooks','')
     pre_restore_src=_fn_sources(web_src,{'_v153_backup_before_restore'}).get('_v153_backup_before_restore','')
@@ -708,8 +712,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.5'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.5')
+       "BOT_DISPLAY_NAME = 'очнись_12.6'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.6')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,

@@ -9994,50 +9994,155 @@ def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str='replace'
     finally:
         src.close()
 
-def _v153_restore_failed_tasks_from_db(raw: str, allowed_chat_ids: set[int] | None=None) -> int:
-    """Restore exported failed-task files through HEAVY; FAST has no runtime MEGA credentials."""
-    conn = _v153_sqlite3.connect(raw)
-    try:
-        row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='failed_tasks'").fetchone()
-        tasks = _v153_json.loads(row[0]) if row else []
-    finally:
-        conn.close()
-    selected = []
-    for task in tasks or []:
-        if not isinstance(task, dict) or task.get('load_error'):
-            continue
-        cid = int(task.get('chat_id') or 0)
-        if allowed_chat_ids is not None and cid not in allowed_chat_ids:
-            continue
-        key = str(task.get('task_id') or task.get('update_id') or task.get('job_id') or '').strip()
-        if not key:
-            continue
-        clean = v153_sanitize(task)
-        clean['_restore_key_v153'] = key
-        selected.append(clean)
-    if not selected:
+def _v153_failed_tasks_pending_store(tasks: list[dict], reason: str='') -> int:
+    """Keep failed-task payload durable inside the restored FAST SQLite.
+
+    These rows are auxiliary recovery artifacts, not the business database itself.
+    A dead/suspended HEAVY must never roll back or abort a valid manual SQLite restore.
+    """
+    rows=[v153_sanitize(x) for x in (tasks or []) if isinstance(x,dict)][:500]
+    if not rows:
+        try: SQLITE.set_meta('restore_failed_tasks_r82','pending',{})
+        except Exception: pass
         return 0
-    base = globals().get('_split_peer_base', lambda: '')()
-    headers_fn = globals().get('_split_headers')
+    payload={
+        'schema':1,
+        'created_at':now_local().isoformat(timespec='microseconds'),
+        'reason':v153_redact_text(reason)[:500],
+        'count':len(rows),
+        'tasks':rows,
+    }
+    try: SQLITE.set_meta('restore_failed_tasks_r82','pending',payload)
+    except Exception: pass
+    try: bot_journal('r82_restore_failed_tasks_pending',int(OWNER_ID or 0),f"count={len(rows)}; reason={v153_redact_text(reason)[:300]}",'WARN')
+    except Exception: pass
+    return len(rows)
+
+
+def _v153_failed_tasks_pending_count() -> int:
+    try:
+        row=SQLITE.get_meta('restore_failed_tasks_r82','pending',{}) or {}
+        return int((row or {}).get('count') or len((row or {}).get('tasks') or []))
+    except Exception:
+        return 0
+
+
+def _v153_failed_tasks_remote_restore(selected: list[dict]) -> int:
+    base=globals().get('_split_peer_base',lambda:'')()
+    headers_fn=globals().get('_split_headers')
     if not base or not callable(headers_fn):
         raise RuntimeError('HEAVY peer unavailable for failed-task restore')
-    restored = 0
-    # Keep the request bounded; HEAVY owns all MEGA I/O and verifies every batch.
-    for pos in range(0, len(selected), 50):
-        chunk = selected[pos:pos + 50]
-        response = requests.post(
-            str(base).rstrip('/') + '/internal/restore/failed-tasks',
-            json={'tasks': chunk},
-            headers=headers_fn('vys-262-r49-restore-failed-tasks'),
-            timeout=180,
+    restored=0
+    for pos in range(0,len(selected),50):
+        chunk=selected[pos:pos+50]
+        # R82: bounded auxiliary call. This can never block a database restore for minutes.
+        response=requests.post(
+            str(base).rstrip('/')+'/internal/restore/failed-tasks',
+            json={'tasks':chunk},
+            headers=headers_fn('ochnis-12.6-r82-restore-failed-tasks'),
+            timeout=(2.0,8.0),
         )
         if not (200 <= response.status_code < 300):
             raise RuntimeError(f'HEAVY failed-task restore HTTP {response.status_code}: {response.text[:220]}')
-        body = response.json() if response.content else {}
-        if not bool(body.get('ok')) or int(body.get('restored') or 0) != len(chunk):
-            raise RuntimeError('HEAVY failed-task restore incomplete: ' + str(body)[:260])
+        body=response.json() if response.content else {}
+        if not bool(body.get('ok')) or int(body.get('restored') or 0)!=len(chunk):
+            raise RuntimeError('HEAVY failed-task restore incomplete: '+str(body)[:260])
         restored += int(body.get('restored') or 0)
     return restored
+
+
+def _v153_retry_pending_failed_tasks() -> bool:
+    """Replay auxiliary failed-task artifacts after R2 comes back.
+
+    Invoked from the R1/R2 owner menu when durability is returned to R2. No user/UI path
+    waits for this function.
+    """
+    try:
+        row=SQLITE.get_meta('restore_failed_tasks_r82','pending',{}) or {}
+        tasks=list((row or {}).get('tasks') or [])
+        if not tasks:
+            return True
+        route_fn=globals().get('_r71_route_is_fast')
+        if callable(route_fn) and bool(route_fn('durability')):
+            return False
+        restored=_v153_failed_tasks_remote_restore(tasks)
+        if restored != len(tasks):
+            raise RuntimeError(f'pending restore incomplete {restored}/{len(tasks)}')
+        SQLITE.set_meta('restore_failed_tasks_r82','pending',{})
+        try: bot_journal('r82_restore_failed_tasks_replayed',int(OWNER_ID or 0),f'count={restored}')
+        except Exception: pass
+        return True
+    except Exception as exc:
+        try:
+            row=SQLITE.get_meta('restore_failed_tasks_r82','pending',{}) or {}
+            if isinstance(row,dict) and row:
+                row['last_retry_at']=now_local().isoformat(timespec='microseconds')
+                row['last_retry_error']=v153_redact_text(exc)[:500]
+                row['retry_count']=int(row.get('retry_count') or 0)+1
+                SQLITE.set_meta('restore_failed_tasks_r82','pending',row)
+        except Exception: pass
+        try: bot_journal('r82_restore_failed_tasks_retry_failed',int(OWNER_ID or 0),v153_redact_text(exc)[:500],'WARN')
+        except Exception: pass
+        return False
+
+
+def _v153_restore_failed_tasks_from_db(raw: str, allowed_chat_ids: set[int] | None=None) -> int:
+    """Best-effort auxiliary failed-task recovery; never abort the SQLite restore.
+
+    OCH12.6/R82: if R2 is suspended/unavailable or durability has been moved to R1,
+    preserve these tasks in FAST SQLite as durable pending work. When R2 is returned,
+    they can be replayed in background. The business SQLite restore remains successful.
+    """
+    conn=_v153_sqlite3.connect(raw)
+    try:
+        row=conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='failed_tasks'").fetchone()
+        tasks=_v153_json.loads(row[0]) if row else []
+    finally:
+        conn.close()
+    selected=[]
+    for task in tasks or []:
+        if not isinstance(task,dict) or task.get('load_error'):
+            continue
+        cid=int(task.get('chat_id') or 0)
+        if allowed_chat_ids is not None and cid not in allowed_chat_ids:
+            continue
+        key=str(task.get('task_id') or task.get('update_id') or task.get('job_id') or '').strip()
+        if not key:
+            continue
+        clean=v153_sanitize(task); clean['_restore_key_v153']=key
+        selected.append(clean)
+    if not selected:
+        return 0
+
+    # Emergency R1 mode deliberately does not contact a dead R2.
+    route_fn=globals().get('_r71_route_is_fast')
+    if callable(route_fn):
+        try:
+            if bool(route_fn('durability')):
+                _v153_failed_tasks_pending_store(selected,'R1 owns durability; HEAVY intentionally bypassed')
+                return 0
+        except Exception:
+            pass
+
+    # If peer health is already known-bad (e.g. Render "Service Suspended" 503), skip it.
+    try:
+        split_state=globals().get('_SPLIT_STATE') or {}
+        status=int(split_state.get('peer_status') or 0)
+        if status and not (200 <= status < 300):
+            _v153_failed_tasks_pending_store(selected,f'HEAVY known unavailable HTTP {status}')
+            return 0
+    except Exception:
+        pass
+
+    try:
+        restored=_v153_failed_tasks_remote_restore(selected)
+        try: SQLITE.set_meta('restore_failed_tasks_r82','pending',{})
+        except Exception: pass
+        return restored
+    except Exception as exc:
+        # R82 invariant: auxiliary task files are retained for later, never fatal to DB restore.
+        _v153_failed_tasks_pending_store(selected,str(exc))
+        return 0
 
 
 def _v240_retry_pending_restore_reanchor() -> bool:
@@ -10178,7 +10283,9 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
         else:
             suffix += '\nℹ️ Внешний recovery checkpoint не требуется.'
             headline = '✅ Восстановление завершено.'
-        safe_edit(bot, call, f"{headline}\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\nFailed-задач восстановлено: {restored_failed}." + suffix)
+        pending_failed = _v153_failed_tasks_pending_count()
+        failed_line = f'Failed-задач восстановлено: {restored_failed}.' + (f' Отложено до возврата R2: {pending_failed}.' if pending_failed else '')
+        safe_edit(bot, call, f"{headline}\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\n{failed_line}" + suffix)
         restore_success = True
         bot_journal('v240_restore_applied', int(row['chat_id']), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}; constitution=1; remote_confirmed={int(remote_ok)}; checkpoint_required={int(checkpoint_required)}; checkpoint_ok={int(checkpoint_ok)}; epoch={restore_epoch}")
     except Exception as exc:

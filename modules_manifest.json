@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "492f630c84b037e9d8f5b063884dc398fb460cbaff78bd9e243dfc87a5159e21",
+    "01_core_data.py": "0449d32929cb3738e9695f63491f5439ac9cd831f1c38764162d2e4548d5278f",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "1b9b7fb915513abd4a4ea0a447790dc0167abef9c27e650a2555c4b2fdc23999",
-    "07_state_web.py": "5d9740a27dba977802d43e778de94c13ac28ca600924391d8dd85f18bd7fe668",
+    "07_state_web.py": "218ba20c178ff48c9b3ef45b750ac9fd88f789bbae99a1346f5d11f17a74bb87",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "be652c040bab76d73f37dfb028adb4406151db276158a53b90a1b8fcb2532146",
-    "10_split_policy_offload.py": "a7ced7dcaa5868e7d3103f063ae1f176af707a8ab292b2255f543fa7f6ab1693"
+    "09_final_transport.py": "67de872421d613a104ee0b6cd0a67a6104ba44bf29241df514c17d67b0ff97f9",
+    "10_split_policy_offload.py": "6b47c94cb2d6c633e8443715a7e19f60145d6efe496680f9584bf6598543d3fb"
   },
-  "release": "ОЧНИСЬ_12.5-R2-FAILOVER-COMPACT-MEGA",
+  "release": "ОЧНИСЬ_12.6-R82-NONFATAL-FAILED-TASK-RESTORE",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -336,6 +336,9 @@
     "r80_redis_first_compact_mega_compare",
     "r80_expanded_r1_r2_failover",
     "r80_fixed_mega_full_tail_head",
-    "r80_no_user_hotpath_remote_io"
+    "r80_no_user_hotpath_remote_io",
+    "r82_failed_task_restore_nonfatal",
+    "r82_failed_task_pending_in_fast_sqlite",
+    "r82_failed_task_background_replay_after_r2_return"
   ]
 }

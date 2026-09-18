@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-OCH12.5 recovery policy:
+OCH12.6 recovery policy:
 - same-container local cache is only a crash breadcrumb;
 - Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
 - legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
@@ -967,7 +967,7 @@ def _r80_get_exact(remote: str, dest: Path, timeout: int) -> tuple[Path|None,str
 
 
 def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tuple[bool,str,str]:
-    """OCH12.5 bounded startup compare/restore. Never scans MEGA trees.
+    """OCH12.6 bounded startup compare/restore. Never scans MEGA trees.
 
     Returns (ok, detail, action), where action is KEEP or RESTORE.
     If a verified Redis/local DB exists, only the tiny head.json is required to
@@ -1073,7 +1073,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'OCH12.5_REDIS_FIRST_COMPACT_MEGA_COMPARE',
+        'policy': 'OCH12.6_REDIS_FIRST_COMPACT_MEGA_COMPARE',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -1135,14 +1135,14 @@ def main():
             trace['redis_ok'] = False
             trace['redis_detail'] = 'Redis startup restore skipped: REDIS_ENABLED=0 or URL missing'
 
-        # OCH12.5: Redis/local is assembled first. When MEGA is enabled, compare
+        # OCH12.6: Redis/local is assembled first. When MEGA is enabled, compare
         # against one tiny fixed head.json. No mega-find, generation scan or directory walk.
         current_valid=bool(_db_valid(target))
         if mega_master_enabled:
             trace['mega_contacted']=True
             ok,detail,action=_r80_compact_mega_compare_restore(target,have_current=current_valid)
             trace['mega_ok']=bool(ok); trace['mega_detail']=str(detail)[:900]; trace['mega_action']=str(action)
-            print(f'[SPLIT FRONT] OCH12.5 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
+            print(f'[SPLIT FRONT] OCH12.6 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
             if ok and action=='RESTORE':
                 trace['base_source']='MEGA_COMPACT'
             elif current_valid:
@@ -1151,7 +1151,7 @@ def main():
                 else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
             elif not ok:
                 if _bool('SPLIT_ALLOW_EMPTY_BOOT',False): trace['base_source']='EMPTY_INIT'
-                else: raise RuntimeError('OCH12.5 Redis/local unavailable and compact MEGA restore failed: '+str(detail)[:700])
+                else: raise RuntimeError('OCH12.6 Redis/local unavailable and compact MEGA restore failed: '+str(detail)[:700])
         else:
             trace['mega_contacted']=False; trace['mega_ok']=False
             trace['mega_detail']='MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
@@ -1159,7 +1159,7 @@ def main():
             elif local_cache_restored and _db_valid(target): trace['base_source']='LOCAL_RUNTIME_CACHE'
             elif had_valid_local_before_restore and _db_valid(target): trace['base_source']='LOCAL_SQLITE'
             elif _bool('SPLIT_ALLOW_EMPTY_BOOT',False): trace['base_source']='EMPTY_INIT'
-            else: raise RuntimeError('OCH12.5 no valid local/Redis database and MEGA_ENABLED=0')
+            else: raise RuntimeError('OCH12.6 no valid local/Redis database and MEGA_ENABLED=0')
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
