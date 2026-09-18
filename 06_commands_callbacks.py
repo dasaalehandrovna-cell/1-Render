@@ -4996,19 +4996,19 @@ def reset_chat_data(chat_id: int):
 
 
 def _r64_restore_redis_seal_text(reason: str) -> str:
-    # Legacy function name kept for callback compatibility; OCH12.2 durability is HEAVY -> MEGA.
+    # R81: Redis and compact MEGA are peer recovery anchors; R2 is optional.
     fn = globals().get('r64_publish_restore_snapshot_v271')
     if not callable(fn):
-        return '\n⚠️ HEAVY/MEGA checkpoint helper недоступен.'
+        return '\n⚠️ Recovery checkpoint helper недоступен.'
     try:
         row = fn(str(reason or 'restore')) or {}
     except Exception as exc:
-        return f'\n⛔ HEAVY/MEGA snapshot НЕ закреплён: {type(exc).__name__}: {str(exc)[:220]}'
+        return f'\n⚠️ Recovery checkpoint НЕ закреплён: {type(exc).__name__}: {str(exc)[:220]}'
     if not row.get('required'):
-        return '\nℹ️ HEAVY/MEGA checkpoint не требуется.'
+        return '\nℹ️ Внешний recovery checkpoint не требуется.'
     if row.get('ok'):
-        return '\n☁️ HEAVY/MEGA: полный SQLite snapshot проверен и закреплён.'
-    return '\n⛔ HEAVY/MEGA snapshot НЕ закреплён: ' + str(row.get('detail') or 'unknown')[:300]
+        return '\n☁️ Recovery checkpoint: полный SQLite закреплён в доступном Redis/MEGA контуре.'
+    return '\n⚠️ Recovery checkpoint НЕ закреплён: ' + str(row.get('detail') or 'unknown')[:300]
 
 
 def handle_document(msg):
@@ -5075,7 +5075,7 @@ def handle_document(msg):
                 raise RuntimeError('pre_restore backup helper недоступен')
             backup_dir = str(backup_fn() or '')
             if not backup_dir:
-                raise RuntimeError('HEAVY/MEGA pre_restore не подтверждён')
+                raise RuntimeError('pre_restore не подтверждён ни одним recovery backend')
             bot_journal('restore_pre_backup_ok_v242', chat_id, f'file={fname}; backend=heavy-mega')
             if fname == 'csv_meta.json':
                 os.replace(tmp_path, CSV_META_FILE)
@@ -5881,7 +5881,7 @@ def run_manual_mega_restore(chat_id: int):
     restore_epoch = 0
     success = False
     try:
-        send_and_auto_delete(chat_id, '☁️ Ручное восстановление: читаю canonical SQLite + delta из MEGA…', 30)
+        send_and_auto_delete(chat_id, '☁️ Ручное восстановление: читаю compact_v80 head + latest + tail из MEGA…', 30)
         begin = globals().get('_v241_restore_storage_barrier_begin')
         if callable(begin):
             restore_epoch = int(begin() or 0)
@@ -5890,37 +5890,18 @@ def run_manual_mega_restore(chat_id: int):
             backup_dir = str(backup_fn() or '')
         else:
             raise RuntimeError('pre_restore backup helper недоступен')
-        canonical_fn = globals().get('mega_restore_sqlite_snapshot_from_cloud')
-        ok = False
-        detail = 'canonical restore helper unavailable'
-        if callable(canonical_fn):
-            try:
-                ok, detail = canonical_fn(force=True)
-            except TypeError:
-                ok, detail = canonical_fn()
-        applied_deltas = 0
-        source = 'canonical SQLite'
-        if ok:
-            restored = load_data()
-            data.clear()
-            data.update(restored)
-            try:
-                seen = globals().get('_LOWRAM_BOOT_APPLIED_DELTA_PATHS')
-                if hasattr(seen, 'clear'):
-                    seen.clear()
-            except Exception:
-                pass
-            delta_fn = globals().get('lowram_apply_deltas_after_db_snapshot')
-            if callable(delta_fn):
-                applied_deltas = int(delta_fn() or 0)
-        else:
-            legacy = globals().get('mega_restore_full_from_cloud')
-            if not callable(legacy):
-                raise RuntimeError(detail)
-            ok, detail = legacy(force=True)
-            source = 'legacy global JSON'
-            if not ok:
-                raise RuntimeError(detail)
+        # R81/OCH12.5: manual MEGA restore is EXACT compact_v80 only.
+        # Never call legacy canonical/history scanners or mega-find here.
+        compact_fn = globals().get('r81_manual_compact_mega_restore')
+        if not callable(compact_fn):
+            raise RuntimeError('compact_v80 restore helper недоступен')
+        ok, detail, applied_deltas = compact_fn()
+        if not ok:
+            raise RuntimeError(detail)
+        source = 'compact_v80 exact (head + latest + tail)'
+        restored = load_data()
+        data.clear()
+        data.update(restored)
         try:
             tenant_v148_bootstrap()
         except Exception:

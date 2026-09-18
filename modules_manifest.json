@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "a30195a2c500be74b41d30eb8f7b40c58b16a39f5a2aee08793b6318be6357e2",
+    "01_core_data.py": "492f630c84b037e9d8f5b063884dc398fb460cbaff78bd9e243dfc87a5159e21",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
-    "06_commands_callbacks.py": "b1b1f1c53ba3c0bd82229558910a8ee388419536199051f8a3f5c8f1decf01c9",
-    "07_state_web.py": "0245a917ac95afac0982983274ac5592fb1cdab990411372e6a1addb9f8eaba8",
+    "06_commands_callbacks.py": "1b9b7fb915513abd4a4ea0a447790dc0167abef9c27e650a2555c4b2fdc23999",
+    "07_state_web.py": "5d9740a27dba977802d43e778de94c13ac28ca600924391d8dd85f18bd7fe668",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "c190a096a21097bb8eb802c06c510e3b72f98b056ff20772e7886a74e75379ae",
-    "10_split_policy_offload.py": "79a6a5351d40f0396e7bb4fd340d2131b3555ec92dad32a83469b668452eb93f"
+    "09_final_transport.py": "be652c040bab76d73f37dfb028adb4406151db276158a53b90a1b8fcb2532146",
+    "10_split_policy_offload.py": "a7ced7dcaa5868e7d3103f063ae1f176af707a8ab292b2255f543fa7f6ab1693"
   },
-  "release": "ОЧНИСЬ_12.3-REDIS-DAILY-FULL-TAIL",
+  "release": "ОЧНИСЬ_12.5-R2-FAILOVER-COMPACT-MEGA",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -332,6 +332,10 @@
     "och123_redis_tail_dual_ack_with_heavy",
     "och123_redis_tail_pruned_after_full",
     "och123_redis_bootstrap_full_after_enable",
-    "och123_legacy_redis_full_rejected_without_tail_contract"
+    "och123_legacy_redis_full_rejected_without_tail_contract",
+    "r80_redis_first_compact_mega_compare",
+    "r80_expanded_r1_r2_failover",
+    "r80_fixed_mega_full_tail_head",
+    "r80_no_user_hotpath_remote_io"
   ]
 }

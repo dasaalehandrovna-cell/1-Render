@@ -166,6 +166,7 @@ if ROLE=='fast':
     diag_src=all_py.get('03_diagnostics_memory.py','')
     msg_src=all_py.get('04_messages_features.py','')
     web_src=all_py.get('07_state_web.py','')
+    cmd_src=all_py.get('06_commands_callbacks.py','')
     rel_src=all_py.get('08_reliability_tasks.py','')
     split_src=all_py.get('10_split_policy_offload.py','')
     core_fns=_fn_sources(core_src,{'_lowram_flush_chat','bump_quick_balance_recreate_counter','_tg_call_retry'})
@@ -350,31 +351,31 @@ if ROLE=='fast':
        'LOCAL_RESTORE_TRACE_FILE' in cfg_src and '_r68_write_restore_trace_file' in start_src and
        'restore_trace' in web_src and 'RESTORE TRACE R68' in core_src,
        'R68 restore source/revision trace file or Watcher integration missing')
-    # OCH12.3: Redis is a direct startup source only when one daily FULL plus a
-    # complete logical TAIL can be verified. MEGA remains the strict fallback.
+    # OCH12.5: Redis FULL+TAIL is assembled first. If Render MEGA_ENABLED=1,
+    # FAST compares only compact_v80/head.json and downloads fixed latest/tail only
+    # when MEGA proves newer or Redis/local recovery is unavailable. No tree scans.
+    compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
     ok('r56_fast_startup_mega_master_switch',
-       all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','def _startup_mega_roots','def _discover_generation_remotes',
+       all(x in start_src for x in ['def _r80_compact_mega_compare_restore','compact_v80',
                                     "mega_master_enabled = _bool('MEGA_ENABLED', True)",
-                                    "elif not mega_master_enabled:",
-                                    'R64 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback']) and
-       '/internal/snapshot' not in start_src,
-       'MEGA_ENABLED must fully gate FAST fallback MEGA while preserving strict direct restore when enabled')
-    ok('och123_fast_startup_redis_full_tail_restore',
+                                    'MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls']) and
+       'mega-find' not in compact_src and '/internal/snapshot' not in start_src,
+       'MEGA_ENABLED must hard-gate all startup MEGA I/O; enabled startup must use fixed compact objects only')
+    ok('och124_fast_startup_redis_first_compact_mega_compare',
        all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.3 REDIS FULL+TAIL startup restore start',
-                                    "trace['base_source'] = 'REDIS'", 'WORKER_REDIS_SNAPSHOT_KEY',
-                                    'WORKER_R32_STATE_EVENT_PREFIX', "tail_schema < 1", 'gzip.decompress(b)',
-                                    'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
-                                    'redis_candidate.sqlite3']) and
-       start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('ok, detail = _restore_from_mega_startup(target)'),
-       'FAST must assemble a temporary verified Redis daily FULL+TAIL candidate before MEGA fallback')
+                                    'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX','Redis TAIL incomplete:',
+                                    '_apply_r32_events(candidate,events)','redis_candidate.sqlite3',
+                                    '_r80_compact_mega_compare_restore(target,have_current=current_valid)']) and
+       start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('_r80_compact_mega_compare_restore(target,have_current=current_valid)'),
+       'FAST must restore Redis FULL+TAIL first, then do a bounded compact MEGA freshness comparison')
     ok('r68_local_cache_before_external_restore',
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
                                     "trace['base_source'] = 'LOCAL_RUNTIME_CACHE'"]) and
        start_src.find('local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)') <
        start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') <
-       start_src.find('ok, detail = _restore_from_mega_startup(target)'),
-       'same-container local cache must be attempted before Redis/MEGA only when main SQLite is invalid')
+       start_src.find('_r80_compact_mega_compare_restore(target,have_current=current_valid)'),
+       'same-container local cache must be attempted before Redis and compact MEGA')
     ok('r68_local_files_packaged_config',
        all(x in cfg_src for x in [
            '"LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local"',
@@ -429,9 +430,9 @@ if ROLE=='fast':
     restore_seal_src=_fn_sources(split_src,{'r64_publish_restore_snapshot_v271'}).get('r64_publish_restore_snapshot_v271','')
     redis_sched_src=_fn_sources(split_src,{'r64_schedule_fast_redis_snapshot_v271'}).get('r64_schedule_fast_redis_snapshot_v271','')
     redis_fire_src=_fn_sources(split_src,{'_r64_periodic_redis_snapshot_fire_v271'}).get('_r64_periodic_redis_snapshot_fire_v271','')
-    ok('och12_manual_restore_seals_on_heavy_mega',
-       "globals().get('_split_push_snapshot_now_v263')" in restore_seal_src and 'sync_mega=True' in restore_seal_src and '_split_cache_snapshot_to_redis_v266' not in restore_seal_src,
-       'manual restore may build one explicit handoff image, but its durable seal must be HEAVY/MEGA rather than FAST Redis')
+    ok('och125_manual_restore_reanchors_redis_and_checkpoint',
+       "globals().get('_split_push_snapshot_now_v263')" in restore_seal_src and 'sync_mega=True' in restore_seal_src and '_split_cache_snapshot_to_redis_v266' in restore_seal_src and "'redis_ok'" in restore_seal_src and "'checkpoint_ok'" in restore_seal_src,
+       'manual restore must immediately re-anchor Redis FULL and also attempt the active MEGA/checkpoint backend')
     ok('och123_redis_daily_full_scheduler',
        'def _r79_daily_snapshot_now' in split_src and 'def _r79_daily_scheduler_loop' in split_src and
        "redis_daily_snapshot_time_r79" in split_src and "callback_data='r79:redis:sched'" in split_src and
@@ -578,6 +579,34 @@ if ROLE=='fast':
     ok('r70_r1_r2_owner_matrix',
        'def _r70_routes_text' in split_src and "callback_data='r70:routes'" in split_src and 'Telegram окна / кнопки' in split_src and 'R70 E2E' in split_src,
        'INFO/Render status must expose actual single-owner R1/R2 processor routing')
+    ok('r80_expanded_failover_routes',
+       "_R80_ROUTE_KEYS=('google','files','diagnostics','mega','durability','checkpoints')" in split_src and
+       '🚨 R2 НЕТ → ВСЁ #1' in split_src and 'MEGA master Render #1' in split_src,
+       'R1/R2 menu must expose emergency failover for durability and checkpoints, not only files/google')
+    r80_full_src=_fn_sources(split_src,{'_r80_snapshot_full_compact'}).get('_r80_snapshot_full_compact','')
+    r80_tail_src=_fn_sources(split_src,{'_r80_flush_compact_tail'}).get('_r80_flush_compact_tail','')
+    ok('r80_compact_mega_fixed_nodes',
+       'compact_v80' in split_src and 'latest.sqlite3.gz' in split_src and 'tail.json.gz' in split_src and 'head.json' in split_src and
+       'mega-find' not in r80_full_src and 'mega-find' not in r80_tail_src and 'archive_previous=False' in split_src,
+       'R1 MEGA must use fixed compact FULL+TAIL+HEAD objects and never tree-scan/per-event history')
+    ok('r80_hotpath_no_remote_mega',
+       '_r80_mark_tail_dirty(); return True' in split_src and "submit_unique('r80-mega-compact-full'" in split_src and
+       "submit_unique('r80-mega-tail'" in split_src,
+       'MEGA checkpoint/tail work must be queued in background, never inline with user UI')
+    ok('r80_all_to_r1_stops_raw_witness_r2',
+       '_R80_HEAVY_WITNESS_EVENT=split_witness_event_v268' in split_src and
+       "if not _r71_route_is_fast('durability'):" in split_src and
+       "st['r80_witness_owner']='R1_FAST_LOCAL_INBOX+REDIS_BG'" in split_src,
+       'R1 durability failover must stop synchronous/raw witness dependence on dead R2')
+    ok('r80_all_to_r1_stops_snapshot_r2',
+       '_R80_HEAVY_PUSH_SNAPSHOT=_split_push_snapshot_now_v263' in split_src and
+       "if not (_r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega')):" in split_src and
+       "_r80_snapshot_full_compact('sync-'" in split_src,
+       'R1 checkpoints failover must not send exact snapshot to dead R2')
+    ok('r80_all_to_r1_stops_legacy_delta_r2',
+       '_R80_HEAVY_SEND_DELTA=_split_send_delta_v267' in split_src and
+       "R1 compact FULL+TAIL owns delta durability" in split_src,
+       'R1 failover must suppress legacy R2 delta traffic')
     # очнись_2: global Window Actor + markup-only transport contract.
     ok('och2_window_actor_registry',
        'class WindowActorRegistry' in core_src and 'WINDOW_ACTOR_REGISTRY = WindowActorRegistry' in core_src and 'logical_window_id' in core_src and 'state_revision' in core_src,
@@ -612,21 +641,20 @@ if ROLE=='fast':
     r34_events_src=_fn_sources(split_src,{'_r34_post_events'}).get('_r34_post_events','')
     r43_cache_src=_fn_sources(split_src,{'_r43_store_events_redis'}).get('_r43_store_events_redis','')
     capsule_push_src=_fn_sources(split_src,{'_r20_capsule_push_now'}).get('_r20_capsule_push_now','')
-    ok('och123_heavy_and_redis_tail_dual_ack',
-       "_r43_store_events_redis(events)" in r34_events_src and "requests.post(base+endpoint" in r34_events_src and
-       r34_events_src.find('_r43_store_events_redis(events)') < r34_events_src.find('requests.post(base+endpoint') and
-       'HEAVY durable revision behind' in r34_events_src and 'redis_required and not redis_ok' in r34_events_src and
-       'Redis TAIL mirror pending after HEAVY ACK' in r34_events_src,
-       'when Redis runtime is ON, durable FAST outbox may clear only after both Redis TAIL and HEAVY ACK')
+    ok('och124_switchable_state_durability',
+       "if not _r71_route_is_fast('durability')" in r34_events_src and '_R80_HEAVY_POST_EVENTS' in r34_events_src and
+       '_r43_store_events_redis(events)' in r34_events_src and '_r80_mark_tail_dirty()' in r34_events_src and
+       'R1 failover Redis TAIL pending' in r34_events_src and 'requests.post(' not in r34_events_src,
+       'R1 emergency durability must avoid synchronous R2/network MEGA and keep Redis/local-outbox safety')
     ok('och123_redis_tail_compressed_bounded_pruned',
        "R79_REDIS_TAIL_TTL_SEC','259200'" in r43_cache_src and '_r32_gzip.compress' in r43_cache_src and
        "pipe.set(f'{prefix}:event:{eid}',packed,ex=ttl)" in r43_cache_src and 'pipe.zadd(index_key' in r43_cache_src and
        "client.zrangebyscore(index_key,'-inf',float(capture_started)" in split_src and "client.delete('per:r43:front:state_events')" in split_src,
        'Redis must keep compressed canonical event tail only and prune events already covered by the daily FULL')
-    ok('och12_capsule_heavy_first_redis_optional',
-       capsule_push_src.find("requests.post(base + '/internal/capsule'") < capsule_push_src.find('_r20_capsule_store_redis') and
-       'if worker_ok:' in capsule_push_src and "if redis_ok or worker_ok" not in capsule_push_src,
-       'capsule success must require HEAVY; Redis is best-effort cache only')
+    ok('och124_capsule_owner_failover',
+       "if not _r71_route_is_fast('durability')" in capsule_push_src and '_R80_HEAVY_CAPSULE_PUSH' in capsule_push_src and
+       '_r20_capsule_store_redis(payload,packed)' in capsule_push_src and '_r80_mark_tail_dirty()' in capsule_push_src,
+       'capsule durability must follow the R1/R2 owner switch without putting R2/MEGA I/O on the user lane')
     ok('r72_single_foreground_window_mutation',
        'safe_edit(bot, call, build_info_text(cid), reply_markup=_r10_kb)\n    try:\n        bot.edit_message_reply_markup' not in final_transport and
        "_v215_edit_or_send(cid, mid, text, kb, 'contour_mode_toggle_v215')\n            try:\n                bot.edit_message_reply_markup" not in rel_src,
@@ -657,9 +685,31 @@ if ROLE=='fast':
        "journal_open is owned exclusively" in cb_src and
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
+    # OCH12.5 / R81: every command/message must be locally admitted before any remote witness.
+    webhook_src=_fn_sources(web_src,{'telegram_webhook'}).get('telegram_webhook','')
+    preboot_src=_fn_sources(web_src,{'_r54_replay_preboot_webhooks'}).get('_r54_replay_preboot_webhooks','')
+    pre_restore_src=_fn_sources(web_src,{'_v153_backup_before_restore'}).get('_v153_backup_before_restore','')
+    durable_req_src=_fn_sources(web_src,{'_canon_durable_task_required__001'}).get('_canon_durable_task_required__001','')
+    manual_mega_src=_fn_sources(cmd_src,{'run_manual_mega_restore'}).get('run_manual_mega_restore','')
+    compact_restore_src=_fn_sources(split_src,{'r81_manual_compact_mega_restore'}).get('r81_manual_compact_mega_restore','')
+    ok('r81_remote_witness_background_only',
+       'REMOTE_WITNESS_QUEUED' in webhook_src and 'REMOTE DURABLE WITNESS FAILED' not in webhook_src and "return ('REMOTE DURABLE WITNESS FAILED', 503)" not in webhook_src,
+       'R2/Redis witness may never return 503 before a user message/command handler')
+    ok('r81_preboot_local_takeover',
+       'R81 PREBOOT LOCAL TAKEOVER' in preboot_src and "_v260_webhook_inbox_state(update_id)" in preboot_src,
+       'preboot spool must stop 2-second replay loops once local SQLite inbox owns the update')
+    ok('r81_all_known_slash_local_admission',
+       "return (False, 'r81:slash_local_admission')" in durable_req_src and '_v150_is_known_slash_command(command)' in durable_req_src,
+       'registered slash commands must not require R2/MEGA pre-execution durability')
+    ok('r81_restore_prebackup_multi_backend',
+       '_split_cache_snapshot_to_redis_v266' in pre_restore_src and '_r80_snapshot_full_compact' in pre_restore_src and "timeout=(2.5, 20.0)" in pre_restore_src and 'timeout=240' not in pre_restore_src,
+       'pre_restore must survive dead R2 via Redis/R1 MEGA and bound any R2 wait')
+    ok('r81_manual_mega_restore_compact_only',
+       'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
+       'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.3'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.3')
+       "BOT_DISPLAY_NAME = 'очнись_12.5'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.5')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,

@@ -4977,36 +4977,48 @@ def telegram_webhook():
             return ('LOCAL DURABLE INBOX FAILED', 503)
         try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=ADMISSION_SQLITE_DONE elapsed={time.monotonic()-_r25_adm_started:.3f}s')
         except Exception: pass
-        # R13: before Telegram gets HTTP 200 and before business execution starts,
-        # make the raw update durable on Worker/Redis.  If both remote witnesses are
-        # unavailable, return 503 so Telegram retries instead of risking a deploy gap.
+        # R81 / OCH12.5: the LOCAL durable SQLite inbox is the admission authority.
+        # Remote witness is always background-only for BOTH callbacks and messages.
+        # A dead R2/Redis/MEGA must never return HTTP 503 before /start, /restore,
+        # /ping or any other user message reaches its handler. Exact update_id dedupe
+        # remains in the local inbox; remote continuity is mirrored asynchronously.
         _r13_witness_fn = globals().get('split_witness_event_v268')
         if callable(_r13_witness_fn):
-            if update_type == 'callback_query':
-                # UI callbacks are already in the local durable inbox.  Mirror the raw
-                # event remotely on DELTA lane, but never put Redis/Worker RTT in front
-                # of a user's button.  Message/finance traffic keeps the strict witness.
-                def _r18_callback_witness():
-                    try:
-                        if not _r13_witness_fn(update_id, payload, update_chat_id, update_type):
-                            log_error(f'R18 CALLBACK REMOTE WITNESS FAILED update={update_id}')
-                    except Exception as _r18w_exc:
-                        log_error(f'R18 CALLBACK REMOTE WITNESS ERROR update={update_id}: {_r18w_exc}')
-                if not DELTA_TASK_POOL.submit_unique(f'callback-witness:{update_id}', _r18_callback_witness):
-                    try:
-                        DELAYED_SCHEDULER.schedule(f'callback-witness:{update_id}', 0.20, _r18_callback_witness)
-                    except Exception:
-                        log_error(f'R48 callback witness deferred queue unavailable update={update_id}')
-            else:
-                _r25_witness_started = time.monotonic()
-                try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_START')
-                except Exception: pass
-                _r25_witness_ok = _r13_witness_fn(update_id, payload, update_chat_id, update_type)
-                try: log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_DONE elapsed={time.monotonic()-_r25_witness_started:.3f}s detail={int(bool(_r25_witness_ok))}')
-                except Exception: pass
-                if not _r25_witness_ok:
-                    log_error(f'R13 REMOTE EVENT WITNESS FAILED update={update_id}')
-                    return ('REMOTE DURABLE WITNESS FAILED', 503)
+            def _r81_remote_witness_background():
+                _r81_started = time.monotonic()
+                try:
+                    log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_BG_START')
+                except Exception:
+                    pass
+                try:
+                    _r81_ok = bool(_r13_witness_fn(update_id, payload, update_chat_id, update_type))
+                except Exception as _r81_exc:
+                    _r81_ok = False
+                    try: log_error(f'R81 REMOTE EVENT WITNESS ERROR update={update_id}: {_r81_exc}')
+                    except Exception: pass
+                try:
+                    log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_BG_DONE elapsed={time.monotonic()-_r81_started:.3f}s detail={int(bool(_r81_ok))}')
+                except Exception:
+                    pass
+                if not _r81_ok:
+                    try: log_error(f'R81 REMOTE EVENT WITNESS DEFERRED update={update_id}; local_inbox=1')
+                    except Exception: pass
+                return _r81_ok
+            _r81_witness_queued = False
+            try:
+                _r81_witness_queued = bool(DELTA_TASK_POOL.submit_unique(f'remote-witness:{update_id}', _r81_remote_witness_background))
+            except Exception:
+                _r81_witness_queued = False
+            if not _r81_witness_queued:
+                try:
+                    DELAYED_SCHEDULER.schedule(f'remote-witness:{update_id}', 0.05, _r81_remote_witness_background)
+                    _r81_witness_queued = True
+                except Exception:
+                    _r81_witness_queued = False
+            try:
+                log_info(f'BTNTRACE update={update_id} chat={update_chat_id} action={_r25_adm_action} stage=REMOTE_WITNESS_QUEUED detail={int(bool(_r81_witness_queued))}')
+            except Exception:
+                pass
         _protect_pending_ui_timers_on_receipt(payload)
         if durable_update_processed(update_id):
             _v260_webhook_inbox_mark(update_id, 'done')
@@ -5360,8 +5372,25 @@ def _r54_replay_preboot_webhooks() -> dict:
                 replayed += 1
                 log_info(f'R54 PREBOOT REPLAY update={update_id} status={status} accepted=1')
             else:
-                remaining.append(line)
-                log_error(f'R54 PREBOOT REPLAY update={update_id} status={status} accepted=0')
+                # R81: once the canonical local SQLite inbox accepted the update,
+                # never keep a preboot spool row in a 2-second 503 loop merely because
+                # a remote durability backend is down. Local recovery owns the retry.
+                try:
+                    _r81_local_state = _v260_webhook_inbox_state(update_id)
+                except Exception:
+                    _r81_local_state = ''
+                if _r81_local_state in {'queued','running','done','failed','external_pending','external_running','external_failed_review','needs_review'}:
+                    replayed += 1
+                    try:
+                        _r81_row = _v260_webhook_inbox_row(update_id)
+                        if _r81_local_state in {'queued','failed'} and _r81_row:
+                            _v260_submit_webhook_inbox_row(_r81_row)
+                    except Exception:
+                        pass
+                    log_info(f'R81 PREBOOT LOCAL TAKEOVER update={update_id} status={status} state={_r81_local_state} accepted=1')
+                else:
+                    remaining.append(line)
+                    log_error(f'R54 PREBOOT REPLAY update={update_id} status={status} accepted=0')
         except Exception as exc:
             remaining.append(line)
             log_error(f'R54 PREBOOT REPLAY row failed: {type(exc).__name__}: {str(exc)[:300]}')
@@ -6820,7 +6849,13 @@ def _v150_is_known_slash_command(text: str) -> bool:
         return False
     name = token[1:]
     known = {str(cmd).casefold() for cmd, _desc in _V150_TELEGRAM_COMMANDS} if '_V150_TELEGRAM_COMMANDS' in globals() else set()
-    known.update({'старт', 'кнопки', 'маска', 'остаток', 'секрет', 'sekret', 'cekret'})
+    # Direct decorator aliases intentionally omitted from Telegram BotCommand export.
+    known.update({
+        'старт','кнопки','маска','остаток','секрет','sekret','cekret',
+        'buy','task','tasks','task_cancel','задача','задачи','задачи_отмена','покупка',
+        'constructor','constructor2','constitution','data_constitution',
+        'доп_владельцы','окна','поехали','пространство','пространства','статьи',
+    })
     return name in known or bool(_v150_re.fullmatch('(?:vyapl_\\d+|izm_[ru]\\d+(?:_u[a-f0-9]{12})?|\\d+)', name, flags=_v150_re.I))
 
 def _canon_durable_task_required__001(payload: dict) -> tuple[bool, str]:
@@ -6845,6 +6880,11 @@ def _canon_durable_task_required__001(payload: dict) -> tuple[bool, str]:
         return (False, 'v239:restore_control_plane')
     if str(command or '').lower().startswith('/izm_'):
         return (False, 'v168:record_edit_open')
+    # R81: every registered/known slash command is a local-control message first.
+    # It must reach its handler even when R2/MEGA/Redis is unavailable. Any heavy
+    # persistence or external delivery created by the command runs after admission.
+    if command and _v150_is_known_slash_command(command):
+        return (False, 'r81:slash_local_admission')
     if _v150_is_mutation_command(command):
         try:
             if not mega_tasks_active():
@@ -9687,30 +9727,90 @@ def _v241_restore_storage_barrier_end(epoch: int, success: bool) -> None:
         pass
 
 def _v153_backup_before_restore() -> str:
-    """Require HEAVY->MEGA pre-restore durability before any destructive restore."""
+    """R81: make the current live SQLite durable before destructive restore.
+
+    R2 is preferred when it owns durability, but it is never the only possible
+    backend. Redis FULL and direct R1 compact-MEGA are valid emergency anchors.
+    No 240-second dead-R2 wait is allowed.
+    """
     _recovery_was_active = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
-    folder = _v153_tempfile.mkdtemp(prefix='v242_pre_restore_')
+    folder = _v153_tempfile.mkdtemp(prefix='r81_pre_restore_')
     raw = _v153_os.path.join(folder, 'pre_restore.sqlite3')
     gz = raw + '.gz'
+    results = []
     try:
         SQLITE.backup_to(raw)
         with open(raw, 'rb') as fin, _v153_gzip.open(gz, 'wb', compresslevel=5) as fout:
             _v153_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        base_fn=globals().get('_split_peer_base'); headers_fn=globals().get('_split_headers')
-        base=str(base_fn() if callable(base_fn) else '').rstrip('/')
-        if not base or not callable(headers_fn):
-            raise RuntimeError('Render #2 недоступен: pre_restore нельзя закрепить в MEGA')
-        with open(gz,'rb') as fh: payload=fh.read()
-        headers={**headers_fn('ochnis-12.2-pre-restore'),'Content-Type':'application/gzip','X-Pre-Restore-Reason':'manual_restore'}
-        response=requests.post(base+'/internal/pre-restore/upload',data=payload,headers=headers,timeout=240)
-        try: body=response.json() if response.content else {}
-        except Exception: body={}
-        if not (200 <= int(response.status_code) < 300 and bool((body or {}).get('ok')) and bool((body or {}).get('mega_stored'))):
-            raise RuntimeError(f'HEAVY/MEGA pre_restore HTTP {response.status_code}: {str(body or response.text)[:300]}')
-        SQLITE.set_meta('restore_control_v240','last_pre_restore',{'at':now_local().isoformat(timespec='microseconds'),'durable':True,'backend':'heavy-mega','size':int((body or {}).get('size') or len(payload)),'sha256':str((body or {}).get('sha256') or ''),'remote_file':str((body or {}).get('filename') or ''),'local_path':raw})
-        try: bot_journal('pre_restore_v242', int(OWNER_ID or 0) or None, f"durable=1; backend=heavy-mega; file={str((body or {}).get('filename') or '')[:180]}", 'INFO')
-        except Exception: pass
+        try:
+            with open(gz, 'rb') as fh:
+                payload_size = len(fh.read())
+        except Exception:
+            payload_size = 0
+
+        # 1) Redis: canonical FULL of the exact pre-restore live state. This is a
+        # valid recovery anchor by itself and does not depend on R2.
+        redis_ok = False
+        redis_fn = globals().get('_split_cache_snapshot_to_redis_v266')
+        if callable(redis_fn):
+            try:
+                redis_ok = bool(redis_fn('manual_restore:pre_restore', verify=True, use_render_url=False))
+                results.append(('redis', redis_ok, str((globals().get('_SPLIT_STATE') or {}).get('redis_fallback_last_error') or 'ok')))
+            except Exception as exc:
+                results.append(('redis', False, f'{type(exc).__name__}: {str(exc)[:180]}'))
+
+        # 2) Direct R1 compact MEGA when emergency ownership is on R1.
+        r1_mega_ok = False
+        route_fn = globals().get('_r71_route_is_fast')
+        route_fast = False
+        if callable(route_fn):
+            try:
+                route_fast = bool(route_fn('mega') or route_fn('checkpoints') or route_fn('durability'))
+            except Exception:
+                route_fast = False
+        compact_fn = globals().get('_r80_snapshot_full_compact')
+        if route_fast and callable(compact_fn):
+            try:
+                r1_mega_ok, detail = compact_fn('pre_restore')
+                r1_mega_ok = bool(r1_mega_ok)
+                results.append(('r1-mega', r1_mega_ok, str(detail)[:220]))
+            except Exception as exc:
+                results.append(('r1-mega', False, f'{type(exc).__name__}: {str(exc)[:180]}'))
+
+        # 3) Normal R2 -> MEGA path, but bounded. A dead R2 must not freeze restore.
+        heavy_ok = False
+        if not route_fast:
+            base_fn = globals().get('_split_peer_base'); headers_fn = globals().get('_split_headers')
+            base = str(base_fn() if callable(base_fn) else '').rstrip('/')
+            if base and callable(headers_fn):
+                try:
+                    with open(gz, 'rb') as fh:
+                        payload = fh.read()
+                    headers = {**headers_fn('ochnis-12.5-pre-restore'), 'Content-Type':'application/gzip', 'X-Pre-Restore-Reason':'manual_restore'}
+                    response = requests.post(base + '/internal/pre-restore/upload', data=payload, headers=headers, timeout=(2.5, 20.0))
+                    try: body = response.json() if response.content else {}
+                    except Exception: body = {}
+                    heavy_ok = bool(200 <= int(response.status_code) < 300 and bool((body or {}).get('ok')) and bool((body or {}).get('mega_stored')))
+                    results.append(('r2-mega', heavy_ok, (str((body or {}).get('filename') or '') if heavy_ok else f'HTTP {response.status_code}: {str(body or response.text)[:180]}')))
+                except Exception as exc:
+                    results.append(('r2-mega', False, f'{type(exc).__name__}: {str(exc)[:180]}'))
+
+        durable_ok = bool(redis_ok or r1_mega_ok or heavy_ok)
+        if not durable_ok:
+            detail = '; '.join(f'{name}={int(ok)}:{msg}' for name, ok, msg in results) or 'no durable backend configured'
+            raise RuntimeError('pre_restore не закреплён: ' + detail[:700])
+
+        backend = '+'.join(name for name, ok, _ in results if ok) or 'unknown'
+        SQLITE.set_meta('restore_control_v240', 'last_pre_restore', {
+            'at': now_local().isoformat(timespec='microseconds'), 'durable': True,
+            'backend': backend, 'size': int(payload_size), 'local_path': raw,
+            'details': {name: {'ok': bool(ok), 'detail': str(detail)[:220]} for name, ok, detail in results},
+        })
+        try:
+            bot_journal('pre_restore_r81', int(OWNER_ID or 0) or None, f'durable=1; backend={backend}; size={payload_size}', 'INFO')
+        except Exception:
+            pass
         return folder
     except Exception:
         _v153_shutil.rmtree(folder, ignore_errors=True)
@@ -10070,13 +10170,13 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
         checkpoint_ok = bool((seal_result or {}).get('ok'))
         suffix = '' if remote_ok else '\n⚠️ Remote re-anchor временно pending; восстановленное состояние уже принято локально.'
         if checkpoint_required and checkpoint_ok:
-            suffix += '\n☁️ HEAVY/MEGA: полный SQLite snapshot проверен и закреплён.'
-            headline = '✅ Восстановление завершено и закреплено в HEAVY/MEGA.'
+            suffix += '\n☁️ Recovery checkpoint: полный SQLite закреплён в доступном Redis/MEGA контуре.'
+            headline = '✅ Восстановление завершено и закреплено в recovery-хранилище.'
         elif checkpoint_required:
-            suffix += '\n⛔ HEAVY/MEGA snapshot НЕ закреплён: ' + str((seal_result or {}).get('detail') or 'unknown')[:320]
-            headline = '⚠️ База восстановлена локально, но HEAVY/MEGA checkpoint НЕ закреплён.'
+            suffix += '\n⚠️ Recovery checkpoint частично не закреплён: ' + str((seal_result or {}).get('detail') or 'unknown')[:320]
+            headline = '⚠️ База восстановлена локально, но внешний recovery checkpoint не подтверждён.'
         else:
-            suffix += '\nℹ️ HEAVY/MEGA checkpoint не требуется.'
+            suffix += '\nℹ️ Внешний recovery checkpoint не требуется.'
             headline = '✅ Восстановление завершено.'
         safe_edit(bot, call, f"{headline}\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\nFailed-задач восстановлено: {restored_failed}." + suffix)
         restore_success = True

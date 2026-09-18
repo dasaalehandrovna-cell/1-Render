@@ -1661,22 +1661,46 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
 
 
 def r64_publish_restore_snapshot_v271(reason='restore'):
-    """OCH12: seal a manual restore on HEAVY/MEGA, never in FAST Redis.
+    """R81/OCH12.5: re-anchor a successful manual restore on every available recovery backend.
 
-    FAST may create one explicit restore handoff image, but it no longer owns any
-    periodic/full Redis checkpoint.  The HEAVY service verifies/promotes the image.
+    Redis FULL is written immediately so a restored database cannot be followed by a
+    restart into the old daily FULL. MEGA/HEAVY checkpoint is also attempted according
+    to the active R1/R2 ownership, but no single dead backend invalidates a locally
+    completed restore when another durable backend was verified.
     """
-    fn = globals().get('_split_push_snapshot_now_v263')
-    if not callable(fn):
-        return {'required': True, 'ok': False, 'detail': 'HEAVY snapshot handoff is unavailable'}
+    results=[]
+    redis_configured=bool(_r61_effective_redis_url())
+    redis_ok=False
+    redis_fn=globals().get('_split_cache_snapshot_to_redis_v266')
+    if redis_configured and callable(redis_fn):
+        try:
+            redis_ok=bool(redis_fn('manual_restore:'+str(reason or 'restore')[:120],verify=True,use_render_url=False))
+            results.append(('redis',redis_ok,str((_SPLIT_STATE or {}).get('redis_fallback_last_error') or 'ok')[:240]))
+        except Exception as exc:
+            results.append(('redis',False,f'{type(exc).__name__}: {str(exc)[:200]}'))
+
+    checkpoint_fn=globals().get('_split_push_snapshot_now_v263')
+    checkpoint_ok=False
+    checkpoint_attempted=callable(checkpoint_fn)
+    if checkpoint_attempted:
+        try:
+            checkpoint_ok=bool(checkpoint_fn('manual_restore:'+str(reason or 'restore')[:120],sync_mega=True))
+            results.append(('checkpoint',checkpoint_ok,('ok' if checkpoint_ok else str((_R32_EVENT_STATE or {}).get('last_error') or 'checkpoint failed')[:240])))
+        except Exception as exc:
+            results.append(('checkpoint',False,f'{type(exc).__name__}: {str(exc)[:200]}'))
+
+    required=bool(redis_configured or checkpoint_attempted)
+    ok=bool(redis_ok or checkpoint_ok) if required else True
+    detail='; '.join(f'{name}={int(good)}:{msg}' for name,good,msg in results) or 'no remote recovery backend configured'
     try:
-        ok = bool(fn('manual_restore:' + str(reason or 'restore')[:120], sync_mega=True))
-        detail = 'HEAVY/MEGA restore checkpoint confirmed' if ok else str((_R32_EVENT_STATE or {}).get('last_error') or 'HEAVY snapshot handoff failed')[:300]
-        try: bot_journal('och12_restore_heavy_snapshot', int(OWNER_ID or 0), f'ok={int(ok)}; reason={str(reason)[:120]}; detail={detail}')
-        except Exception: pass
-        return {'required': True, 'ok': ok, 'detail': detail, 'backend': 'heavy-mega'}
-    except Exception as exc:
-        return {'required': True, 'ok': False, 'detail': f'{type(exc).__name__}: {str(exc)[:260]}', 'backend': 'heavy-mega'}
+        bot_journal('r81_restore_reanchor',int(OWNER_ID or 0),f'ok={int(ok)}; reason={str(reason)[:120]}; {detail[:500]}')
+    except Exception:
+        pass
+    return {
+        'required':required,'ok':ok,'detail':detail[:700],
+        'backend':'+'.join(name for name,good,_ in results if good) or 'local',
+        'redis_ok':bool(redis_ok),'checkpoint_ok':bool(checkpoint_ok),
+    }
 
 def _och111_hot_ui_busy():
     try:
@@ -9182,10 +9206,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10054,7 +10078,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10093,7 +10117,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10143,7 +10167,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10166,13 +10190,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10228,7 +10252,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11035,5 +11059,669 @@ try:
 except Exception:
     pass
 
+
+# v262
+
+# ---------------------------------------------------------------------------
+# OCH12.5 / R80 — R2 emergency failover + compact MEGA mirror.
+# ---------------------------------------------------------------------------
+_R80_ROUTE_KEYS=('google','files','diagnostics','mega','durability','checkpoints')
+_R71_ROUTE_KEYS=_R80_ROUTE_KEYS
+_R71_ROUTE_LABELS.update({
+    'durability':'🧱 State events / capsule durability',
+    'checkpoints':'📸 Full checkpoints / compact tail',
+})
+_R71_ROUTE_DEFAULTS={k:'heavy' for k in _R71_ROUTE_KEYS}
+_R71_ROUTE_CACHE=None
+
+_R80_MEGA_LOCK=_split_threading.RLock()
+_R80_MEGA_TAIL_EVENTS={}
+_R80_MEGA_STATE={
+    'thread_started':False,'tail_dirty':False,'running':False,'last_full_at':0.0,
+    'last_full_date':'','last_tail_at':0.0,'last_tail_count':0,'tail_max_revision':0,
+    'full_event_cutoff_score':0.0,'full_event_revision':0,'full_db_revision':0.0,
+    'last_error':'','next_retry':0.0,'last_head_at':0.0,
+}
+
+def _r80_mega_master_enabled():
+    try:
+        import runtime_config as _r80_rc
+        fn=getattr(_r80_rc,'mega_render_enabled',None)
+        if callable(fn): return bool(fn())
+        return bool(getattr(_r80_rc,'_MEGA_RENDER_ENABLED',False))
+    except Exception:
+        return False
+
+def _r80_compact_root():
+    root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').strip().replace('\\','/')
+    if not root: return ''
+    return '/'+root.strip('/')+'/compact_v80'
+
+def _r80_compact_paths():
+    root=_r80_compact_root().rstrip('/')
+    return {
+        'root':root,
+        'head':root+'/head.json',
+        'latest':root+'/latest.sqlite3.gz',
+        'tail':root+'/tail.json.gz',
+    } if root else {}
+
+def _r80_mega_runtime_ready():
+    return bool(_r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
+
+def _r80_sqlite_freshness(path):
+    db_rev=0.0; event_rev=0
+    try:
+        con=_r32_sqlite3.connect(str(path),timeout=15)
+        try:
+            for kind in ('split_state_revision_r18','user_state_shadow_v265','runtime_continuity_v263'):
+                row=con.execute("SELECT v FROM meta WHERE kind=? AND k='latest'",(kind,)).fetchone()
+                if row:
+                    try: db_rev=max(db_rev,float((_split_json.loads(row[0]) or {}).get('saved_at') or 0.0))
+                    except Exception: pass
+            try:
+                row=con.execute("SELECT MAX(revision) FROM r32_state_revisions").fetchone(); event_rev=int((row or [0])[0] or 0)
+            except Exception: event_rev=0
+        finally: con.close()
+    except Exception: pass
+    return db_rev,event_rev
+
+def _r80_write_local_json(path,obj,gzip_it=False):
+    raw=_split_json.dumps(obj,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
+    if gzip_it: raw=_split_gzip.compress(raw,compresslevel=3)
+    with open(path,'wb') as fh: fh.write(raw)
+    return len(raw)
+
+def _r80_mega_put_fixed(local_path,remote_path):
+    paths=_r80_compact_paths(); root=paths.get('root')
+    if not root: return False,'MEGA compact root unavailable'
+    try:
+        mega_ensure_remote_path(root)
+        remote_dir=remote_path.rsplit('/',1)[0] or root
+        mega_ensure_remote_path(remote_dir)
+        ok=bool(mega_put_replace(str(local_path),remote_dir,remote_path.rsplit('/',1)[-1],archive_previous=False))
+        return ok,('ok' if ok else 'mega_put_replace returned false')
+    except Exception as exc:
+        return False,f'{type(exc).__name__}: {str(exc)[:220]}'
+
+def _r80_current_head(extra=None):
+    with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
+    row={
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.5'),
+        'updated_at':_split_time.time(),
+        'full_db_revision':float(st.get('full_db_revision') or 0.0),
+        'full_event_revision':int(st.get('full_event_revision') or 0),
+        'full_event_cutoff_score':float(st.get('full_event_cutoff_score') or 0.0),
+        'tail_max_revision':int(st.get('tail_max_revision') or 0),
+        'tail_count':int(st.get('last_tail_count') or 0),
+        'full_saved_at':float(st.get('last_full_at') or 0.0),
+        'tail_saved_at':float(st.get('last_tail_at') or 0.0),
+        'layout':'fixed-latest+single-tail; no generation scan; no per-event MEGA files',
+    }
+    if isinstance(extra,dict): row.update(extra)
+    return row
+
+def _r80_write_head(workdir,extra=None):
+    paths=_r80_compact_paths(); local=_split_os.path.join(workdir,'head.json')
+    _r80_write_local_json(local,_r80_current_head(extra),False)
+    ok,detail=_r80_mega_put_fixed(local,paths['head'])
+    if ok:
+        with _R80_MEGA_LOCK: _R80_MEGA_STATE['last_head_at']=_split_time.time()
+    return ok,detail
+
+def _r80_snapshot_full_compact(reason='daily'):
+    """Background-only R1 MEGA checkpoint. Exactly latest.sqlite3.gz + tail.json.gz + head.json."""
+    with _R80_MEGA_LOCK:
+        if _R80_MEGA_STATE.get('running'): return False,'compact MEGA job already running'
+        _R80_MEGA_STATE['running']=True
+    work=None
+    try:
+        if not _r80_mega_runtime_ready(): return False,'R1 MEGA compact runtime not enabled/ready'
+        now=_split_time.time()
+        with _R80_MEGA_LOCK:
+            if now<float(_R80_MEGA_STATE.get('next_retry') or 0.0): return False,'MEGA compact retry cooldown'
+        # This entire function runs in a background pool/thread, never in callback/user lane.
+        login=globals().get('mega_login_if_needed')
+        if callable(login): login(control_plane=True)
+        work=_split_tempfile.mkdtemp(prefix='r80_mega_full_')
+        raw=_split_os.path.join(work,'state.sqlite3'); gz=_split_os.path.join(work,'latest.sqlite3.gz')
+        cutoff=_split_time.time(); SQLITE.backup_to(raw)
+        with open(raw,'rb') as src,_split_gzip.open(gz,'wb',compresslevel=3) as dst:
+            _split_shutil.copyfileobj(src,dst,length=1024*1024)
+        db_rev,event_rev=_r80_sqlite_freshness(raw)
+        paths=_r80_compact_paths()
+        ok,detail=_r80_mega_put_fixed(gz,paths['latest'])
+        if not ok: raise RuntimeError('latest: '+detail)
+        empty_tail={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':cutoff,'events':[],'max_revision':event_rev}
+        tail_local=_split_os.path.join(work,'tail.json.gz'); _r80_write_local_json(tail_local,empty_tail,True)
+        ok,detail=_r80_mega_put_fixed(tail_local,paths['tail'])
+        if not ok: raise RuntimeError('tail reset: '+detail)
+        with _R80_MEGA_LOCK:
+            _R80_MEGA_TAIL_EVENTS.clear()
+            _R80_MEGA_STATE.update({'last_full_at':_split_time.time(),'last_full_date':now_local().date().isoformat(),
+                'full_event_cutoff_score':cutoff,'full_event_revision':event_rev,'full_db_revision':db_rev,
+                'last_tail_at':_split_time.time(),'last_tail_count':0,'tail_max_revision':event_rev,
+                'tail_dirty':False,'last_error':'','next_retry':0.0})
+        ok,detail=_r80_write_head(work,{'reason':str(reason)[:120]})
+        if not ok: raise RuntimeError('head: '+detail)
+        try: bot_journal('r80_mega_compact_full',int(OWNER_ID or 0),f'ok=1 reason={reason}; db={db_rev}; event={event_rev}')
+        except Exception: pass
+        return True,f'compact MEGA FULL ok db={db_rev:.6f} event={event_rev}'
+    except Exception as exc:
+        detail=f'{type(exc).__name__}: {str(exc)[:240]}'
+        with _R80_MEGA_LOCK:
+            _R80_MEGA_STATE['last_error']=detail
+            _R80_MEGA_STATE['next_retry']=_split_time.time()+max(60.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','300') or '300'))
+        try: log_error('R80 compact MEGA full: '+detail)
+        except Exception: pass
+        return False,detail
+    finally:
+        with _R80_MEGA_LOCK: _R80_MEGA_STATE['running']=False
+        if work: _split_shutil.rmtree(work,ignore_errors=True)
+
+def _r80_read_redis_tail_after(score):
+    out=[]; client=None
+    try:
+        client=_r43_event_redis_client()
+        if client is None: return out
+        prefix=str(_split_os.getenv('WORKER_R32_STATE_EVENT_PREFIX','vys262:state_events:r32') or 'vys262:state_events:r32').strip(); index=prefix+':index'
+        max_events=max(1000,min(50000,int(_split_os.getenv('R80_MEGA_COMPACT_MAX_EVENTS','12000') or '12000')))
+        ids=client.zrangebyscore(index,float(score)+0.0000001,'+inf',start=0,num=max_events+1) or []
+        if len(ids)>max_events: raise RuntimeError(f'compact tail > {max_events}; full checkpoint required')
+        for raw_id in ids:
+            eid=raw_id.decode('utf-8','replace') if isinstance(raw_id,(bytes,bytearray)) else str(raw_id)
+            packed=client.get(f'{prefix}:event:{eid}')
+            if not packed: continue
+            try:
+                obj=_split_json.loads(_split_gzip.decompress(bytes(packed)).decode('utf-8'))
+                if isinstance(obj,dict): out.append(obj)
+            except Exception: continue
+    finally:
+        try:
+            if client is not None: client.close()
+        except Exception: pass
+    return out
+
+def _r80_collect_compact_tail():
+    with _R80_MEGA_LOCK: cutoff=float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0)
+    if cutoff<=0.0: return [],'no compact full baseline'
+    with _R80_MEGA_LOCK:
+        merged=dict(_R80_MEGA_TAIL_EVENTS)
+    # Redis is the normal source because it already contains the canonical compressed TAIL.
+    try:
+        for ev in _r80_read_redis_tail_after(cutoff):
+            eid=str((ev or {}).get('event_id') or '')
+            if eid: merged[eid]=ev
+    except Exception as exc:
+        redis_error=f'{type(exc).__name__}: {str(exc)[:180]}'
+    else: redis_error=''
+    # Durable local outbox covers Redis-off/failure windows without user-path network I/O.
+    try:
+        for ev in _r40_event_db_pending(1000):
+            if float((ev or {}).get('created_at') or 0.0)+0.0000001 < cutoff: continue
+            eid=str((ev or {}).get('event_id') or '')
+            if eid: merged[eid]=ev
+    except Exception: pass
+    rows=sorted(merged.values(),key=lambda x:(int((x or {}).get('revision') or 0),str((x or {}).get('event_id') or '')))
+    max_events=max(1000,min(50000,int(_split_os.getenv('R80_MEGA_COMPACT_MAX_EVENTS','12000') or '12000')))
+    if len(rows)>max_events: return [],f'tail too large {len(rows)} > {max_events}; new FULL required'
+    return rows,redis_error
+
+def _r80_flush_compact_tail(reason='periodic'):
+    work=None
+    try:
+        if not _r80_mega_runtime_ready(): return False,'R1 MEGA compact runtime not enabled/ready'
+        with _R80_MEGA_LOCK:
+            if not _R80_MEGA_STATE.get('last_full_at'): return _r80_snapshot_full_compact('tail-bootstrap')
+            if _split_time.time()<float(_R80_MEGA_STATE.get('next_retry') or 0.0): return False,'retry cooldown'
+        events,detail=_r80_collect_compact_tail()
+        if detail.startswith('tail too large'): return _r80_snapshot_full_compact('tail-rollover')
+        work=_split_tempfile.mkdtemp(prefix='r80_mega_tail_'); local=_split_os.path.join(work,'tail.json.gz')
+        max_rev=max([int((x or {}).get('revision') or 0) for x in events] or [int(_R80_MEGA_STATE.get('full_event_revision') or 0)])
+        obj={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0),'events':events,'max_revision':max_rev}
+        _r80_write_local_json(local,obj,True)
+        paths=_r80_compact_paths(); ok,put_detail=_r80_mega_put_fixed(local,paths['tail'])
+        if not ok: raise RuntimeError(put_detail)
+        with _R80_MEGA_LOCK:
+            _R80_MEGA_TAIL_EVENTS.clear()
+            for _ev in events:
+                _eid=str((_ev or {}).get('event_id') or '')
+                if _eid: _R80_MEGA_TAIL_EVENTS[_eid]=_ev
+            _R80_MEGA_STATE.update({'last_tail_at':_split_time.time(),'last_tail_count':len(events),'tail_max_revision':max_rev,'tail_dirty':False,'last_error':'','next_retry':0.0})
+        _r80_write_head(work,{'tail_reason':str(reason)[:120],'tail_source_warning':detail[:160]})
+        return True,f'compact tail events={len(events)} max_revision={max_rev}'
+    except Exception as exc:
+        err=f'{type(exc).__name__}: {str(exc)[:220]}'
+        with _R80_MEGA_LOCK:
+            _R80_MEGA_STATE['last_error']=err; _R80_MEGA_STATE['tail_dirty']=True
+            _R80_MEGA_STATE['next_retry']=_split_time.time()+max(60.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','300') or '300'))
+        return False,err
+    finally:
+        if work: _split_shutil.rmtree(work,ignore_errors=True)
+
+def _r80_mark_tail_dirty():
+    with _R80_MEGA_LOCK: _R80_MEGA_STATE['tail_dirty']=True
+
+def _r80_queue_compact_full(reason='route-switch'):
+    pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+    try:
+        if pool is not None and hasattr(pool,'submit_unique'):
+            return bool(pool.submit_unique('r80-mega-compact-full',_r80_snapshot_full_compact,str(reason)))
+    except Exception: pass
+    try:
+        _split_threading.Thread(target=_r80_snapshot_full_compact,args=(str(reason),),daemon=True,name='r80-mega-full').start(); return True
+    except Exception: return False
+
+
+# ---------------------------------------------------------------------------
+# OCH12.5 / R81 — exact compact MEGA manual restore, zero tree scans.
+# ---------------------------------------------------------------------------
+def _r81_compact_db_valid(path):
+    try:
+        con=_r32_sqlite3.connect(str(path),timeout=20)
+        try:
+            row=con.execute('PRAGMA quick_check').fetchone()
+            return bool(row and str(row[0]).lower()=='ok')
+        finally: con.close()
+    except Exception:
+        return False
+
+def _r81_compact_max_revision(path):
+    try:
+        con=_r32_sqlite3.connect(str(path),timeout=20)
+        try:
+            row=con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='r32_state_revisions'").fetchone()
+            if not row: return 0
+            val=con.execute('SELECT MAX(revision) FROM r32_state_revisions').fetchone()
+            return int((val or [0])[0] or 0)
+        finally: con.close()
+    except Exception:
+        return 0
+
+def _r81_compact_event_valid(ev):
+    if not isinstance(ev,dict) or int(ev.get('schema') or 0)!=32: return False
+    if not str(ev.get('event_id') or '') or int(ev.get('revision') or 0)<=0: return False
+    return str(ev.get('kind') or '') in {'set_kv','save_chat','prune_chats','delete_chat','set_meta','set_cold','set_cold_many','delete_cold'}
+
+def _r81_apply_compact_events(path,events):
+    events=[ev for ev in (events or []) if _r81_compact_event_valid(ev)]
+    if not events: return 0,0
+    con=_r32_sqlite3.connect(str(path),timeout=30)
+    applied=stale=0
+    try:
+        con.execute('PRAGMA journal_mode=WAL'); con.execute('PRAGMA synchronous=FULL')
+        con.execute('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)')
+        con.execute('CREATE TABLE IF NOT EXISTS chats (chat_id TEXT PRIMARY KEY, v TEXT NOT NULL)')
+        con.execute('CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind,k))')
+        con.execute("CREATE TABLE IF NOT EXISTS cold_fields (chat_id TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(chat_id,k))")
+        con.execute('CREATE TABLE IF NOT EXISTS r32_state_revisions (shard_key TEXT PRIMARY KEY, revision INTEGER NOT NULL, event_id TEXT NOT NULL, updated_at REAL NOT NULL)')
+        con.execute('BEGIN IMMEDIATE')
+        for ev in sorted(events,key=lambda x:int(x.get('revision') or 0)):
+            kind=str(ev.get('kind') or ''); key=str(ev.get('key') or '')[:220]; rev=int(ev.get('revision') or 0); eid=str(ev.get('event_id') or '')
+            payload=ev.get('payload') if isinstance(ev.get('payload'),dict) else {}
+            row=con.execute('SELECT revision FROM r32_state_revisions WHERE shard_key=?',(key,)).fetchone()
+            if row and int(row[0] or 0)>=rev:
+                stale+=1; continue
+            if kind=='set_kv':
+                k=str(payload.get('k') or '')
+                con.execute('INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v',(k,_split_json.dumps(payload.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
+            elif kind=='save_chat':
+                cid=str(payload.get('chat_id') or '')
+                con.execute('INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v',(cid,_split_json.dumps(payload.get('v') or {},ensure_ascii=False,separators=(',',':'),default=str)))
+            elif kind=='prune_chats':
+                keep={str(x) for x in (payload.get('keep') or [])}
+                for rr in con.execute('SELECT chat_id FROM chats').fetchall():
+                    if str(rr[0]) not in keep: con.execute('DELETE FROM chats WHERE chat_id=?',(str(rr[0]),))
+            elif kind=='delete_chat':
+                cid=str(payload.get('chat_id') or '')
+                con.execute('DELETE FROM chats WHERE chat_id=?',(cid,)); con.execute('DELETE FROM cold_fields WHERE chat_id=?',(cid,))
+            elif kind=='set_meta':
+                mk=str(payload.get('kind') or ''); kk=str(payload.get('k') or '')
+                con.execute('INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v',(mk,kk,_split_json.dumps(payload.get('v'),ensure_ascii=False,separators=(',',':'),default=str)))
+            elif kind=='set_cold':
+                cid=str(payload.get('chat_id') or ''); kk=str(payload.get('k') or ''); stamp=now_local().isoformat(timespec='seconds')
+                con.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at',(cid,kk,_split_json.dumps(payload.get('v'),ensure_ascii=False,separators=(',',':'),default=str),stamp))
+            elif kind=='set_cold_many':
+                cid=str(payload.get('chat_id') or ''); stamp=now_local().isoformat(timespec='seconds')
+                for kk,vv in (payload.get('items') or {}).items():
+                    con.execute('INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at',(cid,str(kk),_split_json.dumps(vv,ensure_ascii=False,separators=(',',':'),default=str),stamp))
+            elif kind=='delete_cold':
+                con.execute('DELETE FROM cold_fields WHERE chat_id=? AND k=?',(str(payload.get('chat_id') or ''),str(payload.get('k') or '')))
+            con.execute('INSERT INTO r32_state_revisions(shard_key,revision,event_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(shard_key) DO UPDATE SET revision=excluded.revision,event_id=excluded.event_id,updated_at=excluded.updated_at',(key,rev,eid,_split_time.time()))
+            applied+=1
+        con.commit()
+        try: con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        except Exception: pass
+    except Exception:
+        try: con.rollback()
+        except Exception: pass
+        raise
+    finally:
+        con.close()
+    return applied,stale
+
+def _r81_mega_get_exact(remote_path,workdir,timeout_sec=90):
+    folder=_split_os.path.join(str(workdir),str(abs(hash(str(remote_path))))[-10:])
+    _split_os.makedirs(folder,exist_ok=True)
+    res=_mega_run('mega-get',[str(remote_path),folder],check=False,timeout=float(timeout_sec))
+    if int(getattr(res,'returncode',1) or 0)!=0:
+        return None,str(getattr(res,'stderr','') or getattr(res,'stdout','') or 'mega-get failed')[:240]
+    base=_split_os.path.basename(str(remote_path).rstrip('/')); direct=_split_os.path.join(folder,base)
+    if _split_os.path.isfile(direct): return direct,'ok'
+    for root,_dirs,files in _split_os.walk(folder):
+        if base in files: return _split_os.path.join(root,base),'ok'
+    return None,'downloaded exact object missing locally'
+
+def r81_manual_compact_mega_restore():
+    """Restore exact compact_v80 head/latest/tail. Never mega-find or scan history."""
+    work=None
+    try:
+        if not _r80_mega_master_enabled(): return False,'MEGA_ENABLED=0 at Render master gate',0
+        if not _r71_fast_mega_ready(): return False,'R1 MEGA credentials/CLI unavailable',0
+        paths=_r80_compact_paths()
+        if not paths: return False,'MEGA_BACKUP_DIR/compact_v80 unavailable',0
+        login=globals().get('mega_login_if_needed')
+        if callable(login): login(control_plane=True)
+        work=_split_tempfile.mkdtemp(prefix='r81_manual_compact_restore_')
+        head_path,detail=_r81_mega_get_exact(paths['head'],work,45)
+        if not head_path: return False,'compact head: '+detail,0
+        try:
+            head=_split_json.loads(open(head_path,'r',encoding='utf-8').read()) or {}
+        except Exception as exc:
+            return False,f'compact head decode {type(exc).__name__}: {str(exc)[:180]}',0
+        if int((head or {}).get('schema') or 0)!=80: return False,'compact head schema != 80',0
+        latest_path,detail=_r81_mega_get_exact(paths['latest'],work,max(60,min(180,int(float(_split_os.getenv('MEGA_TIMEOUT','120') or '120')))))
+        if not latest_path: return False,'compact latest: '+detail,0
+        candidate=_split_os.path.join(work,'candidate.sqlite3')
+        try:
+            with _split_gzip.open(latest_path,'rb') as src,open(candidate,'wb') as dst:
+                _split_shutil.copyfileobj(src,dst,length=1024*1024)
+        except Exception as exc:
+            return False,f'compact latest decompress {type(exc).__name__}: {str(exc)[:180]}',0
+        if not _r81_compact_db_valid(candidate): return False,'compact latest SQLite quick_check failed',0
+        tail_path,tail_detail=_r81_mega_get_exact(paths['tail'],work,60)
+        if not tail_path: return False,'compact tail: '+tail_detail,0
+        try:
+            tail=_split_json.loads(_split_gzip.decompress(open(tail_path,'rb').read()).decode('utf-8')) or {}
+            events=[ev for ev in (tail.get('events') or []) if _r81_compact_event_valid(ev)]
+        except Exception as exc:
+            return False,f'compact tail decode {type(exc).__name__}: {str(exc)[:180]}',0
+        expected_count=int((head or {}).get('tail_count') or 0); expected_max=int((head or {}).get('tail_max_revision') or 0)
+        if expected_count and len(events)<expected_count: return False,f'compact tail incomplete {len(events)} < {expected_count}',0
+        applied,stale=_r81_apply_compact_events(candidate,events)
+        if not _r81_compact_db_valid(candidate): return False,'compact candidate invalid after tail',applied
+        final_max=_r81_compact_max_revision(candidate)
+        if expected_max and final_max<expected_max: return False,f'compact revision incomplete {final_max} < {expected_max}',applied
+        SQLITE.replace_database(candidate)
+        return True,f'compact_v80 exact restore; events={len(events)} applied={applied} stale={stale} max_revision={final_max}',applied
+    except Exception as exc:
+        return False,f'{type(exc).__name__}: {str(exc)[:260]}',0
+    finally:
+        if work: _split_shutil.rmtree(work,ignore_errors=True)
+
+# Honor Render's MEGA_ENABLED master switch. Runtime menus may route ownership,
+# but can never turn MEGA back on when Render explicitly supplied MEGA_ENABLED=0.
+def _r71_apply_runtime_side_effects():
+    use_fast=bool(_r71_route_is_fast('mega') or _r71_route_is_fast('checkpoints'))
+    master=_r80_mega_master_enabled()
+    active=bool(use_fast and master)
+    try:
+        if 'MEGA_ENABLED' in globals(): globals()['MEGA_ENABLED']=active
+        _split_os.environ['MEGA_ENABLED']='1' if active else '0'
+        _split_os.environ['FAST_RUNTIME_MEGA_DISABLED']='0' if active else '1'
+        if active:
+            if not str(globals().get('MEGA_EMAIL') or ''): globals()['MEGA_EMAIL']=str(_split_os.getenv('MEGA_EMAIL','') or '')
+            if not str(globals().get('MEGA_PASSWORD') or ''): globals()['MEGA_PASSWORD']=str(_split_os.getenv('MEGA_PASSWORD','') or '')
+            _r80_queue_compact_full('r1-owner-switch-bootstrap')
+    except Exception: pass
+
+def _r71_fast_mega_ready():
+    if not _r80_mega_master_enabled(): return False
+    try:
+        import shutil as _r80_shutil
+        creds=bool((str(globals().get('MEGA_EMAIL') or _split_os.getenv('MEGA_EMAIL','') or '').strip() and str(globals().get('MEGA_PASSWORD') or _split_os.getenv('MEGA_PASSWORD','') or '').strip()) or str(_split_os.getenv('MEGA_SESSION','') or '').strip())
+        return creds and _r80_shutil.which('mega-ls') is not None and _r80_shutil.which('mega-get') is not None
+    except Exception: return False
+
+# State durability owner. In emergency R1 mode there is NO synchronous R2 request.
+# Redis write is background-sender work, not Telegram callback work; MEGA is dirtied
+# for a later batched compact flush. If Redis is disabled, the durable local outbox
+# remains pending until MEGA compact tail covers the revision.
+_R80_HEAVY_POST_EVENTS=_r34_post_events
+def _r34_post_events(events,wire,large=False):
+    if not _r71_route_is_fast('durability'):
+        return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
+    redis_ok,redis_detail=_r43_store_events_redis(events)
+    _r80_mark_tail_dirty()
+    max_rev=max([int((x or {}).get('revision') or 0) for x in (events or [])] or [0])
+    redis_required=bool(_r61_effective_redis_url())
+    if redis_required and not redis_ok:
+        raise RuntimeError('R1 failover Redis TAIL pending: '+str(redis_detail)[:180])
+    if not redis_required:
+        with _R80_MEGA_LOCK: covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
+        if covered<max_rev:
+            raise RuntimeError(f'R1 failover compact MEGA tail pending covered={covered} required={max_rev}')
+    _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),max_rev)
+    _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),max_rev)
+    _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events or [])
+    _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
+    _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
+    _R32_EVENT_STATE['redis_cache_ok']=bool(redis_ok); _R32_EVENT_STATE['redis_cache_detail']=str(redis_detail)[:180]
+    st=globals().get('_SPLIT_STATE')
+    if isinstance(st,dict):
+        st['r34_event_last_revision_acked']=max_rev; st['r35_event_last_revision_applied_peer']=max_rev
+        st['r80_failover_durability']='R1_FAST'; st['redis_event_cache_ok']=bool(redis_ok)
+    return True
+
+# Raw Telegram witness owner in emergency R1 mode. The local webhook inbox has
+# already accepted the update, so no R2/Redis RTT is allowed before the user's
+# response. Redis witness mirroring is queued on the existing background lane.
+_R80_HEAVY_WITNESS_EVENT=split_witness_event_v268
+_R80_HEAVY_EVENT_STATUS_SEND=_split_event_status_send_v268
+
+def _r80_redis_witness_background(row,state=None,error=''):
+    try: _split_event_redis_write_v268(row,state=state,error=error)
+    except Exception: pass
+
+def split_witness_event_v268(update_id,payload,chat_id=None,update_type='other'):
+    if not _r71_route_is_fast('durability'):
+        return _R80_HEAVY_WITNESS_EVENT(update_id,payload,chat_id,update_type)
+    row=_split_event_row_v268(update_id,payload,chat_id,update_type)
+    _split_event_bg_v268(_r80_redis_witness_background,row,None,'')
+    st=globals().get('_SPLIT_STATE')
+    if isinstance(st,dict):
+        st['event_received']=int(st.get('event_received') or 0)+1
+        st['r80_witness_owner']='R1_FAST_LOCAL_INBOX+REDIS_BG'
+    return True
+
+def _split_event_status_send_v268(update_id,chat_id=None,update_type='other',success=True,error=''):
+    if not _r71_route_is_fast('durability'):
+        return _R80_HEAVY_EVENT_STATUS_SEND(update_id,chat_id,update_type,success,error)
+    row={'schema':1,'event_id':_split_event_id_v268(update_id),'update_id':str(update_id),'chat_id':chat_id,
+         'update_type':str(update_type or 'other')[:40],'state':'committed' if success else 'failed_retry',
+         'committed_at':_split_time.time() if success else 0.0,'state_token':_split_current_state_token_v264(),
+         'last_error':str(error or '')[:300]}
+    _split_event_bg_v268(_r80_redis_witness_background,row,row['state'],str(error or ''))
+    st=globals().get('_SPLIT_STATE')
+    if isinstance(st,dict): st['event_last_error']=''
+    return True
+
+# Exact snapshot/shutdown owner. If checkpoints are moved to R1, never wait for a
+# dead R2. A sync request may do one compact FULL in this non-user background/shutdown
+# path; ordinary requests only queue it.
+_R80_HEAVY_PUSH_SNAPSHOT=_split_push_snapshot_now_v263
+_R80_HEAVY_SEND_DELTA=_split_send_delta_v267
+
+def _split_push_snapshot_now_v263(reason='shutdown',sync_mega=False):
+    if not (_r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega')):
+        return _R80_HEAVY_PUSH_SNAPSHOT(reason,sync_mega=sync_mega)
+    if not _r80_mega_master_enabled():
+        return True
+    if bool(sync_mega):
+        ok,_detail=_r80_snapshot_full_compact('sync-'+str(reason or 'snapshot')[:80])
+        return bool(ok)
+    return bool(_r80_queue_compact_full('snapshot-'+str(reason or '')[:80]))
+
+def _split_send_delta_v267(reason='change'):
+    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('durability'):
+        _r80_mark_tail_dirty()
+        return True,'R1 compact FULL+TAIL owns delta durability',False
+    return _R80_HEAVY_SEND_DELTA(reason)
+
+# Capsule owner in emergency mode: Redis capsule is enough to release the capsule
+# timer; MEGA state is protected by FULL+TAIL and is never called synchronously here.
+_R80_HEAVY_CAPSULE_PUSH=_r20_capsule_push_now
+def _r20_capsule_push_now(reason='state_change'):
+    if not _r71_route_is_fast('durability'):
+        return _R80_HEAVY_CAPSULE_PUSH(reason)
+    global _R20_CAPSULE_LAST_GEN_SENT,_R20_CAPSULE_LAST_SEQ_SENT
+    try:
+        payload=_r20_capsule_build(reason); raw=_split_json.dumps(payload,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'); packed=_split_gzip.compress(raw,compresslevel=3)
+        ok,detail=_r20_capsule_store_redis(payload,packed)
+        if not ok and _r61_effective_redis_url(): raise RuntimeError(detail)
+        seq=int(payload.get('user_state_seq') or 0); gen=int(payload.get('config_generation') or 0)
+        _R20_CAPSULE_LAST_GEN_SENT=max(_R20_CAPSULE_LAST_GEN_SENT,gen); _R20_CAPSULE_LAST_SEQ_SENT=max(_R20_CAPSULE_LAST_SEQ_SENT,seq)
+        _SPLIT_STATE['capsule_last_ok']=_split_time.time(); _SPLIT_STATE['capsule_last_error']=''; _SPLIT_STATE['capsule_last_seq']=seq; _SPLIT_STATE['capsule_last_generation']=gen
+        _r80_mark_tail_dirty(); return True
+    except Exception as exc:
+        _SPLIT_STATE['capsule_last_error']=f'R1 failover {type(exc).__name__}: {str(exc)[:200]}'; return False
+
+# R1 MEGA mode never calls legacy per-chat/per-delta MEGA writers. All business
+# durability is compact FULL+TAIL; old helpers remain for R2/legacy mode only.
+_R80_REMOTE_SCHEDULE_DELTA=_R71_REMOTE_SCHEDULE_DELTA
+_R80_REMOTE_CRITICAL_DELTA=_R71_REMOTE_CRITICAL_DELTA
+_R80_REMOTE_FULL_BACKUP=_R71_REMOTE_FULL_BACKUP
+_R80_REMOTE_MEGA_UPLOAD_DB=_R71_REMOTE_MEGA_UPLOAD_DB
+_R80_REMOTE_CONFIG_BACKUP=_R71_REMOTE_CONFIG_BACKUP
+
+def schedule_delta_backup(chat_id=None,delay=None,reason='change'):
+    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
+        _r80_mark_tail_dirty(); return True
+    return _R80_REMOTE_SCHEDULE_DELTA(chat_id,delay=delay,reason=reason)
+
+def persist_critical_delta_now(chat_id):
+    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
+        _r80_mark_tail_dirty(); return True
+    return _R80_REMOTE_CRITICAL_DELTA(int(chat_id))
+
+def schedule_full_backup_only(chat_id,delay=3.0):
+    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
+        # No per-chat MEGA JSON bundle in compact mode. Queue only a background
+        # tail flush/full when due; user response never waits for it.
+        _r80_mark_tail_dirty(); return True
+    return _R80_REMOTE_FULL_BACKUP(int(chat_id),delay)
+
+def mega_upload_latest_database_backup(force=False):
+    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
+        return _r80_queue_compact_full('manual-force' if force else 'scheduled-full')
+    return _R80_REMOTE_MEGA_UPLOAD_DB(bool(force))
+
+def schedule_config_backup_for_chats(*chat_ids,delay=3.0):
+    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
+        _r80_mark_tail_dirty(); return True
+    return _R80_REMOTE_CONFIG_BACKUP(*chat_ids,delay=delay)
+
+def _r80_compact_scheduler_loop():
+    _split_time.sleep(15.0)
+    while True:
+        try:
+            if _r80_mega_runtime_ready():
+                now=now_local(); today=now.date().isoformat(); at=_r79_redis_daily_time(False); hh,mm=[int(x) for x in at.split(':',1)]
+                with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
+                if not st.get('last_full_at'):
+                    _r80_queue_compact_full('runtime-bootstrap')
+                elif (now.hour,now.minute)>=(hh,mm) and str(st.get('last_full_date') or '')!=today and not _och111_hot_ui_busy():
+                    _r80_queue_compact_full('daily-'+today)
+                elif st.get('tail_dirty') and not st.get('running') and not _och111_hot_ui_busy() and _split_time.time()-float(st.get('last_tail_at') or 0.0)>=max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_FLUSH_SEC','90') or '90')):
+                    pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
+                    queued=False
+                    try:
+                        if pool is not None and hasattr(pool,'submit_unique'): queued=bool(pool.submit_unique('r80-mega-tail',_r80_flush_compact_tail,'periodic'))
+                    except Exception: queued=False
+                    if not queued:
+                        _split_threading.Thread(target=_r80_flush_compact_tail,args=('periodic',),daemon=True,name='r80-mega-tail').start()
+        except Exception as exc:
+            with _R80_MEGA_LOCK: _R80_MEGA_STATE['last_error']=f'scheduler {type(exc).__name__}: {str(exc)[:180]}'
+        _split_time.sleep(30.0)
+
+def _r80_start_compact_scheduler():
+    with _R80_MEGA_LOCK:
+        if _R80_MEGA_STATE.get('thread_started'): return
+        _R80_MEGA_STATE['thread_started']=True
+    _split_threading.Thread(target=_r80_compact_scheduler_loop,daemon=True,name='r80-mega-compact').start()
+
+def _r70_routes_text():
+    h=dict(_SPLIT_STATE.get('worker_health') or {}); st=dict(h.get('state') or {})
+    worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
+    with _R80_MEGA_LOCK: ms=dict(_R80_MEGA_STATE)
+    master=_r80_mega_master_enabled()
+    lines=[
+        f'🧭 <b>{BOT_DISPLAY_NAME} · R1/R2 ПРОЦЕССЫ</b>','',
+        'Всегда на R1 FAST:',
+        '🔒 Telegram webhook / ACK / окна / кнопки',
+        '🔒 Canonical business mutation / SQLite commit',
+        '🔒 Реальная доставка пересылок','',
+        'Переключаемые тяжёлые контуры:',
+        f'📊 Google / таблицы — {_r71_owner_html("google")}',
+        f'📦 Файлы / Excel / CSV / JSON / SQLite — {_r71_owner_html("files")}',
+        f'🧪 Диагностика / журналы / архивы — {_r71_owner_html("diagnostics")}',
+        f'🗄 MEGA browser / recovery — {_r71_owner_html("mega")}',
+        f'🧱 State events / capsule durability — {_r71_owner_html("durability")}',
+        f'📸 FULL / compact tail checkpoints — {_r71_owner_html("checkpoints")}','',
+        f'R2: {"✅ доступен" if worker_ok else "⛔ недоступен"} · HTTP {int(_SPLIT_STATE.get("peer_status") or 0)} · очередь {int(h.get("queue_size") or 0)}',
+        f'MEGA master Render #1: {"✅ MEGA_ENABLED=1" if master else "⛔ MEGA_ENABLED=0"}',
+        f'R1 compact MEGA: FULL {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")} · tail {int(ms.get("last_tail_count") or 0)} · maxrev {int(ms.get("tail_max_revision") or 0)}',
+        f'R1 compact error: {str(ms.get("last_error") or "нет")[:180]}','',
+        '🚨 Если R2 умер: нажмите «ВСЁ → R1». State-events перестанут ждать R2; Redis остаётся быстрым TAIL, MEGA пишется пакетно в фоне.',
+        'MEGA compact хранит только fixed latest + один aggregated tail + head.json. Никаких per-event/generation тысяч файлов.',
+        'Ни один MEGA/Redis/Google heavy-вызов не ставится между нажатием пользователя и отрисовкой окна.',
+    ]
+    return window_mark('\n'.join(lines),'Ф4072')
+
+def _r71_route_button(key):
+    owner=_r71_route_owner(key); prefix='🟢 #1' if owner=='fast' else '🛰 #2'
+    short={'google':'Google','files':'Файлы','diagnostics':'Диагн.','mega':'MEGA','durability':'State','checkpoints':'FULL'}[key]
+    return IB(f'{prefix} · {short}',callback_data=f'r71:route:{key}')
+
+def _r70_routes_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(_r71_route_button('google'),_r71_route_button('files'))
+    kb.row(_r71_route_button('diagnostics'),_r71_route_button('mega'))
+    kb.row(_r71_route_button('durability'),_r71_route_button('checkpoints'))
+    kb.row(IB('🚨 R2 НЕТ → ВСЁ #1',callback_data='r71:all:fast'),IB('🛰 Вернуть ВСЁ → #2',callback_data='r71:all:heavy'))
+    kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
+    kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+_R80_CONTOUR_CORE=contour_callback_guard
+def _r80_contour_callback_guard(call,resolved):
+    raw=str(resolved or '')
+    if raw=='r80:mega:full':
+        try:
+            cid=int(call.message.chat.id); uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0)
+        except Exception: return True
+        if cid!=int(OWNER_ID or 0) or uid!=int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id,'Только владелец.',show_alert=True)
+            except Exception: pass
+            return True
+        if not _r80_mega_master_enabled():
+            try: bot.answer_callback_query(call.id,'MEGA_ENABLED=0 в Render #1.',show_alert=True)
+            except Exception: pass
+            return True
+        try: bot.answer_callback_query(call.id,'MEGA FULL поставлен в фон')
+        except Exception: pass
+        _r80_queue_compact_full('manual-menu')
+        try: safe_edit(bot,call,_r70_routes_text(),reply_markup=_r70_routes_keyboard(),parse_mode='HTML')
+        except Exception: pass
+        return True
+    return bool(_R80_CONTOUR_CORE(call,resolved)) if callable(_R80_CONTOUR_CORE) else False
+
+contour_callback_guard=_r80_contour_callback_guard
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r80:mega:*','Ф4072')
+    _r71_load_routes(force=True); _r71_apply_runtime_side_effects(); _r80_start_compact_scheduler()
+    bot_journal('r80_failover_compact_mega_loaded',int(OWNER_ID or 0),f'routes={_r71_load_routes()}; mega_master={int(_r80_mega_master_enabled())}; compact=fixed3')
+except Exception:
+    pass
 
 # v262

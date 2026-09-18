@@ -159,6 +159,11 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "TELEGRAM_DURABLE_ENABLED": "0",
     "MEGA_TIMEOUT": "120",
     "MEGA_LOGIN_TIMEOUT": "120",
+    "MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT": "12",
+    "MEGA_STARTUP_COMPARE_GET_TIMEOUT": "12",
+    "R80_MEGA_COMPACT_FLUSH_SEC": "90",
+    "R80_MEGA_COMPACT_MAX_EVENTS": "12000",
+    "R80_MEGA_COMPACT_RETRY_SEC": "300",
     "SPLIT_GOOGLE_REMOTE_ENABLED": "1",
 }
 
@@ -247,6 +252,17 @@ _REDIS_EXTERNAL_URL = str(
 ).strip()
 _REDIS_RUNTIME_ENABLED = False
 _REDIS_RUNTIME_INITIALIZED = False
+
+def mega_render_enabled() -> bool:
+    """Render-owned MEGA master switch captured before runtime mutation."""
+    return bool(_MEGA_RENDER_ENABLED)
+
+def mega_runtime_master_state() -> Dict[str, object]:
+    return {
+        "master_enabled": bool(_MEGA_RENDER_ENABLED),
+        "render_value": str(_RENDER_ENV_AT_IMPORT.get("MEGA_ENABLED", "")),
+        "role": str(os.environ.get("BOT_SPLIT_ROLE", "") or ""),
+    }
 
 def redis_render_url() -> str:
     """Exact Redis/Valkey URL supplied by Render. Never mutated by runtime code."""
