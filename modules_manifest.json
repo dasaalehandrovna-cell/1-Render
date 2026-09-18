@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "be6252fd18ee60f17de711fc70ca63f724ebee71f17a326c19884b13b4baf91d",
+    "01_core_data.py": "a30195a2c500be74b41d30eb8f7b40c58b16a39f5a2aee08793b6318be6357e2",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
@@ -22,10 +22,10 @@
     "06_commands_callbacks.py": "b1b1f1c53ba3c0bd82229558910a8ee388419536199051f8a3f5c8f1decf01c9",
     "07_state_web.py": "0245a917ac95afac0982983274ac5592fb1cdab990411372e6a1addb9f8eaba8",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "a6420f2dabc47bbd3c91067ede063eecb6f049a92636c0cda27955bbde371105",
-    "10_split_policy_offload.py": "4308dc5af7e14849eb69215d45b623db9605ce28f830415bfc9fff6be1bfa86d"
+    "09_final_transport.py": "c190a096a21097bb8eb802c06c510e3b72f98b056ff20772e7886a74e75379ae",
+    "10_split_policy_offload.py": "79a6a5351d40f0396e7bb4fd340d2131b3555ec92dad32a83469b668452eb93f"
   },
-  "release": "ОЧНИСЬ_12.2-HEAVY-NO-REDIS-MEGA-RESTORE-FIX",
+  "release": "ОЧНИСЬ_12.3-REDIS-DAILY-FULL-TAIL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -322,11 +322,16 @@
     "och111_thread_local_sqlite_reads",
     "och111_chat_store_hot_cache",
     "och111_no_cold_ledger_fault",
-    "och12_fast_no_periodic_full_snapshot",
     "och12_heavy_ack_authority",
-    "och12_redis_bounded_best_effort_cache",
     "och12_capsule_heavy_first",
     "och12_legacy_redis_full_image_cleanup",
-    "och12_ready_identity"
+    "och12_ready_identity",
+    "och123_redis_daily_full_configurable_time",
+    "och123_redis_compressed_logical_tail",
+    "och123_redis_full_tail_startup_restore",
+    "och123_redis_tail_dual_ack_with_heavy",
+    "och123_redis_tail_pruned_after_full",
+    "och123_redis_bootstrap_full_after_enable",
+    "och123_legacy_redis_full_rejected_without_tail_contract"
   ]
 }

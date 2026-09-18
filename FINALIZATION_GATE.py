@@ -350,8 +350,8 @@ if ROLE=='fast':
        'LOCAL_RESTORE_TRACE_FILE' in cfg_src and '_r68_write_restore_trace_file' in start_src and
        'restore_trace' in web_src and 'RESTORE TRACE R68' in core_src,
        'R68 restore source/revision trace file or Watcher integration missing')
-    # R63: Redis is the first direct startup source; MEGA remains a strict-root
-    # fallback and is never contacted when REDIS succeeds or MEGA_ENABLED=0.
+    # OCH12.3: Redis is a direct startup source only when one daily FULL plus a
+    # complete logical TAIL can be verified. MEGA remains the strict fallback.
     ok('r56_fast_startup_mega_master_switch',
        all(x in start_src for x in ['def _restore_from_mega_startup','mega-get','_replay_mega_event_segments','def _startup_mega_roots','def _discover_generation_remotes',
                                     "mega_master_enabled = _bool('MEGA_ENABLED', True)",
@@ -359,12 +359,14 @@ if ROLE=='fast':
                                     'R64 MEGA disabled; Redis restore unavailable/failed; using local/empty fallback']) and
        '/internal/snapshot' not in start_src,
        'MEGA_ENABLED must fully gate FAST fallback MEGA while preserving strict direct restore when enabled')
-    ok('r64_fast_startup_redis_first_restore',
-       all(x in start_src for x in ['def _restore_from_redis_startup','R64 REDIS startup restore start',
+    ok('och123_fast_startup_redis_full_tail_restore',
+       all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.3 REDIS FULL+TAIL startup restore start',
                                     "trace['base_source'] = 'REDIS'", 'WORKER_REDIS_SNAPSHOT_KEY',
-                                    'WORKER_R32_STATE_EVENT_PREFIX', 'client.zrange', '_apply_r32_events(target, events)']) and
+                                    'WORKER_R32_STATE_EVENT_PREFIX', "tail_schema < 1", 'gzip.decompress(b)',
+                                    'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
+                                    'redis_candidate.sqlite3']) and
        start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('ok, detail = _restore_from_mega_startup(target)'),
-       'FAST must restore directly from shared Redis full snapshot + retained state events before MEGA fallback')
+       'FAST must assemble a temporary verified Redis daily FULL+TAIL candidate before MEGA fallback')
     ok('r68_local_cache_before_external_restore',
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
@@ -430,11 +432,12 @@ if ROLE=='fast':
     ok('och12_manual_restore_seals_on_heavy_mega',
        "globals().get('_split_push_snapshot_now_v263')" in restore_seal_src and 'sync_mega=True' in restore_seal_src and '_split_cache_snapshot_to_redis_v266' not in restore_seal_src,
        'manual restore may build one explicit handoff image, but its durable seal must be HEAVY/MEGA rather than FAST Redis')
-    ok('och12_fast_full_redis_checkpoint_disabled',
-       'full Redis snapshots are disabled on FAST' in redis_sched_src and 'return False' in redis_sched_src and
-       'FAST never builds periodic full SQLite/Redis checkpoints' in redis_fire_src and
-       str(env.get('LOCAL_SQLITE_SNAPSHOT_ENABLED','')) == '0',
-       'FAST must own no periodic full SQLite/Redis snapshot path in OCH12')
+    ok('och123_redis_daily_full_scheduler',
+       'def _r79_daily_snapshot_now' in split_src and 'def _r79_daily_scheduler_loop' in split_src and
+       "redis_daily_snapshot_time_r79" in split_src and "callback_data='r79:redis:sched'" in split_src and
+       "callback_data='r79:redis:now'" in split_src and "_split_cache_snapshot_to_redis_v266" in split_src and
+       "daily_local_date" in split_src and "event_cutoff_score" in split_src,
+       'FAST must create one configurable daily Redis FULL and expose time/manual FULL controls in Info')
     ok('r64_redis_snapshot_event_cutoff',
        "'event_cutoff_score': float(capture_started)" in split_src and
        'client.zrangebyscore' in start_src and 'events_tail=' in start_src,
@@ -609,15 +612,17 @@ if ROLE=='fast':
     r34_events_src=_fn_sources(split_src,{'_r34_post_events'}).get('_r34_post_events','')
     r43_cache_src=_fn_sources(split_src,{'_r43_store_events_redis'}).get('_r43_store_events_redis','')
     capsule_push_src=_fn_sources(split_src,{'_r20_capsule_push_now'}).get('_r20_capsule_push_now','')
-    ok('och12_heavy_ack_before_redis_cache',
-       "requests.post(base+endpoint" in r34_events_src and 'HEAVY durable revision behind' in r34_events_src and
-       r34_events_src.find('_r43_store_events_redis(events)') > r34_events_src.find('durable revision behind') and
-       'R43_FAST_AUTHORITY' not in r34_events_src,
-       'HEAVY durable ACK must decide event success; Redis mirror runs only afterwards and cannot be an authority')
-    ok('och12_redis_event_cache_bounded',
-       "R43_REDIS_EVENT_MAXLEN','2000'" in r43_cache_src and "R43_REDIS_EVENT_TTL_SEC','86400'" in r43_cache_src and
-       'maxlen=maxlen' in r43_cache_src and 'pipe.expire(_R43_EVENT_STREAM_KEY,ttl)' in r43_cache_src,
-       'FAST Redis event cache must be bounded to a small maxlen and TTL suitable for a 25MB service')
+    ok('och123_heavy_and_redis_tail_dual_ack',
+       "_r43_store_events_redis(events)" in r34_events_src and "requests.post(base+endpoint" in r34_events_src and
+       r34_events_src.find('_r43_store_events_redis(events)') < r34_events_src.find('requests.post(base+endpoint') and
+       'HEAVY durable revision behind' in r34_events_src and 'redis_required and not redis_ok' in r34_events_src and
+       'Redis TAIL mirror pending after HEAVY ACK' in r34_events_src,
+       'when Redis runtime is ON, durable FAST outbox may clear only after both Redis TAIL and HEAVY ACK')
+    ok('och123_redis_tail_compressed_bounded_pruned',
+       "R79_REDIS_TAIL_TTL_SEC','259200'" in r43_cache_src and '_r32_gzip.compress' in r43_cache_src and
+       "pipe.set(f'{prefix}:event:{eid}',packed,ex=ttl)" in r43_cache_src and 'pipe.zadd(index_key' in r43_cache_src and
+       "client.zrangebyscore(index_key,'-inf',float(capture_started)" in split_src and "client.delete('per:r43:front:state_events')" in split_src,
+       'Redis must keep compressed canonical event tail only and prune events already covered by the daily FULL')
     ok('och12_capsule_heavy_first_redis_optional',
        capsule_push_src.find("requests.post(base + '/internal/capsule'") < capsule_push_src.find('_r20_capsule_store_redis') and
        'if worker_ok:' in capsule_push_src and "if redis_ok or worker_ok" not in capsule_push_src,
@@ -653,8 +658,8 @@ if ROLE=='fast':
        "globals().get('_v156_handle_process_toggle')" not in final_transport,
        'known overlapping callback families must have one current semantic owner')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.2'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12')
+       "BOT_DISPLAY_NAME = 'очнись_12.3'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.3')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,

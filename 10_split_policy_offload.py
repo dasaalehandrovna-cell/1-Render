@@ -1589,10 +1589,20 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             _SPLIT_STATE['redis_fallback_last_ok'] = _split_time.time()
             _SPLIT_STATE['redis_fallback_last_error'] = 'newer Redis snapshot preserved'
             return True
+        _r79_time_fn=globals().get('_r79_redis_daily_time')
+        _r79_daily_time=str(_r79_time_fn(False) if callable(_r79_time_fn) else '04:00')
+        try:
+            _r79_local_date=now_local().date().isoformat()
+        except Exception:
+            _r79_local_date=_split_time.strftime('%Y-%m-%d',_split_time.localtime())
         meta = {
             'revision': revision, 'size': len(payload), 'sha256': digest,
             'saved_at': _split_time.time(), 'event_cutoff_score': float(capture_started),
-            'reason': str(reason or '')[:160], 'source': 'fast-r64', 'schema': 2,
+            'reason': str(reason or '')[:160], 'source': 'fast-r79', 'schema': 3,
+            'tail_schema': 1, 'tail_encoding': 'gzip-json',
+            'tail_prefix': str(_split_os.getenv('WORKER_R32_STATE_EVENT_PREFIX','vys262:state_events:r32') or 'vys262:state_events:r32').strip(),
+            'daily_local_date': _r79_local_date,
+            'daily_time': _r79_daily_time,
         }
         pipe = client.pipeline(transaction=True)
         pipe.set(key, payload)
@@ -1613,6 +1623,24 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             meta_obj = _split_json.loads(meta_back) if isinstance(meta_back, str) and meta_back else {}
             if str((meta_obj or {}).get('sha256') or '') != digest:
                 raise RuntimeError('Redis verify: meta sha256 mismatch')
+        # FULL now contains every mutation committed at/before capture_started.
+        # Prune only that covered part of the Redis TAIL; newer events remain.
+        try:
+            prefix=str(meta.get('tail_prefix') or 'vys262:state_events:r32')
+            index_key=prefix+':index'
+            while True:
+                old_ids=client.zrangebyscore(index_key,'-inf',float(capture_started),start=0,num=500) or []
+                if not old_ids: break
+                texts=[x.decode('utf-8','replace') if isinstance(x,(bytes,bytearray)) else str(x) for x in old_ids]
+                pp=client.pipeline(transaction=False)
+                if texts: pp.delete(*[f'{prefix}:event:{eid}' for eid in texts])
+                if texts: pp.zrem(index_key,*texts)
+                pp.execute()
+                if len(texts)<500: break
+            client.delete('per:r43:front:state_events')
+            client.delete(key+':deltas_v1')
+        except Exception as _r79_prune_exc:
+            _SPLIT_STATE['redis_tail_prune_error']=f'{type(_r79_prune_exc).__name__}: {str(_r79_prune_exc)[:160]}'
         _SPLIT_STATE['redis_fallback_last_ok'] = _split_time.time()
         _SPLIT_STATE['redis_fallback_last_error'] = ''
         _SPLIT_STATE['redis_fallback_last_size'] = len(payload)
@@ -4794,7 +4822,7 @@ def _r60_redis_mode_label(st):
     if st.get('switching'):
         return '⏳ ПЕРЕКЛЮЧЕНИЕ'
     if st.get('enabled'):
-        return '🟢 CACHE ON'
+        return '🟢 FULL+TAIL ON'
     return '⚪ RUNTIME OFF'
 
 
@@ -4813,7 +4841,7 @@ def _r60_redis_menu_text(extra=''):
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
         f'FAST runtime={"ON" if enabled else "OFF"}',
         f'Режим={_r60_redis_mode_label(st)}',
-        'Роль=фон/кэш/outbox; SQLite остаётся основной базой',
+        f'Роль=Redis recovery: FULL SQLite 1×/сутки ({_r79_redis_daily_time(False) if "_r79_redis_daily_time" in globals() else "04:00"}) + логический TAIL; live SQLite остаётся основной базой',
         '',
         'Логика после рестарта:',
         '• REDIS_ENABLED=1 → Redis разрешён',
@@ -5096,6 +5124,12 @@ def _r49_apply_redis_runtime_job(enabled: bool, chat_id: int, message_id: int) -
             if callable(kv_ping) and not bool(kv_ping(force=True)):
                 raise RuntimeError('FAST KeyValue PING failed after runtime refresh')
             detail = 'FAST: Redis CACHE ON; PING=PONG · HEAVY: Redis удалён'
+            # OCH12.3: re-anchor Redis immediately after every OFF→ON transition.
+            # This closes any interval in which logical events were intentionally not mirrored.
+            _r79_boot=globals().get('_r79_daily_snapshot_now')
+            if callable(_r79_boot):
+                _bok,_bdetail=_r79_boot('bootstrap_enable')
+                detail += ' · FULL=' + ('OK' if _bok else 'FAIL:'+str(_bdetail)[:90])
         else:
             detail = 'FAST: Redis runtime OFF · HEAVY: Redis удалён'
         ok = True
@@ -6160,19 +6194,45 @@ def _r43_event_redis_client():
         return None
 
 def _r43_store_events_redis(events):
-    """Best-effort bounded Redis mirror. Never an authority in OCH12."""
+    """OCH12.3 Redis TAIL: compressed immutable logical events after the daily FULL.
+
+    Each event is stored under the canonical R32 key and indexed by created_at.
+    This is intentionally the same layout consumed by start_front.py.  The index
+    and event keys expire after a few days, while every successful daily FULL
+    prunes entries at/before its exact capture cutoff.  Redis therefore holds one
+    FULL SQLite image plus only the logical tail needed to reach current state.
+    """
     c=_r43_event_redis_client()
     if c is None: return False,'Redis unavailable'
+    good=[ev for ev in (events or []) if isinstance(ev,dict) and int(ev.get('schema') or 0)==32 and str(ev.get('event_id') or '')]
+    if not good: return True,'redis-tail events=0'
     try:
-        maxlen=max(200,min(5000,int(_r32_os.getenv('R43_REDIS_EVENT_MAXLEN','2000') or '2000')))
-        ttl=max(3600,min(604800,int(_r32_os.getenv('R43_REDIS_EVENT_TTL_SEC','86400') or '86400')))
+        prefix=str(_r32_os.getenv('WORKER_R32_STATE_EVENT_PREFIX','vys262:state_events:r32') or 'vys262:state_events:r32').strip()
+        index_key=prefix+':index'; head_key=prefix+':head'
+        ttl=max(90000,min(604800,int(_r32_os.getenv('R79_REDIS_TAIL_TTL_SEC','259200') or '259200')))
+        max_event=max(65536,min(4*1024*1024,int(_r32_os.getenv('R79_REDIS_EVENT_MAX_BYTES','2097152') or '2097152')))
         pipe=c.pipeline(transaction=False)
-        for ev in events or []:
-            raw=_r32_json.dumps(ev,ensure_ascii=False,separators=(',',':'),default=str)
-            pipe.xadd(_R43_EVENT_STREAM_KEY,{'e':raw},maxlen=maxlen,approximate=True)
-        pipe.expire(_R43_EVENT_STREAM_KEY,ttl)
+        latest_score=0.0; latest_rev=0; latest_id=''; packed_bytes=0
+        for ev in good:
+            eid=str(ev.get('event_id') or '')
+            score=float(ev.get('created_at') or _r32_time.time())
+            raw=_r32_json.dumps(ev,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
+            packed=_r32_gzip.compress(raw,compresslevel=1)
+            if len(packed)>max_event:
+                return False,f'Redis tail event too large id={eid[:50]} bytes={len(packed)} limit={max_event}'
+            pipe.set(f'{prefix}:event:{eid}',packed,ex=ttl)
+            pipe.zadd(index_key,{eid:score})
+            packed_bytes+=len(packed)
+            rev=int(ev.get('revision') or 0)
+            if (score,rev,eid)>(latest_score,latest_rev,latest_id): latest_score,latest_rev,latest_id=score,rev,eid
+        pipe.expire(index_key,ttl)
+        head={'schema':1,'score':latest_score,'revision':latest_rev,'event_id':latest_id,'saved_at':_r32_time.time(),'count':len(good),'encoding':'gzip-json'}
+        pipe.set(head_key,_r32_json.dumps(head,separators=(',',':')),ex=ttl)
+        # Remove the pre-12.3 stream copy: the canonical key+zset tail above is
+        # smaller and, unlike the old stream, is actually replayed during startup.
+        pipe.delete(_R43_EVENT_STREAM_KEY)
         pipe.execute()
-        return True,f'redis-cache events={len(events or [])} maxlen={maxlen} ttl={ttl}'
+        return True,f'redis-tail events={len(good)} packed={packed_bytes}B ttl={ttl}'
     except Exception as exc:
         return False,f'{type(exc).__name__}: {str(exc)[:180]}'
     finally:
@@ -6185,6 +6245,10 @@ def _r34_post_events(events, wire, large=False):
     if not base or not secret:
         raise RuntimeError('OCH12 HEAVY peer URL/secret not configured')
     endpoint='/internal/state/event-large' if large else '/internal/state/events'
+    # OCH12.3: mirror the immutable logical event to Redis BEFORE waiting for
+    # HEAVY.  If HEAVY is temporarily unavailable, FAST's durable outbox keeps
+    # retrying the same event_id and Redis SET/ZADD remains idempotent.
+    redis_ok,redis_detail=_r43_store_events_redis(events)
     r=requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'och12-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(120.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','90') or '90'))))
     if r.status_code==413 and not large:
         if len(events)>1:
@@ -6206,8 +6270,13 @@ def _r34_post_events(events, wire, large=False):
     if ack < max_rev:
         raise RuntimeError(f'OCH12 HEAVY durable revision behind: ack={ack} required={max_rev}')
     applied_ack=int(payload.get('applied_revision') or (ack if bool(payload.get('apply_ok',True)) else 0))
-    # Cache mirror is deliberately after the required HEAVY ACK and cannot fail the batch.
-    redis_ok,redis_detail=_r43_store_events_redis(events)
+    # When Redis runtime is ON, Redis TAIL is part of the promised recovery set.
+    # Keep the durable FAST outbox row until BOTH HEAVY and Redis have the event.
+    # A retry is safe: event_id and HEAVY application are idempotent.
+    redis_required=bool(_r61_effective_redis_url())
+    if redis_required and not redis_ok:
+        _R32_EVENT_STATE['redis_cache_ok']=False; _R32_EVENT_STATE['redis_cache_detail']=str(redis_detail)[:180]
+        raise RuntimeError('Redis TAIL mirror pending after HEAVY ACK: '+str(redis_detail)[:180])
     _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),ack)
     _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),applied_ack)
     _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events)
@@ -9113,10 +9182,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9985,7 +10054,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10024,7 +10093,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10074,7 +10143,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10097,13 +10166,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10159,7 +10228,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.2'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.3'}; live_source_index=on")
 except Exception:
     pass
 
@@ -10726,4 +10795,245 @@ def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
 
 # OCH12 FINALIZATION ONLY — FAST PURE UI release marker.
 # Webhook/ACK/navigation are isolated from persistence/logging/snapshot contention.
+# v262
+
+# ---------------------------------------------------------------------------
+# OCH12.3 / R79 — Redis daily FULL + compressed logical TAIL recovery.
+# ---------------------------------------------------------------------------
+_R79_REDIS_DAILY_DEFAULT='04:00'
+_R79_REDIS_DAILY_STATE={'thread_started':False,'running':False,'last_date':'','last_ok':0.0,'last_error':'','last_reason':'','last_size':0,'remote_check_date':'','remote_has_full':False}
+_R79_REDIS_DAILY_LOCK=__import__('threading').RLock()
+
+def _r79_redis_daily_time(create: bool=False) -> str:
+    try:
+        gs=data.setdefault('_global_settings',{}) if create else (data.get('_global_settings') or {})
+        raw=str(gs.get('redis_daily_snapshot_time_r79') or _R79_REDIS_DAILY_DEFAULT).strip()
+    except Exception:
+        raw=_R79_REDIS_DAILY_DEFAULT
+    try:
+        hh_s,mm_s=raw.split(':',1); hh=int(hh_s); mm=int(mm_s)
+        if not (0<=hh<=23 and 0<=mm<=59): raise ValueError(raw)
+        return f'{hh:02d}:{mm:02d}'
+    except Exception:
+        return _R79_REDIS_DAILY_DEFAULT
+
+def _r79_set_redis_daily_time(hh: int, mm: int) -> str:
+    hh=max(0,min(23,int(hh))); mm=max(0,min(59,int(mm)))
+    value=f'{hh:02d}:{mm:02d}'
+    try: data.setdefault('_global_settings',{})['redis_daily_snapshot_time_r79']=value
+    except Exception: pass
+    try:
+        fn=globals().get('_r31_persist_global_background')
+        if callable(fn): fn('redis_daily_snapshot_time_r79')
+        else: save_data(data,root_only=True)
+    except Exception: pass
+    try: bot_journal('r79_redis_daily_time',int(OWNER_ID or 0),f'time={value}')
+    except Exception: pass
+    return value
+
+def _r79_remote_full_meta(client=None):
+    own=False
+    try:
+        if client is None:
+            client=_r43_event_redis_client(); own=True
+        if client is None: return {}
+        _,meta_key=_split_redis_snapshot_keys_v266(); raw=client.get(meta_key)
+        if isinstance(raw,(bytes,bytearray)): raw=raw.decode('utf-8','replace')
+        obj=_split_json.loads(raw) if raw else {}
+        return obj if isinstance(obj,dict) else {}
+    except Exception:
+        return {}
+    finally:
+        if own:
+            try: client.close()
+            except Exception: pass
+
+def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
+    with _R79_REDIS_DAILY_LOCK:
+        if _R79_REDIS_DAILY_STATE.get('running'):
+            return False,'daily Redis FULL already running'
+        _R79_REDIS_DAILY_STATE['running']=True
+    try:
+        st=_r49_redis_runtime_state()
+        if not st.get('master_enabled') or not st.get('configured') or not st.get('enabled'):
+            raise RuntimeError('Redis FAST runtime OFF or REDIS_URL unavailable')
+        now=now_local(); date_key=now.date().isoformat(); at=_r79_redis_daily_time(False)
+        ok=bool(_split_cache_snapshot_to_redis_v266(f'{reason}:{date_key}@{at}',verify=True,use_render_url=False))
+        if not ok:
+            raise RuntimeError(str(_SPLIT_STATE.get('redis_fallback_last_error') or 'Redis FULL write failed'))
+        size=int(_SPLIT_STATE.get('redis_fallback_last_size') or 0)
+        with _R79_REDIS_DAILY_LOCK:
+            _R79_REDIS_DAILY_STATE.update({'last_date':date_key,'last_ok':_split_time.time(),'last_error':'','last_reason':str(reason),'last_size':size})
+        try: bot_journal('r79_redis_daily_full',int(OWNER_ID or 0),f'ok=1 date={date_key} time={at} size={size} reason={reason}')
+        except Exception: pass
+        return True,f'FULL сохранён · {size/1024/1024:.2f} МБ · {date_key} {at}'
+    except Exception as exc:
+        detail=f'{type(exc).__name__}: {str(exc)[:240]}'
+        with _R79_REDIS_DAILY_LOCK: _R79_REDIS_DAILY_STATE['last_error']=detail
+        try: bot_journal('r79_redis_daily_full',int(OWNER_ID or 0),f'ok=0 {detail}')
+        except Exception: pass
+        return False,detail
+    finally:
+        with _R79_REDIS_DAILY_LOCK: _R79_REDIS_DAILY_STATE['running']=False
+
+def _r79_daily_scheduler_loop():
+    _split_time.sleep(12.0)
+    while True:
+        try:
+            st=_r49_redis_runtime_state()
+            if st.get('master_enabled') and st.get('configured') and st.get('enabled'):
+                now=now_local(); today=now.date().isoformat(); hhmm=_r79_redis_daily_time(False)
+                hh,mm=[int(x) for x in hhmm.split(':',1)]
+                due=(now.hour,now.minute)>=(hh,mm)
+                with _R79_REDIS_DAILY_LOCK:
+                    last_date=str(_R79_REDIS_DAILY_STATE.get('last_date') or '')
+                    checked=str(_R79_REDIS_DAILY_STATE.get('remote_check_date') or '')
+                    has_full=bool(_R79_REDIS_DAILY_STATE.get('remote_has_full'))
+                if last_date!=today and checked!=today:
+                    meta=_r79_remote_full_meta(); remote_date=str((meta or {}).get('daily_local_date') or '')
+                    # A pre-12.3 FULL is deliberately treated as absent because it
+                    # has no provable replay tail and startup will reject it anyway.
+                    has_full=bool(meta) and int((meta or {}).get('tail_schema') or 0)>=1
+                    with _R79_REDIS_DAILY_LOCK:
+                        _R79_REDIS_DAILY_STATE['remote_check_date']=today
+                        _R79_REDIS_DAILY_STATE['remote_has_full']=has_full
+                        if remote_date==today: _R79_REDIS_DAILY_STATE['last_date']=today
+                    if remote_date==today: last_date=today
+                # First deployment bootstrap: do not spend hours with TAIL-only Redis.
+                should_bootstrap=(not has_full and last_date!=today)
+                if (should_bootstrap or (due and last_date!=today)) and not _och111_hot_ui_busy():
+                    _r79_daily_snapshot_now('bootstrap' if should_bootstrap else 'daily')
+        except Exception as exc:
+            with _R79_REDIS_DAILY_LOCK: _R79_REDIS_DAILY_STATE['last_error']=f'scheduler {type(exc).__name__}: {str(exc)[:180]}'
+        _split_time.sleep(30.0)
+
+def _r79_start_daily_scheduler():
+    with _R79_REDIS_DAILY_LOCK:
+        if _R79_REDIS_DAILY_STATE.get('thread_started'): return True
+        _R79_REDIS_DAILY_STATE['thread_started']=True
+    t=_split_threading.Thread(target=_r79_daily_scheduler_loop,daemon=True,name='redis-daily-full-r79')
+    t.start(); return True
+
+def _r79_redis_schedule_button():
+    return IB('🕓 Redis FULL '+_r79_redis_daily_time(False),callback_data='r79:redis:sched')
+
+def _r79_redis_schedule_text(extra=''):
+    now=now_local(); at=_r79_redis_daily_time(False); hh,mm=[int(x) for x in at.split(':',1)]
+    target=now.replace(hour=hh,minute=mm,second=0,microsecond=0)
+    if target<=now: target=target+__import__('datetime').timedelta(days=1)
+    with _R79_REDIS_DAILY_LOCK: st=dict(_R79_REDIS_DAILY_STATE)
+    lines=['🕓 REDIS · СУТОЧНЫЙ FULL + TAIL','',f'FULL SQLite: 1 раз в сутки в {at}',f'Следующий плановый запуск: {target.strftime("%d.%m.%Y %H:%M")}',f'TAIL: каждое логическое изменение → gzip JSON в Redis','После нового FULL старый покрытый TAIL удаляется.','При старте: FULL → весь TAIL после cutoff → проверка целостности.','Если TAIL неполный/повреждён → Redis отклоняется, используется HEAVY/MEGA.','',f'Последний FULL этого процесса: {st.get("last_date") or "—"}',f'Последняя ошибка: {st.get("last_error") or "—"}']
+    if extra: lines+=['',str(extra)[:600]]
+    return window_mark('\n'.join(lines),'Ф89')
+
+def _r79_redis_schedule_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=4)
+    kb.row(IB('🕓 Выбрать время',callback_data='r79:redis:hour'))
+    kb.row(IB('📸 FULL сейчас',callback_data='r79:redis:now'),IB('🧠 Redis',callback_data='r60:redis:menu'))
+    kb.row(IB('🔙 В Инфо',callback_data='r29:info:main'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+def _r79_redis_hour_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=4); row=[]
+    for h in range(24):
+        row.append(IB(f'{h:02d}',callback_data=f'r79:redis:h:{h}'))
+        if len(row)==4: kb.row(*row); row=[]
+    if row: kb.row(*row)
+    kb.row(IB('🔙 Назад',callback_data='r79:redis:sched'))
+    return kb
+
+def _r79_redis_minute_keyboard(hour:int):
+    kb=types.InlineKeyboardMarkup(row_width=4); row=[]
+    for m in range(0,60,5):
+        row.append(IB(f'{hour:02d}:{m:02d}',callback_data=f'r79:redis:set:{hour}:{m}'))
+        if len(row)==4: kb.row(*row); row=[]
+    if row: kb.row(*row)
+    kb.row(IB('🔙 Часы',callback_data='r79:redis:hour'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+_R79_INFO_INJECT_CORE=_r49_info_inject_redis_toggle
+def _r49_info_inject_redis_toggle(kb, chat_id: int):
+    kb=_R79_INFO_INJECT_CORE(kb,chat_id) if callable(_R79_INFO_INJECT_CORE) else kb
+    if int(chat_id)!=int(OWNER_ID or 0): return kb
+    try:
+        rows_fn=globals().get('_v177_info_rows'); set_fn=globals().get('_v177_info_set_rows')
+        rows=list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb,'keyboard',None) or [])
+        rows=[list(row or []) for row in rows if not any(_r29_button_callback(b)=='r79:redis:sched' for b in (row or []))]
+        insert_at=len(rows)
+        for i,row in enumerate(rows):
+            if any(_r29_button_callback(b)=='r60:redis:menu' for b in (row or [])):
+                insert_at=i+1; break
+        rows.insert(insert_at,[_r79_redis_schedule_button()])
+        if callable(set_fn): return set_fn(kb,rows)
+        setattr(kb,'keyboard',rows)
+    except Exception:
+        try: kb.row(_r79_redis_schedule_button())
+        except Exception: pass
+    return kb
+
+def _r79_manual_snapshot_job(chat_id,message_id):
+    ok,detail=_r79_daily_snapshot_now('manual_daily')
+    try:
+        fast_ui_edit_message_text(int(chat_id),int(message_id),_r79_redis_schedule_text(('✅ ' if ok else '❌ ')+detail),reply_markup=_r79_redis_schedule_keyboard(),purpose='r79_redis_full_now')
+    except Exception: pass
+
+_R79_CONTOUR_CORE=contour_callback_guard
+def _r79_contour_callback_guard(call,resolved):
+    raw=str(resolved or '')
+    if raw.startswith('r79:redis:'):
+        try:
+            cid=int(call.message.chat.id); uid=int(getattr(getattr(call,'from_user',None),'id',0) or 0); mid=int(call.message.message_id)
+        except Exception: return True
+        if cid!=int(OWNER_ID or 0) or uid!=int(OWNER_ID or 0):
+            try: bot.answer_callback_query(call.id,'Только владелец может менять Redis FULL.',show_alert=True)
+            except Exception: pass
+            return True
+        if raw=='r79:redis:sched':
+            try: bot.answer_callback_query(call.id)
+            except Exception: pass
+            safe_edit(bot,call,_r79_redis_schedule_text(),reply_markup=_r79_redis_schedule_keyboard()); return True
+        if raw=='r79:redis:hour':
+            try: bot.answer_callback_query(call.id,'Выберите час')
+            except Exception: pass
+            safe_edit(bot,call,window_mark('🕓 REDIS FULL · ВЫБЕРИТЕ ЧАС\n\nПосле часа выберите минуты.','Ф89'),reply_markup=_r79_redis_hour_keyboard()); return True
+        if raw.startswith('r79:redis:h:'):
+            try: h=max(0,min(23,int(raw.rsplit(':',1)[-1])))
+            except Exception: h=4
+            try: bot.answer_callback_query(call.id,'Теперь минуты')
+            except Exception: pass
+            safe_edit(bot,call,window_mark(f'🕓 REDIS FULL · {h:02d}:__\n\nВыберите минуты.','Ф89'),reply_markup=_r79_redis_minute_keyboard(h)); return True
+        if raw.startswith('r79:redis:set:'):
+            try:
+                _,_,_,hs,ms=raw.split(':',4); value=_r79_set_redis_daily_time(int(hs),int(ms))
+            except Exception: value=_r79_redis_daily_time(False)
+            try: bot.answer_callback_query(call.id,'Время сохранено: '+value)
+            except Exception: pass
+            safe_edit(bot,call,_r79_redis_schedule_text('✅ Новое время сохранено: '+value),reply_markup=_r79_redis_schedule_keyboard()); return True
+        if raw=='r79:redis:now':
+            st=_r49_redis_runtime_state()
+            if not st.get('enabled'):
+                try: bot.answer_callback_query(call.id,'Сначала включите Redis FAST.',show_alert=True)
+                except Exception: pass
+                return True
+            try: bot.answer_callback_query(call.id,'Создаю FULL…')
+            except Exception: pass
+            safe_edit(bot,call,_r79_redis_schedule_text('⏳ Создаю и проверяю полный SQLite…'),reply_markup=_r79_redis_schedule_keyboard())
+            pool=globals().get('GENERAL_TASK_POOL')
+            queued=bool(pool and pool.submit_unique('r79-redis-full-now',_r79_manual_snapshot_job,cid,mid))
+            if not queued:
+                try: _split_threading.Thread(target=_r79_manual_snapshot_job,args=(cid,mid),daemon=True,name='r79-full-now').start()
+                except Exception: pass
+            return True
+        return True
+    return bool(_R79_CONTOUR_CORE(call,resolved)) if callable(_R79_CONTOUR_CORE) else False
+
+contour_callback_guard=_r79_contour_callback_guard
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r79:redis:*','Ф89')
+    _r79_start_daily_scheduler()
+    bot_journal('r79_redis_full_tail_loaded',int(OWNER_ID or 0),'daily FULL configurable in Info; compressed canonical R32 tail; startup FULL+TAIL contract')
+except Exception:
+    pass
+
+
 # v262

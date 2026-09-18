@@ -1,12 +1,13 @@
 # v262
 #!/usr/bin/env python3
-"""Render #1 launcher: R68 local crash cache, then Redis/MEGA recovery, then FAST.
+"""Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-R68 recovery policy:
-- same-container local cache is tried only when the main SQLite is missing/invalid;
-- Redis remains the first cross-deploy fast restore source; MEGA is a strict-root fallback;
-- after startup, FAST logs out of MEGA and removes MEGA credentials from its process;
-- all normal runtime MEGA work is therefore delegated to Render #2 / HEAVY.
+OCH12.3 recovery policy:
+- same-container local cache is only a crash breadcrumb;
+- Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
+- legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
+- MEGA remains the strict fallback through the configured root;
+- runtime MEGA work stays delegated to Render #2 / HEAVY by default.
 """
 from __future__ import annotations
 
@@ -788,12 +789,13 @@ def _redis_render_url() -> str:
 
 
 def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
-    """R64: restore FAST directly from the shared Render Redis/Valkey.
+    """OCH12.3: restore Redis daily FULL and replay its complete compressed TAIL.
 
-    Recovery image = immutable full gzip SQLite snapshot + all retained R32 logical
-    state events.  Redis is contacted directly by FAST; HEAVY is not required for
-    startup recovery.  Event replay is idempotent per shard through the existing
-    r32_state_revisions table.
+    A FULL snapshot is never considered current by itself.  The metadata must carry
+    the OCH12.3 tail contract and every indexed logical event after the exact FULL
+    cutoff must be readable and valid.  Restoration is assembled in a temporary
+    candidate DB first, so a stale/corrupt Redis image can never overwrite an
+    already-valid local SQLite before MEGA fallback gets a chance.
     """
     url = _redis_render_url()
     if not url:
@@ -806,96 +808,137 @@ def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
     key = str(os.getenv('WORKER_REDIS_SNAPSHOT_KEY', 'vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
     meta_key = key + ':meta'
     prefix = str(os.getenv('WORKER_R32_STATE_EVENT_PREFIX', 'vys262:state_events:r32') or 'vys262:state_events:r32').strip()
-    index_key = prefix + ':index'
+    index_key = prefix + ':index'; head_key = prefix + ':head'
     max_events = max(1000, min(500000, int(os.getenv('REDIS_RESTORE_MAX_EVENTS', '200000') or '200000')))
     connect_timeout = max(0.5, min(10.0, float(os.getenv('REDIS_RESTORE_CONNECT_TIMEOUT_SEC', '3') or '3')))
     socket_timeout = max(2.0, min(60.0, float(os.getenv('REDIS_RESTORE_SOCKET_TIMEOUT_SEC', '15') or '15')))
     work = Path(tempfile.mkdtemp(prefix='v262_fast_startup_redis_'))
     gz_path = work / 'redis_latest.sqlite3.gz'
-    started = time.monotonic()
+    candidate = work / 'redis_candidate.sqlite3'
+    started = time.monotonic(); client = None
     try:
-        client = _redis_mod.Redis.from_url(
-            url,
-            socket_connect_timeout=connect_timeout,
-            socket_timeout=socket_timeout,
-            health_check_interval=30,
-        )
+        client = _redis_mod.Redis.from_url(url, socket_connect_timeout=connect_timeout, socket_timeout=socket_timeout, health_check_interval=30)
         if not client.ping():
             return False, 'Redis PING returned false'
         payload = client.get(key)
         if not payload:
-            return False, f'Redis full snapshot missing key={key}'
+            return False, f'Redis daily FULL missing key={key}'
         max_bytes = max(1, min(128, int(os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB', '16') or '16'))) * 1024 * 1024
         if len(payload) > max_bytes:
-            return False, f'Redis snapshot too large: {len(payload)} > {max_bytes}'
+            return False, f'Redis FULL too large: {len(payload)} > {max_bytes}'
         gz_path.write_bytes(bytes(payload))
-        ok, install_detail = _install_gzip_db(gz_path, target)
+        ok, install_detail = _install_gzip_db(gz_path, candidate)
         if not ok:
-            return False, 'Redis snapshot invalid: ' + str(install_detail)[:320]
+            return False, 'Redis FULL invalid: ' + str(install_detail)[:320]
 
         meta = {}
         try:
             raw_meta = client.get(meta_key)
-            if isinstance(raw_meta, (bytes, bytearray)):
-                raw_meta = raw_meta.decode('utf-8', 'replace')
-            if raw_meta:
-                meta = json.loads(raw_meta) if isinstance(raw_meta, str) else {}
-        except Exception:
-            meta = {}
+            if isinstance(raw_meta, (bytes, bytearray)): raw_meta = raw_meta.decode('utf-8', 'replace')
+            if raw_meta: meta = json.loads(raw_meta) if isinstance(raw_meta, str) else {}
+        except Exception: meta = {}
+        tail_schema = int((meta or {}).get('tail_schema') or 0)
+        if tail_schema < 1 and not _bool('REDIS_ALLOW_LEGACY_FULL_RESTORE', False):
+            return False, 'Redis FULL is legacy and has no complete TAIL contract; use HEAVY/MEGA fallback'
+        try: cutoff = float((meta or {}).get('event_cutoff_score') or 0.0)
+        except Exception: cutoff = 0.0
+        if cutoff <= 0.0:
+            return False, 'Redis FULL metadata has no valid event_cutoff_score'
 
-        # R64: replay only the event tail newer than this exact full snapshot.
-        # Older R63 snapshots have no cutoff and safely fall back to the full idempotent index.
-        try:
-            cutoff = float((meta or {}).get('event_cutoff_score') or 0.0)
-        except Exception:
-            cutoff = 0.0
-        try:
-            total = int(client.zcount(index_key, f'({cutoff}', '+inf') or 0) if cutoff > 0 else int(client.zcard(index_key) or 0)
-        except Exception:
-            total = 0
-        if total > max_events:
-            return False, f'Redis event tail too large for safe bounded replay: {total} > {max_events}'
-        applied = stale = decoded = missing = 0
+        applied = stale = decoded = missing = invalid = 0; total_seen = 0
+        replay_from = cutoff; stable_head = cutoff
         page = max(100, min(5000, int(os.getenv('REDIS_RESTORE_EVENT_PAGE', '1000') or '1000')))
-        for offset in range(0, total, page):
-            if cutoff > 0:
-                ids = client.zrangebyscore(index_key, f'({cutoff}', '+inf', start=offset, num=page) or []
-            else:
-                ids = client.zrange(index_key, offset, min(total - 1, offset + page - 1)) or []
-            if not ids:
-                continue
-            id_text = [x.decode('utf-8', 'replace') if isinstance(x, (bytes, bytearray)) else str(x) for x in ids]
-            raws = client.mget([f'{prefix}:event:{eid}' for eid in id_text]) or []
-            events = []
-            for raw in raws:
-                if not raw:
-                    missing += 1
-                    continue
-                try:
-                    if isinstance(raw, (bytes, bytearray)):
-                        raw = raw.decode('utf-8')
-                    ev = json.loads(raw)
-                    if _r32_event_valid(ev):
-                        events.append(ev)
-                        decoded += 1
-                except Exception:
-                    continue
-            if events:
-                a, st = _apply_r32_events(target, events)
-                applied += int(a or 0)
-                stale += int(st or 0)
+        for _round in range(4):
+            head = {}
+            try:
+                raw_head = client.get(head_key)
+                if isinstance(raw_head, (bytes, bytearray)): raw_head = raw_head.decode('utf-8', 'replace')
+                if raw_head: head = json.loads(raw_head) if isinstance(raw_head, str) else {}
+            except Exception: head = {}
+            try: head_score = max(replay_from, float((head or {}).get('score') or replay_from))
+            except Exception: head_score = replay_from
+            if head_score <= replay_from + 0.0000001:
+                stable_head = replay_from
+                break
+            try: total = int(client.zcount(index_key, f'({replay_from}', head_score) or 0)
+            except Exception: total = 0
+            if total > max_events:
+                return False, f'Redis TAIL too large for bounded replay: {total} > {max_events}'
+            total_seen += total
+            offset = 0; round_max_score = replay_from
+            while offset < total:
+                ids = client.zrangebyscore(index_key, f'({replay_from}', head_score, start=offset, num=page, withscores=True) or []
+                if not ids: break
+                id_text=[]; scores=[]
+                for item in ids:
+                    member,score=item
+                    id_text.append(member.decode('utf-8','replace') if isinstance(member,(bytes,bytearray)) else str(member)); scores.append(float(score))
+                raws = client.mget([f'{prefix}:event:{eid}' for eid in id_text]) or []
+                events=[]
+                for raw in raws:
+                    if not raw:
+                        missing += 1; continue
+                    try:
+                        b=bytes(raw) if isinstance(raw,(bytes,bytearray)) else str(raw).encode('utf-8')
+                        if b[:2] == b'\x1f\x8b': b=gzip.decompress(b)
+                        ev=json.loads(b.decode('utf-8'))
+                        if _r32_event_valid(ev): events.append(ev); decoded += 1
+                        else: invalid += 1
+                    except Exception: invalid += 1
+                if missing or invalid:
+                    return False, f'Redis TAIL incomplete: missing={missing} invalid={invalid} after cutoff={cutoff:.6f}'
+                if events:
+                    a,st=_apply_r32_events(candidate,events); applied+=int(a or 0); stale+=int(st or 0)
+                if scores: round_max_score=max(round_max_score,max(scores))
+                offset += len(ids)
+            if total and round_max_score + 0.0000001 < head_score:
+                return False, f'Redis TAIL index gap: reached={round_max_score:.6f} head={head_score:.6f}'
+            replay_from = head_score; stable_head = head_score
+            try:
+                raw_head2=client.get(head_key)
+                if isinstance(raw_head2,(bytes,bytearray)): raw_head2=raw_head2.decode('utf-8','replace')
+                head2=json.loads(raw_head2) if raw_head2 else {}
+                head2_score=float((head2 or {}).get('score') or replay_from)
+            except Exception: head2_score=replay_from
+            if head2_score <= replay_from + 0.0000001: break
+        else:
+            return False, 'Redis TAIL kept advancing during startup; use HEAVY/MEGA for a stable restore'
 
-        if not _db_valid(target):
-            return False, 'SQLite invalid after Redis snapshot/event replay'
-        final_rev = _db_revision(target)
+        if not _db_valid(candidate):
+            return False, 'SQLite invalid after Redis FULL+TAIL replay'
+        # Force WAL content into the candidate main file before the atomic replace.
+        try:
+            con=sqlite3.connect(str(candidate),timeout=10)
+            try: con.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()
+            finally: con.close()
+        except Exception as exc:
+            return False, f'Redis candidate checkpoint failed: {type(exc).__name__}: {str(exc)[:180]}'
+
+        local_rev = _db_revision(target) if _db_valid(target) else 0.0
+        remote_freshness = max(float((meta or {}).get('revision') or 0.0), float((meta or {}).get('saved_at') or 0.0), float(stable_head or 0.0))
+        if local_rev > remote_freshness + 0.000001:
+            return False, f'valid local SQLite is newer than Redis FULL+TAIL local={local_rev:.6f} redis={remote_freshness:.6f}'
+        final_tmp=target.with_suffix(target.suffix+'.redis-final.tmp')
+        target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(candidate,final_tmp)
+        if not _db_valid(final_tmp):
+            return False,'Redis FULL+TAIL candidate failed final validation'
+        os.replace(final_tmp,target)
+        for suffix in ('-wal','-shm'):
+            try: Path(str(target)+suffix).unlink(missing_ok=True)
+            except Exception: pass
+        final_rev=_db_revision(target); max_r32=_r32_max_revision(target)
         return True, (
-            f'Redis startup restore OK snapshot={len(payload)}B meta_revision={float((meta or {}).get("revision") or 0.0):.6f} '
-            f'event_cutoff={cutoff:.6f} events_tail={total} replayed={decoded} applied={applied} stale={stale} missing={missing} '
+            f'Redis startup FULL+TAIL OK snapshot={len(payload)}B meta_revision={float((meta or {}).get("revision") or 0.0):.6f} '
+            f'event_cutoff={cutoff:.6f} tail_head={stable_head:.6f} events_tail={total_seen} replayed={decoded} '
+            f'applied={applied} stale={stale} missing={missing} invalid={invalid} r32max={max_r32} '
             f'final_revision={final_rev:.6f} elapsed={time.monotonic()-started:.2f}s'
         )
     except Exception as exc:
-        return False, f'Redis restore {type(exc).__name__}: {str(exc)[:320]}'
+        return False, f'Redis FULL+TAIL restore {type(exc).__name__}: {str(exc)[:320]}'
     finally:
+        try:
+            if client is not None: client.close()
+        except Exception: pass
         shutil.rmtree(work, ignore_errors=True)
 
 def _scrub_fast_runtime_mega_credentials() -> None:
@@ -927,7 +970,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'R68_LOCAL_CACHE_REDIS_MEGA',
+        'policy': 'OCH12.3_LOCAL_REDIS_FULL_TAIL_MEGA',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -977,11 +1020,11 @@ def main():
         redis_restored = False
         if redis_master_enabled and redis_url_present:
             trace['redis_contacted'] = True
-            print('[SPLIT FRONT] R64 REDIS startup restore start', flush=True)
+            print('[SPLIT FRONT] OCH12.3 REDIS FULL+TAIL startup restore start', flush=True)
             redis_ok, redis_detail = _restore_from_redis_startup(target)
             trace['redis_ok'] = bool(redis_ok)
             trace['redis_detail'] = str(redis_detail)[:900]
-            print(f'[SPLIT FRONT] R64 REDIS startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.3 REDIS FULL+TAIL startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
             if redis_ok:
                 redis_restored = True
                 trace['base_source'] = 'REDIS'
@@ -992,7 +1035,7 @@ def main():
         if redis_restored:
             trace['mega_contacted'] = False
             trace['mega_ok'] = False
-            trace['mega_detail'] = 'MEGA startup restore skipped because Redis restore succeeded'
+            trace['mega_detail'] = 'MEGA startup restore skipped because verified Redis FULL+TAIL restore succeeded'
         elif local_cache_restored and _db_valid(target):
             # A verified same-container snapshot + idempotent event replay is the
             # fastest crash recovery. Do not stall this path on MEGA probes.
