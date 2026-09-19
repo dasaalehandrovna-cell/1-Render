@@ -5898,6 +5898,12 @@ def run_manual_mega_restore(chat_id: int):
         ok, detail, applied_deltas = compact_fn()
         if not ok:
             raise RuntimeError(detail)
+        os.environ['SPLIT_RECOVERY_SAFE_MODE']='0'
+        os.environ.pop('SPLIT_RECOVERY_SAFE_REASON', None)
+        try:
+            runtime_event('recovery_safe_mode_cleared_r82','verified compact MEGA restore applied','INFO')
+        except Exception:
+            pass
         source = 'compact_v80 exact (head + latest + tail)'
         restored = load_data()
         data.clear()

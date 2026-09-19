@@ -9218,10 +9218,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10090,7 +10090,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10129,7 +10129,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10179,7 +10179,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10202,13 +10202,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10264,7 +10264,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'}; live_source_index=on")
 except Exception:
     pass
 
@@ -10834,6 +10834,12 @@ def _r40_status_edit(chat_id,msg_id,text,purpose='r40_file_status'):
 # v262
 
 # ---------------------------------------------------------------------------
+# OCH12.7 / R82 — recovery safe-mode write fence.
+# ---------------------------------------------------------------------------
+def _r82_recovery_safe_mode() -> bool:
+    return str(_split_os.getenv('SPLIT_RECOVERY_SAFE_MODE','0') or '0').strip().casefold() in {'1','true','yes','on'}
+
+# ---------------------------------------------------------------------------
 # OCH12.3 / R79 — Redis daily FULL + compressed logical TAIL recovery.
 # ---------------------------------------------------------------------------
 _R79_REDIS_DAILY_DEFAULT='04:00'
@@ -10885,6 +10891,8 @@ def _r79_remote_full_meta(client=None):
             except Exception: pass
 
 def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
+    if _r82_recovery_safe_mode():
+        return False,'RECOVERY SAFE MODE: Redis FULL write fenced until verified restore'
     with _R79_REDIS_DAILY_LOCK:
         if _R79_REDIS_DAILY_STATE.get('running'):
             return False,'daily Redis FULL already running'
@@ -11119,6 +11127,8 @@ def _r80_compact_paths():
     } if root else {}
 
 def _r80_mega_runtime_ready():
+    if _r82_recovery_safe_mode():
+        return False
     return bool(_r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
 
 def _r80_sqlite_freshness(path):
@@ -11159,7 +11169,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.6'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11315,6 +11325,9 @@ def _r80_mark_tail_dirty():
     with _R80_MEGA_LOCK: _R80_MEGA_STATE['tail_dirty']=True
 
 def _r80_queue_compact_full(reason='route-switch'):
+    if _r82_recovery_safe_mode():
+        with _R80_MEGA_LOCK: _R80_MEGA_STATE['last_error']='RECOVERY SAFE MODE: compact FULL write fenced'
+        return False
     pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
     try:
         if pool is not None and hasattr(pool,'submit_unique'):
@@ -11501,6 +11514,11 @@ def _r71_fast_mega_ready():
 # remains pending until MEGA compact tail covers the revision.
 _R80_HEAVY_POST_EVENTS=_r34_post_events
 def _r34_post_events(events,wire,large=False):
+    if _r82_recovery_safe_mode():
+        # No trusted business state exists yet; allowed recovery/control commands
+        # must not create a Redis/MEGA logical tail that could later be mistaken
+        # for post-snapshot business history.
+        return True
     if not _r71_route_is_fast('durability'):
         return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
     redis_ok,redis_detail=_r43_store_events_redis(events)
@@ -11584,6 +11602,8 @@ def _split_send_delta_v267(reason='change'):
 # timer; MEGA state is protected by FULL+TAIL and is never called synchronously here.
 _R80_HEAVY_CAPSULE_PUSH=_r20_capsule_push_now
 def _r20_capsule_push_now(reason='state_change'):
+    if _r82_recovery_safe_mode():
+        return True
     if not _r71_route_is_fast('durability'):
         return _R80_HEAVY_CAPSULE_PUSH(reason)
     global _R20_CAPSULE_LAST_GEN_SENT,_R20_CAPSULE_LAST_SEQ_SENT
@@ -11682,6 +11702,7 @@ def _r70_routes_text():
         f'📸 FULL / compact tail checkpoints — {_r71_owner_html("checkpoints")}','',
         f'R2: {"✅ доступен" if worker_ok else "⛔ недоступен"} · HTTP {int(_SPLIT_STATE.get("peer_status") or 0)} · очередь {int(h.get("queue_size") or 0)}',
         f'MEGA master Render #1: {"✅ MEGA_ENABLED=1" if master else "⛔ MEGA_ENABLED=0"}',
+        f'Recovery Safe Mode: {"⚠️ ВКЛ" if _r82_recovery_safe_mode() else "✅ выкл"}',
         f'R1 compact MEGA: FULL {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")} · tail {int(ms.get("last_tail_count") or 0)} · maxrev {int(ms.get("tail_max_revision") or 0)}',
         f'R1 compact error: {str(ms.get("last_error") or "нет")[:180]}','',
         '🚨 Если R2 умер: нажмите «ВСЁ → R1». State-events перестанут ждать R2; Redis остаётся быстрым TAIL, MEGA пишется пакетно в фоне.',

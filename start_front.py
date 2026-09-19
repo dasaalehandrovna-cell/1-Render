@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-OCH12.6 recovery policy:
+OCH12.7 recovery policy:
 - same-container local cache is only a crash breadcrumb;
 - Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
 - legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
@@ -967,7 +967,7 @@ def _r80_get_exact(remote: str, dest: Path, timeout: int) -> tuple[Path|None,str
 
 
 def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tuple[bool,str,str]:
-    """OCH12.6 bounded startup compare/restore. Never scans MEGA trees.
+    """OCH12.7 bounded startup compare/restore. Never scans MEGA trees.
 
     Returns (ok, detail, action), where action is KEEP or RESTORE.
     If a verified Redis/local DB exists, only the tiny head.json is required to
@@ -1073,7 +1073,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'OCH12.6_REDIS_FIRST_COMPACT_MEGA_COMPARE',
+        'policy': 'OCH12.7_REDIS_FIRST_COMPACT_MEGA_FAILOPEN',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -1094,8 +1094,9 @@ def main():
         if mega_master_enabled:
             strict_root = _canonical_mega_root()
             if not strict_root:
-                raise RuntimeError('R58: MEGA_ENABLED=1 requires explicit MEGA_BACKUP_DIR in Render; no fallback root is allowed')
-            trace['mega_strict_root'] = strict_root
+                trace['mega_config_error'] = 'MEGA_ENABLED=1 but MEGA_BACKUP_DIR is empty'
+            else:
+                trace['mega_strict_root'] = strict_root
         # R68: same-container local cache is a fast crash breadcrumb only.
         # It is tried only when the main SQLite is missing/invalid and never replaces
         # Redis/MEGA as cross-deploy durability.
@@ -1135,14 +1136,14 @@ def main():
             trace['redis_ok'] = False
             trace['redis_detail'] = 'Redis startup restore skipped: REDIS_ENABLED=0 or URL missing'
 
-        # OCH12.6: Redis/local is assembled first. When MEGA is enabled, compare
+        # OCH12.7: Redis/local is assembled first. When MEGA is enabled, compare
         # against one tiny fixed head.json. No mega-find, generation scan or directory walk.
         current_valid=bool(_db_valid(target))
         if mega_master_enabled:
             trace['mega_contacted']=True
             ok,detail,action=_r80_compact_mega_compare_restore(target,have_current=current_valid)
             trace['mega_ok']=bool(ok); trace['mega_detail']=str(detail)[:900]; trace['mega_action']=str(action)
-            print(f'[SPLIT FRONT] OCH12.6 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
+            print(f'[SPLIT FRONT] OCH12.7 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
             if ok and action=='RESTORE':
                 trace['base_source']='MEGA_COMPACT'
             elif current_valid:
@@ -1150,8 +1151,16 @@ def main():
                 elif local_cache_restored: trace['base_source']='LOCAL_RUNTIME_CACHE_VERIFIED_OR_MEGA_UNAVAILABLE'
                 else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
             elif not ok:
-                if _bool('SPLIT_ALLOW_EMPTY_BOOT',False): trace['base_source']='EMPTY_INIT'
-                else: raise RuntimeError('OCH12.6 Redis/local unavailable and compact MEGA restore failed: '+str(detail)[:700])
+                # OCH12.7 fail-open recovery shell: remote MEGA must never create a
+                # Render crash-loop. Start the Telegram/control plane in a protected
+                # recovery-only mode; business mutations and automatic backups stay
+                # fenced until a verified full database is restored.
+                trace['base_source']='RECOVERY_SAFE_MODE'
+                trace['recovery_safe_mode']=True
+                trace['recovery_safe_reason']='Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
+                os.environ['SPLIT_RECOVERY_SAFE_MODE']='1'
+                os.environ['SPLIT_RECOVERY_SAFE_REASON']=trace['recovery_safe_reason']
+                print('[SPLIT FRONT] OCH12.7 RECOVERY SAFE MODE: '+trace['recovery_safe_reason'],flush=True)
         else:
             trace['mega_contacted']=False; trace['mega_ok']=False
             trace['mega_detail']='MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
@@ -1159,7 +1168,13 @@ def main():
             elif local_cache_restored and _db_valid(target): trace['base_source']='LOCAL_RUNTIME_CACHE'
             elif had_valid_local_before_restore and _db_valid(target): trace['base_source']='LOCAL_SQLITE'
             elif _bool('SPLIT_ALLOW_EMPTY_BOOT',False): trace['base_source']='EMPTY_INIT'
-            else: raise RuntimeError('OCH12.6 no valid local/Redis database and MEGA_ENABLED=0')
+            else:
+                trace['base_source']='RECOVERY_SAFE_MODE'
+                trace['recovery_safe_mode']=True
+                trace['recovery_safe_reason']='No valid local/Redis database; MEGA_ENABLED=0'
+                os.environ['SPLIT_RECOVERY_SAFE_MODE']='1'
+                os.environ['SPLIT_RECOVERY_SAFE_REASON']=trace['recovery_safe_reason']
+                print('[SPLIT FRONT] OCH12.7 RECOVERY SAFE MODE: '+trace['recovery_safe_reason'],flush=True)
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1171,11 +1186,18 @@ def main():
             revision = _db_revision(target)
             trace['final_revision'] = revision
             trace['local_valid_after'] = True
+            os.environ['SPLIT_RECOVERY_SAFE_MODE'] = '0'
+            os.environ.pop('SPLIT_RECOVERY_SAFE_REASON', None)
             os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
             os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(revision)
         else:
             trace['final_revision'] = 0.0
             trace['local_valid_after'] = False
+            if trace.get('base_source') == 'RECOVERY_SAFE_MODE':
+                # Mark start_front authoritative even without a data DB. This prevents
+                # the legacy bot.main() boot code from logging into/scanning MEGA again.
+                os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
+                os.environ['SPLIT_PREBOOT_REVISION_R20'] = '0'
 
         trace['runtime_mega_credentials_scrubbed'] = False
         trace['runtime_heavy_credentials_parked_for_r71'] = True
