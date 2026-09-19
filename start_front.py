@@ -158,6 +158,41 @@ def _db_valid(path: Path) -> bool:
         return False
 
 
+def _ensure_empty_db(path: Path) -> tuple[bool, str]:
+    """OCH12.8: initialize a normal empty SQLite when no recovery source exists."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ('-wal', '-shm'):
+            try:
+                Path(str(path) + suffix).unlink(missing_ok=True)
+            except Exception:
+                pass
+        con = sqlite3.connect(str(path), timeout=20)
+        try:
+            con.execute('PRAGMA journal_mode=WAL')
+            con.execute('PRAGMA synchronous=FULL')
+            con.execute('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)')
+            con.execute('CREATE TABLE IF NOT EXISTS chats (chat_id TEXT PRIMARY KEY, v TEXT NOT NULL)')
+            con.execute('CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind,k))')
+            con.execute("CREATE TABLE IF NOT EXISTS cold_fields (chat_id TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(chat_id,k))")
+            con.execute('CREATE TABLE IF NOT EXISTS r32_state_revisions (shard_key TEXT PRIMARY KEY, revision INTEGER NOT NULL, event_id TEXT NOT NULL, updated_at REAL NOT NULL)')
+            con.commit()
+        finally:
+            con.close()
+        # Make the file self-contained before runtime opens its own WAL connection.
+        try:
+            con = sqlite3.connect(str(path), timeout=20)
+            try:
+                con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            finally:
+                con.close()
+        except Exception:
+            pass
+        return bool(_db_valid(path)), 'normal empty SQLite initialized' if _db_valid(path) else 'empty SQLite init validation failed'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:300]}'
+
+
 def _db_revision(path: Path) -> float:
     if not _db_valid(path):
         return 0.0
@@ -1073,7 +1108,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'OCH12.7_REDIS_FIRST_COMPACT_MEGA_FAILOPEN',
+        'policy': 'OCH12.8_REDIS_FIRST_COMPACT_MEGA_NORMAL_EMPTY_BOOT',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -1136,14 +1171,14 @@ def main():
             trace['redis_ok'] = False
             trace['redis_detail'] = 'Redis startup restore skipped: REDIS_ENABLED=0 or URL missing'
 
-        # OCH12.7: Redis/local is assembled first. When MEGA is enabled, compare
+        # OCH12.8: Redis/local is assembled first. When MEGA is enabled, compare
         # against one tiny fixed head.json. No mega-find, generation scan or directory walk.
         current_valid=bool(_db_valid(target))
         if mega_master_enabled:
             trace['mega_contacted']=True
             ok,detail,action=_r80_compact_mega_compare_restore(target,have_current=current_valid)
             trace['mega_ok']=bool(ok); trace['mega_detail']=str(detail)[:900]; trace['mega_action']=str(action)
-            print(f'[SPLIT FRONT] OCH12.7 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
+            print(f'[SPLIT FRONT] OCH12.8 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
             if ok and action=='RESTORE':
                 trace['base_source']='MEGA_COMPACT'
             elif current_valid:
@@ -1151,30 +1186,26 @@ def main():
                 elif local_cache_restored: trace['base_source']='LOCAL_RUNTIME_CACHE_VERIFIED_OR_MEGA_UNAVAILABLE'
                 else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
             elif not ok:
-                # OCH12.7 fail-open recovery shell: remote MEGA must never create a
-                # Render crash-loop. Start the Telegram/control plane in a protected
-                # recovery-only mode; business mutations and automatic backups stay
-                # fenced until a verified full database is restored.
-                trace['base_source']='RECOVERY_SAFE_MODE'
-                trace['recovery_safe_mode']=True
-                trace['recovery_safe_reason']='Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
-                os.environ['SPLIT_RECOVERY_SAFE_MODE']='1'
-                os.environ['SPLIT_RECOVERY_SAFE_REASON']=trace['recovery_safe_reason']
-                print('[SPLIT FRONT] OCH12.7 RECOVERY SAFE MODE: '+trace['recovery_safe_reason'],flush=True)
+                # OCH12.8: MEGA remains fail-open. If no recovery source exists,
+                # initialize a normal empty SQLite and continue in ordinary mode.
+                empty_ok, empty_detail = _ensure_empty_db(target)
+                trace['empty_init_ok'] = bool(empty_ok)
+                trace['empty_init_detail'] = str(empty_detail)[:500]
+                trace['recovery_fallback_reason'] = 'Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
+                trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'
+                print(f'[SPLIT FRONT] OCH12.8 normal empty boot after MEGA unavailable ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
         else:
             trace['mega_contacted']=False; trace['mega_ok']=False
             trace['mega_detail']='MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
             if redis_restored: trace['base_source']='REDIS'
             elif local_cache_restored and _db_valid(target): trace['base_source']='LOCAL_RUNTIME_CACHE'
             elif had_valid_local_before_restore and _db_valid(target): trace['base_source']='LOCAL_SQLITE'
-            elif _bool('SPLIT_ALLOW_EMPTY_BOOT',False): trace['base_source']='EMPTY_INIT'
             else:
-                trace['base_source']='RECOVERY_SAFE_MODE'
-                trace['recovery_safe_mode']=True
-                trace['recovery_safe_reason']='No valid local/Redis database; MEGA_ENABLED=0'
-                os.environ['SPLIT_RECOVERY_SAFE_MODE']='1'
-                os.environ['SPLIT_RECOVERY_SAFE_REASON']=trace['recovery_safe_reason']
-                print('[SPLIT FRONT] OCH12.7 RECOVERY SAFE MODE: '+trace['recovery_safe_reason'],flush=True)
+                empty_ok, empty_detail = _ensure_empty_db(target)
+                trace['empty_init_ok'] = bool(empty_ok)
+                trace['empty_init_detail'] = str(empty_detail)[:500]
+                trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'
+                print(f'[SPLIT FRONT] OCH12.8 MEGA disabled; normal empty boot ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1186,18 +1217,15 @@ def main():
             revision = _db_revision(target)
             trace['final_revision'] = revision
             trace['local_valid_after'] = True
-            os.environ['SPLIT_RECOVERY_SAFE_MODE'] = '0'
-            os.environ.pop('SPLIT_RECOVERY_SAFE_REASON', None)
             os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
             os.environ['SPLIT_PREBOOT_REVISION_R20'] = str(revision)
         else:
             trace['final_revision'] = 0.0
             trace['local_valid_after'] = False
-            if trace.get('base_source') == 'RECOVERY_SAFE_MODE':
-                # Mark start_front authoritative even without a data DB. This prevents
-                # the legacy bot.main() boot code from logging into/scanning MEGA again.
-                os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
-                os.environ['SPLIT_PREBOOT_REVISION_R20'] = '0'
+            # OCH12.8: start_front remains authoritative even if empty DB init itself
+            # failed, so legacy bot.main() never performs a second MEGA scan/login.
+            os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
+            os.environ['SPLIT_PREBOOT_REVISION_R20'] = '0'
 
         trace['runtime_mega_credentials_scrubbed'] = False
         trace['runtime_heavy_credentials_parked_for_r71'] = True

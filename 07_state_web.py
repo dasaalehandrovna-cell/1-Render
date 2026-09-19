@@ -4838,73 +4838,6 @@ def _window_actor_decode_callback_v2(payload: dict) -> tuple[bool, int, int, int
             pass
     return (bool(stale), cid, mid, int(revision), str(base or ''))
 
-def _r82_recovery_safe_mode() -> bool:
-    return str(os.getenv('SPLIT_RECOVERY_SAFE_MODE','0') or '0').strip().casefold() in {'1','true','yes','on'}
-
-
-def _r82_recovery_safe_allowed(payload: dict) -> bool:
-    """Only recovery/control traffic is executable while no verified data DB exists."""
-    if not isinstance(payload, dict):
-        return False
-    cq = payload.get('callback_query') or {}
-    if isinstance(cq, dict) and cq:
-        raw = str(cq.get('data') or '')
-        allowed_prefixes = (
-            'v153:restore:', 'r71:', 'r79:', 'r80:', 'r57:startup:',
-            'info_', 'runtime_', 'mega_', 'restore_', 'careful_restore',
-            'process_center', 'r10:worker:', 'd:'
-        )
-        if raw == 'info_close':
-            return True
-        if raw.startswith(allowed_prefixes):
-            # d:* is allowed only for Info navigation, never finance/business callbacks.
-            return (':info' in raw or raw.endswith(':back_main')) if raw.startswith('d:') else True
-        return False
-    for key in ('message','edited_message'):
-        msg = payload.get(key)
-        if not isinstance(msg, dict):
-            continue
-        if msg.get('document'):
-            # /restore file upload is owner-checked by its canonical handler.
-            return True
-        text = str(msg.get('text') or msg.get('caption') or '').strip()
-        first = text.split(maxsplit=1)[0].lower() if text else ''
-        allowed_commands = {
-            '/start','/help','/info','/ping','/health','/diag','/diagnostics',
-            '/restore','/restore_off','/restore_guard','/restore_guard_on','/restore_guard_off',
-            '/mega_restore_now','/mega_status','/mega_migration_status',
-            '/queues','/queue_status','/delta_status','/errors','/bot_errors',
-            '/journal','/runtime_export','/log','/logs','/sqlite','/db','/windows','/okna','/окна',
-            '/full_audit','/audit_full','/json_full'
-        }
-        return first in allowed_commands
-    return False
-
-
-def _r82_recovery_safe_reject(payload: dict) -> None:
-    reason = str(os.getenv('SPLIT_RECOVERY_SAFE_REASON','') or '')[:220]
-    text = '⚠️ RECOVERY SAFE MODE\nРабочая база не подтверждена. Разрешены восстановление и диагностика; бизнес-изменения временно заблокированы.'
-    if reason:
-        text += '\nПричина: ' + reason
-    try:
-        cq = (payload or {}).get('callback_query') or {}
-        if cq:
-            bot.answer_callback_query(str(cq.get('id') or ''), 'RECOVERY SAFE MODE: сначала восстановите базу через /restore.', show_alert=True)
-            return
-        msg = (payload or {}).get('message') or (payload or {}).get('edited_message') or {}
-        cid = int(((msg.get('chat') or {}).get('id')))
-        pool = globals().get('FAST_UI_TASK_POOL') or globals().get('UI_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        if pool is not None:
-            try:
-                if pool.submit(f'r82-safe-notice:{cid}', bot.send_message, cid, text):
-                    return
-            except Exception:
-                pass
-        threading.Thread(target=lambda: bot.send_message(cid, text), daemon=True, name='r82-safe-notice').start()
-    except Exception:
-        pass
-
-
 @app.route(WEBHOOK_ROUTE_PATH, methods=['POST'])
 def telegram_webhook():
     if WEBHOOK_HEADER_SECRET_ENABLED:
@@ -5000,16 +4933,6 @@ def telegram_webhook():
         except Exception as _wa_exc:
             try: log_error(f'WINDOW_ACTOR callback decode: {_wa_exc}')
             except Exception: pass
-    # OCH12.7/R82: if no verified state DB exists, keep Telegram/control responsive
-    # but fence every business mutation and automatic durability write.
-    if _r82_recovery_safe_mode() and not _r82_recovery_safe_allowed(payload):
-        _r82_recovery_safe_reject(payload)
-        try:
-            runtime_event('recovery_safe_update_blocked_r82', f'update={(payload or {}).get("update_id") if isinstance(payload,dict) else "?"}', 'WARN')
-        except Exception:
-            pass
-        return ('OK', 200)
-
     try:
         if isinstance(payload, dict):
             if 'edited_message' in payload:
@@ -5661,9 +5584,6 @@ def _r57_startup_keyboard(details: bool = False):
 
 def _r57_startup_compact_text() -> str:
     source, _trace = _r57_restore_source_info()
-    if _r82_recovery_safe_mode():
-        reason=str(os.getenv('SPLIT_RECOVERY_SAFE_REASON','') or '')[:220]
-        return f"⚠️ {BOT_DISPLAY_NAME} запущен в RECOVERY SAFE MODE · {VERSION}\nВосстановление: {source}\nБизнес-изменения и автобэкапы заблокированы до /restore." + (("\nПричина: "+reason) if reason else '')
     return f"✅ {BOT_DISPLAY_NAME} запущен · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
@@ -9813,16 +9733,6 @@ def _v153_backup_before_restore() -> str:
     backend. Redis FULL and direct R1 compact-MEGA are valid emergency anchors.
     No 240-second dead-R2 wait is allowed.
     """
-    if _r82_recovery_safe_mode():
-        # There is no trusted old business DB to preserve. Requiring an external
-        # pre_restore anchor here would make /restore impossible precisely when it
-        # is needed to recover from an empty/cold deploy.
-        folder = _v153_tempfile.mkdtemp(prefix='r82_safe_pre_restore_')
-        try:
-            bot_journal('pre_restore_r82_skipped', int(OWNER_ID or 0) or None, 'RECOVERY SAFE MODE: no verified old DB to preserve', 'WARN')
-        except Exception:
-            pass
-        return folder
     _recovery_was_active = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
     folder = _v153_tempfile.mkdtemp(prefix='r81_pre_restore_')
@@ -10354,10 +10264,6 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
         if scope == 'global':
             _v153_apply_global_restore(str(row['raw']))
             restored_failed = _v153_restore_failed_tasks_from_db(str(row['raw']), None)
-            os.environ['SPLIT_RECOVERY_SAFE_MODE']='0'
-            os.environ.pop('SPLIT_RECOVERY_SAFE_REASON', None)
-            try: runtime_event('recovery_safe_mode_cleared_r82','verified global /restore applied','INFO')
-            except Exception: pass
         else:
             _v153_apply_tenant_restore(str(row['raw']), str(row['tenant_id']), str(mode))
             restored_failed = _v153_restore_failed_tasks_from_db(str(row['raw']), set((int(x) for x in (row.get('manifest') or {}).get('chat_ids') or [])))

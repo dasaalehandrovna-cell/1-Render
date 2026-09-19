@@ -6035,7 +6035,7 @@ def _final_bot_identity_text(value):
     """Presentation fence: every visible legacy bot name becomes this release name."""
     raw = str(value or '')
     try:
-        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.7')
+        name = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8')
         return re.sub(r'очнись_\d+(?:\.\d+)?', name, raw, flags=re.I)
     except Exception:
         return raw

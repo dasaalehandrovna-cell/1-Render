@@ -461,6 +461,15 @@ if ROLE=='fast':
        "requests.post(base+endpoint" in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events','') and
        '_r43_store_events_redis' not in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events',''),
        'active state-event sender must go to HEAVY, not FAST Redis/MEGA')
+    ok('och128_no_recovery_safe_mode',
+       'RECOVERY SAFE MODE' not in web_src and 'SPLIT_RECOVERY_SAFE_MODE' not in web_src and
+       'SPLIT_RECOVERY_SAFE_MODE' not in split_src and 'SPLIT_RECOVERY_SAFE_MODE' not in start_src,
+       'recovery safe mode must be fully removed')
+    ok('och128_normal_empty_boot',
+       'def _ensure_empty_db' in start_src and "trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'" in start_src and
+       "raise RuntimeError('OCH12.6 Redis/local unavailable" not in start_src,
+       'when local/Redis/MEGA are unavailable FAST must initialize normal empty SQLite and continue')
+
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
        'def _v153_retry_pending_failed_tasks' in web_src and
@@ -712,8 +721,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.7'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.7')
+       "BOT_DISPLAY_NAME = 'очнись_12.8'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.8')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,
