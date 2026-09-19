@@ -9218,10 +9218,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10090,7 +10090,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10129,7 +10129,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10179,7 +10179,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10202,13 +10202,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10264,7 +10264,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11160,7 +11160,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.8'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11736,5 +11736,655 @@ try:
     bot_journal('r80_failover_compact_mega_loaded',int(OWNER_ID or 0),f'routes={_r71_load_routes()}; mega_master={int(_r80_mega_master_enabled())}; compact=fixed3')
 except Exception:
     pass
+
+# v262
+
+# OCH12.10 / v263 — durable finance-forward edit identity across deploys.
+# The forward_map RAM index is an accelerator only.  The durable truth is the
+# SQLite forward_finance_ops_v260 ledger plus finance records carrying immutable
+# fin-origin/source identity.  Every edit mode resolves through the same local
+# identity repair before any decision to create a new Telegram copy.
+_OCH129_PARENT_GET_FORWARD_LINKS = globals().get('get_forward_links')
+_OCH129_PARENT_FORWARD_SINGLE = globals().get('_forward_single_to_target')
+_OCH129_PARENT_HANDLE_FINANCE_MESSAGE = globals().get('handle_finance_message')
+_OCH129_FORWARD_REPAIR_LOCK = _v262_threading.RLock()
+_OCH129_FORWARD_OP_ROWS = None
+_OCH129_FORWARD_OP_ROWS_AT = 0.0
+_OCH129_FORWARD_RECORD_SCAN_MISS = set()
+
+
+def _och129_forward_op_rows(force: bool=False):
+    global _OCH129_FORWARD_OP_ROWS, _OCH129_FORWARD_OP_ROWS_AT
+    now = _v262_time.time()
+    with _OCH129_FORWARD_REPAIR_LOCK:
+        if (not force) and isinstance(_OCH129_FORWARD_OP_ROWS, list) and (now - float(_OCH129_FORWARD_OP_ROWS_AT or 0.0) < 15.0):
+            return list(_OCH129_FORWARD_OP_ROWS)
+        rows = []
+        try:
+            raw_rows = SQLITE._read_all("SELECT k,v FROM meta WHERE kind='forward_finance_ops_v260'")
+            for _key, raw in raw_rows or []:
+                try:
+                    row = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+        except Exception as exc:
+            try: log_error(f'[FWD EDIT V263] op-ledger read: {exc}')
+            except Exception: pass
+        _OCH129_FORWARD_OP_ROWS = rows
+        _OCH129_FORWARD_OP_ROWS_AT = now
+        return list(rows)
+
+
+def _och129_pair_from_record(dst_chat_id: int, rec: dict, src_chat_id: int, src_msg_id: int):
+    if not isinstance(rec, dict):
+        return None
+    origin_chat = origin_msg = 0
+    try:
+        fn = globals().get('finance_origin_identity_v262')
+        if callable(fn):
+            origin_chat, origin_msg, _ = fn(int(dst_chat_id), rec)
+    except Exception:
+        origin_chat = origin_msg = 0
+    if not (origin_chat and origin_msg):
+        try:
+            origin_chat = int(rec.get('forward_source_chat_id') or 0)
+            origin_msg = int(rec.get('forward_source_msg_id') or 0)
+        except Exception:
+            origin_chat = origin_msg = 0
+    if not (origin_chat == int(src_chat_id) and origin_msg == int(src_msg_id)):
+        return None
+    dst_mid = 0
+    for key in ('forward_dst_msg_id', 'source_msg_id', 'origin_msg_id', 'msg_id', 'source_order_msg_id'):
+        try:
+            dst_mid = int(rec.get(key) or 0)
+        except Exception:
+            dst_mid = 0
+        if dst_mid:
+            break
+    if not dst_mid:
+        return None
+    return (int(dst_chat_id), int(dst_mid))
+
+
+def _och129_install_forward_pairs(src_chat_id: int, src_msg_id: int, pairs, reason: str='local-repair'):
+    src = (int(src_chat_id), int(src_msg_id))
+    clean = []
+    for pair in pairs or []:
+        try:
+            p = (int(pair[0]), int(pair[1]))
+        except Exception:
+            continue
+        if p[0] and p[1] and p not in clean:
+            clean.append(p)
+    if not clean:
+        return []
+    changed = False
+    try:
+        with forward_map_lock:
+            current = forward_map.setdefault(src, [])
+            for p in clean:
+                if p not in current:
+                    current.append(p); changed = True
+            resolved = list(current)
+    except Exception:
+        resolved = clean
+    if changed:
+        try:
+            _persist_forward_index_in_data(data)
+        except Exception:
+            pass
+        try:
+            pool = globals().get('BACKGROUND_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
+            if pool is not None and hasattr(pool, 'submit_unique'):
+                pool.submit_unique(f'v263-fwd-index:{src[0]}:{src[1]}', save_data, data, root_only=True)
+        except Exception:
+            pass
+        try:
+            bot_journal('forward_index_self_healed_v263', int(src[0]), f'msg={src[1]}; pairs={len(clean)}; reason={reason}')
+        except Exception:
+            pass
+    return resolved
+
+
+def _och129_recover_forward_links_local(src_chat_id: int, src_msg_id: int, target_chat_id: int | None=None, *, scan_records: bool=True):
+    """Network-free forward identity recovery used by every finance edit path."""
+    src_chat_id = int(src_chat_id); src_msg_id = int(src_msg_id)
+    target = int(target_chat_id) if target_chat_id is not None else None
+    pairs = []
+    # 1) Durable operation ledger: O(ledger rows), no network, survives deploy/full SQLite restore.
+    for row in _och129_forward_op_rows(False):
+        try:
+            if int(row.get('source_chat_id') or 0) != src_chat_id or int(row.get('source_msg_id') or 0) != src_msg_id:
+                continue
+            dst_chat = int(row.get('dst_chat_id') or 0); dst_mid = int(row.get('dst_msg_id') or 0)
+            state = str(row.get('state') or '')
+            if target is not None and dst_chat != target:
+                continue
+            if dst_chat and dst_mid and state not in {'deleted', 'cancelled', 'removed'}:
+                p = (dst_chat, dst_mid)
+                if p not in pairs: pairs.append(p)
+        except Exception:
+            continue
+    # 2) Finance rows: immutable v262 origin key / fwd-fin operation key is a second witness.
+    # For a known destination this is one-chat only; general scans happen only on a cache miss.
+    if scan_records and (not pairs or target is None):
+        miss_key = (src_chat_id, src_msg_id, target)
+        do_scan = True
+        with _OCH129_FORWARD_REPAIR_LOCK:
+            if miss_key in _OCH129_FORWARD_RECORD_SCAN_MISS:
+                do_scan = False
+        if do_scan:
+            if target is not None:
+                chat_ids = [target]
+            else:
+                chat_ids = []
+                try:
+                    chat_ids.extend(int(x) for x in ((data or {}).get('chats', {}) or {}).keys())
+                except Exception:
+                    pass
+                try:
+                    # Root finance chat may exist outside the currently materialized LOW-RAM dict.
+                    chat_ids.append(int(src_chat_id))
+                except Exception:
+                    pass
+                chat_ids = list(dict.fromkeys(chat_ids))
+            for cid in chat_ids:
+                try:
+                    store = get_chat_store(int(cid))
+                    seen = set()
+                    for ledger in ('records', 'ars_records', 'usd_records'):
+                        rows = store.get(ledger, []) or []
+                        for rec in rows:
+                            if not isinstance(rec, dict) or id(rec) in seen:
+                                continue
+                            seen.add(id(rec))
+                            p = _och129_pair_from_record(int(cid), rec, src_chat_id, src_msg_id)
+                            if p and (target is None or p[0] == target) and p not in pairs:
+                                pairs.append(p)
+                except Exception:
+                    continue
+            if not pairs:
+                with _OCH129_FORWARD_REPAIR_LOCK:
+                    _OCH129_FORWARD_RECORD_SCAN_MISS.add(miss_key)
+    if pairs:
+        # Recreate missing durable op rows from record witnesses as well.
+        for dst_chat, dst_mid in pairs:
+            try:
+                row = _v260_forward_finance_op_get(src_chat_id, src_msg_id, dst_chat)
+                if not int((row or {}).get('dst_msg_id') or 0):
+                    _v260_forward_finance_op_mark(src_chat_id, src_msg_id, dst_chat, 'committed', dst_msg_id=int(dst_mid), recovered_v263=True)
+            except Exception:
+                pass
+        return _och129_install_forward_pairs(src_chat_id, src_msg_id, pairs, 'sqlite-op+records')
+    return []
+
+
+def get_forward_links(src_chat_id: int, src_msg_id: int):
+    links = []
+    try:
+        if callable(_OCH129_PARENT_GET_FORWARD_LINKS):
+            links = list(_OCH129_PARENT_GET_FORWARD_LINKS(int(src_chat_id), int(src_msg_id)) or [])
+    except Exception:
+        links = []
+    if links:
+        return links
+    return list(_och129_recover_forward_links_local(int(src_chat_id), int(src_msg_id), None, scan_records=True) or [])
+
+
+def _och129_reconcile_existing_forward_copy(source_chat_id: int, msg, dst_chat_id: int, dst_msg_id: int, finance_enabled: bool):
+    """A repeated pre-deploy message is reconcile/edit, never a second Telegram copy."""
+    try:
+        new_mid = sync_edited_copy_to_target(int(source_chat_id), msg, int(dst_chat_id), int(dst_msg_id), bool(finance_enabled))
+    except Exception as exc:
+        try: log_error(f'[FWD EDIT V263] reconcile {source_chat_id}:{getattr(msg,"message_id",0)}->{dst_chat_id}:{dst_msg_id}: {exc}')
+        except Exception: pass
+        return None
+    if not new_mid:
+        return None
+    try:
+        _store_forward_link(int(source_chat_id), int(getattr(msg, 'message_id', 0) or 0), int(dst_chat_id), int(new_mid))
+    except Exception:
+        pass
+    if finance_enabled:
+        try:
+            rec = find_record_by_message_id(int(dst_chat_id), int(new_mid))
+            if isinstance(rec, dict):
+                _persist_forward_finance_delivery_now(int(source_chat_id), int(getattr(msg, 'message_id', 0) or 0), int(dst_chat_id), int(new_mid), rec)
+            else:
+                _v260_forward_finance_op_mark(int(source_chat_id), int(getattr(msg, 'message_id', 0) or 0), int(dst_chat_id), 'copy_delivered', dst_msg_id=int(new_mid), recovered_v263=True)
+        except Exception:
+            pass
+    try:
+        bot_journal('forward_existing_copy_reconciled_v263', int(dst_chat_id), f'src={source_chat_id}:{getattr(msg,"message_id",0)}; dst={dst_chat_id}:{new_mid}')
+    except Exception:
+        pass
+    return int(new_mid)
+
+
+def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool, _migration_retry: bool=False):
+    src_mid = int(getattr(msg, 'message_id', 0) or 0)
+    # Resolve the exact destination before the legacy create-copy branch.  This makes
+    # post-deploy redelivery idempotent even when the RAM/root forward_index vanished.
+    links = list(get_forward_links(int(source_chat_id), src_mid) or [])
+    match = next(((dc, dm) for dc, dm in links if int(dc) == int(dst_chat_id)), None)
+    if match is None and finance_enabled:
+        healed = _och129_recover_forward_links_local(int(source_chat_id), src_mid, int(dst_chat_id), scan_records=True)
+        match = next(((dc, dm) for dc, dm in healed if int(dc) == int(dst_chat_id)), None)
+    if match is not None:
+        reconciled = _och129_reconcile_existing_forward_copy(int(source_chat_id), msg, int(dst_chat_id), int(match[1]), bool(finance_enabled))
+        if reconciled:
+            return int(reconciled)
+        # If Telegram edit/replacement itself fails, preserve exact-once: do not blindly
+        # create another copy while a durable destination identity still exists.
+        try:
+            bot_journal('forward_existing_copy_reconcile_deferred_v263', int(dst_chat_id), f'src={source_chat_id}:{src_mid}; dst={dst_chat_id}:{match[1]}', 'WARN')
+        except Exception:
+            pass
+        return int(match[1])
+    if callable(_OCH129_PARENT_FORWARD_SINGLE):
+        return _OCH129_PARENT_FORWARD_SINGLE(int(source_chat_id), msg, int(dst_chat_id), bool(finance_enabled), _migration_retry=_migration_retry)
+    return None
+
+
+def _och129_finance_record_text(rec: dict) -> str:
+    try:
+        raw = str((rec or {}).get('source_finance_text') or '').strip()
+        if raw:
+            return raw.replace('\r\n', '\n').replace('\r', '\n')
+    except Exception:
+        pass
+    try:
+        fn = globals().get('_v262_record_canonical_text')
+        return str(fn(rec) if callable(fn) else '').strip().replace('\r\n', '\n').replace('\r', '\n')
+    except Exception:
+        return ''
+
+
+def handle_finance_message(msg):
+    """Treat same chat/message identity after deploy as replay/edit, never a new operation."""
+    try:
+        cid = int(getattr(getattr(msg, 'chat', None), 'id', 0) or 0)
+        mid = int(getattr(msg, 'message_id', 0) or 0)
+    except Exception:
+        cid = mid = 0
+    if cid and mid:
+        existing = None
+        try:
+            existing = find_record_by_message_id(cid, mid)
+        except Exception:
+            existing = None
+        if isinstance(existing, dict):
+            incoming = str(_message_text_for_finance(msg) or getattr(msg, 'caption', None) or getattr(msg, 'text', None) or '').strip().replace('\r\n', '\n').replace('\r', '\n')
+            previous = _och129_finance_record_text(existing)
+            if incoming != previous:
+                # A Telegram update can be replayed as a normal `message` after a deploy.
+                # Use the native linked-edit transaction, then repaint/reconcile old copies.
+                try:
+                    edited = bool(handle_finance_edit(msg))
+                except Exception as exc:
+                    edited = False
+                    try: log_error(f'[FIN EDIT V263] replay-as-message edit failed {cid}:{mid}: {exc}')
+                    except Exception: pass
+                if edited:
+                    try: schedule_propagate_edited_to_copies(msg)
+                    except Exception: pass
+                    try: bot_journal('finance_message_reclassified_as_edit_v263', cid, f'msg={mid}; old={previous[:120]!r}; new={incoming[:120]!r}')
+                    except Exception: pass
+                    return True
+            # Identical redelivery: stable source identity is authoritative; no new row.
+            try:
+                bot_journal('finance_message_replay_blocked_v263', cid, f'msg={mid}; identical={int(incoming == previous)}')
+            except Exception:
+                pass
+            return True
+    if callable(_OCH129_PARENT_HANDLE_FINANCE_MESSAGE):
+        return _OCH129_PARENT_HANDLE_FINANCE_MESSAGE(msg)
+    return False
+
+
+def _och129_boot_rebuild_forward_identity():
+    repaired = 0
+    try:
+        # Merge durable op-ledger links even when root forward_index exists but is stale/partial.
+        grouped = {}
+        for row in _och129_forward_op_rows(True):
+            try:
+                sc = int(row.get('source_chat_id') or 0); sm = int(row.get('source_msg_id') or 0)
+                dc = int(row.get('dst_chat_id') or 0); dm = int(row.get('dst_msg_id') or 0)
+                if sc and sm and dc and dm and str(row.get('state') or '') not in {'deleted','cancelled','removed'}:
+                    grouped.setdefault((sc, sm), []).append((dc, dm))
+            except Exception:
+                continue
+        for (sc, sm), pairs in grouped.items():
+            before = []
+            try:
+                before = list(_OCH129_PARENT_GET_FORWARD_LINKS(sc, sm) or []) if callable(_OCH129_PARENT_GET_FORWARD_LINKS) else []
+            except Exception:
+                pass
+            after = _och129_install_forward_pairs(sc, sm, pairs, 'boot-op-ledger')
+            repaired += max(0, len(after) - len(before))
+        try:
+            legacy = globals().get('_rebuild_forward_index_from_finance_records')
+            if callable(legacy):
+                repaired += int(legacy(data) or 0)
+        except Exception:
+            pass
+        try: bot_journal('forward_identity_boot_rebuild_v263', int(OWNER_ID or 0), f'repaired={repaired}; sources={len(grouped)}')
+        except Exception: pass
+    except Exception as exc:
+        try: log_error(f'[FWD EDIT V263] boot rebuild: {exc}')
+        except Exception: pass
+    return repaired
+
+
+def _och129_schedule_boot_rebuild():
+    try:
+        scheduler = globals().get('DELAYED_SCHEDULER')
+        if scheduler is not None:
+            scheduler.schedule('v263-forward-identity-boot', 0.35, _och129_boot_rebuild_forward_identity)
+            return True
+    except Exception:
+        pass
+    try:
+        _v262_threading.Thread(target=_och129_boot_rebuild_forward_identity, daemon=True, name='v263-forward-id').start()
+        return True
+    except Exception:
+        return False
+
+try:
+    _och129_schedule_boot_rebuild()
+    bot_journal('v263_finance_forward_edit_durability_loaded', int(OWNER_ID or 0), 'RAM forward_map=cache; SQLite op-ledger+origin=authority; replay-message=reconcile')
+except Exception:
+    pass
+
+# v262
+
+# ---------------------------------------------------------------------------
+# OCH12.10 / R83 — standalone R1 is the normal profile; R2 is explicit opt-in.
+# Memory economy: dead-R2 traffic is hard-gated, and MEGAcmd server is released
+# after idle time. None of these controls sit in the Telegram/UI hot path.
+# ---------------------------------------------------------------------------
+_R83_RELEASE = f'{BOT_DISPLAY_NAME}-r83-r1-normal-r2-opt-in'
+_R71_ROUTE_DEFAULTS = {k: 'fast' for k in _R71_ROUTE_KEYS}
+_OCH1210_ROUTE_MIGRATION_NS = 'och12_10_r1_normal_profile'
+_OCH1210_ROUTE_MIGRATION_KEY = 'applied'
+_OCH1210_PARENT_R71_APPLY = _r71_apply_runtime_side_effects
+_OCH1210_PARENT_SPLIT_PING = _split_ping_once
+_OCH1210_PARENT_KEEPALIVE_PEER_ENABLED = globals().get('keepalive_peer_enabled')
+_OCH1210_PARENT_KEEPALIVE_PING_PEER = globals().get('keepalive_ping_peer_once')
+_OCH1210_PARENT_REANCHOR_RETRY = globals().get('_v240_retry_pending_restore_reanchor')
+_OCH1210_PARENT_MEGA_RUN = globals().get('_mega_run')
+_OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
+_OCH1210_MEGA_IDLE_SEC = max(120.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC', '240') or '240'))
+_OCH1210_MEGA_REAPER_STARTED = False
+_OCH1210_MEGA_REAPER_LOCK = _split_threading.RLock()
+
+
+def _och1210_all_fast() -> bool:
+    try:
+        return all(_r71_route_is_fast(k) for k in _R71_ROUTE_KEYS)
+    except Exception:
+        return True
+
+
+def _och1210_r2_enabled() -> bool:
+    return not _och1210_all_fast()
+
+
+def _och1210_route_migration_once():
+    """First 12.10 boot deliberately selects the standalone R1 profile.
+
+    After the migration, an owner may explicitly switch selected contours back to R2
+    and that choice persists. Fresh/older restored databases still start R1-only once.
+    """
+    db = globals().get('SQLITE')
+    applied = False
+    try:
+        row = db.get_meta(_OCH1210_ROUTE_MIGRATION_NS, _OCH1210_ROUTE_MIGRATION_KEY, {}) if db is not None else {}
+        applied = bool((row or {}).get('done')) if isinstance(row, dict) else bool(row)
+    except Exception:
+        applied = False
+    if not applied:
+        routes = _r71_save_routes({k: 'fast' for k in _R71_ROUTE_KEYS}, 'och12.10-normal-r2-off')
+        try:
+            if db is not None:
+                db.set_meta(_OCH1210_ROUTE_MIGRATION_NS, _OCH1210_ROUTE_MIGRATION_KEY,
+                            {'done': True, 'at': now_local().isoformat(timespec='microseconds'), 'routes': routes})
+        except Exception:
+            pass
+        return routes
+    return _r71_load_routes(force=True)
+
+
+def _och1210_r71_apply_runtime_side_effects():
+    try:
+        if callable(_OCH1210_PARENT_R71_APPLY):
+            _OCH1210_PARENT_R71_APPLY()
+    finally:
+        all_fast = _och1210_all_fast()
+        # The old unconditional v262 peer-health thread remains alive but becomes a
+        # zero-network sleeper while R2 is not selected.
+        _split_os.environ['PEER_PING_ENABLED'] = '0' if all_fast else '1'
+        st = globals().get('_SPLIT_STATE')
+        if isinstance(st, dict):
+            st['r83_r2_runtime_enabled'] = not all_fast
+            st['r83_route_profile'] = 'R1_ONLY_NORMAL' if all_fast else 'R2_OPT_IN'
+            if all_fast:
+                st['peer_status'] = 0
+                st['peer_last_error'] = 'R2 disabled by normal R1-only profile'
+                st['worker_health'] = {'ok': False, 'disabled': True, 'reason': 'R2 disabled by normal R1-only profile', 'seen_at': _split_time.time()}
+
+
+_r71_apply_runtime_side_effects = _och1210_r71_apply_runtime_side_effects
+
+
+def _och1210_split_ping_once():
+    if not _och1210_r2_enabled():
+        st = globals().get('_SPLIT_STATE')
+        if isinstance(st, dict):
+            st['peer_status'] = 0
+            st['peer_last_error'] = 'R2 disabled by normal R1-only profile'
+        return False
+    return bool(_OCH1210_PARENT_SPLIT_PING()) if callable(_OCH1210_PARENT_SPLIT_PING) else False
+
+
+_split_ping_once = _och1210_split_ping_once
+
+
+def _och1210_keepalive_peer_enabled():
+    if not _och1210_r2_enabled():
+        return False
+    return bool(_OCH1210_PARENT_KEEPALIVE_PEER_ENABLED()) if callable(_OCH1210_PARENT_KEEPALIVE_PEER_ENABLED) else False
+
+
+keepalive_peer_enabled = _och1210_keepalive_peer_enabled
+
+
+def _och1210_keepalive_ping_peer_once():
+    if not _och1210_r2_enabled():
+        return False, 'R2 штатно выключен: все контуры принадлежат R1'
+    if callable(_OCH1210_PARENT_KEEPALIVE_PING_PEER):
+        return _OCH1210_PARENT_KEEPALIVE_PING_PEER()
+    return False, 'peer keepalive unavailable'
+
+
+keepalive_ping_peer_once = _och1210_keepalive_ping_peer_once
+
+
+def _och1210_retry_pending_restore_reanchor():
+    """Never poll dead R2 while the standalone R1 profile owns durability/checkpoints."""
+    if _och1210_all_fast():
+        pending = SQLITE.get_meta('restore_control_v240', 'remote_reanchor_pending', {}) or {}
+        if not isinstance(pending, dict) or not pending:
+            return True
+        redis_ok = False
+        redis_detail = 'Redis unavailable'
+        try:
+            fn = globals().get('_r79_daily_snapshot_now')
+            if callable(fn):
+                redis_ok, redis_detail = fn('restore-r1-reanchor')
+        except Exception as exc:
+            redis_detail = f'{type(exc).__name__}: {str(exc)[:180]}'
+        mega_queued = False
+        try:
+            if _r80_mega_master_enabled() and _r71_route_is_fast('mega'):
+                mega_queued = bool(_r80_queue_compact_full('restore-r1-reanchor'))
+        except Exception:
+            mega_queued = False
+        if redis_ok or mega_queued:
+            try:
+                SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', {})
+                SQLITE.set_meta('restore_control_v240', 'config_remote_pending', {})
+            except Exception:
+                pass
+            try:
+                runtime_event('restore_r1_reanchor_completed_v83', f'redis={int(bool(redis_ok))}; mega_queued={int(bool(mega_queued))}', 'INFO')
+            except Exception:
+                pass
+            return True
+        pending['last_retry_at'] = now_local().isoformat(timespec='microseconds')
+        pending['last_retry_error'] = str(redis_detail)[:500]
+        pending['retry_count'] = int(pending.get('retry_count') or 0) + 1
+        try: SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', pending)
+        except Exception: pass
+        try: _v240_schedule_pending_restore_reanchor_retry(600.0)
+        except Exception: pass
+        return False
+    if callable(_OCH1210_PARENT_REANCHOR_RETRY):
+        return bool(_OCH1210_PARENT_REANCHOR_RETRY())
+    return False
+
+
+_v240_retry_pending_restore_reanchor = _och1210_retry_pending_restore_reanchor
+
+
+def _och1210_mega_run(cmd: str, args=None, timeout=None, check: bool=True, control_plane: bool=False):
+    global _OCH1210_MEGA_LAST_ACTIVITY
+    _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
+    if not callable(_OCH1210_PARENT_MEGA_RUN):
+        raise RuntimeError('MEGA runner unavailable')
+    try:
+        return _OCH1210_PARENT_MEGA_RUN(cmd, args=args, timeout=timeout, check=check, control_plane=control_plane)
+    finally:
+        _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
+
+
+_mega_run = _och1210_mega_run
+
+
+def _och1210_mega_busy() -> bool:
+    try:
+        with _R80_MEGA_LOCK:
+            if bool(_R80_MEGA_STATE.get('running')):
+                return True
+    except Exception:
+        return True
+    try:
+        with _V240_PAR_STATS_LOCK:
+            if int((_V240_PAR_STATS or {}).get('active') or 0) > 0:
+                return True
+    except Exception:
+        pass
+    try:
+        active = globals().get('_MEMORY_ACTIVE') or {}
+        if any(str((row or {}).get('kind') or '').startswith('mega:') for row in active.values()):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _och1210_quit_mega_server_if_idle() -> bool:
+    global _OCH1210_MEGA_LAST_ACTIVITY
+    if _split_time.time() - float(_OCH1210_MEGA_LAST_ACTIVITY or 0.0) < _OCH1210_MEGA_IDLE_SEC:
+        return False
+    if _och1210_mega_busy() or _och111_hot_ui_busy():
+        return False
+    try:
+        import shutil as _r83_shutil, subprocess as _r83_subprocess
+        exe = _r83_shutil.which('mega-quit')
+        if not exe:
+            return False
+        _r83_subprocess.run([exe], stdout=_r83_subprocess.DEVNULL, stderr=_r83_subprocess.DEVNULL, timeout=8, check=False)
+        _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
+        try:
+            gc_fn = globals().get('_memory_gc')
+            if gc_fn is not None and hasattr(gc_fn, 'collect'): gc_fn.collect()
+            trim_fn = globals().get('memory_malloc_trim')
+            if callable(trim_fn): trim_fn()
+        except Exception:
+            pass
+        try: bot_journal('r83_mega_idle_server_released', int(OWNER_ID or 0), f'idle_sec={int(_OCH1210_MEGA_IDLE_SEC)}')
+        except Exception: pass
+        return True
+    except Exception:
+        return False
+
+
+def _och1210_mega_idle_reaper_loop():
+    _split_time.sleep(60.0)
+    while True:
+        try: _och1210_quit_mega_server_if_idle()
+        except Exception: pass
+        _split_time.sleep(60.0)
+
+
+def _och1210_start_mega_idle_reaper():
+    global _OCH1210_MEGA_REAPER_STARTED
+    with _OCH1210_MEGA_REAPER_LOCK:
+        if _OCH1210_MEGA_REAPER_STARTED:
+            return
+        _OCH1210_MEGA_REAPER_STARTED = True
+    _split_threading.Thread(target=_och1210_mega_idle_reaper_loop, daemon=True, name='r83-mega-idle').start()
+
+
+def _r70_routes_text():
+    routes = _r71_load_routes()
+    all_fast = all(str(routes.get(k) or '') == 'fast' for k in _R71_ROUTE_KEYS)
+    master = _r80_mega_master_enabled()
+    with _R80_MEGA_LOCK:
+        ms = dict(_R80_MEGA_STATE)
+    lines = [
+        f'🧭 <b>{BOT_DISPLAY_NAME} · R1/R2 ПРОЦЕССЫ</b>', '',
+        ('✅ <b>ШТАТНЫЙ РЕЖИМ: R2 ВЫКЛЮЧЕН · ВСЁ НА R1</b>' if all_fast else '🛰 <b>R2 ВКЛЮЧЁН ДЛЯ ВЫБРАННЫХ КОНТУРОВ</b>'), '',
+        'Всегда на R1 FAST:',
+        '🔒 Telegram webhook / ACK / окна / кнопки',
+        '🔒 Business mutation / SQLite commit / реальные пересылки', '',
+        f'📊 Google — {_r71_owner_html("google")}',
+        f'📦 Файлы / Excel / CSV / JSON / SQLite — {_r71_owner_html("files")}',
+        f'🧪 Диагностика / журналы / архивы — {_r71_owner_html("diagnostics")}',
+        f'🗄 MEGA browser / recovery — {_r71_owner_html("mega")}',
+        f'🧱 State / capsule / witness — {_r71_owner_html("durability")}',
+        f'📸 FULL / compact tail — {_r71_owner_html("checkpoints")}', '',
+        f'R2 HTTP/ping: {"⛔ штатно отключён" if all_fast else "✅ разрешён"}',
+        f'MEGA master R1: {"✅ MEGA_ENABLED=1" if master else "⛔ MEGA_ENABLED=0"}',
+        f'R1 compact FULL: {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")} · tail={int(ms.get("last_tail_count") or 0)}', '',
+        'В штатном R1-only режиме нет фоновых /events, /upload, /capsule и health-ping запросов к Render #2.',
+        'Тяжёлые R1 операции остаются background-only; Telegram/UI не ждёт MEGA/Google/экспорт.',
+    ]
+    return window_mark('\n'.join(lines), 'Ф4072')
+
+
+def _r70_routes_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(_r71_route_button('google'),_r71_route_button('files'))
+    kb.row(_r71_route_button('diagnostics'),_r71_route_button('mega'))
+    kb.row(_r71_route_button('durability'),_r71_route_button('checkpoints'))
+    kb.row(IB('✅ R2 НЕТ · ВСЁ #1',callback_data='r71:all:fast'),IB('🛰 Включить R2 → #2',callback_data='r71:all:heavy'))
+    kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
+    kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
+    return kb
+
+
+try:
+    _och1210_route_migration_once()
+    _r71_apply_runtime_side_effects()
+    _och1210_start_mega_idle_reaper()
+    bot_journal('r83_r1_normal_profile_loaded', int(OWNER_ID or 0), f'routes={_r71_load_routes()}; r2_enabled={int(_och1210_r2_enabled())}; peer_ping={_split_os.getenv("PEER_PING_ENABLED")}; mega_idle={int(_OCH1210_MEGA_IDLE_SEC)}s')
+except Exception as _och1210_exc:
+    try: log_error(f'OCH12.10 R83 init: {_och1210_exc}')
+    except Exception: pass
 
 # v262

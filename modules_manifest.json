@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "c5cf45bfccdac515e7c34d6501e9b1952705c267c39ca549ed0474d89b74da35",
+    "01_core_data.py": "12e1aca6c87af3baf8976d44a04dbf228ce6cf140f1e363edb63f79f60d8233c",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
-    "03_diagnostics_memory.py": "3546fd002adafb13f2f28c1c1a6aa80bce8215f24bc1475b14f75e1f4dac3774",
+    "03_diagnostics_memory.py": "a79dd0e07573bbaf498dbb68ed1c6bfced6485f478fbb49e21a474a5ca8cc06e",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "1b9b7fb915513abd4a4ea0a447790dc0167abef9c27e650a2555c4b2fdc23999",
     "07_state_web.py": "218ba20c178ff48c9b3ef45b750ac9fd88f789bbae99a1346f5d11f17a74bb87",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "4025b4cc81e8b51e4e90685255c0c1a1311bba91f3a386dadb33852dc181d25e",
-    "10_split_policy_offload.py": "47133a1d3093a2d11ef070de27c53cb497d45e03ad99a4249107e17048dbe2b8"
+    "10_split_policy_offload.py": "dc0b11338035d8cf45f7adfcb3d253cdf893c48448d951b99a87bd0ddb946508"
   },
-  "release": "ОЧНИСЬ_12.8-NORMAL-EMPTY-BOOT-NO-SAFE-MODE",
+  "release": "ОЧНИСЬ_12.10-R1-NORMAL-R2-OFF-MEMORY-ECONOMY",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -343,6 +343,15 @@
     "r82_mega_startup_failopen",
     "och128_normal_empty_boot",
     "och128_no_recovery_safe_mode",
-    "och128_mega_failopen_no_crash"
+    "och128_mega_failopen_no_crash",
+    "v263_finance_forward_identity_durable",
+    "v263_replay_message_as_edit",
+    "v263_existing_copy_reconcile_no_duplicate",
+    "och1210_r1_only_normal_profile",
+    "och1210_r2_network_hard_gate",
+    "och1210_peer_ping_default_off",
+    "och1210_memory_economy",
+    "och1210_mega_idle_server_release",
+    "och1210_no_memory_safe_restart"
   ]
 }

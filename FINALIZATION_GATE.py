@@ -721,8 +721,23 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.8'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.8')
+       "BOT_DISPLAY_NAME = 'очнись_12.10'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.10')
+    ok('och1210_r1_only_normal_default',
+       "_R71_ROUTE_DEFAULTS = {k: 'fast' for k in _R71_ROUTE_KEYS}" in split_src and
+       'och12_10_r1_normal_profile' in split_src and "och12.10-normal-r2-off" in split_src and
+       "✅ R2 НЕТ · ВСЁ #1" in split_src,
+       '12.10 must default/migrate all switchable heavy contours to R1 with R2 opt-in only')
+    ok('och1210_r2_network_hard_gate',
+       "_split_os.environ['PEER_PING_ENABLED'] = '0' if all_fast else '1'" in split_src and
+       'R2 disabled by normal R1-only profile' in split_src and
+       'def _och1210_split_ping_once' in split_src and 'def _och1210_keepalive_peer_enabled' in split_src,
+       'R1-only normal profile must make old peer loops zero-network')
+    ok('och1210_memory_economy',
+       '"MEMORY_SAFE_RESTART_ENABLED": "0"' in cfg_src and '"MEMORY_HEAVY_BLOCK_MB": "360"' in cfg_src and
+       '"R80_MEGA_COMPACT_FLUSH_SEC": "180"' in cfg_src and 'def _och1210_mega_idle_reaper_loop' in split_src and
+       "_r83_shutil.which('mega-quit')" in split_src,
+       'memory guard must trim/block instead of self-restart and release idle MEGAcmd server')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,
@@ -898,6 +913,27 @@ if ROLE=='fast':
        'close_previous_main_window_before_back' not in cmd_src and
        'delete_message' not in back_main_src,
        'Back/Main must edit only the clicked message and preserve sibling windows')
+
+    # OCH12.9 / v263: finance-forward edit identity must survive deploy/restart.
+    v263_src=all_py.get('10_split_policy_offload.py','')
+    ok('v263_forward_map_cache_not_authority',
+       'SQLite op-ledger+origin=authority' in v263_src and "kind='forward_finance_ops_v260'" in v263_src,
+       'finance forwarding identity must recover from durable SQLite witnesses')
+    ok('v263_replayed_message_reclassified_as_edit',
+       'finance_message_reclassified_as_edit_v263' in v263_src and 'schedule_propagate_edited_to_copies(msg)' in v263_src,
+       'same Telegram message_id after deploy must become linked edit, not a new finance operation')
+    ok('v263_existing_copy_reconciled_not_resent',
+       'forward_existing_copy_reconciled_v263' in v263_src and '_och129_reconcile_existing_forward_copy' in v263_src and
+       'sync_edited_copy_to_target' in v263_src,
+       'known old destination copy must be edited/reconciled instead of duplicated')
+    recover_src=_fn_sources(v263_src,{'_och129_recover_forward_links_local'}).get('_och129_recover_forward_links_local','')
+    ok('v263_identity_repair_local_only_hotpath',
+       'requests.' not in recover_src and 'bot.' not in recover_src and 'mega_' not in recover_src.lower(),
+       'identity repair before forwarding must be local SQLite/RAM only; no R2/MEGA/network in user hot path')
+    ok('v263_all_edit_modes_share_resolver',
+       count(r'(?m)^def get_forward_links\(',v263_src)>=1 and '_v262_linked_locations' in v263_src and
+       'edit_forward_copy_and_record' in v263_src and 'handle_finance_edit' in v263_src,
+       'native/button/slash/linked edit paths must converge on durable get_forward_links resolver')
 
     if _run_startup_smoke:
         # Deterministic build-time import smoke.  Execute the complete modular bot
