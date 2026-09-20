@@ -5483,6 +5483,7 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
+    '• R84: стартовое окно читает фактический Redis runtime/master из runtime_config.\n'
     '• R57: MEGA, Redis и Telegram backup-channel имеют независимые Render master-switches.\n'
     '• Redis не участвует в Telegram hot-path; включение из меню выполняется фоном.\n'
     '• После READY владелец получает только короткое сообщение; подробности открываются кнопкой.\n'
@@ -5589,7 +5590,8 @@ def _r57_startup_compact_text() -> str:
 def _r57_startup_details_text() -> str:
     source, trace = _r57_restore_source_info()
     try:
-        redis_state = globals().get('redis_runtime_state', lambda: {})() or {}
+        import runtime_config as _r57_runtime_config
+        redis_state = dict(_r57_runtime_config.redis_runtime_state() or {})
     except Exception:
         redis_state = {}
     mega_enabled = str(os.getenv('MEGA_ENABLED', '1') or '1').strip().casefold() not in {'0','false','no','off'}

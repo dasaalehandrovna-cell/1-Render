@@ -721,13 +721,41 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.10'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.10')
+       "BOT_DISPLAY_NAME = 'очнись_12.13'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.13')
+    startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
+    ok('och1211_startup_redis_authoritative_state',
+       'import runtime_config as _r57_runtime_config' in startup_details_src and
+       '_r57_runtime_config.redis_runtime_state()' in startup_details_src and
+       "globals().get('redis_runtime_state'" not in startup_details_src,
+       'startup details must read Redis status from authoritative runtime_config instead of module globals')
+    mega_list_src=_fn_sources(split_src,{'_r71_local_mega_list'}).get('_r71_local_mega_list','')
+    ok('och1212_r1_mega_browser_type_flags',
+       "runner('mega-ls', ['-l', path]" in mega_list_src and
+       "line.upper().startswith('FLAGS ')" in mega_list_src and
+       "parts = line.split(None, 5)" in mega_list_src and
+       "kind = 'dir' if str(flags).lower().startswith('d') else 'file'" in mega_list_src and
+       "runner('mega-ls', [path]" not in mega_list_src and
+       "raw_name).rstrip().endswith('/')" not in mega_list_src and
+       'len(entries) >= 500' not in mega_list_src,
+       'R1 MEGA browser must classify folders from authoritative mega-ls -l FLAGS, never by row alignment/plain-list slash heuristics')
     ok('och1210_r1_only_normal_default',
        "_R71_ROUTE_DEFAULTS = {k: 'fast' for k in _R71_ROUTE_KEYS}" in split_src and
        'och12_10_r1_normal_profile' in split_src and "och12.10-normal-r2-off" in split_src and
        "✅ R2 НЕТ · ВСЁ #1" in split_src,
        '12.10 must default/migrate all switchable heavy contours to R1 with R2 opt-in only')
+    ok('och1213_total_traffic_control',
+       'def _install_och1213_traffic_guard' in split_src and
+       "R2_OFF_R1_ONLY" in split_src and
+       'def traffic_render_refresh' in split_src and
+       "https://api.render.com/v1/metrics/bandwidth" in split_src and
+       "https://api.render.com/v1/metrics/bandwidth-sources" in split_src and
+       'def traffic_container_net_snapshot' in split_src,
+       '12.13 must hard-block stale R2 traffic and expose official Render + container traffic counters')
+    ok('och1213_traffic_ui_controls',
+       "traffic_audit:render" in cb_src and "traffic_audit:guard" in cb_src and
+       "☁️ Render API" in cb_src and "🛡 Guard" in cb_src,
+       'traffic window must expose Render refresh and Traffic Guard status')
     ok('och1210_r2_network_hard_gate',
        "_split_os.environ['PEER_PING_ENABLED'] = '0' if all_fast else '1'" in split_src and
        'R2 disabled by normal R1-only profile' in split_src and

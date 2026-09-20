@@ -159,7 +159,7 @@ def _db_valid(path: Path) -> bool:
 
 
 def _ensure_empty_db(path: Path) -> tuple[bool, str]:
-    """OCH12.10: initialize a normal empty SQLite when no recovery source exists."""
+    """OCH12.11: initialize a normal empty SQLite when no recovery source exists."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         for suffix in ('-wal', '-shm'):
@@ -1108,7 +1108,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'OCH12.10_REDIS_FIRST_COMPACT_MEGA_NORMAL_EMPTY_BOOT',
+        'policy': 'OCH12.11_REDIS_FIRST_COMPACT_MEGA_NORMAL_EMPTY_BOOT',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -1171,14 +1171,14 @@ def main():
             trace['redis_ok'] = False
             trace['redis_detail'] = 'Redis startup restore skipped: REDIS_ENABLED=0 or URL missing'
 
-        # OCH12.10: Redis/local is assembled first. When MEGA is enabled, compare
+        # OCH12.11: Redis/local is assembled first. When MEGA is enabled, compare
         # against one tiny fixed head.json. No mega-find, generation scan or directory walk.
         current_valid=bool(_db_valid(target))
         if mega_master_enabled:
             trace['mega_contacted']=True
             ok,detail,action=_r80_compact_mega_compare_restore(target,have_current=current_valid)
             trace['mega_ok']=bool(ok); trace['mega_detail']=str(detail)[:900]; trace['mega_action']=str(action)
-            print(f'[SPLIT FRONT] OCH12.10 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
+            print(f'[SPLIT FRONT] OCH12.11 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
             if ok and action=='RESTORE':
                 trace['base_source']='MEGA_COMPACT'
             elif current_valid:
@@ -1186,14 +1186,14 @@ def main():
                 elif local_cache_restored: trace['base_source']='LOCAL_RUNTIME_CACHE_VERIFIED_OR_MEGA_UNAVAILABLE'
                 else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
             elif not ok:
-                # OCH12.10: MEGA remains fail-open. If no recovery source exists,
+                # OCH12.11: MEGA remains fail-open. If no recovery source exists,
                 # initialize a normal empty SQLite and continue in ordinary mode.
                 empty_ok, empty_detail = _ensure_empty_db(target)
                 trace['empty_init_ok'] = bool(empty_ok)
                 trace['empty_init_detail'] = str(empty_detail)[:500]
                 trace['recovery_fallback_reason'] = 'Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
                 trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                print(f'[SPLIT FRONT] OCH12.10 normal empty boot after MEGA unavailable ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                print(f'[SPLIT FRONT] OCH12.11 normal empty boot after MEGA unavailable ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
         else:
             trace['mega_contacted']=False; trace['mega_ok']=False
             trace['mega_detail']='MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
@@ -1205,7 +1205,7 @@ def main():
                 trace['empty_init_ok'] = bool(empty_ok)
                 trace['empty_init_detail'] = str(empty_detail)[:500]
                 trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                print(f'[SPLIT FRONT] OCH12.10 MEGA disabled; normal empty boot ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                print(f'[SPLIT FRONT] OCH12.11 MEGA disabled; normal empty boot ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1222,7 +1222,7 @@ def main():
         else:
             trace['final_revision'] = 0.0
             trace['local_valid_after'] = False
-            # OCH12.10: start_front remains authoritative even if empty DB init itself
+            # OCH12.11: start_front remains authoritative even if empty DB init itself
             # failed, so legacy bot.main() never performs a second MEGA scan/login.
             os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
             os.environ['SPLIT_PREBOOT_REVISION_R20'] = '0'

@@ -8991,30 +8991,56 @@ def _r71_mega_child(path, name):
 
 
 def _r71_local_mega_list(path):
+    """List immediate MEGA children on R1 using MEGAcmd's own type flag.
+
+    OCH12.12: the old R1 browser combined plain ``mega-ls`` with ``mega-ls -l``
+    by row number.  ``mega-ls -l`` may contain a FLAGS header/service rows, so the
+    two outputs drifted and real directories could be rendered as files.  A
+    single authoritative long listing is now parsed exactly like the proven R2
+    browser: FLAGS VERS SIZE DATE TIME NAME, with NAME allowed to contain spaces.
+    """
     if not _r71_fast_mega_ready():
         raise RuntimeError('R1 MEGA: credentials или MEGAcmd недоступны')
     login = globals().get('mega_login_if_needed')
     if callable(login): login(control_plane=True)
     runner = globals().get('_mega_run')
-    if not callable(runner): raise RuntimeError('R1 MEGA runner unavailable')
+    if not callable(runner):
+        raise RuntimeError('R1 MEGA runner unavailable')
     path = str(path or '/').strip() or '/'
-    plain = runner('mega-ls', [path], timeout=90, check=False, control_plane=True)
-    if int(getattr(plain, 'returncode', 1) or 0) != 0:
-        raise RuntimeError(str(getattr(plain, 'stderr', '') or getattr(plain, 'stdout', '') or 'mega-ls failed')[:700])
-    names = [x.rstrip('/') for x in str(getattr(plain, 'stdout', '') or '').splitlines() if str(x).strip()]
     longr = runner('mega-ls', ['-l', path], timeout=90, check=False, control_plane=True)
-    long_lines = [x for x in str(getattr(longr, 'stdout', '') or '').splitlines() if str(x).strip()] if int(getattr(longr, 'returncode', 1) or 0) == 0 else []
+    if int(getattr(longr, 'returncode', 1) or 0) != 0:
+        raise RuntimeError(str(getattr(longr, 'stderr', '') or getattr(longr, 'stdout', '') or 'mega-ls -l failed')[:700])
+
     entries = []
-    for i, raw_name in enumerate(names[:500]):
-        name = str(raw_name).strip()
-        if not name: continue
-        kind = 'file'
-        if i < len(long_lines):
-            first = str(long_lines[i]).lstrip()[:1].lower()
-            if first == 'd': kind = 'dir'
-        if str(raw_name).rstrip().endswith('/'): kind = 'dir'
-        entries.append({'path':_r71_mega_child(path, name),'name':name,'type':kind})
-    return {'ok':True,'path':path,'parent':_r71_mega_parent(path),'entries':entries,'configured_root':str(globals().get('MEGA_BACKUP_DIR') or ''),'owner':'R1_FAST'}
+    for raw in str(getattr(longr, 'stdout', '') or '').splitlines():
+        line = str(raw or '').strip()
+        if not line or line.upper().startswith('FLAGS ') or line.startswith('Versions of '):
+            continue
+        # MEGAcmd -l: FLAGS VERS SIZE DATE TIME NAME; NAME may contain spaces.
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+        flags, name = parts[0], parts[5].strip()
+        if not name or name in {'.', '..'}:
+            continue
+        kind = 'dir' if str(flags).lower().startswith('d') else 'file'
+        entries.append({'path': _r71_mega_child(path, name), 'name': name, 'type': kind})
+
+    # Keep one canonical row per object and show folders before files.
+    dedup = {}
+    for row in entries:
+        dedup[(str(row.get('type') or ''), str(row.get('path') or ''))] = row
+    entries = list(dedup.values())
+    entries.sort(key=lambda row: (0 if row.get('type') == 'dir' else 1, str(row.get('name') or '').casefold()))
+    return {
+        'ok': True,
+        'path': path,
+        'parent': _r71_mega_parent(path),
+        'entries': entries,
+        'configured_root': str(globals().get('MEGA_BACKUP_DIR') or ''),
+        'owner': 'R1_FAST',
+        'parser': 'mega-ls-long-flags-v84',
+    }
 
 
 def _v265_peer_mega_request(path):
@@ -9218,10 +9244,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10090,7 +10116,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10129,7 +10155,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10179,7 +10205,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10202,13 +10228,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10264,7 +10290,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11160,7 +11186,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.10'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -12385,6 +12411,543 @@ try:
     bot_journal('r83_r1_normal_profile_loaded', int(OWNER_ID or 0), f'routes={_r71_load_routes()}; r2_enabled={int(_och1210_r2_enabled())}; peer_ping={_split_os.getenv("PEER_PING_ENABLED")}; mega_idle={int(_OCH1210_MEGA_IDLE_SEC)}s')
 except Exception as _och1210_exc:
     try: log_error(f'OCH12.10 R83 init: {_och1210_exc}')
+    except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# OCH12.13 / R84 — TOTAL TRAFFIC CONTROL
+#
+# Goals:
+#   1) a hard final network gate: R1-only means zero HTTP to Render #2 even if a
+#      stale legacy retry/outbox path attempts it;
+#   2) a circuit breaker for a failing R2 so retries cannot burn public egress;
+#   3) better classification of peer and Render API traffic;
+#   4) container TX/RX counters as an independent network cross-check;
+#   5) optional official Render bandwidth counters via RENDER_API_KEY.
+#
+# This block intentionally lives at the very end of the modular runtime so it
+# wraps the FINAL requests.Session.request chain after all legacy transports.
+# ---------------------------------------------------------------------------
+import os as _och1213_os
+import time as _och1213_time
+import json as _och1213_json
+import threading as _och1213_threading
+import urllib.parse as _och1213_urlparse
+from datetime import datetime as _och1213_datetime, timezone as _och1213_timezone
+
+_OCH1213_RELEASE = f'{BOT_DISPLAY_NAME}-r84-total-traffic-control'
+_OCH1213_GUARD_ENABLED = str(_och1213_os.getenv('TRAFFIC_GUARD_ENABLED', '1') or '1').strip().lower() not in {'0','false','no','off'}
+_OCH1213_GUARD_FAIL_THRESHOLD = max(2, min(20, int(_och1213_os.getenv('TRAFFIC_GUARD_FAIL_THRESHOLD', '3') or '3')))
+_OCH1213_GUARD_OPEN_SEC = max(60.0, min(3600.0, float(_och1213_os.getenv('TRAFFIC_GUARD_OPEN_SEC', '900') or '900')))
+_OCH1213_GUARD_PROBE_SEC = max(30.0, min(900.0, float(_och1213_os.getenv('TRAFFIC_GUARD_PROBE_SEC', '60') or '60')))
+_OCH1213_RENDER_CACHE_SEC = max(60.0, min(3600.0, float(_och1213_os.getenv('RENDER_TRAFFIC_CACHE_SEC', '300') or '300')))
+_OCH1213_RENDER_POLL_SEC = max(900.0, min(21600.0, float(_och1213_os.getenv('RENDER_TRAFFIC_POLL_SEC', '3600') or '3600')))
+_OCH1213_RENDER_LIMIT_GB = max(0.1, float(_och1213_os.getenv('RENDER_BANDWIDTH_LIMIT_GB', '5') or '5'))
+_OCH1213_TRAFFIC_LOCK = _och1213_threading.RLock()
+_OCH1213_GUARD = {
+    'blocked_calls': 0,
+    'saved_bytes_est': 0,
+    'last_block_at': 0.0,
+    'last_block_reason': '',
+    'last_block_operation': '',
+    'consecutive_failures': 0,
+    'circuit_open_until': 0.0,
+    'last_probe_at': 0.0,
+    'last_success_at': 0.0,
+    'last_failure_at': 0.0,
+    'last_failure': '',
+}
+_OCH1213_RENDER_CACHE = {'fetched_at': 0.0, 'ok': False, 'error': 'not fetched', 'data': {}}
+_OCH1213_RENDER_THREAD_STARTED = False
+
+
+def _och1213_netdev_totals():
+    """Return container/network-namespace bytes excluding loopback."""
+    rx = tx = 0
+    try:
+        with open('/proc/net/dev', 'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if ':' not in line:
+                    continue
+                name, rest = line.split(':', 1)
+                name = name.strip()
+                if not name or name == 'lo':
+                    continue
+                cols = rest.split()
+                if len(cols) >= 9:
+                    rx += int(cols[0] or 0)
+                    tx += int(cols[8] or 0)
+    except Exception:
+        pass
+    return {'rx': max(0, rx), 'tx': max(0, tx)}
+
+
+_OCH1213_NET_BASELINE = _och1213_netdev_totals()
+
+
+def traffic_container_net_snapshot():
+    now = _och1213_netdev_totals()
+    return {
+        'rx': max(0, int(now.get('rx', 0)) - int(_OCH1213_NET_BASELINE.get('rx', 0))),
+        'tx': max(0, int(now.get('tx', 0)) - int(_OCH1213_NET_BASELINE.get('tx', 0))),
+        'rx_total': int(now.get('rx', 0)),
+        'tx_total': int(now.get('tx', 0)),
+    }
+
+
+def _och1213_peer_urls():
+    out = []
+    for key in ('PEER_PRIVATE_URL', 'PEER_SERVICE_URL', 'PEER_KEEPALIVE_URL'):
+        value = str(_och1213_os.getenv(key, '') or '').strip()
+        if value:
+            if not value.startswith(('http://', 'https://')):
+                value = ('http://' if (value.endswith('.internal') or '.internal:' in value or ':' in value) else 'https://') + value
+            out.append(value.rstrip('/'))
+    for name in ('_split_peer_base', 'keepalive_peer_target_url'):
+        try:
+            fn = globals().get(name)
+            value = str(fn() or '').strip() if callable(fn) else ''
+            if value:
+                if not value.startswith(('http://', 'https://')):
+                    value = 'https://' + value
+                out.append(value.rstrip('/'))
+        except Exception:
+            pass
+    # preserve order, drop duplicates
+    seen = set(); clean = []
+    for value in out:
+        if value not in seen:
+            seen.add(value); clean.append(value)
+    return clean
+
+
+def _och1213_peer_hosts():
+    hosts = set()
+    for value in _och1213_peer_urls():
+        try:
+            host = (_och1213_urlparse.urlsplit(value).hostname or '').casefold()
+            if host:
+                hosts.add(host)
+        except Exception:
+            pass
+    return hosts
+
+
+def _och1213_peer_url_info(url):
+    try:
+        parts = _och1213_urlparse.urlsplit(str(url or ''))
+        host = (parts.hostname or '').casefold()
+        path = parts.path or '/'
+    except Exception:
+        return False, False, '', '/'
+    is_peer = bool(host and host in _och1213_peer_hosts())
+    private = bool(is_peer and (host.endswith('.internal') or str(url or '').startswith('http://')))
+    return is_peer, private, host, path
+
+
+# Reclassify late so the audit wrapper installed in 01_core_data sees the final
+# peer hosts (PEER_SERVICE_URL / PEER_PRIVATE_URL), not only old keepalive URL.
+_OCH1213_PARENT_TRAFFIC_CLASSIFY_HTTP = globals().get('_traffic_classify_http')
+def _traffic_classify_http(url: str, method: str):
+    try:
+        parts = _och1213_urlparse.urlsplit(str(url or ''))
+        host = (parts.hostname or '').casefold()
+        last = (parts.path or '/').rstrip('/').split('/')[-1] or '/'
+    except Exception:
+        host = ''; last = '/'
+    if host == 'api.render.com':
+        return ('render_api', f'render-api:{str(method).upper()}:{last}')
+    is_peer, private, peer_host, _path = _och1213_peer_url_info(url)
+    if is_peer:
+        cat = 'peer_private' if private else 'peer_http'
+        return (cat, f'{cat}:{str(method).upper()}:{peer_host}:{last}')
+    if callable(_OCH1213_PARENT_TRAFFIC_CLASSIFY_HTTP):
+        return _OCH1213_PARENT_TRAFFIC_CLASSIFY_HTTP(url, method)
+    return ('other_http', f'http:{str(method).upper()}:{host or "unknown"}:{last}')
+
+
+def _och1213_guard_block(reason, method, url, kwargs):
+    estimated = 0
+    try:
+        estimated = int(_traffic_request_fallback_size(url, kwargs) or 0)
+    except Exception:
+        estimated = len(str(url or '').encode('utf-8', errors='ignore')) + 128
+    try:
+        _is_peer, _private, host, path = _och1213_peer_url_info(url)
+        operation = f'{str(method).upper()}:{host}:{path}'[:240]
+    except Exception:
+        operation = f'{str(method).upper()}:{str(url)[:180]}'
+    now = _och1213_time.time()
+    with _OCH1213_TRAFFIC_LOCK:
+        _OCH1213_GUARD['blocked_calls'] = int(_OCH1213_GUARD.get('blocked_calls', 0) or 0) + 1
+        _OCH1213_GUARD['saved_bytes_est'] = int(_OCH1213_GUARD.get('saved_bytes_est', 0) or 0) + max(0, estimated)
+        _OCH1213_GUARD['last_block_at'] = now
+        _OCH1213_GUARD['last_block_reason'] = str(reason)[:180]
+        _OCH1213_GUARD['last_block_operation'] = operation
+    try:
+        fn = globals().get('bot_journal')
+        if callable(fn):
+            fn('r84_traffic_guard_block', int(globals().get('OWNER_ID') or 0), f'{reason}; {operation}; saved_est={estimated}')
+    except Exception:
+        pass
+    raise RuntimeError(f'traffic_guard_v213:{reason}:{operation}')
+
+
+def _och1213_guard_note_result(ok: bool, detail: str=''):
+    now = _och1213_time.time()
+    with _OCH1213_TRAFFIC_LOCK:
+        if ok:
+            _OCH1213_GUARD['consecutive_failures'] = 0
+            _OCH1213_GUARD['circuit_open_until'] = 0.0
+            _OCH1213_GUARD['last_success_at'] = now
+            _OCH1213_GUARD['last_failure'] = ''
+        else:
+            failures = int(_OCH1213_GUARD.get('consecutive_failures', 0) or 0) + 1
+            _OCH1213_GUARD['consecutive_failures'] = failures
+            _OCH1213_GUARD['last_failure_at'] = now
+            _OCH1213_GUARD['last_failure'] = str(detail or 'peer request failed')[:240]
+            if failures >= _OCH1213_GUARD_FAIL_THRESHOLD:
+                _OCH1213_GUARD['circuit_open_until'] = max(float(_OCH1213_GUARD.get('circuit_open_until', 0) or 0), now + _OCH1213_GUARD_OPEN_SEC)
+
+
+def traffic_guard_snapshot():
+    with _OCH1213_TRAFFIC_LOCK:
+        row = dict(_OCH1213_GUARD)
+    now = _och1213_time.time()
+    row['enabled'] = bool(_OCH1213_GUARD_ENABLED)
+    try: row['r2_enabled'] = bool(_och1210_r2_enabled())
+    except Exception: row['r2_enabled'] = False
+    row['circuit_open'] = float(row.get('circuit_open_until', 0) or 0) > now
+    row['circuit_remaining_sec'] = max(0, int(float(row.get('circuit_open_until', 0) or 0) - now))
+    row['peer_urls'] = _och1213_peer_urls()
+    row['peer_hosts'] = sorted(_och1213_peer_hosts())
+    row['private_configured'] = bool(str(_och1213_os.getenv('PEER_PRIVATE_URL', '') or '').strip())
+    return row
+
+
+def traffic_guard_text():
+    st = traffic_guard_snapshot()
+    fmt = globals().get('_traffic_fmt_bytes')
+    fbytes = fmt if callable(fmt) else (lambda x: f'{int(x or 0)} B')
+    peer = ', '.join(st.get('peer_hosts') or []) or 'не настроен'
+    lines = [
+        f'🛡 TRAFFIC GUARD · {BOT_DISPLAY_NAME}',
+        '',
+        f"Guard: {'✅ включён' if st.get('enabled') else '⛔ выключен'}",
+        f"R2 по маршрутам: {'✅ ВКЛ' if st.get('r2_enabled') else '⛔ ВЫКЛ · R1-only'}",
+        f"Peer: {peer}",
+        f"Private URL: {'есть' if st.get('private_configured') else 'нет'}",
+        '',
+        f"Заблокировано сетевых попыток: {int(st.get('blocked_calls',0) or 0)}",
+        f"Не отправлено (оценка payload): {fbytes(st.get('saved_bytes_est',0))}",
+        f"Ошибок подряд R2: {int(st.get('consecutive_failures',0) or 0)} / {_OCH1213_GUARD_FAIL_THRESHOLD}",
+        f"Circuit breaker: {'🔴 открыт ещё ' + str(st.get('circuit_remaining_sec',0)) + ' с' if st.get('circuit_open') else '🟢 закрыт'}",
+    ]
+    if st.get('last_block_reason'):
+        lines += ['', f"Последняя блокировка: {st.get('last_block_reason')}", f"Операция: {st.get('last_block_operation')}"]
+    lines += ['', 'R1-only блокируется на последнем сетевом слое: даже старый retry/outbox не сможет отправить HTTP в Render #2.', 'Circuit breaker после повторных ошибок останавливает тяжёлые peer-запросы; разрешается только редкий /health probe.']
+    return '\n'.join(lines)[:3900]
+
+
+def _install_och1213_traffic_guard():
+    if not _OCH1213_GUARD_ENABLED:
+        return False
+    current = requests.sessions.Session.request
+    if getattr(current, '_och1213_traffic_guard', False):
+        return True
+    original = current
+    def guarded(self, method, url, *args, **kwargs):
+        is_peer, _private, _host, path = _och1213_peer_url_info(url)
+        if not is_peer:
+            return original(self, method, url, *args, **kwargs)
+        # HARD RULE: owner-selected R1-only means absolutely no peer HTTP.
+        try:
+            r2_on = bool(_och1210_r2_enabled())
+        except Exception:
+            r2_on = False
+        if not r2_on:
+            return _och1213_guard_block('R2_OFF_R1_ONLY', method, url, kwargs)
+        now = _och1213_time.time()
+        is_probe = str(path or '').rstrip('/').endswith('/health')
+        with _OCH1213_TRAFFIC_LOCK:
+            open_until = float(_OCH1213_GUARD.get('circuit_open_until', 0) or 0)
+            last_probe = float(_OCH1213_GUARD.get('last_probe_at', 0) or 0)
+            if open_until > now:
+                if not is_probe or (now - last_probe) < _OCH1213_GUARD_PROBE_SEC:
+                    block = True
+                else:
+                    _OCH1213_GUARD['last_probe_at'] = now
+                    block = False
+            else:
+                block = False
+        if block:
+            return _och1213_guard_block('R2_CIRCUIT_OPEN', method, url, kwargs)
+        try:
+            response = original(self, method, url, *args, **kwargs)
+            status = int(getattr(response, 'status_code', 0) or 0)
+            ok = bool(status and status < 500 and status not in {408, 425, 429})
+            _och1213_guard_note_result(ok, f'HTTP {status}' if status else 'no status')
+            return response
+        except Exception as exc:
+            _och1213_guard_note_result(False, f'{type(exc).__name__}: {str(exc)[:180]}')
+            raise
+    guarded._och1213_traffic_guard = True
+    guarded._och1213_original = original
+    requests.sessions.Session.request = guarded
+    return True
+
+
+# ------------------------- Official Render metrics -------------------------
+def _och1213_render_resources():
+    raw = []
+    for key in ('RENDER_SERVICE_ID', 'RENDER_PEER_SERVICE_ID'):
+        v = str(_och1213_os.getenv(key, '') or '').strip()
+        if v:
+            raw.append(v)
+    extra = str(_och1213_os.getenv('RENDER_BANDWIDTH_RESOURCE_IDS', '') or '')
+    raw += [x.strip() for x in extra.replace(';', ',').split(',') if x.strip()]
+    seen = set(); out = []
+    for v in raw:
+        if v.startswith('srv-') and v not in seen:
+            seen.add(v); out.append(v)
+    return out[:30]
+
+
+def _och1213_series(payload):
+    if isinstance(payload, dict):
+        payload = payload.get('data', payload.get('series', []))
+    return payload if isinstance(payload, list) else []
+
+
+def _och1213_points_sum(series):
+    total = 0.0
+    vals = (series or {}).get('values', []) if isinstance(series, dict) else []
+    for point in vals or []:
+        try:
+            if isinstance(point, dict):
+                v = point.get('value', 0)
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                v = point[-1]
+            else:
+                v = point
+            total += float(v or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _och1213_unit_factor(unit):
+    u = str(unit or 'B').strip()
+    low = u.casefold()
+    table = {
+        'b':1.0, 'byte':1.0, 'bytes':1.0,
+        'kb':1000.0, 'kbyte':1000.0, 'kbytes':1000.0,
+        'mb':1000.0**2, 'mbyte':1000.0**2, 'mbytes':1000.0**2,
+        'gb':1000.0**3, 'gbyte':1000.0**3, 'gbytes':1000.0**3,
+        'tb':1000.0**4,
+        'kib':1024.0, 'mib':1024.0**2, 'gib':1024.0**3, 'tib':1024.0**4,
+    }
+    return table.get(low, 1.0)
+
+
+def _och1213_total_metric_bytes(payload):
+    total = 0.0
+    for series in _och1213_series(payload):
+        if not isinstance(series, dict):
+            continue
+        unit = series.get('unit') or (series.get('labels') or {}).get('unit') or 'B'
+        total += _och1213_points_sum(series) * _och1213_unit_factor(unit)
+    return max(0, int(total))
+
+
+def traffic_render_refresh(force=False):
+    key = str(_och1213_os.getenv('RENDER_API_KEY', '') or '').strip()
+    resources = _och1213_render_resources()
+    now = _och1213_time.time()
+    with _OCH1213_TRAFFIC_LOCK:
+        cached = dict(_OCH1213_RENDER_CACHE)
+    if not force and cached.get('fetched_at') and now - float(cached.get('fetched_at') or 0) < _OCH1213_RENDER_CACHE_SEC:
+        return cached
+    if not key:
+        result = {'fetched_at': now, 'ok': False, 'error': 'RENDER_API_KEY не задан', 'data': {'resources': resources}}
+        with _OCH1213_TRAFFIC_LOCK: _OCH1213_RENDER_CACHE.update(result)
+        return result
+    if not resources:
+        result = {'fetched_at': now, 'ok': False, 'error': 'RENDER_SERVICE_ID не найден', 'data': {'resources': []}}
+        with _OCH1213_TRAFFIC_LOCK: _OCH1213_RENDER_CACHE.update(result)
+        return result
+    start = _och1213_datetime.now(_och1213_timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end = _och1213_datetime.now(_och1213_timezone.utc)
+    params = [('startTime', start.isoformat().replace('+00:00','Z')), ('endTime', end.isoformat().replace('+00:00','Z'))]
+    params += [('resource', rid) for rid in resources]
+    headers = {'Authorization': f'Bearer {key}', 'Accept': 'application/json', 'User-Agent': 'ochnis-12.13-traffic-control'}
+    try:
+        r_total = requests.get('https://api.render.com/v1/metrics/bandwidth', headers=headers, params=params, timeout=(3.0, 12.0))
+        r_total.raise_for_status()
+        total_payload = r_total.json()
+        total_bytes = _och1213_total_metric_bytes(total_payload)
+        r_src = requests.get('https://api.render.com/v1/metrics/bandwidth-sources', headers=headers, params=params, timeout=(3.0, 12.0))
+        r_src.raise_for_status()
+        src_payload = r_src.json()
+        raw_by = {}
+        for series in _och1213_series(src_payload):
+            if not isinstance(series, dict):
+                continue
+            labels = series.get('labels') or {}
+            src = str(labels.get('trafficSource') or labels.get('traffic_source') or 'unknown').casefold()
+            raw_by[src] = raw_by.get(src, 0.0) + _och1213_points_sum(series)
+        raw_sum = sum(raw_by.values())
+        by_bytes = {}
+        if raw_sum > 0 and total_bytes >= 0:
+            ratio = float(total_bytes) / float(raw_sum)
+            by_bytes = {k:max(0,int(v*ratio)) for k,v in raw_by.items()}
+        data = {
+            'resources': resources,
+            'month_start': start.isoformat(),
+            'total_bytes': int(total_bytes),
+            'sources_bytes': by_bytes,
+            'sources_raw': raw_by,
+            'limit_bytes': int(_OCH1213_RENDER_LIMIT_GB * 1000**3),
+        }
+        result = {'fetched_at': now, 'ok': True, 'error': '', 'data': data}
+    except Exception as exc:
+        result = {'fetched_at': now, 'ok': False, 'error': f'{type(exc).__name__}: {str(exc)[:260]}', 'data': {'resources': resources}}
+    with _OCH1213_TRAFFIC_LOCK:
+        _OCH1213_RENDER_CACHE.clear(); _OCH1213_RENDER_CACHE.update(result)
+    return dict(result)
+
+
+def traffic_render_snapshot():
+    with _OCH1213_TRAFFIC_LOCK:
+        return _och1213_json.loads(_och1213_json.dumps(_OCH1213_RENDER_CACHE, default=str))
+
+
+def _och1213_render_source_lines(cache):
+    fmt = globals().get('_traffic_fmt_bytes')
+    fbytes = fmt if callable(fmt) else (lambda x: f'{int(x or 0)} B')
+    if not (cache or {}).get('ok'):
+        err = str((cache or {}).get('error') or 'нет данных')
+        return ['☁️ Render API: ' + err]
+    d = (cache or {}).get('data') or {}
+    total = int(d.get('total_bytes', 0) or 0)
+    limit = int(d.get('limit_bytes', 0) or 0)
+    pct = (100.0 * total / limit) if limit > 0 else 0.0
+    src = d.get('sources_bytes') or {}
+    names = {'http':'HTTP Responses', 'websocket':'WebSocket', 'nat':'Service-Initiated', 'privatelink':'Private Link', 'total':'Total'}
+    lines = [f'☁️ RENDER OFFICIAL · месяц: {fbytes(total)} / {_OCH1213_RENDER_LIMIT_GB:g} GB ({pct:.1f}%)']
+    for key in ('nat','http','websocket','privatelink'):
+        if key in src:
+            lines.append(f"• {names[key]}: {fbytes(src.get(key,0))}")
+    lines.append(f"• ресурсов в запросе: {len(d.get('resources') or [])}")
+    return lines
+
+
+def traffic_audit_text(scope: str='month') -> str:
+    """12.13 compact audit: app attribution + container cross-check + Render truth."""
+    b = _traffic_scope_bucket(scope)
+    labels = {'month':'этот месяц','today':'сегодня','process':'этот процесс','all':'вся сохранённая история'}
+    label = labels.get(str(scope).lower(), str(scope))
+    fmt = globals().get('_traffic_fmt_bytes')
+    fbytes = fmt if callable(fmt) else (lambda x: f'{int(x or 0)} B')
+    lines = [f'📶 ТОТАЛЬНЫЙ КОНТРОЛЬ ТРАФИКА · {BOT_DISPLAY_NAME}', f'Период внутреннего учёта: {label}', '']
+    if str(scope).lower() == 'month':
+        cache = traffic_render_refresh(False)
+        lines += _och1213_render_source_lines(cache) + ['']
+    lines += [
+        f"🧮 ВНУТРЕННИЙ УЧЁТ: ↑ {fbytes(b.get('outbound_bytes',0))} · ↓ {fbytes(b.get('inbound_bytes',0))}",
+        f"Вызовов: {int(b.get('calls',0) or 0)} · ошибок: {int(b.get('errors',0) or 0)}",
+        '', 'По системам:'
+    ]
+    rows = sorted((b.get('categories') or {}).items(), key=lambda kv:int((kv[1] or {}).get('outbound_bytes',0) or 0), reverse=True)
+    names = {'telegram':'Telegram API','mega_put':'MEGA upload','mega_get':'MEGA download','mega_control':'MEGA служебное','google':'Google API','currency':'Курс USD','self_http':'Self/Render HTTP','peer_http':'Render #2 PUBLIC','peer_private':'Render #2 PRIVATE','render_api':'Render Metrics API','other_http':'Прочий HTTP','web_http':'HTTP responses/webhook','traffic_guard':'Traffic Guard'}
+    for cat,row in rows[:9]:
+        lines.append(f"• {names.get(cat,cat)}: ↑ {fbytes(row.get('outbound_bytes',0))} · {int(row.get('calls',0) or 0)} выз. · err {int(row.get('errors',0) or 0)}")
+    ops = sorted((b.get('operations') or {}).items(), key=lambda kv:int((kv[1] or {}).get('outbound_bytes',0) or 0), reverse=True)
+    if ops:
+        lines += ['', '🔥 ТОП операций:']
+        for op,row in ops[:7]:
+            lines.append(f"• {str(op)[:88]}: {fbytes(row.get('outbound_bytes',0))} · {int(row.get('calls',0) or 0)}×")
+    net = traffic_container_net_snapshot()
+    proc = _traffic_scope_bucket('process')
+    unknown = max(0, int(net.get('tx',0) or 0) - int(proc.get('outbound_bytes',0) or 0))
+    guard = traffic_guard_snapshot()
+    lines += ['', '🧷 КОНТЕЙНЕР (с запуска Traffic Control):', f"TX {fbytes(net.get('tx',0))} · RX {fbytes(net.get('rx',0))}", f"Необъяснённый TX минимум: {fbytes(unknown)}", '', f"🛡 Guard: {'R2 разрешён' if guard.get('r2_enabled') else 'R1-only · R2 СЕТЬ ЗАБЛОКИРОВАНА'}", f"Блокировок: {int(guard.get('blocked_calls',0) or 0)} · сохранено ≈ {fbytes(guard.get('saved_bytes_est',0))}", f"Circuit: {'🔴 OPEN ' + str(guard.get('circuit_remaining_sec',0)) + 'с' if guard.get('circuit_open') else '🟢 CLOSED'}"]
+    lines += ['', 'ℹ️ Внутренний счётчик = прикладные байты. Render API = официальный платформенный счётчик. TX/RX = независимая проверка сетевого интерфейса.']
+    return '\n'.join(lines)[:3900]
+
+
+def _och1213_alert_state_get():
+    try:
+        db = globals().get('SQLITE')
+        row = db.get_meta('traffic_control_v213', 'render_alert', {}) if db is not None else {}
+        return row if isinstance(row, dict) else {}
+    except Exception:
+        return {}
+
+
+def _och1213_alert_state_set(row):
+    try:
+        db = globals().get('SQLITE')
+        if db is not None:
+            db.set_meta('traffic_control_v213', 'render_alert', dict(row or {}))
+    except Exception:
+        pass
+
+
+def _och1213_maybe_alert_render(cache):
+    if not (cache or {}).get('ok'):
+        return
+    d = cache.get('data') or {}
+    total = int(d.get('total_bytes',0) or 0); limit = int(d.get('limit_bytes',0) or 0)
+    if limit <= 0:
+        return
+    pct = 100.0 * total / limit
+    reached = max([x for x in (50,70,85,95) if pct >= x] or [0])
+    if not reached:
+        return
+    month = _och1213_datetime.now(_och1213_timezone.utc).strftime('%Y-%m')
+    old = _och1213_alert_state_get()
+    if str(old.get('month') or '') == month and int(old.get('threshold',0) or 0) >= reached:
+        return
+    _och1213_alert_state_set({'month':month,'threshold':reached,'at':_och1213_datetime.now(_och1213_timezone.utc).isoformat()})
+    try:
+        owner = int(globals().get('OWNER_ID') or 0)
+        if owner:
+            bot.send_message(owner, f'⚠️ Render traffic: достигнуто {reached}% локального лимита {_OCH1213_RENDER_LIMIT_GB:g} GB. Сейчас: {_traffic_fmt_bytes(total)} ({pct:.1f}%).\nОткройте Инфо → 📶 Трафик.')
+    except Exception:
+        pass
+
+
+def _och1213_render_poll_loop():
+    # Do not add startup pressure; first official poll happens after a short delay.
+    _och1213_time.sleep(20.0)
+    while True:
+        try:
+            cache = traffic_render_refresh(True)
+            _och1213_maybe_alert_render(cache)
+        except Exception:
+            pass
+        _och1213_time.sleep(_OCH1213_RENDER_POLL_SEC)
+
+
+def _och1213_start_render_poll():
+    global _OCH1213_RENDER_THREAD_STARTED
+    if not str(_och1213_os.getenv('RENDER_API_KEY','') or '').strip():
+        return False
+    with _OCH1213_TRAFFIC_LOCK:
+        if _OCH1213_RENDER_THREAD_STARTED:
+            return True
+        _OCH1213_RENDER_THREAD_STARTED = True
+    _och1213_threading.Thread(target=_och1213_render_poll_loop, daemon=True, name='r84-render-bandwidth').start()
+    return True
+
+
+try:
+    _install_och1213_traffic_guard()
+    _och1213_start_render_poll()
+    bot_journal('r84_total_traffic_control_loaded', int(OWNER_ID or 0), f'r2_enabled={int(bool(_och1210_r2_enabled()))}; guard={int(bool(_OCH1213_GUARD_ENABLED))}; render_api={int(bool(_och1213_os.getenv("RENDER_API_KEY","")))}; resources={len(_och1213_render_resources())}')
+except Exception as _och1213_exc:
+    try: log_error(f'OCH12.13 R84 init: {_och1213_exc}')
     except Exception: pass
 
 # v262

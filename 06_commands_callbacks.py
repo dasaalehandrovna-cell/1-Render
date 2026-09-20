@@ -1812,13 +1812,28 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             scope = data_str.split(':', 1)[1] if ':' in data_str else 'month'
-            if scope not in {'month', 'today', 'process', 'all'}:
+            special = scope
+            if special == 'render':
+                try:
+                    refresh_fn = globals().get('traffic_render_refresh')
+                    if callable(refresh_fn): refresh_fn(True)
+                except Exception:
+                    pass
+                scope = 'month'
+            elif special == 'guard':
+                scope = 'guard'
+            elif scope not in {'month', 'today', 'process', 'all'}:
                 scope = 'month'
             kbt = types.InlineKeyboardMarkup(row_width=3)
             kbt.row(IB('📅 Месяц', callback_data='traffic_audit:month'), IB('Сегодня', callback_data='traffic_audit:today'), IB('Процесс', callback_data='traffic_audit:process'))
-            kbt.row(IB('🔄 Обновить', callback_data=f'traffic_audit:{scope}'), IB('🖥 Watcher', callback_data='runtime_watcher'))
+            kbt.row(IB('☁️ Render API', callback_data='traffic_audit:render'), IB('🛡 Guard', callback_data='traffic_audit:guard'))
+            refresh_target = 'render' if special == 'render' else ('guard' if special == 'guard' else scope)
+            kbt.row(IB('🔄 Обновить', callback_data=f'traffic_audit:{refresh_target}'), IB('🖥 Watcher', callback_data='runtime_watcher'))
             kbt.row(IB('🔙 Назад в Инфо', callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB('❌ Закрыть', callback_data='info_close'))
-            text = traffic_audit_text(scope) if 'traffic_audit_text' in globals() else '📶 Аудит трафика недоступен.'
+            if scope == 'guard' and callable(globals().get('traffic_guard_text')):
+                text = traffic_guard_text()
+            else:
+                text = traffic_audit_text(scope) if 'traffic_audit_text' in globals() else '📶 Аудит трафика недоступен.'
             safe_edit(bot, call, text, reply_markup=kbt)
             return
         # R72: runtime_watcher is owned exclusively by the v153 diagnostic route.

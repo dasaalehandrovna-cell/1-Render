@@ -2886,13 +2886,13 @@ def mega_database_browser_text_v242(page: int | None=None) -> str:
     err = str(st.get('error') or '')
     status = '⏳ загрузка…' if st.get('loading') else (('⛔ ' + err[:700]) if err else f'✅ {len(entries)} элементов')
     return (
-        '🗄 БАЗЫ MEGA / ВОССТАНОВЛЕНИЕ · через #2\n\n'
+        '🗄 БАЗЫ MEGA / ВОССТАНОВЛЕНИЕ · R1\n\n'
         f"Путь: {st.get('path') or '/'}\n"
         f"Статус: {status}\n"
         f"Страница: {cur + 1}/{pages}\n"
-        f"Рабочий root #2: {st.get('configured_root') or '—'}\n\n"
+        f"Рабочий root R1: {st.get('configured_root') or '—'}\n\n"
         'Ручной recovery-browser может просматривать ВСЕ папки аккаунта MEGA. '
-        'Автоматический backup №2 при этом остаётся строго внутри MEGA_BACKUP_DIR.\n\n'
+        'Автоматический backup при этом остаётся строго внутри MEGA_BACKUP_DIR.\n\n'
         'Файл при восстановлении принимается только после SQLite quick_check; текущая база сначала получает pre_restore.'
     )[:3900]
 
@@ -2931,12 +2931,12 @@ def mega_database_browser_keyboard_v242(page: int | None=None):
 def mega_database_confirm_text_v242(token: str) -> str:
     row = _v265_mdb_entry(token)
     return (
-        '⚠️ ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ MEGA · через #2\n\n'
+        '⚠️ ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ MEGA · R1\n\n'
         f"Файл: {row.get('name') or str(row.get('path') or '').rsplit('/',1)[-1] or 'не найден'}\n"
         f"Путь: {row.get('path') or '—'}\n\n"
-        'FAST скачает файл через HEAVY, проверит gzip/raw SQLite и PRAGMA quick_check. '
+        'FAST скачает файл из MEGA прямо на R1, проверит gzip/raw SQLite и PRAGMA quick_check. '
         'Только валидная SQLite полностью заменит рабочую базу без merge. Перед заменой создаётся pre_restore. '
-        'После успеха FAST сразу закрепит full snapshot в Redis, а HEAVY получит re-anchor в свой строгий MEGA root.'
+        'После успеха FAST сразу закрепит FULL snapshot в Redis и поставит compact MEGA checkpoint на R1.'
     )[:3900]
 
 
@@ -2993,7 +2993,7 @@ def _v265_mdb_refresh_job(chat_id: int, message_id: int, path: str, page: int=0)
     except Exception as exc:
         fast_ui_edit_message_text(int(chat_id), int(message_id), window_mark(mega_database_browser_text_v242(page), 'Ф233'), reply_markup=mega_database_browser_keyboard_v242(page), purpose='r65_mega_browser_error')
         try:
-            send_and_auto_delete(int(chat_id), '❌ MEGA browser через #2: ' + str(exc)[:500], 30)
+            send_and_auto_delete(int(chat_id), '❌ MEGA browser R1: ' + str(exc)[:500], 30)
         except Exception:
             pass
 
@@ -5282,7 +5282,7 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                 token = action.split(':', 1)[1]
                 path = str((_v265_mdb_entry(token) or {}).get('path') or '/')
             try:
-                bot.answer_callback_query(call.id, 'Читаю MEGA через Render #2…')
+                bot.answer_callback_query(call.id, 'Читаю MEGA на R1…')
             except Exception:
                 pass
             with _V265_MEGA_BROWSER_LOCK:
@@ -5344,7 +5344,7 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
                 try:
                     rep = _v242_restore_selected_mega_database(token, cid)
                     checkpoint_note = '✅' if rep.get('checkpoint_ok') else ('—' if rep.get('checkpoint_required') is False else '⛔')
-                    send_and_auto_delete(cid, f"✅ База MEGA восстановлена через #2. records={rep.get('source_records')} · новая generation={rep.get('generation') or 'LOCAL-PENDING'} · HEAVY/MEGA checkpoint={checkpoint_note}", 180)
+                    send_and_auto_delete(cid, f"✅ База MEGA восстановлена на R1. records={rep.get('source_records')} · новая generation={rep.get('generation') or 'LOCAL-PENDING'} · HEAVY/MEGA checkpoint={checkpoint_note}", 180)
                     try:
                         schedule_startup_main_windows(delay=0.5)
                     except Exception:
