@@ -461,14 +461,14 @@ if ROLE=='fast':
        "requests.post(base+endpoint" in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events','') and
        '_r43_store_events_redis' not in _fn_sources(split_src,{'_r38_post_events'}).get('_r38_post_events',''),
        'active state-event sender must go to HEAVY, not FAST Redis/MEGA')
-    ok('och128_no_recovery_safe_mode',
+    ok('och128_no_legacy_runtime_safe_mode',
        'RECOVERY SAFE MODE' not in web_src and 'SPLIT_RECOVERY_SAFE_MODE' not in web_src and
        'SPLIT_RECOVERY_SAFE_MODE' not in split_src and 'SPLIT_RECOVERY_SAFE_MODE' not in start_src,
-       'recovery safe mode must be fully removed')
+       'legacy runtime SPLIT_RECOVERY_SAFE_MODE flag must stay removed; 12.14 preboot recovery-safe wait is a separate startup policy')
     ok('och128_normal_empty_boot',
-       'def _ensure_empty_db' in start_src and "trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'" in start_src and
-       "raise RuntimeError('OCH12.6 Redis/local unavailable" not in start_src,
-       'when local/Redis/MEGA are unavailable FAST must initialize normal empty SQLite and continue')
+       'def _ensure_empty_db' in start_src and 'OCHNIS_ALLOW_EMPTY_INIT' in start_src and
+       "trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'" in start_src,
+       'legacy empty bootstrap remains available only as explicit first-install opt-in; production auto-empty is forbidden by 12.14')
 
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
@@ -721,8 +721,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.13'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.13')
+       "BOT_DISPLAY_NAME = 'очнись_12.14'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.14')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -756,6 +756,24 @@ if ROLE=='fast':
        "traffic_audit:render" in cb_src and "traffic_audit:guard" in cb_src and
        "☁️ Render API" in cb_src and "🛡 Guard" in cb_src,
        'traffic window must expose Render refresh and Traffic Guard status')
+    ok('och1214_journal_queue_batched_bounded',
+       "JOURNAL_TASK_POOL = KeyedTaskPool('journal-file'" in core_src and
+       'def _journal_file_drain_v214' in core_src and 'def _journal_enqueue_file_v214' in core_src and
+       "JOURNAL_TASK_POOL.submit('journal-file'" not in core_src and
+       "BACKGROUND_MAX_PENDING', 400" in core_src,
+       '12.14 must batch local journal IO outside GENERAL background and bound background backlog')
+    ok('och1214_forward_index_latest_wins',
+       'PERSIST_LATEST_TASK_POOL = LatestKeyedTaskPool' in core_src and
+       "submit_latest('v263-fwd-index-root-v214'" in split_src and
+       "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
+       'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
+    ok('och1214_disaster_safe_no_empty_boot',
+       "OCH12.14_REDIS_FIRST_MEGA_RECOVERY_SAFE_NO_EMPTY_BOOT" in start_src and
+       'def _och1214_recovery_safe_wait' in start_src and
+       "OCHNIS_ALLOW_EMPTY_INIT" in start_src and
+       "base_source'] = 'EMPTY_INIT'" not in start_src and
+       "base_source'] = 'RECOVERY_SAFE_WAIT'" in start_src,
+       'production recovery must wait/retry Redis/MEGA instead of silently booting an empty database')
     ok('och1210_r2_network_hard_gate',
        "_split_os.environ['PEER_PING_ENABLED'] = '0' if all_fast else '1'" in split_src and
        'R2 disabled by normal R1-only profile' in split_src and

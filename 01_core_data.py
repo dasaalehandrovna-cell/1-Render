@@ -650,7 +650,8 @@ class KeyedTaskPool:
         with self._lock:
             _now_m = time.monotonic()
             _running = [dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
-            return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running}
+            _top = sorted(((str(k), len(v)) for k, v in self._by_key.items() if v), key=lambda x: (-x[1], x[0]))[:8]
+            return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running, 'top_queued_keys': [{'key': k, 'queued': n} for k, n in _top]}
 
 
 class LatestKeyedTaskPool:
@@ -1369,10 +1370,15 @@ FORWARD_TASK_POOL = KeyedTaskPool('forward', _env_int('FORWARD_WORKERS', 1, 1, 6
 BACKUP_TASK_POOL = KeyedTaskPool('backup', _env_int('BACKUP_WORKERS', 1, 1, 2), _env_int('BACKUP_MAX_PENDING', 120, 20, 500))
 DELTA_TASK_POOL = KeyedTaskPool('delta', _env_int('DELTA_WORKERS', 1, 1, 2), _env_int('DELTA_MAX_PENDING', 300, 30, 1200))
 EXPORT_TASK_POOL = KeyedTaskPool('export', _env_int('EXPORT_WORKERS', 1, 1, 2), _env_int('EXPORT_MAX_PENDING', 40, 5, 200))
-BACKGROUND_TASK_POOL = KeyedTaskPool('background', _env_int('BACKGROUND_WORKERS', 1, 1, 4), _env_int('BACKGROUND_MAX_PENDING', 1600, 100, 6000))
+# OCH12.14: general/background work must never be allowed to consume nearly the
+# whole 512 MB container simply by queueing Python call arguments.  Journal file IO
+# has its own tiny lane and is batch-drained below; forward-index persistence uses a
+# latest-wins pool.  Critical finance/forward/delta lanes remain unchanged.
+BACKGROUND_TASK_POOL = KeyedTaskPool('background', _env_int('BACKGROUND_WORKERS', 1, 1, 4), _env_int('BACKGROUND_MAX_PENDING', 400, 100, 1200))
 MAINTENANCE_TASK_POOL = BACKGROUND_TASK_POOL
-JOURNAL_TASK_POOL = BACKGROUND_TASK_POOL
 GENERAL_TASK_POOL = BACKGROUND_TASK_POOL
+JOURNAL_TASK_POOL = KeyedTaskPool('journal-file', _env_int('JOURNAL_FILE_WORKERS', 1, 1, 2), _env_int('JOURNAL_FILE_MAX_PENDING', 20, 10, 100))
+PERSIST_LATEST_TASK_POOL = LatestKeyedTaskPool('persist-latest', _env_int('PERSIST_LATEST_WORKERS', 1, 1, 2), _env_int('PERSIST_LATEST_MAX_KEYS', 64, 16, 256))
 DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 2, 2, 8), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
 DOZVON_TASK_POOL = KeyedTaskPool('dozvon', _env_int('DOZVON_WORKERS', 1, 1, 2), _env_int('DOZVON_MAX_PENDING', 100, 10, 500))
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
@@ -2124,7 +2130,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.13'
+BOT_DISPLAY_NAME = 'очнись_12.14'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -3100,6 +3106,18 @@ _JOURNAL_ERROR_FLUSH_LOCK = threading.RLock()
 _JOURNAL_ERROR_FLUSH_LAST = {}
 _JOURNAL_DURABLE_STATS.update({'immediate_error_flushes': 0, 'suppressed_immediate_error_flushes': 0, 'last_immediate_error_at': ''})
 
+# OCH12.14: one bounded in-RAM queue for local JSONL writes.  Prior releases
+# enqueued one Python task per journal row into GENERAL/BACKGROUND, which could hit
+# 1600 pending tasks and retain a large object graph until OOM pressure.
+try:
+    BOT_JOURNAL_FILE_PENDING_MAX = max(250, min(5000, int(os.getenv('BOT_JOURNAL_FILE_PENDING_MAX', '1200') or '1200')))
+except Exception:
+    BOT_JOURNAL_FILE_PENDING_MAX = 1200
+_JOURNAL_FILE_PENDING = deque()
+_JOURNAL_FILE_PENDING_LOCK = threading.RLock()
+_JOURNAL_FILE_DRAIN_SCHEDULED = False
+_JOURNAL_FILE_DROPPED = 0
+
 def _journal_error_flush_fingerprint(action: str, chat_id, level: str, detail) -> str:
     """Stable network-flush fingerprint without weakening the full local journal."""
     base = {'action': str(action or '')[:160], 'chat_id': str(chat_id or ''), 'level': str(level or '').upper()}
@@ -3811,6 +3829,55 @@ def _journal_write_row(row: dict):
     except Exception:
         pass
 
+def _journal_write_rows_batch_v214(rows):
+    if not rows:
+        return
+    try:
+        payload = ''.join(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n' for row in rows)
+        with _JOURNAL_FILE_LOCK:
+            _journal_rotate_local_locked()
+            with open(BOT_JOURNAL_FILE, 'a', encoding='utf-8') as jf:
+                jf.write(payload)
+    except Exception:
+        # Local forensic journal is best-effort; never recurse through bot_journal here.
+        pass
+
+def _journal_file_drain_v214():
+    global _JOURNAL_FILE_DRAIN_SCHEDULED
+    while True:
+        with _JOURNAL_FILE_PENDING_LOCK:
+            if not _JOURNAL_FILE_PENDING:
+                _JOURNAL_FILE_DRAIN_SCHEDULED = False
+                return
+            batch = []
+            for _ in range(min(256, len(_JOURNAL_FILE_PENDING))):
+                batch.append(_JOURNAL_FILE_PENDING.popleft())
+        _journal_write_rows_batch_v214(batch)
+
+def _journal_enqueue_file_v214(row: dict) -> bool:
+    global _JOURNAL_FILE_DRAIN_SCHEDULED, _JOURNAL_FILE_DROPPED
+    need_submit = False
+    with _JOURNAL_FILE_PENDING_LOCK:
+        while len(_JOURNAL_FILE_PENDING) >= int(BOT_JOURNAL_FILE_PENDING_MAX):
+            _JOURNAL_FILE_PENDING.popleft()
+            _JOURNAL_FILE_DROPPED += 1
+        _JOURNAL_FILE_PENDING.append(dict(row))
+        if not _JOURNAL_FILE_DRAIN_SCHEDULED:
+            _JOURNAL_FILE_DRAIN_SCHEDULED = True
+            need_submit = True
+    if not need_submit:
+        return True
+    try:
+        if JOURNAL_TASK_POOL.submit_unique('journal-file-drain-v214', _journal_file_drain_v214):
+            return True
+    except Exception:
+        pass
+    # If the tiny journal lane is unavailable, release the scheduled flag.  The next
+    # row will retry; keep the row buffered rather than executing disk IO in hot path.
+    with _JOURNAL_FILE_PENDING_LOCK:
+        _JOURNAL_FILE_DRAIN_SCHEDULED = False
+    return False
+
 def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str='', level: str='INFO'):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
     try:
@@ -3851,8 +3918,7 @@ def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str='', lev
                         sched.schedule('journal-size-flush', 1.0, flush_fn, True)
             except Exception:
                 pass
-        if not JOURNAL_TASK_POOL.submit('journal-file', _journal_write_row, dict(row)):
-            _journal_write_row(row)
+        _journal_enqueue_file_v214(row)
         if str(level or '').upper() in {'ERROR', 'CRITICAL'}:
             try:
                 flush_fn = globals().get('journal_flush_to_mega')
@@ -14278,7 +14344,7 @@ def _runtime_disk_stats() -> dict:
         return {'total_mb': None, 'used_mb': None, 'free_mb': None}
 
 def _runtime_pool_stats() -> dict:
-    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL, BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL, BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, PERSIST_LATEST_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
     return {p.name: p.stats() for p in pools}
 
 def runtime_snapshot(extra: dict | None=None) -> dict:

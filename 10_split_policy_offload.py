@@ -9244,10 +9244,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10116,7 +10116,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10155,7 +10155,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10205,7 +10205,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10228,13 +10228,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10290,7 +10290,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11186,7 +11186,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.13'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11862,9 +11862,17 @@ def _och129_install_forward_pairs(src_chat_id: int, src_msg_id: int, pairs, reas
         except Exception:
             pass
         try:
-            pool = globals().get('BACKGROUND_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
-            if pool is not None and hasattr(pool, 'submit_unique'):
-                pool.submit_unique(f'v263-fwd-index:{src[0]}:{src[1]}', save_data, data, root_only=True)
+            # OCH12.14: every forward-link repair mutates the same root forward_index.
+            # Hundreds of per-message save_data tasks are redundant and previously
+            # amplified the single background lane.  Keep at most one running plus
+            # one newest root persistence task.
+            pool = globals().get('PERSIST_LATEST_TASK_POOL')
+            if pool is not None and hasattr(pool, 'submit_latest'):
+                pool.submit_latest('v263-fwd-index-root-v214', save_data, data, root_only=True)
+            else:
+                fallback = globals().get('BACKGROUND_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
+                if fallback is not None and hasattr(fallback, 'submit_unique'):
+                    fallback.submit_unique('v263-fwd-index-root-v214', save_data, data, root_only=True)
         except Exception:
             pass
         try:
@@ -12416,6 +12424,7 @@ except Exception as _och1210_exc:
 
 # ---------------------------------------------------------------------------
 # OCH12.13 / R84 — TOTAL TRAFFIC CONTROL
+# OCH12.14 / R85 — OOM QUEUE CONTROL + DISASTER-SAFE RECOVERY
 #
 # Goals:
 #   1) a hard final network gate: R1-only means zero HTTP to Render #2 even if a
@@ -12780,7 +12789,7 @@ def traffic_render_refresh(force=False):
     end = _och1213_datetime.now(_och1213_timezone.utc)
     params = [('startTime', start.isoformat().replace('+00:00','Z')), ('endTime', end.isoformat().replace('+00:00','Z'))]
     params += [('resource', rid) for rid in resources]
-    headers = {'Authorization': f'Bearer {key}', 'Accept': 'application/json', 'User-Agent': 'ochnis-12.13-traffic-control'}
+    headers = {'Authorization': f'Bearer {key}', 'Accept': 'application/json', 'User-Agent': 'ochnis-12.14-traffic-control'}
     try:
         r_total = requests.get('https://api.render.com/v1/metrics/bandwidth', headers=headers, params=params, timeout=(3.0, 12.0))
         r_total.raise_for_status()

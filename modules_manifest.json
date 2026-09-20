@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "8451209ec6fccd449c53a8e2b5bc7e73ae97ccca20702bf276b1565cf77895e8",
+    "01_core_data.py": "e4a79719860b9296e86477bdc99728cba56a7131ce78b4679ef671571efb10b5",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "a79dd0e07573bbaf498dbb68ed1c6bfced6485f478fbb49e21a474a5ca8cc06e",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
@@ -23,9 +23,9 @@
     "07_state_web.py": "637bfcb5a5b201a7a85be629251f2d34072142fc507b198296c143eb45c8add8",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "12393bec268b7dd998d3cf277896ff63dd9cd2b1bc15f1815a6d363fec797a13"
+    "10_split_policy_offload.py": "0feb9618f9e2a9da646e4d1c308b63127a930b1877eecd8487ca28cf8c5db378"
   },
-  "release": "ОЧНИСЬ_12.13-TOTAL-TRAFFIC-CONTROL",
+  "release": "ОЧНИСЬ_12.14-OOM-QUEUE-CONTROL-DISASTER-SAFE-RECOVERY",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -359,6 +359,12 @@
     "och1213_peer_circuit_breaker",
     "och1213_render_official_bandwidth_api",
     "och1213_container_tx_rx_crosscheck",
-    "och1213_traffic_guard_ui"
+    "och1213_traffic_guard_ui",
+    "och1214_bounded_batched_local_journal_queue",
+    "och1214_forward_index_persist_latest_wins",
+    "och1214_background_pending_default_400",
+    "och1214_recovery_safe_no_auto_empty",
+    "och1214_explicit_first_install_empty_opt_in",
+    "och1214_queue_top_key_forensics"
   ]
 }

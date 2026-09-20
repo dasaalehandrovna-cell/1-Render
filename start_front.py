@@ -2,11 +2,13 @@
 #!/usr/bin/env python3
 """Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-OCH12.7 recovery policy:
+OCH12.14 recovery policy:
 - same-container local cache is only a crash breadcrumb;
 - Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
 - legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
 - MEGA remains the strict fallback through the configured root;
+- on Render, missing Redis + unavailable MEGA enters recovery-safe wait; an empty production database is never auto-created;
+- a true first install may opt in with OCHNIS_ALLOW_EMPTY_INIT=1;
 - runtime MEGA work stays delegated to Render #2 / HEAVY by default.
 """
 from __future__ import annotations
@@ -1091,6 +1093,69 @@ def _scrub_fast_runtime_mega_credentials() -> None:
     os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'
 
 
+def _och1214_allow_empty_init() -> bool:
+    # Production Render defaults to disaster-safe behaviour.  Local development may
+    # still bootstrap an empty DB automatically; a genuine new Render install must
+    # explicitly opt in once with OCHNIS_ALLOW_EMPTY_INIT=1.
+    if 'OCHNIS_ALLOW_EMPTY_INIT' in os.environ:
+        return _bool('OCHNIS_ALLOW_EMPTY_INIT', False)
+    return not _bool('RENDER', False)
+
+def _och1214_safe_retry_seconds() -> float:
+    try:
+        return max(5.0, min(300.0, float(os.getenv('RECOVERY_SAFE_RETRY_SECONDS', '30') or '30')))
+    except Exception:
+        return 30.0
+
+def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: bool, redis_url_present: bool, mega_enabled: bool) -> tuple[bool, str]:
+    """Never manufacture an empty production DB after durability failure.
+
+    The preboot HTTP server remains alive and Telegram updates keep their retry
+    semantics while we retry exact Redis FULL+TAIL and exact compact MEGA.
+    """
+    attempt = 0
+    trace['recovery_safe_mode'] = True
+    trace['base_source'] = 'RECOVERY_SAFE_WAIT'
+    while not _db_valid(target):
+        attempt += 1
+        trace['recovery_safe_attempts'] = attempt
+        delay = 5.0 if attempt == 1 else _och1214_safe_retry_seconds()
+        print(f'[SPLIT FRONT] OCH12.14 RECOVERY SAFE WAIT attempt={attempt} retry_in={delay:.0f}s; empty init blocked', flush=True)
+        time.sleep(delay)
+        if redis_enabled and redis_url_present:
+            try:
+                ok, detail = _restore_from_redis_startup(target)
+            except Exception as exc:
+                ok, detail = False, f'Redis retry exception: {exc}'
+            trace['redis_retry_ok'] = bool(ok)
+            trace['redis_retry_detail'] = str(detail)[:900]
+            print(f'[SPLIT FRONT] OCH12.14 Redis retry ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
+            if ok and _db_valid(target):
+                trace['redis_ok'] = True
+                trace['redis_detail'] = str(detail)[:900]
+                trace['base_source'] = 'REDIS_SAFE_RETRY'
+                trace['recovery_safe_mode'] = False
+                return True, 'Redis FULL+TAIL recovered during safe wait'
+        if mega_enabled:
+            try:
+                ok, detail, action = _r80_compact_mega_compare_restore(target, have_current=False)
+            except Exception as exc:
+                ok, detail, action = False, f'MEGA retry exception: {exc}', 'KEEP'
+            trace['mega_retry_ok'] = bool(ok)
+            trace['mega_retry_detail'] = str(detail)[:900]
+            trace['mega_retry_action'] = str(action)
+            print(f'[SPLIT FRONT] OCH12.14 MEGA retry ok={int(bool(ok))} action={action} detail={str(detail)[:500]}', flush=True)
+            if ok and action == 'RESTORE' and _db_valid(target):
+                trace['mega_ok'] = True
+                trace['mega_detail'] = str(detail)[:900]
+                trace['mega_action'] = 'RESTORE'
+                trace['base_source'] = 'MEGA_COMPACT_SAFE_RETRY'
+                trace['recovery_safe_mode'] = False
+                return True, 'MEGA compact recovered during safe wait'
+
+    trace['recovery_safe_mode'] = False
+    return True, 'valid local DB appeared during safe wait'
+
 def main():
     server = _start_boot_port()
     render_host = str(os.getenv('RENDER_EXTERNAL_HOSTNAME', '') or '').strip()
@@ -1108,7 +1173,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'OCH12.11_REDIS_FIRST_COMPACT_MEGA_NORMAL_EMPTY_BOOT',
+        'policy': 'OCH12.14_REDIS_FIRST_MEGA_RECOVERY_SAFE_NO_EMPTY_BOOT',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -1186,14 +1251,15 @@ def main():
                 elif local_cache_restored: trace['base_source']='LOCAL_RUNTIME_CACHE_VERIFIED_OR_MEGA_UNAVAILABLE'
                 else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
             elif not ok:
-                # OCH12.11: MEGA remains fail-open. If no recovery source exists,
-                # initialize a normal empty SQLite and continue in ordinary mode.
-                empty_ok, empty_detail = _ensure_empty_db(target)
-                trace['empty_init_ok'] = bool(empty_ok)
-                trace['empty_init_detail'] = str(empty_detail)[:500]
                 trace['recovery_fallback_reason'] = 'Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
-                trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                print(f'[SPLIT FRONT] OCH12.11 normal empty boot after MEGA unavailable ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                if _och1214_allow_empty_init():
+                    empty_ok, empty_detail = _ensure_empty_db(target)
+                    trace['empty_init_ok'] = bool(empty_ok)
+                    trace['empty_init_detail'] = str(empty_detail)[:500]
+                    trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'
+                    print(f'[SPLIT FRONT] OCH12.14 explicit empty bootstrap ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                else:
+                    _och1214_recovery_safe_wait(target, trace, redis_enabled=redis_master_enabled, redis_url_present=redis_url_present, mega_enabled=mega_master_enabled)
         else:
             trace['mega_contacted']=False; trace['mega_ok']=False
             trace['mega_detail']='MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
@@ -1201,11 +1267,14 @@ def main():
             elif local_cache_restored and _db_valid(target): trace['base_source']='LOCAL_RUNTIME_CACHE'
             elif had_valid_local_before_restore and _db_valid(target): trace['base_source']='LOCAL_SQLITE'
             else:
-                empty_ok, empty_detail = _ensure_empty_db(target)
-                trace['empty_init_ok'] = bool(empty_ok)
-                trace['empty_init_detail'] = str(empty_detail)[:500]
-                trace['base_source'] = 'EMPTY_INIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                print(f'[SPLIT FRONT] OCH12.11 MEGA disabled; normal empty boot ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                if _och1214_allow_empty_init():
+                    empty_ok, empty_detail = _ensure_empty_db(target)
+                    trace['empty_init_ok'] = bool(empty_ok)
+                    trace['empty_init_detail'] = str(empty_detail)[:500]
+                    trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'
+                    print(f'[SPLIT FRONT] OCH12.14 explicit empty bootstrap with MEGA disabled ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                else:
+                    _och1214_recovery_safe_wait(target, trace, redis_enabled=redis_master_enabled, redis_url_present=redis_url_present, mega_enabled=False)
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1236,7 +1305,7 @@ def main():
         except Exception:
             trace['redis_runtime_enabled'] = False
         trace['base_revision'] = float(trace.get('local_revision_before') or 0.0)
-        if trace.get('base_source') in {'REDIS', 'MEGA', 'LOCAL_RUNTIME_CACHE'}:
+        if trace.get('base_source') in {'REDIS', 'MEGA', 'MEGA_COMPACT', 'REDIS_SAFE_RETRY', 'MEGA_COMPACT_SAFE_RETRY', 'LOCAL_RUNTIME_CACHE'}:
             trace['base_revision'] = float(trace.get('final_revision') or 0.0)
         trace['local_found'] = bool(trace.get('local_found'))
         trace['local_valid'] = bool(trace.get('local_valid_before'))
