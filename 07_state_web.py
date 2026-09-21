@@ -4013,8 +4013,17 @@ class _V260WebhookInboxStore:
         self.read_conn = sqlite3.connect(str(self.path), timeout=1.0, check_same_thread=False)
         self.read_conn.row_factory = sqlite3.Row
         self._configure(self.read_conn, writer=False)
-        self.thread = threading.Thread(target=self._writer_loop, name='webhook-inbox-writer-1', daemon=True)
-        self.thread.start()
+        # OCH12.17 RAM: durable inbox writer starts on the first mutation.
+        self.thread = None
+        self.thread_start_lock = threading.Lock()
+
+    def _ensure_writer(self):
+        if self.thread is not None and self.thread.is_alive():
+            return
+        with self.thread_start_lock:
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._writer_loop, name='webhook-inbox-writer-1', daemon=True)
+                self.thread.start()
 
     def _configure(self, conn, writer: bool):
         conn.execute('PRAGMA busy_timeout=1500')
@@ -4051,6 +4060,7 @@ class _V260WebhookInboxStore:
                 self.write_q.task_done()
 
     def submit(self, fn, *, priority=1, wait=True, timeout=3.0):
+        self._ensure_writer()
         ev = threading.Event() if wait else None
         box = {'ok':False, 'result':None, 'error':None}
         item = (max(0, min(9, int(priority))), self._next_seq(), fn, ev, box)
@@ -4129,7 +4139,7 @@ class _V260WebhookInboxStore:
         return self.submit(lambda conn: (conn.executemany('DELETE FROM inbox WHERE update_id=?', vals), len(vals))[1], priority=5, wait=True)
 
     def status(self):
-        return dict(self.stats, pending=self.write_q.qsize(), alive=bool(self.thread.is_alive()))
+        return dict(self.stats, pending=self.write_q.qsize(), alive=bool(self.thread is not None and self.thread.is_alive()))
 
 _V260_INBOX_STORE = _V260WebhookInboxStore(_V260_INBOX_DB)
 _V260_INBOX_READY = True

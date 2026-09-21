@@ -8362,7 +8362,15 @@ def _r45_diag_writer_loop():
         except Exception:
             batch=[];_r44_time.sleep(.25)
 
-_r44_threading.Thread(target=_r45_diag_writer_loop,name='r45-diag-writer',daemon=True).start()
+_R45_DIAG_WRITER_THREAD=None
+_R45_DIAG_WRITER_START_LOCK=_r44_threading.Lock()
+def _r45_diag_ensure_writer():
+    global _R45_DIAG_WRITER_THREAD
+    if _R45_DIAG_WRITER_THREAD is not None and _R45_DIAG_WRITER_THREAD.is_alive(): return
+    with _R45_DIAG_WRITER_START_LOCK:
+        if _R45_DIAG_WRITER_THREAD is None or not _R45_DIAG_WRITER_THREAD.is_alive():
+            _R45_DIAG_WRITER_THREAD=_r44_threading.Thread(target=_r45_diag_writer_loop,name='r45-diag-writer',daemon=True)
+            _R45_DIAG_WRITER_THREAD.start()
 
 def _r44_diag(event, **fields):
     """Zero-blocking hot-path trace: RAM ring + nonblocking writer queue."""
@@ -8372,6 +8380,7 @@ def _r44_diag(event, **fields):
         for k,v in fields.items():row[str(k)[:80]]=_r44_redact(v)
         with _R45_DIAG_SEQ_LOCK:_R45_DIAG_RING.append(row)
         raw=_r44_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n'
+        _r45_diag_ensure_writer()
         try:_R45_DIAG_Q.put_nowait(raw)
         except _r45_queue.Full:_R45_DIAG_DROPPED+=1
     except Exception:pass

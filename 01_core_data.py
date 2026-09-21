@@ -522,9 +522,18 @@ class KeyedTaskPool:
         self._max_wait = 0.0
         self._last_error = ''
         self._running = {}
-        for idx in range(self.workers):
-            t = threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True)
-            t.start()
+        # OCH12.17 RAM: workers are created on demand instead of at module import.
+        # One first task creates one physical worker; additional workers are added only
+        # when there are enough independent active keys to use them. This preserves
+        # per-key FIFO semantics while avoiding dozens of idle thread stacks at boot.
+        self._threads_started = 0
+
+    def _ensure_worker_capacity_locked(self):
+        target = min(self.workers, max(1, len(self._active_keys)))
+        while self._threads_started < target:
+            self._threads_started += 1
+            idx = self._threads_started
+            threading.Thread(target=self._worker, name=f'{self.name}-{idx}', daemon=True).start()
 
     def submit(self, key, func, *args, **kwargs) -> bool:
         key = str(key)
@@ -538,6 +547,7 @@ class KeyedTaskPool:
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
+            self._ensure_worker_capacity_locked()
             _r52_snap = (self._pending, self._active_workers, len(self._active_keys), len(self._by_key.get(key) or ()))
         if _r52_pool_key_interesting(key):
             r52_diag('POOL_SUBMIT', pool=self.name, key=key, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], key_queued=_r52_snap[3], func=getattr(func,'__name__',type(func).__name__))
@@ -562,6 +572,7 @@ class KeyedTaskPool:
             self._submitted += 1
             self._active_keys.add(key)
             self._ready.put(key)
+            self._ensure_worker_capacity_locked()
             _r52_snap = (self._pending, self._active_workers, len(self._active_keys))
         if _r52_pool_key_interesting(key):
             r52_diag('POOL_SUBMIT_UNIQUE', pool=self.name, key=key, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], func=getattr(func,'__name__',type(func).__name__))
@@ -651,7 +662,7 @@ class KeyedTaskPool:
             _now_m = time.monotonic()
             _running = [dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
             _top = sorted(((str(k), len(v)) for k, v in self._by_key.items() if v), key=lambda x: (-x[1], x[0]))[:8]
-            return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running, 'top_queued_keys': [{'key': k, 'queued': n} for k, n in _top]}
+            return {'name': self.name, 'workers': self.workers, 'physical_workers': self._threads_started, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running, 'top_queued_keys': [{'key': k, 'queued': n} for k, n in _top]}
 
 
 class LatestKeyedTaskPool:
@@ -680,8 +691,15 @@ class LatestKeyedTaskPool:
         self._max_wait = 0.0
         self._last_error = ''
         self._running = {}
-        for idx in range(self.workers):
-            threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True).start()
+        # OCH12.17 RAM: latest-wins render pools are lazy too.
+        self._threads_started = 0
+
+    def _ensure_worker_capacity_locked(self):
+        target = min(self.workers, max(1, len(self._active_keys)))
+        while self._threads_started < target:
+            self._threads_started += 1
+            idx = self._threads_started
+            threading.Thread(target=self._worker, name=f'{self.name}-{idx}', daemon=True).start()
 
     def submit_latest(self, key, func, *args, on_replaced=None, **kwargs):
         """Submit newest work for *key* and replace an older waiting task.
@@ -710,6 +728,7 @@ class LatestKeyedTaskPool:
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
+            self._ensure_worker_capacity_locked()
             _r52_snap = (len(self._latest), self._active_workers, len(self._active_keys), self._replaced)
         if callable(replaced_callback):
             try:
@@ -783,7 +802,7 @@ class LatestKeyedTaskPool:
             _now_m=time.monotonic()
             _running=[dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
             return {
-                'name': self.name, 'workers': self.workers, 'active': self._active_workers,
+                'name': self.name, 'workers': self.workers, 'physical_workers': self._threads_started, 'active': self._active_workers,
                 'pending': len(self._latest), 'keys': len(self._active_keys),
                 'submitted': self._submitted, 'replaced': self._replaced,
                 'completed': self._completed, 'failed': self._failed,
@@ -810,7 +829,13 @@ class DelayedTaskScheduler:
         self._retry_counts = {}
         self._last_retry_log = {}
         self._busy_requeues = 0
-        threading.Thread(target=self._worker, name=f'{self.executor_pool.name}-scheduler', daemon=True).start()
+        # OCH12.17 RAM: no scheduler thread exists until the first logical timer.
+        self._thread = None
+
+    def _ensure_thread_locked(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._worker, name=f'{self.executor_pool.name}-scheduler', daemon=True)
+            self._thread.start()
 
     def _compact_locked(self, force: bool=False):
         live = len(self._deadlines)
@@ -837,6 +862,7 @@ class DelayedTaskScheduler:
             heapq.heappush(self._heap, (run_at, self._seq, key, version, func, args, kwargs))
             self._submitted += 1
             self._compact_locked(False)
+            self._ensure_thread_locked()
             self._cv.notify_all()
         return run_at
 
@@ -1418,12 +1444,19 @@ class DurableUpdateDispatcher:
         self._retries = 0
         self._last_error = ''
         self._last_warn = {}
-        threading.Thread(target=self._watchdog, name='update-dispatcher-watchdog', daemon=True).start()
+        # OCH12.17 RAM: no watchdog thread before the first Telegram update.
+        self._watchdog_thread = None
+
+    def _ensure_watchdog_locked(self):
+        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+            self._watchdog_thread = threading.Thread(target=self._watchdog, name='update-dispatcher-watchdog', daemon=True)
+            self._watchdog_thread.start()
 
     def claim(self, update_id, chat_id=None, update_type='other'):
         key = str(update_id)
         now = time.time()
         with self._lock:
+            self._ensure_watchdog_locked()
             self._received += 1
             item = self._tickets.get(key)
             if item:
@@ -1692,7 +1725,9 @@ def _r52_forensic_watchdog():
             try: r52_diag('HEARTBEAT_ERROR', error=f'{type(exc).__name__}:{exc}')
             except Exception: pass
 
-threading.Thread(target=_r52_forensic_watchdog, name='r52-forensic-watchdog', daemon=True).start()
+# OCH12.17 RAM: do not keep a sleeping forensic thread when diagnostics are disabled.
+if R52_FORENSIC_BUTTON_LOG:
+    threading.Thread(target=_r52_forensic_watchdog, name='r52-forensic-watchdog', daemon=True).start()
 
 # R27: human input has priority over housekeeping on FAST.
 _R27_LAST_USER_ACTIVITY_MONO = 0.0
@@ -2339,6 +2374,7 @@ def _fast_log_worker_v111():
             _FAST_LOG_QUEUE.task_done()
 def _fast_log_enqueue_v111(level, message):
     try:
+        _fast_log_ensure_worker_v111()
         _FAST_LOG_QUEUE.put_nowait((str(level or 'INFO'), str(message or '')))
         _FAST_LOG_STATS['queued'] = int(_FAST_LOG_STATS.get('queued') or 0) + 1
         return True
@@ -2347,7 +2383,16 @@ def _fast_log_enqueue_v111(level, message):
         return False
     except Exception:
         return False
-threading.Thread(target=_fast_log_worker_v111, name='fast-log-writer-1', daemon=True).start()
+_FAST_LOG_THREAD = None
+_FAST_LOG_THREAD_LOCK = threading.Lock()
+def _fast_log_ensure_worker_v111():
+    global _FAST_LOG_THREAD
+    if _FAST_LOG_THREAD is not None and _FAST_LOG_THREAD.is_alive():
+        return
+    with _FAST_LOG_THREAD_LOCK:
+        if _FAST_LOG_THREAD is None or not _FAST_LOG_THREAD.is_alive():
+            _FAST_LOG_THREAD = threading.Thread(target=_fast_log_worker_v111, name='fast-log-writer-1', daemon=True)
+            _FAST_LOG_THREAD.start()
 BOT_ERROR_LOG = deque(maxlen=200)
 error_log_lock = threading.RLock()
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None, threaded=False)
@@ -2385,8 +2430,9 @@ class SQLiteState:
         self._writer_stop = False
         self._writer_ident = None
         self._writer_stats = {'submitted': 0, 'done': 0, 'failed': 0, 'max_pending': 0, 'last_wait_ms': 0.0}
-        self._writer_thread = threading.Thread(target=self._writer_loop, name='sqlite-writer-1', daemon=True)
-        self._writer_thread.start()
+        # OCH12.17 RAM: create the priority writer only on the first real write.
+        self._writer_thread = None
+        self._writer_start_lock = threading.Lock()
         # R70: one physical online backup for concurrent snapshot consumers.
         # A waiter may reuse only a snapshot completed AFTER its own request began,
         # so sequential later requests never receive a stale image.
@@ -2439,15 +2485,24 @@ class SQLiteState:
                 self._writer_stats['last_wait_ms'] = round(max(0.0, started - task['queued_at']) * 1000.0, 3)
                 task['event'].set()
 
+    def _ensure_writer_thread(self):
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            return
+        with self._writer_start_lock:
+            if self._writer_thread is None or not self._writer_thread.is_alive():
+                self._writer_thread = threading.Thread(target=self._writer_loop, name='sqlite-writer-1', daemon=True)
+                self._writer_thread.start()
+
     def _write(self, fn, *, priority=None, timeout=30.0):
         # Re-entrant calls from the writer itself stay direct and never deadlock.
         if threading.get_ident() == self._writer_ident:
             result = fn(self.conn)
             self.conn.commit()
             return result
-        if not self._writer_thread.is_alive():
-            if str(os.getenv('FINALIZATION_STARTUP_SMOKE','0') or '0').lower() in {'1','true','yes','on'}:
-                result = fn(self.conn); self.conn.commit(); return result
+        if str(os.getenv('FINALIZATION_STARTUP_SMOKE','0') or '0').lower() in {'1','true','yes','on'}:
+            result = fn(self.conn); self.conn.commit(); return result
+        self._ensure_writer_thread()
+        if self._writer_thread is None or not self._writer_thread.is_alive():
             raise RuntimeError('R49 SQLite writer thread is not alive')
         import heapq as _heapq
         ev = threading.Event()
@@ -2468,7 +2523,7 @@ class SQLiteState:
         with self._writer_cv:
             out = dict(self._writer_stats)
             out['pending'] = len(self._writer_heap)
-            out['alive'] = bool(self._writer_thread.is_alive())
+            out['alive'] = bool(self._writer_thread is not None and self._writer_thread.is_alive())
             return out
 
     def _init_db(self):
@@ -2586,9 +2641,11 @@ class SQLiteState:
         self.set_kv('root', obj)
 
     def load_chats(self) -> dict:
-        rows = self._read_all('SELECT chat_id, v FROM chats')
+        # OCH12.17 RAM: stream rows from SQLite. fetchall() temporarily duplicated
+        # every raw JSON row in RAM at the same time as the decoded chats dict.
         out = {}
-        for row in rows:
+        cur = self._reader_v111().execute('SELECT chat_id, v FROM chats')
+        for row in cur:
             val = self._load(row[1], {})
             if isinstance(val, dict):
                 out[str(row[0])] = val

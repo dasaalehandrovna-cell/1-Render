@@ -14,16 +14,16 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "f2829642d3cff7d1ada4a60ef363855129eb07c86cafd41c732ca31f89bcb811",
+    "01_core_data.py": "9964dbbb6a9737cde5539b507923095eaa81aeec61d9a2d0a7fb06535bcded5a",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "f6f8c90b41bbd3287a0d9f5974db26fb9e68fe1e48b5dba8736cc927a3445157",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "35ed257b111b060a84b0693243acb69de573a2f6b248fee255750b01a52e45f0",
-    "07_state_web.py": "fddb290665917f82ad0ae0c290a2a3e38bd639f82b4f74da9034dfe40914bc36",
+    "07_state_web.py": "b91adbafbe389aa531e1e08b40a6f31d916b938cf90acb01fb5768b3c8c73e66",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "986926655e7a148fc6c690b0d7909ba4afb1f6f038cb40a2476087bf5d26ca10"
+    "10_split_policy_offload.py": "ac8ac5fdac768dcffb7bd18038e1ab20f5e174efc8215f9e44b1b50110aa864b"
   },
   "release": "ОЧНИСЬ_12.17-COMPACT-ONLY-STARTUP-RECOVERY",
   "release_features": [
@@ -377,6 +377,16 @@
     "och12.16_bounded_runtime_buffers",
     "och1217_compact_only_startup_recovery",
     "och1217_no_legacy_mega_tree_scan",
-    "och1217_cold_mega_login_timeout"
+    "och1217_cold_mega_login_timeout",
+    "och1217_lazy_keyed_task_workers",
+    "och1217_lazy_latest_task_workers",
+    "och1217_lazy_delayed_scheduler_threads",
+    "och1217_lazy_sqlite_writer",
+    "och1217_lazy_webhook_inbox_writer",
+    "och1217_lazy_dispatcher_watchdog",
+    "och1217_streaming_load_chats",
+    "och1217_lazy_fast_log_writer",
+    "och1217_lazy_diag_writer",
+    "och1217_heavy_lazy_openpyxl"
   ]
 }
