@@ -2,12 +2,13 @@
 #!/usr/bin/env python3
 """Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-OCH12.14 recovery policy:
+OCH12.19 recovery policy:
 - same-container local cache is only a crash breadcrumb;
 - Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
 - legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
-- MEGA remains the strict fallback through the configured root;
-- on Render, missing Redis + unavailable MEGA enters recovery-safe wait; an empty production database is never auto-created;
+- MEGA startup recovery reads ONLY the current fixed compact_v80 objects: head.json, latest.sqlite3.gz, tail.json.gz;
+- startup never scans database/current_manifest, database/generations, database/pre_restore or legacy latest mirrors;
+- on Render, missing Redis + unavailable compact_v80 enters recovery-safe wait; an empty production database is never auto-created;
 - a true first install may opt in with OCHNIS_ALLOW_EMPTY_INIT=1;
 - runtime MEGA work stays delegated to Render #2 / HEAVY by default.
 """
@@ -195,8 +196,10 @@ def _ensure_empty_db(path: Path) -> tuple[bool, str]:
         return False, f'{type(exc).__name__}: {str(exc)[:300]}'
 
 
-def _db_revision(path: Path) -> float:
-    if not _db_valid(path):
+def _db_revision(path: Path, *, validated: bool=False) -> float:
+    # OCH12.19: callers that already ran PRAGMA quick_check can reuse that result.
+    # This avoids repeating SQLite integrity scans during the BOOT decision tree.
+    if not validated and not _db_valid(path):
         return 0.0
     try:
         con = sqlite3.connect(str(path))
@@ -311,50 +314,8 @@ def _mega_missing(detail: str) -> bool:
     return any(x in low for x in ('not found', 'no such', 'does not exist', "couldn't find", 'couldn\'t find'))
 
 
-def _manifest_generation_remote(root: str, tmpdir: Path, mega_timeout: int) -> tuple[str, str]:
-    """Return manifest-selected immutable generation, if one exists."""
-    manifest_remote = root.rstrip('/') + '/database/current_manifest.json'
-    md = tmpdir / ('manifest_' + str(abs(hash(root))))
-    md.mkdir(exist_ok=True)
-    try:
-        mg = _run(['mega-get', manifest_remote, str(md)], timeout=mega_timeout)
-    except Exception as exc:
-        return '', f'{manifest_remote}: {type(exc).__name__}'
-    if mg.returncode != 0:
-        detail = (mg.stderr or mg.stdout or 'mega-get failed').strip()
-        return '', f'{manifest_remote}: {detail[:180]}'
-    rows = list(md.rglob('current_manifest.json')) + list(md.rglob('*.json'))
-    if not rows:
-        return '', f'{manifest_remote}: downloaded manifest missing'
-    try:
-        payload = json.loads(rows[0].read_text(encoding='utf-8')) or {}
-    except Exception as exc:
-        return '', f'{manifest_remote}: invalid JSON {type(exc).__name__}'
-    generation_remote = str(payload.get('remote_generation') or '').strip()
-    if generation_remote and not generation_remote.startswith('/'):
-        generation_remote = root.rstrip('/') + '/database/generations/' + generation_remote.rsplit('/', 1)[-1]
-    if not generation_remote and payload.get('generation'):
-        generation_remote = root.rstrip('/') + '/database/generations/' + str(payload.get('generation')).rsplit('/', 1)[-1]
-    if not generation_remote:
-        return '', f'{manifest_remote}: no generation pointer'
-    # R58: a stale manifest must never escape the Render-configured MEGA root.
-    if not _mega_remote_within_root(generation_remote, root):
-        return '', f'{manifest_remote}: rejected external generation pointer={generation_remote}'
-    return generation_remote, f'{manifest_remote}: generation={generation_remote.rsplit("/",1)[-1]}'
-
-
-def _discover_generation_remotes(root: str, mega_timeout: int, limit: int = 3) -> tuple[list[str], str]:
-    """Find newest immutable generations when current_manifest is absent/stale."""
-    generations = root.rstrip('/') + '/database/generations'
-    try:
-        found = _run(['mega-find', generations, '--pattern=generation_*.sqlite3.gz', '--type=f'], timeout=mega_timeout)
-    except Exception as exc:
-        return [], f'{generations}: {type(exc).__name__}'
-    if found.returncode != 0:
-        detail = (found.stderr or found.stdout or 'mega-find failed').strip()
-        return [], f'{generations}: {detail[:180]}'
-    rows = sorted({x.strip() for x in (found.stdout or '').splitlines() if x.strip().endswith('.sqlite3.gz')}, reverse=True)
-    return rows[:max(1, int(limit))], f'{generations}: found={len(rows)}'
+# OCH12.19: historical manifest/generation/pre_restore discovery intentionally removed.
+# Startup recovery uses fixed compact_v80 objects only; no mega-find/tree scan is allowed.
 
 
 def _r32_event_valid(ev: object) -> bool:
@@ -701,119 +662,21 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
 
 
 def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
-    """Restore FAST from MEGA once per process start, then leave MEGA completely.
+    """OCH12.19 compatibility wrapper: exact compact_v80 only.
 
-    R58 strict-root recovery.  FAST is allowed to inspect only MEGA_BACKUP_DIR
-    supplied by Render.  No legacy/default roots are consulted and a manifest
-    pointer outside that root is rejected.
-      configured latest -> configured manifest generation -> configured generation scan.
+    No manifest, generation, pre_restore, legacy latest or MEGA tree scan is
+    permitted from startup.  The actual fixed-object restore is centralized in
+    _r80_compact_mega_compare_restore().
     """
-    roots = _startup_mega_roots()
-    if not roots:
-        return False, 'MEGA_ENABLED=1 but MEGA_BACKUP_DIR is empty; strict root policy refuses fallback'
-    canonical_root = roots[0]
-    mega_timeout = max(45, min(900, int(os.getenv('MEGA_TIMEOUT', '120') or '120')))
-    login_timeout = max(45, min(300, int(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120')))
-    print(f'[SPLIT FRONT] R58 MEGA STRICT ROOT={canonical_root} login start timeout={login_timeout}s', flush=True)
-    logged, detail = _mega_login(login_timeout)
-    print(f'[SPLIT FRONT] R56 MEGA login done ok={int(bool(logged))} detail={detail[:220]}', flush=True)
-    if not logged:
-        return False, detail
-    tmpdir = Path(tempfile.mkdtemp(prefix='v262_fast_startup_mega_'))
-    errors: list[str] = []
-    discovery: list[str] = []
-    candidate_index = 0
-
-    def try_remote(source_root: str, remote: str, source_kind: str) -> tuple[bool, str]:
-        nonlocal candidate_index
-        candidate_index += 1
-        idx = candidate_index
-        dl = tmpdir / f'd{idx}'
-        dl.mkdir(exist_ok=True)
-        print(f'[SPLIT FRONT] R56 MEGA candidate start idx={idx} kind={source_kind} remote={remote}', flush=True)
-        t0 = time.monotonic()
-        try:
-            get = _run(['mega-get', remote, str(dl)], timeout=mega_timeout)
-        except Exception as exc:
-            err = f'{remote}: {type(exc).__name__}: {str(exc)[:160]}'
-            errors.append(err)
-            print(f'[SPLIT FRONT] R56 MEGA candidate fail idx={idx} elapsed={time.monotonic()-t0:.2f}s {err}', flush=True)
-            return False, err
-        if get.returncode != 0:
-            detail2 = (get.stderr or get.stdout or 'mega-get failed').strip()
-            err = f'{remote}: {detail2[:180]}'
-            errors.append(err)
-            print(f'[SPLIT FRONT] R56 MEGA candidate miss idx={idx} elapsed={time.monotonic()-t0:.2f}s detail={detail2[:220]}', flush=True)
-            return False, err
-        candidates_local = list(dl.rglob('*.sqlite3.gz')) + [x for x in dl.rglob('*.gz') if x.name != 'latest_bot_state.sqlite3.gz']
-        if not candidates_local:
-            err = f'{remote}: download contains no SQLite gzip'
-            errors.append(err)
-            return False, err
-        for gz_path in candidates_local:
-            ok, install_detail = _install_gzip_db(gz_path, target)
-            if not ok:
-                errors.append(f'{remote}: {install_detail}')
-                continue
-            replay_parts: list[str] = []
-            # R58: replay deltas only from the same configured root as the base.
-            for event_root in [canonical_root]:
-                print(f'[SPLIT FRONT] R56 MEGA event replay start root={event_root}', flush=True)
-                replay_ok, replay_detail = _replay_mega_event_segments(target, event_root, mega_timeout)
-                replay_parts.append(f'{event_root}: {replay_detail}')
-                print(f'[SPLIT FRONT] R56 MEGA event replay done root={event_root} ok={int(bool(replay_ok))} detail={replay_detail[:260]}', flush=True)
-                if not replay_ok:
-                    errors.append(f'{remote}: base installed but event replay failed at {event_root}: {replay_detail}')
-                    return False, errors[-1]
-            source_note = 'configured-root'
-            detail3 = (
-                f'MEGA startup restore OK source={source_note}/{source_kind} root={source_root} '
-                f'remote={remote}; {install_detail}; ' + '; '.join(replay_parts)
-            )[:1200]
-            print(f'[SPLIT FRONT] R56 MEGA candidate success idx={idx} elapsed={time.monotonic()-t0:.2f}s', flush=True)
-            return True, detail3
-        return False, errors[-1] if errors else f'{remote}: invalid downloaded snapshot'
-
     try:
-        for root_no, root in enumerate(roots, 1):
-            print(f'[SPLIT FRONT] R58 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
-
-            # HEAVY's active runtime checkpoint writer promotes this object on every
-            # successful full snapshot.  It is therefore the freshest control file
-            # in the current split architecture and must be tried before a possibly
-            # stale immutable-generation manifest left by an older release.
-            latest = root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz'
-            ok, done = try_remote(root, latest, 'latest')
-            if ok:
-                return True, done
-
-            generation_remote, manifest_detail = _manifest_generation_remote(root, tmpdir, mega_timeout)
-            discovery.append(manifest_detail)
-            print(f'[SPLIT FRONT] R55 manifest root={root} detail={manifest_detail[:260]}', flush=True)
-            if generation_remote:
-                ok, done = try_remote(root, generation_remote, 'manifest-fallback')
-                if ok:
-                    return True, done
-
-            generations, find_detail = _discover_generation_remotes(root, mega_timeout)
-            discovery.append(find_detail)
-            print(f'[SPLIT FRONT] R55 generation scan root={root} detail={find_detail[:260]}', flush=True)
-            for remote in generations:
-                ok, done = try_remote(root, remote, 'generation-scan')
-                if ok:
-                    return True, done
-
-        useful_discovery = [x for x in discovery if x and not _mega_missing(x)]
-        tail = errors[-6:] + useful_discovery[-3:]
-        return False, ('; '.join(tail) or 'no valid MEGA snapshot/generation found inside configured MEGA_BACKUP_DIR')[:1200]
-    finally:
-        try: _run(['mega-logout'], timeout=20)
-        except Exception: pass
-        try: _run(['mega-quit'], timeout=12)
-        except Exception: pass
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-
+        ok, detail, action = _r80_compact_mega_compare_restore(target, have_current=bool(_db_valid(target)))
+    except Exception as exc:
+        return False, f'compact_v80 exact recovery exception: {type(exc).__name__}: {str(exc)[:220]}'
+    if action == 'RESTORE' and _db_valid(target):
+        return True, str(detail)
+    if _db_valid(target):
+        return True, str(detail)
+    return False, f'compact_v80 exact recovery unavailable: {detail}'
 
 def _redis_render_url() -> str:
     return str(
@@ -980,6 +843,94 @@ def _restore_from_redis_startup(target: Path) -> tuple[bool, str]:
 
 
 
+def _r32_legacy_descriptor(ev: object) -> bool:
+    """Recognize the OCH12.18 compact-tail writer bug safely.
+
+    12.18 could copy a durable outbox *descriptor* into compact_v80/tail.json.gz
+    before materialization.  Such rows have event_id/revision/kind/key/ids but no
+    schema=32 payload and therefore can never be replayed as state events.
+    """
+    if not isinstance(ev, dict):
+        return False
+    if int(ev.get('schema') or 0) == 32:
+        return False
+    return bool(
+        str(ev.get('event_id') or '')
+        and int(ev.get('revision') or 0) > 0
+        and str(ev.get('kind') or '')
+        and isinstance(ev.get('ids'), dict)
+        and 'payload' not in ev
+    )
+
+
+def _redis_tail_events_after_cutoff(cutoff: float) -> tuple[list[dict], str]:
+    """Recover canonical materialized R32 events without requiring Redis FULL.
+
+    This is intentionally separate from _restore_from_redis_startup(): when the
+    daily FULL key has expired/disappeared, the event stream may still contain
+    the payloads needed to repair an OCH12.18 MEGA descriptor tail.
+    """
+    url = _redis_render_url()
+    if not url:
+        return [], 'Redis URL unavailable for tail repair'
+    try:
+        import redis as _redis_mod
+    except Exception as exc:
+        return [], f'redis package unavailable: {type(exc).__name__}: {str(exc)[:120]}'
+    prefix = str(os.getenv('WORKER_R32_STATE_EVENT_PREFIX', 'vys262:state_events:r32') or 'vys262:state_events:r32').strip()
+    index_key = prefix + ':index'
+    max_events = max(1000, min(200000, int(os.getenv('REDIS_REPAIR_MAX_EVENTS', '50000') or '50000')))
+    page = max(100, min(5000, int(os.getenv('REDIS_RESTORE_EVENT_PAGE', '1000') or '1000')))
+    client = None
+    try:
+        client = _redis_mod.Redis.from_url(
+            url,
+            socket_connect_timeout=max(0.5, min(5.0, float(os.getenv('REDIS_RESTORE_CONNECT_TIMEOUT_SEC', '2') or '2'))),
+            socket_timeout=max(2.0, min(20.0, float(os.getenv('REDIS_RESTORE_SOCKET_TIMEOUT_SEC', '8') or '8'))),
+            health_check_interval=30,
+        )
+        if not client.ping():
+            return [], 'Redis PING false during MEGA tail repair'
+        try:
+            total = int(client.zcount(index_key, f'({float(cutoff)}', '+inf') or 0)
+        except Exception:
+            total = 0
+        if total > max_events:
+            return [], f'Redis repair tail too large: {total} > {max_events}'
+        out=[]; offset=0; missing=0; invalid=0
+        while offset < total:
+            members = client.zrangebyscore(index_key, f'({float(cutoff)}', '+inf', start=offset, num=page) or []
+            if not members:
+                break
+            ids=[m.decode('utf-8','replace') if isinstance(m,(bytes,bytearray)) else str(m) for m in members]
+            raws=client.mget([f'{prefix}:event:{eid}' for eid in ids]) or []
+            for raw in raws:
+                if not raw:
+                    missing += 1
+                    continue
+                try:
+                    b=bytes(raw) if isinstance(raw,(bytes,bytearray)) else str(raw).encode('utf-8')
+                    if b[:2] == b'\x1f\x8b':
+                        b=gzip.decompress(b)
+                    ev=json.loads(b.decode('utf-8'))
+                    if _r32_event_valid(ev):
+                        out.append(ev)
+                    else:
+                        invalid += 1
+                except Exception:
+                    invalid += 1
+            offset += len(members)
+        return out, f'Redis repair events={len(out)} indexed={total} missing={missing} invalid={invalid}'
+    except Exception as exc:
+        return [], f'Redis tail repair {type(exc).__name__}: {str(exc)[:180]}'
+    finally:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass
+
+
 def _r80_compact_mega_paths() -> tuple[str,str,str]:
     root=_canonical_mega_root().rstrip('/')
     base=root+'/compact_v80'
@@ -1015,8 +966,15 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
         return False,'MEGA_BACKUP_DIR empty','KEEP'
     head_remote,latest_remote,tail_remote=_r80_compact_mega_paths()
     quick=bool(have_current and _db_valid(target))
-    login_timeout=max(5,min(60,int(os.getenv('MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT','12' if quick else '25') or ('12' if quick else '25'))))
-    get_timeout=max(5,min(180,int(os.getenv('MEGA_STARTUP_COMPARE_GET_TIMEOUT','12' if quick else '75') or ('12' if quick else '75'))))
+    # OCH12.19: short compare timeouts are only safe when a verified local DB already exists.
+    # On a cold restore MEGAcmd login can legitimately take tens of seconds; use the normal
+    # recovery timeouts so removal of the obsolete deep fallback cannot strand startup.
+    if quick:
+        login_timeout=max(5,min(60,int(os.getenv('MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT','12') or '12')))
+        get_timeout=max(5,min(180,int(os.getenv('MEGA_STARTUP_COMPARE_GET_TIMEOUT','12') or '12')))
+    else:
+        login_timeout=max(45,min(300,int(os.getenv('MEGA_LOGIN_TIMEOUT','120') or '120')))
+        get_timeout=max(45,min(900,int(os.getenv('MEGA_TIMEOUT','120') or '120')))
     logged,detail=_mega_login(login_timeout)
     if not logged:
         return (True,f'MEGA compare unavailable, current source kept: {detail[:220]}','KEEP') if quick else (False,detail,'KEEP')
@@ -1046,23 +1004,73 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
         ok,install_detail=_install_gzip_db(latest_path,candidate)
         if not ok:
             return False,f'compact latest invalid: {install_detail}','KEEP'
-        tail_count=int((head or {}).get('tail_count') or 0) if isinstance(head,dict) else 0
-        expected_tail_max=int((head or {}).get('tail_max_revision') or 0) if isinstance(head,dict) else 0
+        head_valid=bool(isinstance(head,dict) and int(head.get('schema') or 0)>=80)
+        tail_count=int((head or {}).get('tail_count') or 0) if head_valid else 0
+        expected_tail_max=int((head or {}).get('tail_max_revision') or 0) if head_valid else 0
         tail_applied=0
-        if tail_count>0 or expected_tail_max>_r32_max_revision(candidate):
-            tail_path,tail_detail=_r80_get_exact(tail_remote,work/'tail',get_timeout)
-            if tail_path is None:
-                return False,f'compact tail required but unavailable: {tail_detail}','KEEP'
+        # OCH12.19: on a cold restore always inspect tail.json.gz even when HEAD says
+        # tail_count=0.  A crash can happen after TAIL promotion and before HEAD; HEAD
+        # is the commit record, but it must not make an already-durable newer TAIL invisible.
+        tail_path,tail_detail=_r80_get_exact(tail_remote,work/'tail',get_timeout)
+        if tail_path is None:
+            if (not head_valid) or tail_count>0 or expected_tail_max>_r32_max_revision(candidate):
+                return False,f'compact tail/head incomplete: {tail_detail}','KEEP'
+        else:
             try:
                 obj=json.loads(gzip.decompress(tail_path.read_bytes()).decode('utf-8')) or {}
-                events=[ev for ev in (obj.get('events') or []) if _r32_event_valid(ev)]
+                raw_events=list(obj.get('events') or [])
             except Exception as exc:
                 return False,f'compact tail decode {type(exc).__name__}: {str(exc)[:160]}','KEEP'
-            if tail_count and len(events)<tail_count:
-                return False,f'compact tail incomplete {len(events)} < {tail_count}','KEEP'
-            a,_st=_apply_r32_events(candidate,events); tail_applied=int(a)
-            if expected_tail_max and _r32_max_revision(candidate)<expected_tail_max:
-                return False,f'compact tail revision incomplete {_r32_max_revision(candidate)} < {expected_tail_max}','KEEP'
+            tail_base_db=float(obj.get('full_db_revision') or 0.0)
+            candidate_db_before_tail=_db_revision(candidate)
+            if tail_base_db and candidate_db_before_tail and abs(tail_base_db-candidate_db_before_tail)>0.000001:
+                return False,f'compact tail belongs to different FULL tail_db={tail_base_db:.6f} latest_db={candidate_db_before_tail:.6f}','KEEP'
+
+            # OCH12.19 repair path for the 12.18 writer bug.  12.18 could write
+            # durable outbox descriptors into tail.json.gz.  They increased
+            # tail_max_revision/tail_count but had no payload, so the old reader
+            # rejected the same immutable backup forever in RECOVERY SAFE WAIT.
+            valid_events=[ev for ev in raw_events if _r32_event_valid(ev)]
+            legacy_desc=[ev for ev in raw_events if _r32_legacy_descriptor(ev)]
+            invalid_other=[ev for ev in raw_events if not _r32_event_valid(ev) and not _r32_legacy_descriptor(ev)]
+            if invalid_other:
+                return False,f'compact tail contains {len(invalid_other)} unknown invalid rows; refusing unsafe recovery','KEEP'
+            if tail_count and len(raw_events)<tail_count:
+                return False,f'compact tail physically incomplete {len(raw_events)} < {tail_count}','KEEP'
+
+            repair_detail=''
+            merged={str(ev.get('event_id')):ev for ev in valid_events if str(ev.get('event_id') or '')}
+            if legacy_desc:
+                cutoff=float(obj.get('full_event_cutoff_score') or (head or {}).get('full_event_cutoff_score') or 0.0)
+                redis_events,repair_detail=_redis_tail_events_after_cutoff(cutoff)
+                for ev in redis_events:
+                    eid=str(ev.get('event_id') or '')
+                    if eid:
+                        merged[eid]=ev
+            events=sorted(merged.values(),key=lambda x:(int(x.get('revision') or 0),str(x.get('event_id') or '')))
+            if events:
+                a,_st=_apply_r32_events(candidate,events); tail_applied=int(a)
+
+            tail_obj_max=int(obj.get('max_revision') or 0)
+            claimed_tail_max=max(expected_tail_max,tail_obj_max)
+            recovered_max=_r32_max_revision(candidate)
+            degraded_desc=0
+            if claimed_tail_max and recovered_max<claimed_tail_max:
+                if legacy_desc:
+                    # The missing ceiling is exactly the known 12.18 descriptor
+                    # bug. Waiting cannot repair an immutable object. Accept the
+                    # newest replayable state, but make degradation explicit.
+                    repaired_ids={str(ev.get('event_id') or '') for ev in events}
+                    degraded_desc=sum(1 for ev in legacy_desc if str(ev.get('event_id') or '') not in repaired_ids)
+                else:
+                    return False,f'compact tail revision incomplete {recovered_max} < {claimed_tail_max}','KEEP'
+            if legacy_desc:
+                trace_note=(
+                    f'OCH12.19 repaired legacy descriptor tail raw={len(raw_events)} valid={len(valid_events)} '
+                    f'descriptors={len(legacy_desc)} unrecovered={degraded_desc}; {repair_detail}'
+                )
+            else:
+                trace_note=''
         if not _db_valid(candidate): return False,'compact candidate invalid after tail','KEEP'
         cand_db=_db_revision(candidate); cand_ev=_r32_max_revision(candidate)
         if quick and ((cand_ev<local_event_rev) or (cand_ev==local_event_rev and cand_db<local_db_rev-0.000001)):
@@ -1073,7 +1081,8 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
         for suffix in ('-wal','-shm'):
             try: Path(str(target)+suffix).unlink(missing_ok=True)
             except Exception: pass
-        return True,f'MEGA compact restore OK db={_db_revision(target):.6f} event={_r32_max_revision(target)} tail_applied={tail_applied}','RESTORE'
+        _note = ((' · ' + trace_note) if 'trace_note' in locals() and trace_note else '')
+        return True,f'MEGA compact restore OK db={_db_revision(target):.6f} event={_r32_max_revision(target)} tail_applied={tail_applied}{_note}','RESTORE'
     finally:
         try: _run(['mega-logout'],timeout=8)
         except Exception: pass
@@ -1103,9 +1112,9 @@ def _och1214_allow_empty_init() -> bool:
 
 def _och1214_safe_retry_seconds() -> float:
     try:
-        return max(5.0, min(300.0, float(os.getenv('RECOVERY_SAFE_RETRY_SECONDS', '30') or '30')))
+        return max(5.0, min(300.0, float(os.getenv('RECOVERY_SAFE_RETRY_SECONDS', '15') or '15')))
     except Exception:
-        return 30.0
+        return 15.0
 
 def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: bool, redis_url_present: bool, mega_enabled: bool) -> tuple[bool, str]:
     """Never manufacture an empty production DB after durability failure.
@@ -1119,8 +1128,8 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
     while not _db_valid(target):
         attempt += 1
         trace['recovery_safe_attempts'] = attempt
-        delay = 5.0 if attempt == 1 else _och1214_safe_retry_seconds()
-        print(f'[SPLIT FRONT] OCH12.14 RECOVERY SAFE WAIT attempt={attempt} retry_in={delay:.0f}s; empty init blocked', flush=True)
+        delay = 2.0 if attempt == 1 else _och1214_safe_retry_seconds()
+        print(f'[SPLIT FRONT] OCH12.19 RECOVERY SAFE WAIT attempt={attempt} retry_in={delay:.0f}s; empty init blocked', flush=True)
         time.sleep(delay)
         if redis_enabled and redis_url_present:
             try:
@@ -1129,7 +1138,7 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
                 ok, detail = False, f'Redis retry exception: {exc}'
             trace['redis_retry_ok'] = bool(ok)
             trace['redis_retry_detail'] = str(detail)[:900]
-            print(f'[SPLIT FRONT] OCH12.14 Redis retry ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.19 Redis retry ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
             if ok and _db_valid(target):
                 trace['redis_ok'] = True
                 trace['redis_detail'] = str(detail)[:900]
@@ -1144,7 +1153,7 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
             trace['mega_retry_ok'] = bool(ok)
             trace['mega_retry_detail'] = str(detail)[:900]
             trace['mega_retry_action'] = str(action)
-            print(f'[SPLIT FRONT] OCH12.14 MEGA retry ok={int(bool(ok))} action={action} detail={str(detail)[:500]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.19 MEGA retry ok={int(bool(ok))} action={action} detail={str(detail)[:500]}', flush=True)
             if ok and action == 'RESTORE' and _db_valid(target):
                 trace['mega_ok'] = True
                 trace['mega_detail'] = str(detail)[:900]
@@ -1171,23 +1180,33 @@ def main():
                 )
     target = _db_path()
     started = time.time()
+
+    # OCH12.19: Render Free normally starts a fresh ephemeral filesystem after a
+    # deploy.  Do the cheapest possible probe first.  If the file is absent we do
+    # not call SQLite at all; Redis recovery starts immediately.  When the file is
+    # present we still keep the full PRAGMA quick_check safety gate.
+    local_found = bool(target.exists())
+    local_valid_before = bool(_db_valid(target)) if local_found else False
+    local_revision_before = _db_revision(target, validated=True) if local_valid_before else 0.0
     trace = {
-        'schema': 3,
-        'policy': 'OCH12.14_REDIS_FIRST_MEGA_RECOVERY_SAFE_NO_EMPTY_BOOT',
+        'schema': 4,
+        'policy': 'OCH12.19_FAST_REDIS_THEN_MEGA_REPAIR',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
-        'local_found': target.exists(),
-        'local_valid_before': _db_valid(target),
-        'local_revision_before': _db_revision(target),
+        'local_found': local_found,
+        'local_valid_before': local_valid_before,
+        'local_revision_before': local_revision_before,
+        'local_probe': 'quick_check_once' if local_found else 'missing_no_sqlite_open',
         'mega_contacted': False,
         'mega_ok': False,
         'mega_detail': '',
         'redis_contacted': False,
         'heavy_contacted': False,
         'base_source': '',
+        'remote_compare_deferred': False,
     }
     try:
-        had_valid_local_before_restore = bool(trace['local_valid_before'])
+        current_valid = bool(local_valid_before)
         mega_master_enabled = _bool('MEGA_ENABLED', True)
         trace['mega_master_enabled'] = bool(mega_master_enabled)
         strict_root = ''
@@ -1197,84 +1216,108 @@ def main():
                 trace['mega_config_error'] = 'MEGA_ENABLED=1 but MEGA_BACKUP_DIR is empty'
             else:
                 trace['mega_strict_root'] = strict_root
-        # R68: same-container local cache is a fast crash breadcrumb only.
-        # It is tried only when the main SQLite is missing/invalid and never replaces
-        # Redis/MEGA as cross-deploy durability.
+
+        # Same-container crash cache remains useful only when it actually exists.
+        # On a normal Free Render redeploy state.sqlite3.gz is absent, so skip the
+        # restore function entirely instead of doing another DB validity pass.
         trace['local_cache_contacted'] = False
         trace['local_cache_ok'] = False
         trace['local_cache_detail'] = ''
         local_cache_restored = False
-        if not had_valid_local_before_restore:
-            trace['local_cache_contacted'] = True
-            local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)
-            trace['local_cache_ok'] = bool(local_cache_ok)
-            trace['local_cache_detail'] = str(local_cache_detail)[:900]
-            if local_cache_ok:
-                trace['base_source'] = 'LOCAL_RUNTIME_CACHE'
-                local_cache_restored = True
-                print(f'[SPLIT FRONT] R68 local runtime cache restore ok=1 detail={str(local_cache_detail)[:700]}', flush=True)
-                had_valid_local_before_restore = True
+        if not current_valid:
+            local_gz = _r68_local_snapshot_path()
+            if local_gz.exists() and local_gz.stat().st_size >= 256:
+                trace['local_cache_contacted'] = True
+                local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)
+                trace['local_cache_ok'] = bool(local_cache_ok)
+                trace['local_cache_detail'] = str(local_cache_detail)[:900]
+                if local_cache_ok and _db_valid(target):
+                    current_valid = True
+                    local_cache_restored = True
+                    trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'
+                    print(f'[SPLIT FRONT] R68 local runtime cache restore ok=1 detail={str(local_cache_detail)[:700]}', flush=True)
+                else:
+                    print(f'[SPLIT FRONT] R68 local runtime cache restore ok=0 detail={str(local_cache_detail)[:500]}', flush=True)
             else:
-                print(f'[SPLIT FRONT] R68 local runtime cache restore ok=0 detail={str(local_cache_detail)[:500]}', flush=True)
+                trace['local_cache_detail'] = f'skipped: ephemeral cache absent ({local_gz})'
+                print('[SPLIT FRONT] OCH12.19 local cache absent -> Redis immediately', flush=True)
 
         redis_master_enabled = _bool('REDIS_ENABLED', False)
         redis_url_present = bool(_redis_render_url())
         trace['redis_master_enabled'] = bool(redis_master_enabled)
         trace['redis_url_present'] = bool(redis_url_present)
         redis_restored = False
-        if redis_master_enabled and redis_url_present:
+
+        # OCH12.19: a verified local SQLite is authoritative for a same-container
+        # restart. Do not spend BOOT time contacting Redis/MEGA just to compare it.
+        if current_valid:
+            trace['redis_ok'] = False
+            trace['redis_detail'] = 'startup Redis skipped: verified local SQLite already available'
+            trace['base_source'] = trace['base_source'] or 'LOCAL_SQLITE_FAST'
+            trace['remote_compare_deferred'] = True
+        elif redis_master_enabled and redis_url_present:
             trace['redis_contacted'] = True
-            print('[SPLIT FRONT] OCH12.3 REDIS FULL+TAIL startup restore start', flush=True)
+            print('[SPLIT FRONT] OCH12.19 REDIS FULL+TAIL startup restore start', flush=True)
             redis_ok, redis_detail = _restore_from_redis_startup(target)
             trace['redis_ok'] = bool(redis_ok)
             trace['redis_detail'] = str(redis_detail)[:900]
-            print(f'[SPLIT FRONT] OCH12.3 REDIS FULL+TAIL startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
-            if redis_ok:
+            print(f'[SPLIT FRONT] OCH12.19 REDIS FULL+TAIL startup restore ok={int(bool(redis_ok))} detail={str(redis_detail)[:700]}', flush=True)
+            if redis_ok and _db_valid(target):
                 redis_restored = True
-                trace['base_source'] = 'REDIS'
+                current_valid = True
+                trace['base_source'] = 'REDIS_FAST'
+                trace['remote_compare_deferred'] = True
         else:
             trace['redis_ok'] = False
             trace['redis_detail'] = 'Redis startup restore skipped: REDIS_ENABLED=0 or URL missing'
 
-        # OCH12.11: Redis/local is assembled first. When MEGA is enabled, compare
-        # against one tiny fixed head.json. No mega-find, generation scan or directory walk.
-        current_valid=bool(_db_valid(target))
-        if mega_master_enabled:
-            trace['mega_contacted']=True
-            ok,detail,action=_r80_compact_mega_compare_restore(target,have_current=current_valid)
-            trace['mega_ok']=bool(ok); trace['mega_detail']=str(detail)[:900]; trace['mega_action']=str(action)
-            print(f'[SPLIT FRONT] OCH12.11 compact MEGA compare ok={int(bool(ok))} action={action} detail={str(detail)[:700]}',flush=True)
-            if ok and action=='RESTORE':
-                trace['base_source']='MEGA_COMPACT'
-            elif current_valid:
-                if redis_restored: trace['base_source']='REDIS_VERIFIED_OR_MEGA_UNAVAILABLE'
-                elif local_cache_restored: trace['base_source']='LOCAL_RUNTIME_CACHE_VERIFIED_OR_MEGA_UNAVAILABLE'
-                else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
-            elif not ok:
-                trace['recovery_fallback_reason'] = 'Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
+        # Critical OCH12.19 change: MEGA is a FALLBACK, not a mandatory compare.
+        # If local/Redis already produced a validated SQLite we proceed to runtime
+        # immediately.  MEGA remains the independent disaster-recovery backend and
+        # is contacted during BOOT only when the faster sources failed.
+        if current_valid:
+            trace['mega_contacted'] = False
+            trace['mega_ok'] = False
+            trace['mega_action'] = 'DEFERRED'
+            trace['mega_detail'] = 'startup compare skipped: validated local/Redis state already selected; MEGA kept as fallback'
+            print(f"[SPLIT FRONT] OCH12.19 fast source selected={trace.get('base_source')} -> MEGA startup compare skipped", flush=True)
+        elif mega_master_enabled:
+            trace['mega_contacted'] = True
+            ok, detail, action = _r80_compact_mega_compare_restore(target, have_current=False)
+            trace['mega_ok'] = bool(ok)
+            trace['mega_detail'] = str(detail)[:900]
+            trace['mega_action'] = str(action)
+            print(f'[SPLIT FRONT] OCH12.19 MEGA fallback ok={int(bool(ok))} action={action} detail={str(detail)[:700]}', flush=True)
+            if ok and action == 'RESTORE' and _db_valid(target):
+                current_valid = True
+                trace['base_source'] = 'MEGA_COMPACT_FALLBACK'
+            elif not current_valid:
+                trace['recovery_fallback_reason'] = 'Redis/local unavailable; exact compact_v80 unavailable: ' + str(detail)[:600]
                 if _och1214_allow_empty_init():
                     empty_ok, empty_detail = _ensure_empty_db(target)
                     trace['empty_init_ok'] = bool(empty_ok)
                     trace['empty_init_detail'] = str(empty_detail)[:500]
                     trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                    print(f'[SPLIT FRONT] OCH12.14 explicit empty bootstrap ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                    current_valid = bool(empty_ok and _db_valid(target))
+                    print(f'[SPLIT FRONT] OCH12.19 explicit empty bootstrap ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
                 else:
                     _och1214_recovery_safe_wait(target, trace, redis_enabled=redis_master_enabled, redis_url_present=redis_url_present, mega_enabled=mega_master_enabled)
+                    current_valid = bool(_db_valid(target))
         else:
-            trace['mega_contacted']=False; trace['mega_ok']=False
-            trace['mega_detail']='MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
-            if redis_restored: trace['base_source']='REDIS'
-            elif local_cache_restored and _db_valid(target): trace['base_source']='LOCAL_RUNTIME_CACHE'
-            elif had_valid_local_before_restore and _db_valid(target): trace['base_source']='LOCAL_SQLITE'
-            else:
+            trace['mega_contacted'] = False
+            trace['mega_ok'] = False
+            trace['mega_detail'] = 'MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls'
+            if not current_valid:
                 if _och1214_allow_empty_init():
                     empty_ok, empty_detail = _ensure_empty_db(target)
                     trace['empty_init_ok'] = bool(empty_ok)
                     trace['empty_init_detail'] = str(empty_detail)[:500]
                     trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                    print(f'[SPLIT FRONT] OCH12.14 explicit empty bootstrap with MEGA disabled ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                    current_valid = bool(empty_ok and _db_valid(target))
+                    print(f'[SPLIT FRONT] OCH12.19 explicit empty bootstrap with MEGA disabled ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
                 else:
                     _och1214_recovery_safe_wait(target, trace, redis_enabled=redis_master_enabled, redis_url_present=redis_url_present, mega_enabled=False)
+                    current_valid = bool(_db_valid(target))
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1282,8 +1325,11 @@ def main():
         # R1/R2 owner switch.  MEGA itself is still parked OFF until R1 is selected.
         _scrub_fast_runtime_mega_credentials()
 
-        if _db_valid(target):
-            revision = _db_revision(target)
+        final_valid = bool(current_valid and target.exists())
+        if not final_valid:
+            final_valid = bool(_db_valid(target))
+        if final_valid:
+            revision = _db_revision(target, validated=True)
             trace['final_revision'] = revision
             trace['local_valid_after'] = True
             os.environ['SPLIT_PREBOOT_AUTHORITATIVE_R20'] = '1'
@@ -1305,7 +1351,7 @@ def main():
         except Exception:
             trace['redis_runtime_enabled'] = False
         trace['base_revision'] = float(trace.get('local_revision_before') or 0.0)
-        if trace.get('base_source') in {'REDIS', 'MEGA', 'MEGA_COMPACT', 'REDIS_SAFE_RETRY', 'MEGA_COMPACT_SAFE_RETRY', 'LOCAL_RUNTIME_CACHE'}:
+        if trace.get('base_source') in {'REDIS', 'REDIS_FAST', 'MEGA', 'MEGA_COMPACT', 'MEGA_COMPACT_FALLBACK', 'REDIS_SAFE_RETRY', 'MEGA_COMPACT_SAFE_RETRY', 'LOCAL_RUNTIME_CACHE', 'LOCAL_RUNTIME_CACHE_FAST', 'LOCAL_SQLITE_FAST'}:
             trace['base_revision'] = float(trace.get('final_revision') or 0.0)
         trace['local_found'] = bool(trace.get('local_found'))
         trace['local_valid'] = bool(trace.get('local_valid_before'))

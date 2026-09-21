@@ -446,7 +446,7 @@ def _install_requests_traffic_audit():
     return True
 _install_requests_traffic_audit()
 try:
-    _BOT_THREAD_STACK_KB = max(512, min(8192, int(os.getenv('BOT_THREAD_STACK_KB', '512') or '512')))
+    _BOT_THREAD_STACK_KB = max(384, min(8192, int(os.getenv('BOT_THREAD_STACK_KB', '384') or '384')))
     threading.stack_size(_BOT_THREAD_STACK_KB * 1024)
 except Exception:
     _BOT_THREAD_STACK_KB = 0
@@ -522,9 +522,18 @@ class KeyedTaskPool:
         self._max_wait = 0.0
         self._last_error = ''
         self._running = {}
-        for idx in range(self.workers):
-            t = threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True)
-            t.start()
+        # OCH12.18 RAM: workers are created on demand instead of at module import.
+        # One first task creates one physical worker; additional workers are added only
+        # when there are enough independent active keys to use them. This preserves
+        # per-key FIFO semantics while avoiding dozens of idle thread stacks at boot.
+        self._threads_started = 0
+
+    def _ensure_worker_capacity_locked(self):
+        target = min(self.workers, max(1, len(self._active_keys)))
+        while self._threads_started < target:
+            self._threads_started += 1
+            idx = self._threads_started
+            threading.Thread(target=self._worker, name=f'{self.name}-{idx}', daemon=True).start()
 
     def submit(self, key, func, *args, **kwargs) -> bool:
         key = str(key)
@@ -538,6 +547,7 @@ class KeyedTaskPool:
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
+            self._ensure_worker_capacity_locked()
             _r52_snap = (self._pending, self._active_workers, len(self._active_keys), len(self._by_key.get(key) or ()))
         if _r52_pool_key_interesting(key):
             r52_diag('POOL_SUBMIT', pool=self.name, key=key, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], key_queued=_r52_snap[3], func=getattr(func,'__name__',type(func).__name__))
@@ -562,6 +572,7 @@ class KeyedTaskPool:
             self._submitted += 1
             self._active_keys.add(key)
             self._ready.put(key)
+            self._ensure_worker_capacity_locked()
             _r52_snap = (self._pending, self._active_workers, len(self._active_keys))
         if _r52_pool_key_interesting(key):
             r52_diag('POOL_SUBMIT_UNIQUE', pool=self.name, key=key, pending=_r52_snap[0], active=_r52_snap[1], keys=_r52_snap[2], func=getattr(func,'__name__',type(func).__name__))
@@ -651,7 +662,7 @@ class KeyedTaskPool:
             _now_m = time.monotonic()
             _running = [dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
             _top = sorted(((str(k), len(v)) for k, v in self._by_key.items() if v), key=lambda x: (-x[1], x[0]))[:8]
-            return {'name': self.name, 'workers': self.workers, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running, 'top_queued_keys': [{'key': k, 'queued': n} for k, n in _top]}
+            return {'name': self.name, 'workers': self.workers, 'physical_workers': self._threads_started, 'active': self._active_workers, 'pending': self._pending, 'keys': len(self._active_keys), 'submitted': self._submitted, 'completed': self._completed, 'failed': self._failed, 'rejected': self._rejected, 'max_wait': round(self._max_wait, 3), 'last_error': self._last_error, 'running': _running, 'top_queued_keys': [{'key': k, 'queued': n} for k, n in _top]}
 
 
 class LatestKeyedTaskPool:
@@ -680,8 +691,15 @@ class LatestKeyedTaskPool:
         self._max_wait = 0.0
         self._last_error = ''
         self._running = {}
-        for idx in range(self.workers):
-            threading.Thread(target=self._worker, name=f'{self.name}-{idx + 1}', daemon=True).start()
+        # OCH12.18 RAM: latest-wins render pools are lazy too.
+        self._threads_started = 0
+
+    def _ensure_worker_capacity_locked(self):
+        target = min(self.workers, max(1, len(self._active_keys)))
+        while self._threads_started < target:
+            self._threads_started += 1
+            idx = self._threads_started
+            threading.Thread(target=self._worker, name=f'{self.name}-{idx}', daemon=True).start()
 
     def submit_latest(self, key, func, *args, on_replaced=None, **kwargs):
         """Submit newest work for *key* and replace an older waiting task.
@@ -710,6 +728,7 @@ class LatestKeyedTaskPool:
             if key not in self._active_keys:
                 self._active_keys.add(key)
                 self._ready.put(key)
+            self._ensure_worker_capacity_locked()
             _r52_snap = (len(self._latest), self._active_workers, len(self._active_keys), self._replaced)
         if callable(replaced_callback):
             try:
@@ -783,7 +802,7 @@ class LatestKeyedTaskPool:
             _now_m=time.monotonic()
             _running=[dict(row, age=round(max(0.0,_now_m-float(row.get('started_mono') or _now_m)),3)) for row in self._running.values()]
             return {
-                'name': self.name, 'workers': self.workers, 'active': self._active_workers,
+                'name': self.name, 'workers': self.workers, 'physical_workers': self._threads_started, 'active': self._active_workers,
                 'pending': len(self._latest), 'keys': len(self._active_keys),
                 'submitted': self._submitted, 'replaced': self._replaced,
                 'completed': self._completed, 'failed': self._failed,
@@ -810,7 +829,13 @@ class DelayedTaskScheduler:
         self._retry_counts = {}
         self._last_retry_log = {}
         self._busy_requeues = 0
-        threading.Thread(target=self._worker, name=f'{self.executor_pool.name}-scheduler', daemon=True).start()
+        # OCH12.18 RAM: no scheduler thread exists until the first logical timer.
+        self._thread = None
+
+    def _ensure_thread_locked(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._worker, name=f'{self.executor_pool.name}-scheduler', daemon=True)
+            self._thread.start()
 
     def _compact_locked(self, force: bool=False):
         live = len(self._deadlines)
@@ -837,6 +862,7 @@ class DelayedTaskScheduler:
             heapq.heappush(self._heap, (run_at, self._seq, key, version, func, args, kwargs))
             self._submitted += 1
             self._compact_locked(False)
+            self._ensure_thread_locked()
             self._cv.notify_all()
         return run_at
 
@@ -1418,12 +1444,19 @@ class DurableUpdateDispatcher:
         self._retries = 0
         self._last_error = ''
         self._last_warn = {}
-        threading.Thread(target=self._watchdog, name='update-dispatcher-watchdog', daemon=True).start()
+        # OCH12.18 RAM: no watchdog thread before the first Telegram update.
+        self._watchdog_thread = None
+
+    def _ensure_watchdog_locked(self):
+        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+            self._watchdog_thread = threading.Thread(target=self._watchdog, name='update-dispatcher-watchdog', daemon=True)
+            self._watchdog_thread.start()
 
     def claim(self, update_id, chat_id=None, update_type='other'):
         key = str(update_id)
         now = time.time()
         with self._lock:
+            self._ensure_watchdog_locked()
             self._received += 1
             item = self._tickets.get(key)
             if item:
@@ -1692,7 +1725,9 @@ def _r52_forensic_watchdog():
             try: r52_diag('HEARTBEAT_ERROR', error=f'{type(exc).__name__}:{exc}')
             except Exception: pass
 
-threading.Thread(target=_r52_forensic_watchdog, name='r52-forensic-watchdog', daemon=True).start()
+# OCH12.18 RAM: do not keep a sleeping forensic thread when diagnostics are disabled.
+if R52_FORENSIC_BUTTON_LOG:
+    threading.Thread(target=_r52_forensic_watchdog, name='r52-forensic-watchdog', daemon=True).start()
 
 # R27: human input has priority over housekeeping on FAST.
 _R27_LAST_USER_ACTIVITY_MONO = 0.0
@@ -2130,7 +2165,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.14'
+BOT_DISPLAY_NAME = 'очнись_12.19'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2339,6 +2374,7 @@ def _fast_log_worker_v111():
             _FAST_LOG_QUEUE.task_done()
 def _fast_log_enqueue_v111(level, message):
     try:
+        _fast_log_ensure_worker_v111()
         _FAST_LOG_QUEUE.put_nowait((str(level or 'INFO'), str(message or '')))
         _FAST_LOG_STATS['queued'] = int(_FAST_LOG_STATS.get('queued') or 0) + 1
         return True
@@ -2347,7 +2383,16 @@ def _fast_log_enqueue_v111(level, message):
         return False
     except Exception:
         return False
-threading.Thread(target=_fast_log_worker_v111, name='fast-log-writer-1', daemon=True).start()
+_FAST_LOG_THREAD = None
+_FAST_LOG_THREAD_LOCK = threading.Lock()
+def _fast_log_ensure_worker_v111():
+    global _FAST_LOG_THREAD
+    if _FAST_LOG_THREAD is not None and _FAST_LOG_THREAD.is_alive():
+        return
+    with _FAST_LOG_THREAD_LOCK:
+        if _FAST_LOG_THREAD is None or not _FAST_LOG_THREAD.is_alive():
+            _FAST_LOG_THREAD = threading.Thread(target=_fast_log_worker_v111, name='fast-log-writer-1', daemon=True)
+            _FAST_LOG_THREAD.start()
 BOT_ERROR_LOG = deque(maxlen=200)
 error_log_lock = threading.RLock()
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None, threaded=False)
@@ -2370,6 +2415,13 @@ class SQLiteState:
         self.read_conn = None  # compatibility handle; OCH12 reads use thread-local connections
         self._read_tls = threading.local()
         self._read_generation = 0
+        # OCH12.16 RAM: readers remain thread-local (no hot-path read lock), but their
+        # private SQLite page cache is deliberately small and mmap is disabled.
+        # The old 2 MB cache + 32 MB mmap per long-lived worker made RSS grow as
+        # more worker lanes touched SQLite.
+        self._reader_stats_lock = threading.Lock()
+        self._reader_threads_seen = set()
+        self._reader_connections_created = 0
         self._init_db()
         self._open_reader()
         self._writer_cv = threading.Condition(threading.RLock())
@@ -2378,8 +2430,9 @@ class SQLiteState:
         self._writer_stop = False
         self._writer_ident = None
         self._writer_stats = {'submitted': 0, 'done': 0, 'failed': 0, 'max_pending': 0, 'last_wait_ms': 0.0}
-        self._writer_thread = threading.Thread(target=self._writer_loop, name='sqlite-writer-1', daemon=True)
-        self._writer_thread.start()
+        # OCH12.18 RAM: create the priority writer only on the first real write.
+        self._writer_thread = None
+        self._writer_start_lock = threading.Lock()
         # R70: one physical online backup for concurrent snapshot consumers.
         # A waiter may reuse only a snapshot completed AFTER its own request began,
         # so sequential later requests never receive a stale image.
@@ -2432,15 +2485,24 @@ class SQLiteState:
                 self._writer_stats['last_wait_ms'] = round(max(0.0, started - task['queued_at']) * 1000.0, 3)
                 task['event'].set()
 
+    def _ensure_writer_thread(self):
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            return
+        with self._writer_start_lock:
+            if self._writer_thread is None or not self._writer_thread.is_alive():
+                self._writer_thread = threading.Thread(target=self._writer_loop, name='sqlite-writer-1', daemon=True)
+                self._writer_thread.start()
+
     def _write(self, fn, *, priority=None, timeout=30.0):
         # Re-entrant calls from the writer itself stay direct and never deadlock.
         if threading.get_ident() == self._writer_ident:
             result = fn(self.conn)
             self.conn.commit()
             return result
-        if not self._writer_thread.is_alive():
-            if str(os.getenv('FINALIZATION_STARTUP_SMOKE','0') or '0').lower() in {'1','true','yes','on'}:
-                result = fn(self.conn); self.conn.commit(); return result
+        if str(os.getenv('FINALIZATION_STARTUP_SMOKE','0') or '0').lower() in {'1','true','yes','on'}:
+            result = fn(self.conn); self.conn.commit(); return result
+        self._ensure_writer_thread()
+        if self._writer_thread is None or not self._writer_thread.is_alive():
             raise RuntimeError('R49 SQLite writer thread is not alive')
         import heapq as _heapq
         ev = threading.Event()
@@ -2461,7 +2523,7 @@ class SQLiteState:
         with self._writer_cv:
             out = dict(self._writer_stats)
             out['pending'] = len(self._writer_heap)
-            out['alive'] = bool(self._writer_thread.is_alive())
+            out['alive'] = bool(self._writer_thread is not None and self._writer_thread.is_alive())
             return out
 
     def _init_db(self):
@@ -2484,13 +2546,44 @@ class SQLiteState:
         conn = sqlite3.connect(self.path, check_same_thread=False, timeout=1.5)
         conn.row_factory = sqlite3.Row
         try:
+            cache_kb = max(128, min(2048, int(os.getenv('SQLITE_READER_CACHE_KB', '384') or '384')))
+        except Exception:
+            cache_kb = 384
+        try:
+            mmap_mb = max(0, min(16, int(os.getenv('SQLITE_READER_MMAP_MB', '0') or '0')))
+        except Exception:
+            mmap_mb = 0
+        try:
             conn.execute('PRAGMA busy_timeout=1500')
             conn.execute('PRAGMA query_only=ON')
-            conn.execute('PRAGMA cache_size=-2048')
-            conn.execute('PRAGMA mmap_size=33554432')
+            conn.execute(f'PRAGMA cache_size=-{cache_kb}')
+            conn.execute(f'PRAGMA mmap_size={mmap_mb * 1024 * 1024}')
+        except Exception:
+            pass
+        try:
+            with self._reader_stats_lock:
+                self._reader_connections_created += 1
+                self._reader_threads_seen.add(int(threading.get_ident()))
         except Exception:
             pass
         return conn
+
+    def reader_status(self) -> dict:
+        try:
+            with self._reader_stats_lock:
+                created = int(self._reader_connections_created or 0)
+                threads_seen = len(self._reader_threads_seen)
+        except Exception:
+            created = 0; threads_seen = 0
+        try:
+            cache_kb = max(128, min(2048, int(os.getenv('SQLITE_READER_CACHE_KB', '384') or '384')))
+        except Exception:
+            cache_kb = 384
+        try:
+            mmap_mb = max(0, min(16, int(os.getenv('SQLITE_READER_MMAP_MB', '0') or '0')))
+        except Exception:
+            mmap_mb = 0
+        return {'connections_created': created, 'threads_seen': threads_seen, 'generation': int(self._read_generation or 0), 'cache_kb_each': cache_kb, 'mmap_mb_each': mmap_mb}
 
     def _open_reader(self):
         """OCH12: invalidate thread-local WAL readers after DB replacement."""
@@ -2548,9 +2641,11 @@ class SQLiteState:
         self.set_kv('root', obj)
 
     def load_chats(self) -> dict:
-        rows = self._read_all('SELECT chat_id, v FROM chats')
+        # OCH12.18 RAM: stream rows from SQLite. fetchall() temporarily duplicated
+        # every raw JSON row in RAM at the same time as the decoded chats dict.
         out = {}
-        for row in rows:
+        cur = self._reader_v111().execute('SELECT chat_id, v FROM chats')
+        for row in cur:
             val = self._load(row[1], {})
             if isinstance(val, dict):
                 out[str(row[0])] = val
@@ -14891,7 +14986,9 @@ def _lowram_business_busy() -> bool:
     except Exception:
         return True
 
-R24_LOWRAM_EVICT_RSS_MB = max(320.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '430') or '430')))
+# OCH12.16: 12.15 packaged 270 MB but the old hard minimum (320 MB) silently
+# defeated it. Allow proactive eviction before a 512 MB container approaches OOM.
+R24_LOWRAM_EVICT_RSS_MB = max(220.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '270') or '270')))
 
 def _r24_lowram_release_if_pressure(chat_id):
     try:
@@ -14938,7 +15035,7 @@ def _lowram_idle_sweep_job():
         runtime_event('lowram_idle_evict_error', str(e), 'WARN')
     finally:
         try:
-            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 120.0, _lowram_idle_sweep_job)
+            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 60.0, _lowram_idle_sweep_job)
         except Exception:
             pass
 
@@ -15225,6 +15322,14 @@ def build_runtime_watcher_text() -> str:
     memrt = snap.get('memory_runtime') or {}
     memquick = memrt.get('quick') or {}
     memstate = memrt.get('state') or {}
+    memstruct = memrt.get('structures') or {}
+    memroll = memstruct.get('process_rollup') or {}
+    sqlite_readers = memstruct.get('sqlite_readers') or {}
+    membuffers = memstruct.get('buffers') or {}
+    cold_by_key = memstruct.get('cold_fields_by_key') or {}
+    cgroup_stat = memstruct.get('cgroup_stat') or {}
+    thread_groups = memstruct.get('thread_groups') or {}
+    child_rows = memrt.get('children') or []
     local_files = snap.get('local_files') or {}
     prev = snap.get('previous_runtime') or {}
     prev_state = prev.get('state') or {}
@@ -15234,7 +15339,10 @@ def build_runtime_watcher_text() -> str:
     commit = str(ren.get('RENDER_GIT_COMMIT') or '—')
     instance = str(ren.get('RENDER_INSTANCE_ID') or '—')
     restore_trace = st.get('restore_trace') or {}
-    lines = ['🖥 Render / Сервер — Watcher', f'Состояние: {status}', f"Фаза: {st.get('phase') or '—'}", f'Версия: {VERSION}', f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}", f"Старт: {st.get('started_at') or '—'}", f"READY: {st.get('ready_at') or '—'}", f"BOOT: {(st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—')} сек", '', 'Render:', f"Instance: {(instance[-28:] if instance != '—' else instance)}", f"Commit: {(commit[:12] if commit != '—' else commit)}", f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}", f"Region/type: {ren.get('RENDER_REGION') or '—'} / {ren.get('RENDER_SERVICE_TYPE') or '—'}", f"PID/host: {proc.get('pid')} / {proc.get('hostname')}", '', 'Ресурсы:', f"Python RAM: {(proc.get('rss_mb') if proc.get('rss_mb') is not None else '—')} MB; пик: {(proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—')} MB", f"Контейнер RAM: {(proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—')} MB; пик: {(proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—')} MB", f"RAM лимит cgroup: {(proc.get('limit_mb') if proc.get('limit_mb') is not None else '—')} MB; контейнер: {(proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—')}%", f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count', '—')} | malloc_trim {memstate.get('malloc_trim_count', '—')} | blocked exports {memstate.get('blocked_heavy_jobs', '—')}", f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb', '—')} MB", f"Диск: занято {(disk.get('used_mb') if disk.get('used_mb') is not None else '—')} MB; свободно {(disk.get('free_mb') if disk.get('free_mb') is not None else '—')} MB", f"Потоков Python: {proc.get('threads')}", f"Runtime объекты: операции {audit.get('operation_items', '—')} | integrity {audit.get('integrity_events', '—')} | forward outcomes {audit.get('forward_outcomes', '—')} | fin batches {audit.get('finance_forward_batches', '—')}", f"Кэши/буферы: finance {audit.get('finance_cache_entries', '—')} | expense {audit.get('expense_drafts', '—')} | journal {audit.get('journal_buffer_rows', '—')} | reminder mode {audit.get('reminder_mode', '—')}", '', 'BOOT / Telegram gate:', f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}", f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}", f"Webhook получено: {st.get('webhook_received', 0)}", f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}", f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}", '', 'Очереди P/A | done err rej | max wait:']
+    child_text = '; '.join([f"{r.get('pid')} {r.get('name') or '?'} {r.get('rss_mb', '—')}MB" for r in child_rows[:4]]) or 'нет'
+    thread_text = ', '.join([f"{k}×{v}" for k, v in list(thread_groups.items())[:8]]) or '—'
+    cold_text = ', '.join([f"{k}={v}" for k, v in sorted(cold_by_key.items(), key=lambda kv: (-kv[1], kv[0]))[:10]]) or '—'
+    lines = ['🖥 Render / Сервер — Watcher', f'Состояние: {status}', f"Фаза: {st.get('phase') or '—'}", f'Версия: {BOT_DISPLAY_NAME} · {VERSION}', f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}", f"Старт: {st.get('started_at') or '—'}", f"READY: {st.get('ready_at') or '—'}", f"BOOT: {(st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—')} сек", '', 'Render:', f"Instance: {(instance[-28:] if instance != '—' else instance)}", f"Commit: {(commit[:12] if commit != '—' else commit)}", f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}", f"Region/type: {ren.get('RENDER_REGION') or '—'} / {ren.get('RENDER_SERVICE_TYPE') or '—'}", f"PID/host: {proc.get('pid')} / {proc.get('hostname')}", '', 'Ресурсы:', f"Python RAM: {(proc.get('rss_mb') if proc.get('rss_mb') is not None else '—')} MB; пик: {(proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—')} MB", f"Контейнер RAM: {(proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—')} MB; пик: {(proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—')} MB", f"RAM лимит cgroup: {(proc.get('limit_mb') if proc.get('limit_mb') is not None else '—')} MB; контейнер: {(proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—')}%", f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count', '—')} | malloc_trim {memstate.get('malloc_trim_count', '—')} | blocked exports {memstate.get('blocked_heavy_jobs', '—')}", f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb', '—')} MB", f"Дети: {child_text}", f"Потоки TOP: {thread_text}", f"Диск: занято {(disk.get('used_mb') if disk.get('used_mb') is not None else '—')} MB; свободно {(disk.get('free_mb') if disk.get('free_mb') is not None else '—')} MB", f"Потоков Python: {proc.get('threads')}", f"Runtime объекты: операции {audit.get('operation_items', '—')} | integrity {audit.get('integrity_events', '—')} | forward outcomes {audit.get('forward_outcomes', '—')} | fin batches {audit.get('finance_forward_batches', '—')}", f"Кэши/буферы: finance {audit.get('finance_cache_entries', '—')} | expense {audit.get('expense_drafts', '—')} | journal {audit.get('journal_buffer_rows', '—')} | reminder mode {audit.get('reminder_mode', '—')}", '', 'RAM — источники:', f"anon {memroll.get('anonymous_mb', '—')} MB | private dirty {memroll.get('private_dirty_mb', '—')} MB | shared clean {memroll.get('shared_clean_mb', '—')} MB", f"cgroup: anon {cgroup_stat.get('anon_mb', '—')} | file {cgroup_stat.get('file_mb', '—')} | shmem {cgroup_stat.get('shmem_mb', '—')} | slab {cgroup_stat.get('slab_mb', '—')} | kernel {cgroup_stat.get('kernel_mb', '—')} MB", f"SQLite readers: threads {sqlite_readers.get('threads_seen', '—')} | created {sqlite_readers.get('connections_created', '—')} | cache {sqlite_readers.get('cache_kb_each', '—')} KB/reader | mmap {sqlite_readers.get('mmap_mb_each', '—')} MB/reader", f"Cold fields: loaded {memstruct.get('cold_fields_loaded', '—')} | records {cold_by_key.get('records', 0)} | ARS {cold_by_key.get('ars_records', 0)} | USD {cold_by_key.get('usd_records', 0)} | secret {cold_by_key.get('secret_messages', 0)}", f"Cold keys: {cold_text}", f"RAM buffers: log {membuffers.get('fast_log', 0)} | R32 {membuffers.get('r32_events', 0)} | diag {membuffers.get('r45_diag', 0)} | short-cb {membuffers.get('short_callbacks', 0)} | jobs {membuffers.get('file_jobs_state', 0)}", '', 'BOOT / Telegram gate:', f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}", f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}", f"Webhook получено: {st.get('webhook_received', 0)}", f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}", f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}", '', 'Очереди P/A | done err rej | max wait:']
     if isinstance(restore_trace, dict) and restore_trace:
         lines.extend([
             '', 'RESTORE TRACE R68:',
@@ -20342,6 +20450,34 @@ def _canon_constitution_download_best_boot_generation_v235__001(workdir: str) ->
             return (gz, candidate, 'recent verified generation history fallback v235')
     return (None, active or None, f'no verified generation; active_error={active_err}')
 
+def _v215_constitution_genesis_publish_allowed() -> tuple[bool, str]:
+    """Narrow OCH12.15 safety fence for automatic first immutable generation.
+
+    A Redis image with meta_revision=0 can be structurally replayable yet originate
+    from an EMPTY_INIT incident.  Until the broader semantic restore guard is added,
+    such a base may run but must not silently become the new immutable MEGA genesis.
+    """
+    raw = str(os.getenv('R68_RESTORE_TRACE_JSON') or os.getenv('R49_RESTORE_TRACE_JSON') or '').strip()
+    if not raw:
+        return True, 'no preboot restore trace'
+    try:
+        trace = json.loads(raw) or {}
+    except Exception:
+        return True, 'restore trace unreadable'
+    base = str(trace.get('base_source') or '')
+    redis_detail = str(trace.get('redis_detail') or trace.get('redis_full_detail') or '')
+    if base.startswith('REDIS'):
+        m = re.search(r'meta_revision=([0-9.]+)', redis_detail)
+        if m:
+            try:
+                meta_revision = float(m.group(1) or 0.0)
+            except Exception:
+                meta_revision = 0.0
+            if meta_revision <= 0.0:
+                return False, f'zero-revision Redis restore cannot auto-create immutable genesis; base={base}'
+    return True, 'restore base eligible for automatic immutable genesis'
+
+
 def constitution_boot_verify_after_restore() -> dict:
     """Fast semantic boot verification without a mandatory MEGA manifest round-trip.
 
@@ -20413,13 +20549,23 @@ def constitution_boot_verify_after_restore() -> dict:
     current = constitution_load_active_manifest_remote(force=True)
     if not current:
         try:
+            genesis_allowed, genesis_reason = _v215_constitution_genesis_publish_allowed()
+            if not genesis_allowed:
+                raise RuntimeError('immutable genesis deferred: ' + genesis_reason)
             genesis = constitution_bootstrap_ledger_genesis()
             live = constitution_semantic_manifest_from_live()
-            snapshot_ok = bool(mega_upload_latest_database_backup(force=True))
-            active_now = constitution_load_active_manifest_remote(force=True) if snapshot_ok else None
-            if not snapshot_ok or not active_now:
+            # OCH12.15: DATA CONSTITUTION must publish its own immutable generation
+            # synchronously.  The public mega_upload_latest_database_backup symbol is
+            # intentionally overridden later by R80 compact storage and only means
+            # "queue compact latest/head/tail" there; it is NOT the immutable writer.
+            publish_generation = globals().get('mega_publish_current_sqlite_v242')
+            if not callable(publish_generation):
+                raise RuntimeError('immutable generation publisher unavailable')
+            active_now = publish_generation('constitution_genesis', manual_restore=False, allow_destructive=False) or {}
+            snapshot_ok = bool(active_now.get('generation') and active_now.get('remote_generation'))
+            if not snapshot_ok:
                 raise RuntimeError('genesis created but first immutable generation was not activated')
-            result = {'ok': True, 'mode': 'bootstrap', 'live': live, 'genesis': genesis, 'active': active_now, 'reason': 'constitution genesis + first generation created'}
+            result = {'ok': True, 'mode': 'bootstrap', 'live': live, 'genesis': genesis, 'active': active_now, 'reason': 'constitution genesis + first immutable generation created synchronously'}
         except Exception as exc:
             constitution_set_quarantine(f'constitution genesis failed: {exc}')
             result = {'ok': False, 'mode': 'bootstrap', 'live': live, 'reason': str(exc)}

@@ -8362,7 +8362,15 @@ def _r45_diag_writer_loop():
         except Exception:
             batch=[];_r44_time.sleep(.25)
 
-_r44_threading.Thread(target=_r45_diag_writer_loop,name='r45-diag-writer',daemon=True).start()
+_R45_DIAG_WRITER_THREAD=None
+_R45_DIAG_WRITER_START_LOCK=_r44_threading.Lock()
+def _r45_diag_ensure_writer():
+    global _R45_DIAG_WRITER_THREAD
+    if _R45_DIAG_WRITER_THREAD is not None and _R45_DIAG_WRITER_THREAD.is_alive(): return
+    with _R45_DIAG_WRITER_START_LOCK:
+        if _R45_DIAG_WRITER_THREAD is None or not _R45_DIAG_WRITER_THREAD.is_alive():
+            _R45_DIAG_WRITER_THREAD=_r44_threading.Thread(target=_r45_diag_writer_loop,name='r45-diag-writer',daemon=True)
+            _R45_DIAG_WRITER_THREAD.start()
 
 def _r44_diag(event, **fields):
     """Zero-blocking hot-path trace: RAM ring + nonblocking writer queue."""
@@ -8372,6 +8380,7 @@ def _r44_diag(event, **fields):
         for k,v in fields.items():row[str(k)[:80]]=_r44_redact(v)
         with _R45_DIAG_SEQ_LOCK:_R45_DIAG_RING.append(row)
         raw=_r44_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n'
+        _r45_diag_ensure_writer()
         try:_R45_DIAG_Q.put_nowait(raw)
         except _r45_queue.Full:_R45_DIAG_DROPPED+=1
     except Exception:pass
@@ -9244,10 +9253,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10116,7 +10125,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10155,7 +10164,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10205,7 +10214,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10228,13 +10237,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10290,7 +10299,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11186,7 +11195,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.19'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11207,6 +11216,37 @@ def _r80_write_head(workdir,extra=None):
     if ok:
         with _R80_MEGA_LOCK: _R80_MEGA_STATE['last_head_at']=_split_time.time()
     return ok,detail
+
+def _r80_store_pre_restore_gz(local_gz, reason='manual_restore'):
+    """OCH12.15: store a named pre-restore snapshot in the canonical database/pre_restore path.
+
+    This is deliberately separate from compact_v80 latest/head/tail: taking a safety
+    checkpoint before a destructive restore must never overwrite the normal compact FULL.
+    """
+    if not _r80_mega_runtime_ready():
+        return False, 'R1 MEGA runtime not enabled/ready'
+    local_gz = str(local_gz or '')
+    if not local_gz or not _split_os.path.isfile(local_gz):
+        return False, 'pre_restore local gzip missing'
+    root = str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').strip().replace('\\','/')
+    if not root:
+        return False, 'MEGA_BACKUP_DIR empty'
+    root = '/' + root.strip('/')
+    remote_dir = root + '/database/pre_restore'
+    safe_reason = _v262_re.sub(r'[^A-Za-z0-9_.-]+','_',str(reason or 'manual_restore'))[:80].strip('_') or 'manual_restore'
+    stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
+    name = f'pre_restore_{stamp}_{safe_reason}.sqlite3.gz'
+    try:
+        login=globals().get('mega_login_if_needed')
+        if callable(login): login(control_plane=True)
+        mega_ensure_remote_path(remote_dir)
+        ok=bool(mega_put_replace(local_gz, remote_dir, name, archive_previous=False))
+        if not ok:
+            return False, 'mega_put_replace returned false'
+        return True, remote_dir + '/' + name
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:220]}'
+
 
 def _r80_snapshot_full_compact(reason='daily'):
     """Background-only R1 MEGA checkpoint. Exactly latest.sqlite3.gz + tail.json.gz + head.json."""
@@ -11231,7 +11271,7 @@ def _r80_snapshot_full_compact(reason='daily'):
         paths=_r80_compact_paths()
         ok,detail=_r80_mega_put_fixed(gz,paths['latest'])
         if not ok: raise RuntimeError('latest: '+detail)
-        empty_tail={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':cutoff,'events':[],'max_revision':event_rev}
+        empty_tail={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':cutoff,'full_db_revision':db_rev,'full_event_revision':event_rev,'events':[],'max_revision':event_rev}
         tail_local=_split_os.path.join(work,'tail.json.gz'); _r80_write_local_json(tail_local,empty_tail,True)
         ok,detail=_r80_mega_put_fixed(tail_local,paths['tail'])
         if not ok: raise RuntimeError('tail reset: '+detail)
@@ -11281,6 +11321,12 @@ def _r80_read_redis_tail_after(score):
         except Exception: pass
     return out
 
+def _r80_compact_event_valid(ev):
+    if not isinstance(ev,dict) or int(ev.get('schema') or 0)!=32: return False
+    if not str(ev.get('event_id') or '') or int(ev.get('revision') or 0)<=0: return False
+    return str(ev.get('kind') or '') in {'set_kv','save_chat','prune_chats','delete_chat','set_meta','set_cold','set_cold_many','delete_cold'}
+
+
 def _r80_collect_compact_tail():
     with _R80_MEGA_LOCK: cutoff=float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0)
     if cutoff<=0.0: return [],'no compact full baseline'
@@ -11294,14 +11340,27 @@ def _r80_collect_compact_tail():
     except Exception as exc:
         redis_error=f'{type(exc).__name__}: {str(exc)[:180]}'
     else: redis_error=''
-    # Durable local outbox covers Redis-off/failure windows without user-path network I/O.
+    # Durable local outbox stores tiny DESCRIPTORS, not replayable R32 events.
+    # OCH12.18 incorrectly copied those descriptors straight into compact_v80,
+    # inflating tail_max_revision with rows that startup could never apply.
+    # Materialize them from the authoritative live SQLite first.
+    materialize_missed=0
     try:
-        for ev in _r40_event_db_pending(1000):
-            if float((ev or {}).get('created_at') or 0.0)+0.0000001 < cutoff: continue
+        for desc in _r40_event_db_pending(1000):
+            if float((desc or {}).get('created_at') or 0.0)+0.0000001 < cutoff: continue
+            ev=desc if _r80_compact_event_valid(desc) else _r32_materialize(desc)
+            if not _r80_compact_event_valid(ev):
+                materialize_missed+=1
+                continue
             eid=str((ev or {}).get('event_id') or '')
             if eid: merged[eid]=ev
-    except Exception: pass
-    rows=sorted(merged.values(),key=lambda x:(int((x or {}).get('revision') or 0),str((x or {}).get('event_id') or '')))
+    except Exception:
+        materialize_missed+=1
+    # Never publish malformed rows or let them define max_revision/head metadata.
+    rows=sorted([ev for ev in merged.values() if _r80_compact_event_valid(ev)],key=lambda x:(int((x or {}).get('revision') or 0),str((x or {}).get('event_id') or '')))
+    if materialize_missed:
+        suffix=f'outbox descriptors pending materialization={materialize_missed}'
+        redis_error=(redis_error+'; '+suffix).strip('; ') if redis_error else suffix
     max_events=max(1000,min(50000,int(_split_os.getenv('R80_MEGA_COMPACT_MAX_EVENTS','12000') or '12000')))
     if len(rows)>max_events: return [],f'tail too large {len(rows)} > {max_events}; new FULL required'
     return rows,redis_error
@@ -11317,7 +11376,7 @@ def _r80_flush_compact_tail(reason='periodic'):
         if detail.startswith('tail too large'): return _r80_snapshot_full_compact('tail-rollover')
         work=_split_tempfile.mkdtemp(prefix='r80_mega_tail_'); local=_split_os.path.join(work,'tail.json.gz')
         max_rev=max([int((x or {}).get('revision') or 0) for x in events] or [int(_R80_MEGA_STATE.get('full_event_revision') or 0)])
-        obj={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0),'events':events,'max_revision':max_rev}
+        obj={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0),'full_db_revision':float(_R80_MEGA_STATE.get('full_db_revision') or 0.0),'full_event_revision':int(_R80_MEGA_STATE.get('full_event_revision') or 0),'events':events,'max_revision':max_rev}
         _r80_write_local_json(local,obj,True)
         paths=_r80_compact_paths(); ok,put_detail=_r80_mega_put_fixed(local,paths['tail'])
         if not ok: raise RuntimeError(put_detail)
@@ -11482,17 +11541,38 @@ def r81_manual_compact_mega_restore():
         if not tail_path: return False,'compact tail: '+tail_detail,0
         try:
             tail=_split_json.loads(_split_gzip.decompress(open(tail_path,'rb').read()).decode('utf-8')) or {}
-            events=[ev for ev in (tail.get('events') or []) if _r81_compact_event_valid(ev)]
+            raw_events=list(tail.get('events') or [])
         except Exception as exc:
             return False,f'compact tail decode {type(exc).__name__}: {str(exc)[:180]}',0
         expected_count=int((head or {}).get('tail_count') or 0); expected_max=int((head or {}).get('tail_max_revision') or 0)
-        if expected_count and len(events)<expected_count: return False,f'compact tail incomplete {len(events)} < {expected_count}',0
+        def _legacy_desc(ev):
+            return bool(isinstance(ev,dict) and int(ev.get('schema') or 0)!=32 and str(ev.get('event_id') or '') and int(ev.get('revision') or 0)>0 and str(ev.get('kind') or '') and isinstance(ev.get('ids'),dict) and 'payload' not in ev)
+        legacy=[ev for ev in raw_events if _legacy_desc(ev)]
+        invalid=[ev for ev in raw_events if not _r81_compact_event_valid(ev) and not _legacy_desc(ev)]
+        if invalid: return False,f'compact tail contains {len(invalid)} unknown invalid rows',0
+        if expected_count and len(raw_events)<expected_count: return False,f'compact tail physically incomplete {len(raw_events)} < {expected_count}',0
+        merged={str(ev.get('event_id')):ev for ev in raw_events if _r81_compact_event_valid(ev)}
+        repair_detail=''
+        if legacy:
+            cutoff=float(tail.get('full_event_cutoff_score') or (head or {}).get('full_event_cutoff_score') or 0.0)
+            try:
+                repaired=_r80_read_redis_tail_after(cutoff)
+                for ev in repaired:
+                    if _r81_compact_event_valid(ev): merged[str(ev.get('event_id'))]=ev
+                repair_detail=f'redis_repair={len(repaired)}'
+            except Exception as exc:
+                repair_detail=f'redis_repair_error={type(exc).__name__}'
+        events=sorted(merged.values(),key=lambda x:(int(x.get('revision') or 0),str(x.get('event_id') or '')))
         applied,stale=_r81_apply_compact_events(candidate,events)
         if not _r81_compact_db_valid(candidate): return False,'compact candidate invalid after tail',applied
         final_max=_r81_compact_max_revision(candidate)
-        if expected_max and final_max<expected_max: return False,f'compact revision incomplete {final_max} < {expected_max}',applied
+        unrecovered=0
+        if expected_max and final_max<expected_max:
+            if not legacy: return False,f'compact revision incomplete {final_max} < {expected_max}',applied
+            ids={str(ev.get('event_id') or '') for ev in events}; unrecovered=sum(1 for ev in legacy if str(ev.get('event_id') or '') not in ids)
         SQLITE.replace_database(candidate)
-        return True,f'compact_v80 exact restore; events={len(events)} applied={applied} stale={stale} max_revision={final_max}',applied
+        note=f' legacy_descriptor_repair={len(legacy)} unrecovered={unrecovered} {repair_detail}' if legacy else ''
+        return True,f'compact_v80 exact restore; events={len(events)} applied={applied} stale={stale} max_revision={final_max}{note}',applied
     except Exception as exc:
         return False,f'{type(exc).__name__}: {str(exc)[:260]}',0
     finally:
@@ -12151,7 +12231,7 @@ _OCH1210_PARENT_KEEPALIVE_PING_PEER = globals().get('keepalive_ping_peer_once')
 _OCH1210_PARENT_REANCHOR_RETRY = globals().get('_v240_retry_pending_restore_reanchor')
 _OCH1210_PARENT_MEGA_RUN = globals().get('_mega_run')
 _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
-_OCH1210_MEGA_IDLE_SEC = max(120.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC', '240') or '240'))
+_OCH1210_MEGA_IDLE_SEC = max(45.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC', '75') or '75'))
 _OCH1210_MEGA_REAPER_STARTED = False
 _OCH1210_MEGA_REAPER_LOCK = _split_threading.RLock()
 
@@ -12358,11 +12438,11 @@ def _och1210_quit_mega_server_if_idle() -> bool:
 
 
 def _och1210_mega_idle_reaper_loop():
-    _split_time.sleep(60.0)
+    _split_time.sleep(30.0)
     while True:
         try: _och1210_quit_mega_server_if_idle()
         except Exception: pass
-        _split_time.sleep(60.0)
+        _split_time.sleep(30.0)
 
 
 def _och1210_start_mega_idle_reaper():
