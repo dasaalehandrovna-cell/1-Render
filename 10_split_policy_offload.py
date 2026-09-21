@@ -875,10 +875,19 @@ import shutil as _split_shutil
 import tempfile as _split_tempfile
 import threading as _split_threading
 import time as _split_time
-try:
-    import redis as _split_redis
-except Exception:
-    _split_redis = None
+# OCH12.21: Redis is recovery/runtime-optional.  Do not import the client on every
+# empty FAST boot; load it only when a Redis operation is actually requested.
+_split_redis = None
+def _split_get_redis():
+    global _split_redis
+    if _split_get_redis() is not None:
+        return _split_redis
+    try:
+        import importlib as _split_importlib
+        _split_redis = _split_importlib.import_module('redis')
+    except Exception:
+        _split_redis = None
+    return _split_redis
 
 _SPLIT_FRONT_VERSION = "vys-262-front-per-r24-ordered-hot-ram-fast"
 _SPLIT_SYNC_LOCK = _split_threading.RLock()
@@ -1149,7 +1158,7 @@ def _split_event_row_v268(update_id, payload, chat_id=None, update_type='other')
     }
 
 def _split_event_redis_write_v268(row, state=None, error=''):
-    if _split_redis is None:
+    if _split_get_redis() is None:
         return False, 'redis package unavailable'
     url=_r61_effective_redis_url()
     if not url:
@@ -1271,7 +1280,7 @@ def _split_ack_mirrored_events_v268(event_ids):
 
 def _split_remote_pending_rows_v268(limit=100):
     # R16: query the authoritative Redis event journal first; Worker is a fallback.
-    if _split_redis is not None:
+    if _split_get_redis() is not None:
         url=_r61_effective_redis_url()
         if url:
             try:
@@ -1528,7 +1537,7 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
     use the Render-owned URL whenever REDIS_ENABLED=1 so REDIS_START_ENABLED does
     not prevent protecting a user-confirmed restore.
     """
-    if _split_redis is None:
+    if _split_get_redis() is None:
         _SPLIT_STATE['redis_fallback_last_error'] = 'redis package unavailable'
         return False
     url = _r61_render_redis_url() if use_render_url else _r61_effective_redis_url()
@@ -2672,7 +2681,7 @@ def _r20_capsule_redis_key():
     return str(_split_os.getenv('WORKER_REDIS_CAPSULE_KEY', 'vys262:durable_capsule:r20') or 'vys262:durable_capsule:r20').strip()
 
 def _r20_capsule_store_redis(payload: dict, packed: bytes):
-    if _split_redis is None:
+    if _split_get_redis() is None:
         return False, 'redis package unavailable'
     url = _r61_effective_redis_url()
     if not url:
@@ -3152,7 +3161,7 @@ def runtime_mark_ready(detail: str=''):
     except Exception as exc:
         try: log_error(f'R6 boot-ready sync: {exc}')
         except Exception: pass
-    # OCH12.20: boot/load work can leave allocator arenas resident. Compact them
+    # OCH12.21: boot/load work can leave allocator arenas resident. Compact them
     # once after READY; normal memory-guard trimming continues afterwards.
     try:
         import gc as _och1220_gc
@@ -4819,7 +4828,7 @@ def _r59_vars_keyboard(kind, page=0):
 def _r59_fast_redis_probe():
     url=_r61_effective_redis_url()
     if not url: return False,'FAST REDIS_URL empty'
-    if _split_redis is None: return False,'FAST redis package unavailable'
+    if _split_get_redis() is None: return False,'FAST redis package unavailable'
     client=None
     try:
         client=_split_redis.Redis.from_url(url,socket_connect_timeout=0.8,socket_timeout=1.2,health_check_interval=30)
@@ -4882,7 +4891,7 @@ def _r60_redis_menu_text(extra=''):
         '',
         'Логика после рестарта:',
         '• REDIS_ENABLED=1 → Redis разрешён',
-        '• REDIS_ENABLED=0 → Redis жёстко ВЫКЛ',
+        '• REDIS_ENABLED=0 → фон/runtime OFF; ручное/BOOT восстановление разрешено',
         '• REDIS_START_ENABLED=1 → после deploy runtime стартует ON',
         '• REDIS_START_ENABLED=0 → после deploy runtime стартует OFF',
         '• кнопки ниже меняют только runtime до следующего рестарта',
@@ -4900,6 +4909,7 @@ def _r60_redis_menu_keyboard():
     kb=types.InlineKeyboardMarkup(row_width=2)
     kb.row(IB('🟢 Включить сейчас',callback_data='r60:redis:on'),IB('⚪ Выключить сейчас',callback_data='r60:redis:off'))
     kb.row(IB('🧠 Что внутри Redis',callback_data='r60:redis:inspect:0'),IB('🔄 Обновить',callback_data='r60:redis:menu'))
+    kb.row(IB('♻️ Восстановить FULL+TAIL',callback_data='r60:redis:restore'))
     kb.row(IB('🔙 В Инфо',callback_data='r29:info:main'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
 
@@ -5599,6 +5609,17 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             try: bot.answer_callback_query(call.id)
             except Exception: pass
             safe_edit(bot, call, _r60_redis_menu_text(), reply_markup=_r60_redis_menu_keyboard())
+            return True
+
+        if raw == 'r60:redis:restore':
+            try: bot.answer_callback_query(call.id,'Запускаю Redis FULL+TAIL restore…')
+            except Exception: pass
+            fn=globals().get('run_manual_redis_restore')
+            pool=globals().get('RECOVERY_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
+            queued=bool(callable(fn) and pool is not None and pool.submit(f'manual-redis-restore:{cid}',fn,cid))
+            if not queued:
+                try: bot.answer_callback_query(call.id,'Очередь восстановления занята.',show_alert=True)
+                except Exception: pass
             return True
 
         if raw.startswith('r60:redis:inspect:'):
@@ -6742,7 +6763,7 @@ def _r36_delivery_local_get(jid):
 
 def _r35_delivery_redis_client():
     try:
-        pkg=globals().get('_split_redis')
+        pkg=_split_get_redis()
         url=_r61_effective_redis_url()
         if pkg is None or not url: return None
         return pkg.Redis.from_url(url,socket_connect_timeout=1.0,socket_timeout=2.0,health_check_interval=30)
@@ -9266,10 +9287,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10138,7 +10159,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10177,7 +10198,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10227,7 +10248,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10250,13 +10271,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10312,7 +10333,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11208,7 +11229,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.20'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11523,12 +11544,25 @@ def _r81_mega_get_exact(remote_path,workdir,timeout_sec=90):
         if base in files: return _split_os.path.join(root,base),'ok'
     return None,'downloaded exact object missing locally'
 
+def _r221_manual_mega_ready():
+    """Manual recovery bypasses MEGA_ENABLED but still requires real credentials + CLI."""
+    try:
+        creds = bool((str(globals().get('MEGA_EMAIL') or _split_os.getenv('MEGA_EMAIL','') or '').strip() and
+                      str(globals().get('MEGA_PASSWORD') or _split_os.getenv('MEGA_PASSWORD','') or '').strip()) or
+                     str(_split_os.getenv('MEGA_SESSION','') or '').strip())
+        return bool(creds and _split_shutil.which('mega-ls') and _split_shutil.which('mega-get'))
+    except Exception:
+        return False
+
 def r81_manual_compact_mega_restore():
-    """Restore exact compact_v80 head/latest/tail. Never mega-find or scan history."""
+    """Restore exact compact_v80 head/latest/tail. Never mega-find or scan history.
+
+    OCH12.21: explicit owner recovery works even when MEGA_ENABLED=0; that flag
+    suppresses background/runtime MEGA only.
+    """
     work=None
     try:
-        if not _r80_mega_master_enabled(): return False,'MEGA_ENABLED=0 at Render master gate',0
-        if not _r71_fast_mega_ready(): return False,'R1 MEGA credentials/CLI unavailable',0
+        if not _r221_manual_mega_ready(): return False,'MEGA credentials/CLI unavailable for manual recovery',0
         paths=_r80_compact_paths()
         if not paths: return False,'MEGA_BACKUP_DIR/compact_v80 unavailable',0
         login=globals().get('mega_login_if_needed')
@@ -11590,6 +11624,88 @@ def r81_manual_compact_mega_restore():
         return False,f'{type(exc).__name__}: {str(exc)[:260]}',0
     finally:
         if work: _split_shutil.rmtree(work,ignore_errors=True)
+
+def _r221_manual_redis_restore_sqlite():
+    """OCH12.21 owner-triggered Redis FULL+TAIL restore independent of REDIS_ENABLED.
+
+    The runtime switch stays OFF.  This function reads Redis directly, builds a
+    temporary candidate, replays canonical R32 events page-by-page, then hands the
+    validated file to SQLiteState.replace_database() so open connections are safely
+    reopened on the restored inode.
+    """
+    if _split_get_redis() is None:
+        return False, 'redis package unavailable', 0
+    url = str(_split_os.getenv('REDIS_URL') or _split_os.getenv('RENDER_KEY_VALUE_URL') or _split_os.getenv('KEY_VALUE_URL') or _split_os.getenv('VALKEY_URL') or '').strip()
+    if not url:
+        return False, 'Redis URL отсутствует в Render', 0
+    key = str(_split_os.getenv('WORKER_REDIS_SNAPSHOT_KEY','vys262:bot_state:latest_gz') or 'vys262:bot_state:latest_gz').strip()
+    prefix = str(_split_os.getenv('WORKER_R32_STATE_EVENT_PREFIX','vys262:state_events:r32') or 'vys262:state_events:r32').strip()
+    index_key = prefix + ':index'; head_key = prefix + ':head'; meta_key = key + ':meta'
+    work = _split_tempfile.mkdtemp(prefix='och1221_manual_redis_restore_')
+    client = None
+    applied = stale = decoded = 0
+    try:
+        client = _split_redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=15, health_check_interval=30)
+        if not client.ping(): return False, 'Redis PING=false', 0
+        payload = client.get(key)
+        if not payload: return False, f'Redis FULL отсутствует: {key}', 0
+        max_bytes=max(1,min(128,int(_split_os.getenv('WORKER_REDIS_SNAPSHOT_MAX_MB','16') or '16')))*1024*1024
+        if len(payload)>max_bytes: return False,f'Redis FULL слишком большой: {len(payload)} > {max_bytes}',0
+        gz=_split_os.path.join(work,'full.sqlite3.gz'); candidate=_split_os.path.join(work,'candidate.sqlite3')
+        open(gz,'wb').write(bytes(payload))
+        try:
+            with _split_gzip.open(gz,'rb') as src, open(candidate,'wb') as dst:
+                _split_shutil.copyfileobj(src,dst,length=1024*1024)
+        except Exception as exc:
+            return False,f'Redis FULL decompress {type(exc).__name__}: {str(exc)[:180]}',0
+        if not _r81_compact_db_valid(candidate): return False,'Redis FULL SQLite quick_check failed',0
+        meta={}
+        try:
+            raw=client.get(meta_key)
+            if isinstance(raw,(bytes,bytearray)): raw=raw.decode('utf-8','replace')
+            if raw: meta=_split_json.loads(raw) or {}
+        except Exception: meta={}
+        cutoff=float((meta or {}).get('event_cutoff_score') or 0.0)
+        if cutoff<=0: return False,'Redis FULL metadata: нет event_cutoff_score',0
+        raw_head=client.get(head_key)
+        if isinstance(raw_head,(bytes,bytearray)): raw_head=raw_head.decode('utf-8','replace')
+        try: head=float((_split_json.loads(raw_head) if raw_head else {}).get('score') or cutoff)
+        except Exception: head=cutoff
+        total=int(client.zcount(index_key,f'({cutoff}',head) or 0) if head>cutoff else 0
+        max_events=max(1000,min(200000,int(_split_os.getenv('REDIS_RESTORE_MAX_EVENTS','200000') or '200000')))
+        if total>max_events: return False,f'Redis TAIL слишком большой: {total} > {max_events}',0
+        page=max(100,min(5000,int(_split_os.getenv('REDIS_RESTORE_EVENT_PAGE','1000') or '1000')))
+        offset=0
+        while offset<total:
+            pairs=client.zrangebyscore(index_key,f'({cutoff}',head,start=offset,num=page,withscores=True) or []
+            if not pairs: break
+            ids=[]
+            for member,_score in pairs:
+                ids.append(member.decode('utf-8','replace') if isinstance(member,(bytes,bytearray)) else str(member))
+            raws=client.mget([f'{prefix}:event:{eid}' for eid in ids]) or []
+            events=[]
+            for raw in raws:
+                if not raw: return False,'Redis TAIL incomplete: missing event payload',applied
+                try:
+                    b=bytes(raw) if isinstance(raw,(bytes,bytearray)) else str(raw).encode('utf-8')
+                    if b[:2]==b'\x1f\x8b': b=_split_gzip.decompress(b)
+                    ev=_split_json.loads(b.decode('utf-8'))
+                except Exception as exc:
+                    return False,f'Redis TAIL decode {type(exc).__name__}: {str(exc)[:140]}',applied
+                if not _r81_compact_event_valid(ev): return False,'Redis TAIL contains invalid R32 event',applied
+                events.append(ev); decoded += 1
+            a,st=_r81_apply_compact_events(candidate,events); applied+=int(a or 0); stale+=int(st or 0)
+            offset += len(pairs)
+        if not _r81_compact_db_valid(candidate): return False,'Redis candidate invalid after TAIL',applied
+        SQLITE.replace_database(candidate)
+        return True,f'Redis FULL+TAIL manual restore OK snapshot={len(payload)}B events={decoded} applied={applied} stale={stale}',applied
+    except Exception as exc:
+        return False,f'{type(exc).__name__}: {str(exc)[:260]}',applied
+    finally:
+        try:
+            if client is not None: client.close()
+        except Exception: pass
+        _split_shutil.rmtree(work,ignore_errors=True)
 
 # Honor Render's MEGA_ENABLED master switch. Runtime menus may route ownership,
 # but can never turn MEGA back on when Render explicitly supplied MEGA_ENABLED=0.
@@ -12510,7 +12626,7 @@ def _r70_routes_keyboard():
 try:
     _och1210_route_migration_once()
     _r71_apply_runtime_side_effects()
-    # OCH12.20: do not keep an idle MEGA reaper thread on the normal FAST profile.
+    # OCH12.21: do not keep an idle MEGA reaper thread on the normal FAST profile.
     # _r71_apply_runtime_side_effects() starts it only if MEGA/checkpoints are
     # actually routed to R1.
     bot_journal('r83_r1_normal_profile_loaded', int(OWNER_ID or 0), f'routes={_r71_load_routes()}; r2_enabled={int(_och1210_r2_enabled())}; peer_ping={_split_os.getenv("PEER_PING_ENABLED")}; mega_idle={int(_OCH1210_MEGA_IDLE_SEC)}s')

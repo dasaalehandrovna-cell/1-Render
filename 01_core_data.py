@@ -1127,6 +1127,7 @@ class WindowActorRegistry:
                 'logical_window_id': f'{key[0]}:{key[1]}:window',
                 'generation': 0,
                 'state_revision': 0,
+                'delivered_state_revision': 0,
                 'desired_text_fp': '',
                 'desired_markup_fp': '',
                 'delivered_text_fp': '',
@@ -1206,6 +1207,7 @@ class WindowActorRegistry:
             row = self._ensure(key)
             row['generation'] = max(1, int(row.get('generation') or 0))
             row['state_revision'] = max(1, int(state_revision or 1), int(row.get('state_revision') or 0))
+            row['delivered_state_revision'] = int(row['state_revision'])
             row['logical_window_id'] = window_actor_logical_id(key[0], key[1], text, purpose)
             row['desired_text_fp'] = text_fp
             row['desired_markup_fp'] = semantic_markup
@@ -1257,7 +1259,10 @@ class WindowActorRegistry:
         key = self._key(chat_id, message_id)
         with self._lock:
             row = self._rows.get(key) or {}
-            current = int(row.get('state_revision') or 0)
+            # OCH12.21: only a Telegram-confirmed keyboard may invalidate visible
+            # callbacks. reserve() can advance desired state before the edit; if
+            # Telegram rejects that edit, the old visible keyboard must stay valid.
+            current = int(row.get('delivered_state_revision') or 0)
             stale = bool(current and int(state_revision) != current)
             if stale:
                 self._stats['stale_callbacks'] += 1
@@ -1271,6 +1276,7 @@ class WindowActorRegistry:
                 'logical_window_id': str(row.get('logical_window_id') or ''),
                 'generation': int(row.get('generation') or 0),
                 'state_revision': int(row.get('state_revision') or 0),
+                'delivered_state_revision': int(row.get('delivered_state_revision') or 0),
                 'delivered_text_fp': str(row.get('delivered_text_fp') or ''),
                 'delivered_markup_fp': str(row.get('delivered_markup_fp') or ''),
             }
@@ -1282,7 +1288,9 @@ class WindowActorRegistry:
             row = self._ensure(key)
             if generation and int(row.get('generation') or 0) != int(generation):
                 return False
+            row['delivered_state_revision'] = int(row.get('state_revision') or row.get('delivered_state_revision') or 0)
             row['delivered_text_fp'] = window_actor_text_fingerprint(text, parse_mode)
+            row['delivered_state_revision'] = int(row.get('state_revision') or row.get('delivered_state_revision') or 0)
             row['delivered_markup_fp'] = window_actor_markup_fingerprint(reply_markup, strip_revision=False)
             row['updated_mono'] = time.monotonic()
             if mode == 'markup':
@@ -2165,7 +2173,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.20'
+BOT_DISPLAY_NAME = 'очнись_12.21'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -10037,7 +10045,10 @@ def mega_is_configured(control_plane: bool=False) -> bool:
     gate_category = 'mega_control' if control_plane else 'mega'
     if callable(gate) and (not gate(gate_category)):
         return False
-    return bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD and str(MEGA_BACKUP_DIR or '').strip('/'))
+    # OCH12.21: MEGA_ENABLED controls normal/background runtime only.
+    # Explicit control-plane recovery is allowed whenever credentials/root exist.
+    enabled_for_call = True if control_plane else bool(MEGA_ENABLED)
+    return bool(enabled_for_call and MEGA_EMAIL and MEGA_PASSWORD and str(MEGA_BACKUP_DIR or '').strip('/'))
 
 def mega_remote_file_path(filename: str=None) -> str:
     filename = filename or MEGA_LATEST_GLOBAL_NAME
@@ -14995,7 +15006,7 @@ def _r24_lowram_release_if_pressure(chat_id):
         rss = float((_runtime_memory_stats() or {}).get('rss_mb', 0) or 0)
     except Exception:
         rss = 0.0
-    # OCH12.20: this is a targeted per-chat release scheduled after a durable
+    # OCH12.21: this is a targeted per-chat release scheduled after a durable
     # mutation. Do not cancel it merely because some *other* chat/pool is busy;
     # that old global busy gate allowed cold ledgers to accumulate indefinitely
     # under steady traffic. _lowram_release_chat() serializes only this chat and
@@ -15378,7 +15389,15 @@ def build_runtime_watcher_text() -> str:
     delta = snap.get('delta') or {}
     keep = snap.get('keep_alive') or {}
     lines.extend(['', 'MEGA durable tasks / delta:', f"tasks: pending {mega.get('pending', 0)} | running {mega.get('running', 0)} | failed {mega.get('failed', 0)} | done {mega.get('done', 0)} | processing {mega.get('processing', 0)}", f"task counters: saved {mega.get('persisted', 0)} | recovered {mega.get('recovered', 0)} | done {mega.get('completed', 0)} | skip {mega.get('skipped_done', 0)} | save err {mega.get('persist_errors', 0)} | final err {mega.get('finalize_errors', 0)}", f"task last error: {str(mega.get('last_error') or 'нет')[:220]}", f"delta: pending chats {delta.get('pending_chats', 0)} | last {delta.get('last_success_at') or '—'} | events {delta.get('last_event_count', 0)}", f"delta file: {os.path.basename(str(delta.get('last_file') or '—'))}", f"delta error: {str(delta.get('last_error') or 'нет')[:220]}", f"keep-alive: last ok {keep.get('last_ok_at') or keep.get('last_success_at') or '—'} | last error {str(keep.get('last_error') or 'нет')[:160]}", '', 'SHUTDOWN:', f"start {st.get('shutdown_started_at') or '—'} | finish {st.get('shutdown_finished_at') or '—'} | signal {st.get('shutdown_signal') or '—'}", f"drain={st.get('shutdown_drain_ok')} | final delta={st.get('shutdown_delta_ok')}", '', 'Предыдущий запуск:', f"Классификация: {st.get('previous_reason') or '—'}", f"Предыдущий state: {prev_state.get('phase') or '—'}", f"Предыдущий snapshot: {prev.get('captured_at') or '—'}", f"Предыдущий старт: {prev_state.get('started_at') or '—'}", f"Предыдущий shutdown: {prev_state.get('shutdown_finished_at') or 'не зафиксирован'}", f"Предыдущий signal: {prev_state.get('shutdown_signal') or '—'}", f"Предыдущий instance: {str(prev_render.get('RENDER_INSTANCE_ID') or '—')[-28:]}", f"Предыдущий commit: {str(prev_render.get('RENDER_GIT_COMMIT') or '—')[:12]}", '', f"Последняя ошибка Watcher: {str(st.get('last_error') or 'нет')[:300]}", '', lowram_status_text() if 'lowram_status_text' in globals() else 'LOW-RAM: —'])
-    return wm_owner('\n'.join(lines), 12)
+    # OCH12.21: Watcher is a Telegram message, not an unbounded diagnostic dump.
+    # Keep enough headroom for window marker/watermark and prevent edit_message_text
+    # failures (>4096 chars), which previously left the visible diagnostic keyboard stale.
+    body = '\n'.join(lines)
+    max_chars = 3300
+    if len(body) > max_chars:
+        cut = body[:max_chars].rsplit('\n', 1)[0]
+        body = cut + '\n\n… Watcher сокращён для Telegram. Детали доступны кнопками «События», «Очереди», «Delta» и Runtime ZIP.'
+    return wm_owner(body, 12)
 
 def build_runtime_events_text(limit: int=14) -> str:
     with _RUNTIME_LOCK:
@@ -17848,9 +17867,10 @@ def _v186_restore_day_key_without_mutation(rec: dict, daily_hint: dict | None=No
     return today_key()
 
 def _v186_rebuild_restore_derived(chat_id: int, daily_hint: dict | None=None) -> dict:
-    """Rebuild only derived runtime indexes/balance; preserve every field/order of file records exactly."""
+    """Rebuild one explicitly targeted chat; this path may materialize that chat only."""
     store = get_chat_store(int(chat_id))
-    records = store.get('records') if isinstance(store.get('records'), list) else []
+    rows = store.get('records')
+    records = rows if isinstance(rows, list) else []
     daily = {}
     total = 0.0
     valid = 0
@@ -17866,7 +17886,67 @@ def _v186_rebuild_restore_derived(chat_id: int, daily_hint: dict | None=None) ->
         valid += 1
     store['daily_records'] = daily
     store['balance'] = total
-    return {'records': valid, 'days': len(daily), 'balance': total}
+    return {'records': valid, 'days': len(daily), 'balance': total, 'mode': 'materialized_target'}
+
+def _v221_restore_chat_cold_safe(chat_id: int) -> dict:
+    """OCH12.21: keep global-restore finance history cold.
+
+    A SQLite restore already contains canonical cold_fields.  Global rehydrate must
+    never call ColdChatStore.get('records'), because that materializes every chat's
+    ledger and defeats LOW-RAM.  Preserve persisted balance/meta; only if an old
+    snapshot lacks balance do a one-chat transient scan without inserting records
+    into the store.
+    """
+    cid = int(chat_id)
+    store = get_chat_store(cid)
+    records_loaded = bool(dict.__contains__(store, 'records'))
+    if (not LOWRAM_ENABLED) or (not isinstance(store, ColdChatStore)) or records_loaded:
+        return _v186_rebuild_restore_derived(cid)
+    total = None
+    if dict.__contains__(store, 'balance'):
+        try:
+            total = float(dict.__getitem__(store, 'balance') or 0)
+        except Exception:
+            total = 0.0
+    if total is None:
+        # Compatibility for old snapshots only: scan one chat transiently, never
+        # attach the list/daily index to ColdChatStore.
+        rows = SQLITE.get_cold(cid, 'records', []) or []
+        acc = 0.0
+        valid = 0
+        for rec in rows:
+            if not isinstance(rec, dict):
+                continue
+            try:
+                acc += float(rec.get('amount', 0) or 0)
+            except Exception:
+                pass
+            valid += 1
+        total = float(acc)
+        dict.__setitem__(store, 'balance', total)
+        rows = None
+        return {'records': valid, 'days': 'cold', 'balance': total, 'mode': 'cold_transient_balance'}
+    # daily_records/records/ARS/USD remain absent in RAM and lazy in SQLite.
+    return {'records': 'cold', 'days': 'cold', 'balance': total, 'mode': 'cold_preserved'}
+
+def _v221_post_restore_trim() -> dict:
+    out = {'gc': 0, 'malloc_trim': False}
+    try:
+        import gc as _gc
+        out['gc'] = int(_gc.collect() or 0)
+    except Exception:
+        pass
+    try:
+        import ctypes as _ctypes
+        _libc = _ctypes.CDLL(None)
+        _fn = getattr(_libc, 'malloc_trim', None)
+        if _fn is not None:
+            _fn.argtypes = [_ctypes.c_size_t]
+            _fn.restype = _ctypes.c_int
+            out['malloc_trim'] = bool(_fn(0))
+    except Exception:
+        pass
+    return out
 
 def _v184_post_restore_rehydrate(restored: dict | None=None, chat_ids=None) -> dict:
     """One post-restore path. Per-chat restore stays targeted; global GZ/JSON may rebuild globally."""
@@ -17908,9 +17988,16 @@ def _v184_post_restore_rehydrate(restored: dict | None=None, chat_ids=None) -> d
                             chats.append(int(cid))
             except Exception as exc:
                 result['errors'].append(f'tenant:{cid}:' + str(exc)[:120])
+    # OCH12.21: global restore is metadata-only for cold ledgers.  Targeted
+    # per-chat file restore may still materialize exactly that one chat.
+    global_cold_safe = bool(chat_ids is None and LOWRAM_ENABLED)
+    result['cold_safe_global'] = global_cold_safe
+    result['cold_preserved_chats'] = 0
     for cid in ids:
         try:
-            _v186_rebuild_restore_derived(cid)
+            rep = _v221_restore_chat_cold_safe(cid) if global_cold_safe else _v186_rebuild_restore_derived(cid)
+            if str((rep or {}).get('mode') or '').startswith('cold'):
+                result['cold_preserved_chats'] += 1
             result['normalized_chats'] += 1
         except Exception as exc:
             result['errors'].append(f'chat:{cid}:' + str(exc)[:120])
@@ -17930,6 +18017,10 @@ def _v184_post_restore_rehydrate(restored: dict | None=None, chat_ids=None) -> d
                 restore_finance_window_runtime_state()
         except Exception as exc:
             result['errors'].append('windows:' + str(exc)[:160])
+        try:
+            result['memory_trim'] = _v221_post_restore_trim()
+        except Exception as exc:
+            result['errors'].append('trim:' + str(exc)[:120])
     return result
 
 def _v186_clear_chat_scope_before_restore(chat_id: int) -> None:

@@ -5932,6 +5932,11 @@ def run_manual_mega_restore(chat_id: int):
         except Exception as exc:
             log_error(f'manual MEGA rehydrate v241: {exc}')
         try:
+            trim = globals().get('_v221_post_restore_trim')
+            if callable(trim): trim()
+        except Exception:
+            pass
+        try:
             bind = globals().get('config_guard_bind_recovered_state_v242')
             if callable(bind):
                 bind()
@@ -6000,6 +6005,60 @@ def run_manual_mega_restore(chat_id: int):
                 end(restore_epoch, success)
             except Exception:
                 pass
+
+def run_manual_redis_restore(chat_id: int):
+    """OCH12.21 owner restore from Redis even when REDIS_ENABLED=0."""
+    global data
+    chat_id=int(chat_id); backup_dir=''; restore_epoch=0; success=False
+    try:
+        send_and_auto_delete(chat_id,'🧱 Ручное восстановление: читаю Redis FULL + TAIL…',30)
+        begin=globals().get('_v241_restore_storage_barrier_begin')
+        if callable(begin): restore_epoch=int(begin() or 0)
+        backup_fn=globals().get('_v153_backup_before_restore')
+        if callable(backup_fn): backup_dir=str(backup_fn() or '')
+        else: raise RuntimeError('pre_restore backup helper недоступен')
+        fn=globals().get('_r221_manual_redis_restore_sqlite')
+        if not callable(fn): raise RuntimeError('Redis manual restore helper недоступен')
+        ok,detail,applied=fn()
+        if not ok: raise RuntimeError(detail)
+        restored=load_data(); data.clear(); data.update(restored)
+        post=globals().get('_v184_post_restore_rehydrate')
+        if callable(post): post(data)
+        trim=globals().get('_v221_post_restore_trim')
+        if callable(trim): trim()
+        bind=globals().get('config_guard_bind_recovered_state_v242')
+        if callable(bind): bind()
+        verify=globals().get('constitution_boot_verify_after_restore')
+        if callable(verify):
+            rep=verify() or {}
+            if not bool(rep.get('ok')): raise RuntimeError('semantic verify after Redis restore failed: '+str(rep.get('reason') or 'unknown')[:350])
+        save_data(data,full=True)
+        reanchor=globals().get('_v240_restore_reanchor_guaranteed')
+        result=(reanchor('redis_restore_now_v221') or {}) if callable(reanchor) else {}
+        initialize_delta_baseline(data)
+        try:
+            heal=globals().get('_v243_mark_runtime_restore_healthy')
+            if callable(heal): heal('redis_restore_now_v221',remote_confirmed=bool(result.get('remote_confirmed_v240')),generation=str((result.get('active') or {}).get('generation') or ''))
+        except Exception: pass
+        _clear_restore_guard(); success=True
+        try: refresh_registered_financial_windows(chat_id)
+        except Exception: pass
+        try: schedule_startup_main_windows(delay=0.5)
+        except Exception: pass
+        send_and_auto_delete(chat_id,f'✅ Redis → бот восстановлен. {detail}; delta={applied}. REDIS_ENABLED может оставаться OFF — это не мешает ручному recovery.',180)
+        try: bot_journal('redis_manual_restore_v221',chat_id,f'{detail}; applied={applied}; epoch={restore_epoch}')
+        except Exception: pass
+    except Exception as exc:
+        log_error(f'run_manual_redis_restore: {exc}')
+        send_and_auto_delete(chat_id,'❌ Ошибка ручного восстановления из Redis: '+str(exc)[:500],180)
+    finally:
+        if backup_dir:
+            try: shutil.rmtree(backup_dir,ignore_errors=True)
+            except Exception: pass
+        end=globals().get('_v241_restore_storage_barrier_end')
+        if restore_epoch and callable(end):
+            try: end(restore_epoch,success)
+            except Exception: pass
 
 @bot.message_handler(commands=['mega_restore_now'])
 def cmd_mega_restore_now(msg):
