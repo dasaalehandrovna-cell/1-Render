@@ -9762,7 +9762,7 @@ def _v153_backup_before_restore() -> str:
             except Exception as exc:
                 results.append(('redis', False, f'{type(exc).__name__}: {str(exc)[:180]}'))
 
-        # 2) Direct R1 compact MEGA when emergency ownership is on R1.
+        # 2) Direct R1 named MEGA pre_restore when emergency ownership is on R1.
         r1_mega_ok = False
         route_fn = globals().get('_r71_route_is_fast')
         route_fast = False
@@ -9771,10 +9771,10 @@ def _v153_backup_before_restore() -> str:
                 route_fast = bool(route_fn('mega') or route_fn('checkpoints') or route_fn('durability'))
             except Exception:
                 route_fast = False
-        compact_fn = globals().get('_r80_snapshot_full_compact')
+        compact_fn = globals().get('_r80_store_pre_restore_gz')
         if route_fast and callable(compact_fn):
             try:
-                r1_mega_ok, detail = compact_fn('pre_restore')
+                r1_mega_ok, detail = compact_fn(gz, 'manual_restore')
                 r1_mega_ok = bool(r1_mega_ok)
                 results.append(('r1-mega', r1_mega_ok, str(detail)[:220]))
             except Exception as exc:

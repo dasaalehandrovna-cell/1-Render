@@ -2130,7 +2130,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.14'
+BOT_DISPLAY_NAME = 'очнись_12.15'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -20342,6 +20342,34 @@ def _canon_constitution_download_best_boot_generation_v235__001(workdir: str) ->
             return (gz, candidate, 'recent verified generation history fallback v235')
     return (None, active or None, f'no verified generation; active_error={active_err}')
 
+def _v215_constitution_genesis_publish_allowed() -> tuple[bool, str]:
+    """Narrow OCH12.15 safety fence for automatic first immutable generation.
+
+    A Redis image with meta_revision=0 can be structurally replayable yet originate
+    from an EMPTY_INIT incident.  Until the broader semantic restore guard is added,
+    such a base may run but must not silently become the new immutable MEGA genesis.
+    """
+    raw = str(os.getenv('R68_RESTORE_TRACE_JSON') or os.getenv('R49_RESTORE_TRACE_JSON') or '').strip()
+    if not raw:
+        return True, 'no preboot restore trace'
+    try:
+        trace = json.loads(raw) or {}
+    except Exception:
+        return True, 'restore trace unreadable'
+    base = str(trace.get('base_source') or '')
+    redis_detail = str(trace.get('redis_detail') or trace.get('redis_full_detail') or '')
+    if base.startswith('REDIS'):
+        m = re.search(r'meta_revision=([0-9.]+)', redis_detail)
+        if m:
+            try:
+                meta_revision = float(m.group(1) or 0.0)
+            except Exception:
+                meta_revision = 0.0
+            if meta_revision <= 0.0:
+                return False, f'zero-revision Redis restore cannot auto-create immutable genesis; base={base}'
+    return True, 'restore base eligible for automatic immutable genesis'
+
+
 def constitution_boot_verify_after_restore() -> dict:
     """Fast semantic boot verification without a mandatory MEGA manifest round-trip.
 
@@ -20413,13 +20441,23 @@ def constitution_boot_verify_after_restore() -> dict:
     current = constitution_load_active_manifest_remote(force=True)
     if not current:
         try:
+            genesis_allowed, genesis_reason = _v215_constitution_genesis_publish_allowed()
+            if not genesis_allowed:
+                raise RuntimeError('immutable genesis deferred: ' + genesis_reason)
             genesis = constitution_bootstrap_ledger_genesis()
             live = constitution_semantic_manifest_from_live()
-            snapshot_ok = bool(mega_upload_latest_database_backup(force=True))
-            active_now = constitution_load_active_manifest_remote(force=True) if snapshot_ok else None
-            if not snapshot_ok or not active_now:
+            # OCH12.15: DATA CONSTITUTION must publish its own immutable generation
+            # synchronously.  The public mega_upload_latest_database_backup symbol is
+            # intentionally overridden later by R80 compact storage and only means
+            # "queue compact latest/head/tail" there; it is NOT the immutable writer.
+            publish_generation = globals().get('mega_publish_current_sqlite_v242')
+            if not callable(publish_generation):
+                raise RuntimeError('immutable generation publisher unavailable')
+            active_now = publish_generation('constitution_genesis', manual_restore=False, allow_destructive=False) or {}
+            snapshot_ok = bool(active_now.get('generation') and active_now.get('remote_generation'))
+            if not snapshot_ok:
                 raise RuntimeError('genesis created but first immutable generation was not activated')
-            result = {'ok': True, 'mode': 'bootstrap', 'live': live, 'genesis': genesis, 'active': active_now, 'reason': 'constitution genesis + first generation created'}
+            result = {'ok': True, 'mode': 'bootstrap', 'live': live, 'genesis': genesis, 'active': active_now, 'reason': 'constitution genesis + first immutable generation created synchronously'}
         except Exception as exc:
             constitution_set_quarantine(f'constitution genesis failed: {exc}')
             result = {'ok': False, 'mode': 'bootstrap', 'live': live, 'reason': str(exc)}

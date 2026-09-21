@@ -715,14 +715,14 @@ if ROLE=='fast':
        "return (False, 'r81:slash_local_admission')" in durable_req_src and '_v150_is_known_slash_command(command)' in durable_req_src,
        'registered slash commands must not require R2/MEGA pre-execution durability')
     ok('r81_restore_prebackup_multi_backend',
-       '_split_cache_snapshot_to_redis_v266' in pre_restore_src and '_r80_snapshot_full_compact' in pre_restore_src and "timeout=(2.5, 20.0)" in pre_restore_src and 'timeout=240' not in pre_restore_src,
+       '_split_cache_snapshot_to_redis_v266' in pre_restore_src and '_r80_store_pre_restore_gz' in pre_restore_src and "timeout=(2.5, 20.0)" in pre_restore_src and 'timeout=240' not in pre_restore_src,
        'pre_restore must survive dead R2 via Redis/R1 MEGA and bound any R2 wait')
     ok('r81_manual_mega_restore_compact_only',
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.14'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.14')
+       "BOT_DISPLAY_NAME = 'очнись_12.15'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.15')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -768,12 +768,46 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1214_disaster_safe_no_empty_boot',
-       "OCH12.14_REDIS_FIRST_MEGA_RECOVERY_SAFE_NO_EMPTY_BOOT" in start_src and
+       "OCH12.15_REDIS_COMPACT_GENERATION_PRERESTORE_SAFE_NO_EMPTY_BOOT" in start_src and
        'def _och1214_recovery_safe_wait' in start_src and
        "OCHNIS_ALLOW_EMPTY_INIT" in start_src and
        "base_source'] = 'EMPTY_INIT'" not in start_src and
        "base_source'] = 'RECOVERY_SAFE_WAIT'" in start_src,
        'production recovery must wait/retry Redis/MEGA instead of silently booting an empty database')
+    ok('och1215_startup_deep_mega_fallback_wired',
+       start_src.count('_restore_from_mega_startup(target)') >= 2 and
+       'MEGA_IMMUTABLE_OR_PRERESTORE' in start_src and
+       'MEGA_IMMUTABLE_OR_PRERESTORE_SAFE_RETRY' in start_src and
+       'def _discover_pre_restore_remotes' in start_src,
+       'cold startup and safe-wait must actually use manifest/generation/pre_restore fallback after compact_v80')
+    ok('och1215_compact_tail_not_hidden_by_stale_head',
+       'on a cold restore always inspect tail.json.gz' in start_src and
+       'tail_obj_max=max' not in start_src and 'effective_tail_max=max(expected_tail_max,tail_obj_max)' in start_src and
+       'tail belongs to different FULL' in start_src,
+       'cold compact restore must inspect durable tail even with missing/stale head and reject a mismatched FULL baseline')
+    constitution_boot_src=_fn_sources(core_src,{'constitution_boot_verify_after_restore'}).get('constitution_boot_verify_after_restore','')
+    ok('och1215_constitution_immutable_publish_is_synchronous',
+       "globals().get('mega_publish_current_sqlite_v242')" in constitution_boot_src and
+       'mega_upload_latest_database_backup(force=True)' not in constitution_boot_src and
+       'first immutable generation created synchronously' in constitution_boot_src,
+       'DATA CONSTITUTION genesis must synchronously create database/generations + current_manifest, not queue R80 compact')
+    genesis_guard_src=_fn_sources(core_src,{'_v215_constitution_genesis_publish_allowed'}).get('_v215_constitution_genesis_publish_allowed','')
+    ok('och1215_zero_revision_redis_cannot_anchor_genesis',
+       'meta_revision=' in genesis_guard_src and "base.startswith('REDIS')" in genesis_guard_src and
+       'zero-revision Redis restore cannot auto-create immutable genesis' in genesis_guard_src and
+       'immutable genesis deferred' in constitution_boot_src,
+       'a structurally replayable zero-revision Redis image must not silently become the first immutable MEGA generation')
+    pre_restore_fast=_fn_sources(web_src,{'_v153_backup_before_restore'}).get('_v153_backup_before_restore','')
+    ok('och1215_pre_restore_path_and_writer_unified',
+       "globals().get('_r80_store_pre_restore_gz')" in pre_restore_fast and
+       "'/database/pre_restore'" in split_src and
+       "constitution_database_dir() + '/pre_restore'" in web_src,
+       'R1 named pre_restore writer and FAST catalog must use database/pre_restore')
+    ok('och1215_compact_tail_baseline_metadata',
+       "'full_db_revision':db_rev" in split_src and
+       "'full_event_revision':event_rev" in split_src and
+       "'full_db_revision':float(_R80_MEGA_STATE.get('full_db_revision') or 0.0)" in split_src,
+       'new compact tail files must identify the FULL baseline they belong to')
     ok('och1210_r2_network_hard_gate',
        "_split_os.environ['PEER_PING_ENABLED'] = '0' if all_fast else '1'" in split_src and
        'R2 disabled by normal R1-only profile' in split_src and

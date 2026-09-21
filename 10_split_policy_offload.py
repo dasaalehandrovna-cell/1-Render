@@ -9244,10 +9244,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10116,7 +10116,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10155,7 +10155,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10205,7 +10205,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10228,13 +10228,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10290,7 +10290,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11186,7 +11186,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.14'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.15'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11207,6 +11207,37 @@ def _r80_write_head(workdir,extra=None):
     if ok:
         with _R80_MEGA_LOCK: _R80_MEGA_STATE['last_head_at']=_split_time.time()
     return ok,detail
+
+def _r80_store_pre_restore_gz(local_gz, reason='manual_restore'):
+    """OCH12.15: store a named pre-restore snapshot in the canonical database/pre_restore path.
+
+    This is deliberately separate from compact_v80 latest/head/tail: taking a safety
+    checkpoint before a destructive restore must never overwrite the normal compact FULL.
+    """
+    if not _r80_mega_runtime_ready():
+        return False, 'R1 MEGA runtime not enabled/ready'
+    local_gz = str(local_gz or '')
+    if not local_gz or not _split_os.path.isfile(local_gz):
+        return False, 'pre_restore local gzip missing'
+    root = str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').strip().replace('\\','/')
+    if not root:
+        return False, 'MEGA_BACKUP_DIR empty'
+    root = '/' + root.strip('/')
+    remote_dir = root + '/database/pre_restore'
+    safe_reason = _v262_re.sub(r'[^A-Za-z0-9_.-]+','_',str(reason or 'manual_restore'))[:80].strip('_') or 'manual_restore'
+    stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
+    name = f'pre_restore_{stamp}_{safe_reason}.sqlite3.gz'
+    try:
+        login=globals().get('mega_login_if_needed')
+        if callable(login): login(control_plane=True)
+        mega_ensure_remote_path(remote_dir)
+        ok=bool(mega_put_replace(local_gz, remote_dir, name, archive_previous=False))
+        if not ok:
+            return False, 'mega_put_replace returned false'
+        return True, remote_dir + '/' + name
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:220]}'
+
 
 def _r80_snapshot_full_compact(reason='daily'):
     """Background-only R1 MEGA checkpoint. Exactly latest.sqlite3.gz + tail.json.gz + head.json."""
@@ -11231,7 +11262,7 @@ def _r80_snapshot_full_compact(reason='daily'):
         paths=_r80_compact_paths()
         ok,detail=_r80_mega_put_fixed(gz,paths['latest'])
         if not ok: raise RuntimeError('latest: '+detail)
-        empty_tail={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':cutoff,'events':[],'max_revision':event_rev}
+        empty_tail={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':cutoff,'full_db_revision':db_rev,'full_event_revision':event_rev,'events':[],'max_revision':event_rev}
         tail_local=_split_os.path.join(work,'tail.json.gz'); _r80_write_local_json(tail_local,empty_tail,True)
         ok,detail=_r80_mega_put_fixed(tail_local,paths['tail'])
         if not ok: raise RuntimeError('tail reset: '+detail)
@@ -11317,7 +11348,7 @@ def _r80_flush_compact_tail(reason='periodic'):
         if detail.startswith('tail too large'): return _r80_snapshot_full_compact('tail-rollover')
         work=_split_tempfile.mkdtemp(prefix='r80_mega_tail_'); local=_split_os.path.join(work,'tail.json.gz')
         max_rev=max([int((x or {}).get('revision') or 0) for x in events] or [int(_R80_MEGA_STATE.get('full_event_revision') or 0)])
-        obj={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0),'events':events,'max_revision':max_rev}
+        obj={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0),'full_db_revision':float(_R80_MEGA_STATE.get('full_db_revision') or 0.0),'full_event_revision':int(_R80_MEGA_STATE.get('full_event_revision') or 0),'events':events,'max_revision':max_rev}
         _r80_write_local_json(local,obj,True)
         paths=_r80_compact_paths(); ok,put_detail=_r80_mega_put_fixed(local,paths['tail'])
         if not ok: raise RuntimeError(put_detail)

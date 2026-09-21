@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-OCH12.14 recovery policy:
+OCH12.15 recovery policy:
 - same-container local cache is only a crash breadcrumb;
 - Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
 - legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
@@ -357,6 +357,35 @@ def _discover_generation_remotes(root: str, mega_timeout: int, limit: int = 3) -
     return rows[:max(1, int(limit))], f'{generations}: found={len(rows)}'
 
 
+
+def _discover_pre_restore_remotes(root: str, mega_timeout: int, limit: int = 4) -> tuple[list[str], str]:
+    """OCH12.15: newest named safety snapshots.  Canonical path is database/pre_restore.
+
+    compact_v80/pre_restore is read only for backward compatibility with 12.14 HEAVY.
+    """
+    rows: list[str] = []
+    details: list[str] = []
+    for folder in (root.rstrip('/') + '/database/pre_restore', root.rstrip('/') + '/compact_v80/pre_restore'):
+        try:
+            found = _run(['mega-find', folder, '--pattern=pre_restore_*.sqlite3.gz', '--type=f'], timeout=mega_timeout)
+        except Exception as exc:
+            details.append(f'{folder}: {type(exc).__name__}: {str(exc)[:120]}')
+            continue
+        if found.returncode != 0:
+            details.append(f'{folder}: {(found.stderr or found.stdout or "mega-find failed").strip()[:150]}')
+            continue
+        candidates = [x.strip() for x in (found.stdout or '').splitlines() if x.strip().endswith('.sqlite3.gz')]
+        candidates.sort(reverse=True)
+        for remote in candidates:
+            if remote not in rows:
+                rows.append(remote)
+            if len(rows) >= max(1, int(limit)):
+                break
+        details.append(f'{folder}: found={len(candidates)}')
+        if len(rows) >= max(1, int(limit)):
+            break
+    return rows[:max(1, int(limit))], '; '.join(details)[:500]
+
 def _r32_event_valid(ev: object) -> bool:
     if not isinstance(ev, dict) or int(ev.get('schema') or 0) != 32:
         return False
@@ -706,7 +735,7 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
     R58 strict-root recovery.  FAST is allowed to inspect only MEGA_BACKUP_DIR
     supplied by Render.  No legacy/default roots are consulted and a manifest
     pointer outside that root is rejected.
-      configured latest -> configured manifest generation -> configured generation scan.
+      current_manifest generation -> generation scan -> named pre_restore -> legacy latest mirror.
     """
     roots = _startup_mega_roots()
     if not roots:
@@ -778,15 +807,9 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
         for root_no, root in enumerate(roots, 1):
             print(f'[SPLIT FRONT] R58 MEGA root start {root_no}/{len(roots)} root={root}', flush=True)
 
-            # HEAVY's active runtime checkpoint writer promotes this object on every
-            # successful full snapshot.  It is therefore the freshest control file
-            # in the current split architecture and must be tried before a possibly
-            # stale immutable-generation manifest left by an older release.
-            latest = root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz'
-            ok, done = try_remote(root, latest, 'latest')
-            if ok:
-                return True, done
-
+            # OCH12.15 deep recovery order after compact_v80 already failed:
+            # active immutable manifest -> newest immutable generations -> named
+            # pre_restore safety snapshots -> legacy latest mirror.
             generation_remote, manifest_detail = _manifest_generation_remote(root, tmpdir, mega_timeout)
             discovery.append(manifest_detail)
             print(f'[SPLIT FRONT] R55 manifest root={root} detail={manifest_detail[:260]}', flush=True)
@@ -802,6 +825,19 @@ def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
                 ok, done = try_remote(root, remote, 'generation-scan')
                 if ok:
                     return True, done
+
+            pre_restores, pre_detail = _discover_pre_restore_remotes(root, mega_timeout, limit=4)
+            discovery.append(pre_detail)
+            print(f'[SPLIT FRONT] OCH12.15 pre_restore scan root={root} detail={pre_detail[:260]}', flush=True)
+            for remote in pre_restores:
+                ok, done = try_remote(root, remote, 'pre-restore')
+                if ok:
+                    return True, done
+
+            latest = root.rstrip('/') + '/database/latest_bot_state.sqlite3.gz'
+            ok, done = try_remote(root, latest, 'legacy-latest')
+            if ok:
+                return True, done
 
         useful_discovery = [x for x in discovery if x and not _mega_missing(x)]
         tail = errors[-6:] + useful_discovery[-3:]
@@ -1046,23 +1082,35 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
         ok,install_detail=_install_gzip_db(latest_path,candidate)
         if not ok:
             return False,f'compact latest invalid: {install_detail}','KEEP'
-        tail_count=int((head or {}).get('tail_count') or 0) if isinstance(head,dict) else 0
-        expected_tail_max=int((head or {}).get('tail_max_revision') or 0) if isinstance(head,dict) else 0
+        head_valid=bool(isinstance(head,dict) and int(head.get('schema') or 0)>=80)
+        tail_count=int((head or {}).get('tail_count') or 0) if head_valid else 0
+        expected_tail_max=int((head or {}).get('tail_max_revision') or 0) if head_valid else 0
         tail_applied=0
-        if tail_count>0 or expected_tail_max>_r32_max_revision(candidate):
-            tail_path,tail_detail=_r80_get_exact(tail_remote,work/'tail',get_timeout)
-            if tail_path is None:
-                return False,f'compact tail required but unavailable: {tail_detail}','KEEP'
+        # OCH12.15: on a cold restore always inspect tail.json.gz even when HEAD says
+        # tail_count=0.  A crash can happen after TAIL promotion and before HEAD; HEAD
+        # is the commit record, but it must not make an already-durable newer TAIL invisible.
+        tail_path,tail_detail=_r80_get_exact(tail_remote,work/'tail',get_timeout)
+        if tail_path is None:
+            if (not head_valid) or tail_count>0 or expected_tail_max>_r32_max_revision(candidate):
+                return False,f'compact tail/head incomplete: {tail_detail}','KEEP'
+        else:
             try:
                 obj=json.loads(gzip.decompress(tail_path.read_bytes()).decode('utf-8')) or {}
                 events=[ev for ev in (obj.get('events') or []) if _r32_event_valid(ev)]
             except Exception as exc:
                 return False,f'compact tail decode {type(exc).__name__}: {str(exc)[:160]}','KEEP'
+            tail_base_db=float(obj.get('full_db_revision') or 0.0)
+            candidate_db_before_tail=_db_revision(candidate)
+            if tail_base_db and candidate_db_before_tail and abs(tail_base_db-candidate_db_before_tail)>0.000001:
+                return False,f'compact tail belongs to different FULL tail_db={tail_base_db:.6f} latest_db={candidate_db_before_tail:.6f}','KEEP'
+            tail_obj_max=int(obj.get('max_revision') or 0)
+            effective_tail_max=max(expected_tail_max,tail_obj_max)
             if tail_count and len(events)<tail_count:
                 return False,f'compact tail incomplete {len(events)} < {tail_count}','KEEP'
-            a,_st=_apply_r32_events(candidate,events); tail_applied=int(a)
-            if expected_tail_max and _r32_max_revision(candidate)<expected_tail_max:
-                return False,f'compact tail revision incomplete {_r32_max_revision(candidate)} < {expected_tail_max}','KEEP'
+            if events:
+                a,_st=_apply_r32_events(candidate,events); tail_applied=int(a)
+            if effective_tail_max and _r32_max_revision(candidate)<effective_tail_max:
+                return False,f'compact tail revision incomplete {_r32_max_revision(candidate)} < {effective_tail_max}','KEEP'
         if not _db_valid(candidate): return False,'compact candidate invalid after tail','KEEP'
         cand_db=_db_revision(candidate); cand_ev=_r32_max_revision(candidate)
         if quick and ((cand_ev<local_event_rev) or (cand_ev==local_event_rev and cand_db<local_db_rev-0.000001)):
@@ -1120,7 +1168,7 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
         attempt += 1
         trace['recovery_safe_attempts'] = attempt
         delay = 5.0 if attempt == 1 else _och1214_safe_retry_seconds()
-        print(f'[SPLIT FRONT] OCH12.14 RECOVERY SAFE WAIT attempt={attempt} retry_in={delay:.0f}s; empty init blocked', flush=True)
+        print(f'[SPLIT FRONT] OCH12.15 RECOVERY SAFE WAIT attempt={attempt} retry_in={delay:.0f}s; empty init blocked', flush=True)
         time.sleep(delay)
         if redis_enabled and redis_url_present:
             try:
@@ -1129,7 +1177,7 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
                 ok, detail = False, f'Redis retry exception: {exc}'
             trace['redis_retry_ok'] = bool(ok)
             trace['redis_retry_detail'] = str(detail)[:900]
-            print(f'[SPLIT FRONT] OCH12.14 Redis retry ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.15 Redis retry ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
             if ok and _db_valid(target):
                 trace['redis_ok'] = True
                 trace['redis_detail'] = str(detail)[:900]
@@ -1144,7 +1192,7 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
             trace['mega_retry_ok'] = bool(ok)
             trace['mega_retry_detail'] = str(detail)[:900]
             trace['mega_retry_action'] = str(action)
-            print(f'[SPLIT FRONT] OCH12.14 MEGA retry ok={int(bool(ok))} action={action} detail={str(detail)[:500]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.15 MEGA retry ok={int(bool(ok))} action={action} detail={str(detail)[:500]}', flush=True)
             if ok and action == 'RESTORE' and _db_valid(target):
                 trace['mega_ok'] = True
                 trace['mega_detail'] = str(detail)[:900]
@@ -1152,6 +1200,20 @@ def _och1214_recovery_safe_wait(target: Path, trace: dict, *, redis_enabled: boo
                 trace['base_source'] = 'MEGA_COMPACT_SAFE_RETRY'
                 trace['recovery_safe_mode'] = False
                 return True, 'MEGA compact recovered during safe wait'
+            try:
+                deep_ok, deep_detail = _restore_from_mega_startup(target)
+            except Exception as exc:
+                deep_ok, deep_detail = False, f'MEGA deep retry exception: {exc}'
+            trace['mega_deep_retry_ok'] = bool(deep_ok)
+            trace['mega_deep_retry_detail'] = str(deep_detail)[:900]
+            print(f'[SPLIT FRONT] OCH12.15 MEGA deep retry ok={int(bool(deep_ok))} detail={str(deep_detail)[:500]}', flush=True)
+            if deep_ok and _db_valid(target):
+                trace['mega_ok'] = True
+                trace['mega_detail'] = str(deep_detail)[:900]
+                trace['mega_action'] = 'DEEP_RESTORE'
+                trace['base_source'] = 'MEGA_IMMUTABLE_OR_PRERESTORE_SAFE_RETRY'
+                trace['recovery_safe_mode'] = False
+                return True, 'MEGA immutable/pre_restore recovered during safe wait'
 
     trace['recovery_safe_mode'] = False
     return True, 'valid local DB appeared during safe wait'
@@ -1173,7 +1235,7 @@ def main():
     started = time.time()
     trace = {
         'schema': 3,
-        'policy': 'OCH12.14_REDIS_FIRST_MEGA_RECOVERY_SAFE_NO_EMPTY_BOOT',
+        'policy': 'OCH12.15_REDIS_COMPACT_GENERATION_PRERESTORE_SAFE_NO_EMPTY_BOOT',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': target.exists(),
@@ -1252,12 +1314,21 @@ def main():
                 else: trace['base_source']='LOCAL_SQLITE_VERIFIED_OR_MEGA_UNAVAILABLE'
             elif not ok:
                 trace['recovery_fallback_reason'] = 'Redis/local unavailable; compact MEGA unavailable: '+str(detail)[:600]
-                if _och1214_allow_empty_init():
+                deep_ok, deep_detail = _restore_from_mega_startup(target)
+                trace['mega_deep_fallback_ok'] = bool(deep_ok)
+                trace['mega_deep_fallback_detail'] = str(deep_detail)[:900]
+                print(f'[SPLIT FRONT] OCH12.15 MEGA deep fallback ok={int(bool(deep_ok))} detail={str(deep_detail)[:700]}', flush=True)
+                if deep_ok and _db_valid(target):
+                    trace['mega_ok'] = True
+                    trace['mega_detail'] = str(deep_detail)[:900]
+                    trace['mega_action'] = 'DEEP_RESTORE'
+                    trace['base_source'] = 'MEGA_IMMUTABLE_OR_PRERESTORE'
+                elif _och1214_allow_empty_init():
                     empty_ok, empty_detail = _ensure_empty_db(target)
                     trace['empty_init_ok'] = bool(empty_ok)
                     trace['empty_init_detail'] = str(empty_detail)[:500]
                     trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                    print(f'[SPLIT FRONT] OCH12.14 explicit empty bootstrap ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                    print(f'[SPLIT FRONT] OCH12.15 explicit empty bootstrap ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
                 else:
                     _och1214_recovery_safe_wait(target, trace, redis_enabled=redis_master_enabled, redis_url_present=redis_url_present, mega_enabled=mega_master_enabled)
         else:
@@ -1272,7 +1343,7 @@ def main():
                     trace['empty_init_ok'] = bool(empty_ok)
                     trace['empty_init_detail'] = str(empty_detail)[:500]
                     trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'
-                    print(f'[SPLIT FRONT] OCH12.14 explicit empty bootstrap with MEGA disabled ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+                    print(f'[SPLIT FRONT] OCH12.15 explicit empty bootstrap with MEGA disabled ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
                 else:
                     _och1214_recovery_safe_wait(target, trace, redis_enabled=redis_master_enabled, redis_url_present=redis_url_present, mega_enabled=False)
 
@@ -1305,7 +1376,7 @@ def main():
         except Exception:
             trace['redis_runtime_enabled'] = False
         trace['base_revision'] = float(trace.get('local_revision_before') or 0.0)
-        if trace.get('base_source') in {'REDIS', 'MEGA', 'MEGA_COMPACT', 'REDIS_SAFE_RETRY', 'MEGA_COMPACT_SAFE_RETRY', 'LOCAL_RUNTIME_CACHE'}:
+        if trace.get('base_source') in {'REDIS', 'MEGA', 'MEGA_COMPACT', 'MEGA_IMMUTABLE_OR_PRERESTORE', 'REDIS_SAFE_RETRY', 'MEGA_COMPACT_SAFE_RETRY', 'MEGA_IMMUTABLE_OR_PRERESTORE_SAFE_RETRY', 'LOCAL_RUNTIME_CACHE'}:
             trace['base_revision'] = float(trace.get('final_revision') or 0.0)
         trace['local_found'] = bool(trace.get('local_found'))
         trace['local_valid'] = bool(trace.get('local_valid_before'))

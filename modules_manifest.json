@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "e4a79719860b9296e86477bdc99728cba56a7131ce78b4679ef671571efb10b5",
+    "01_core_data.py": "740d3edf5def9113ebd831aaeec7ab2244e4c5a8b763c62f4adb1eeaeae7bf6f",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "a79dd0e07573bbaf498dbb68ed1c6bfced6485f478fbb49e21a474a5ca8cc06e",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "35ed257b111b060a84b0693243acb69de573a2f6b248fee255750b01a52e45f0",
-    "07_state_web.py": "637bfcb5a5b201a7a85be629251f2d34072142fc507b198296c143eb45c8add8",
+    "07_state_web.py": "fddb290665917f82ad0ae0c290a2a3e38bd639f82b4f74da9034dfe40914bc36",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "0feb9618f9e2a9da646e4d1c308b63127a930b1877eecd8487ca28cf8c5db378"
+    "10_split_policy_offload.py": "077d8b87e9d388bd202f903a289be63696908cb013cfd3c3e41eb52f8c6bf6ee"
   },
-  "release": "ОЧНИСЬ_12.14-OOM-QUEUE-CONTROL-DISASTER-SAFE-RECOVERY",
+  "release": "ОЧНИСЬ_12.15-MEGA-RECOVERY-CONTRACT-SYNC",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -365,6 +365,11 @@
     "och1214_background_pending_default_400",
     "och1214_recovery_safe_no_auto_empty",
     "och1214_explicit_first_install_empty_opt_in",
-    "och1214_queue_top_key_forensics"
+    "och1214_queue_top_key_forensics",
+    "och1215_compact_primary_generation_fallback",
+    "och1215_named_pre_restore_unified_path",
+    "och1215_constitution_sync_immutable_publish",
+    "och1215_stale_head_tail_visibility",
+    "och1215_compact_tail_full_baseline_identity"
   ]
 }
