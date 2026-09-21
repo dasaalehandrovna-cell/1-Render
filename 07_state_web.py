@@ -9722,6 +9722,7 @@ def _v241_restore_storage_barrier_begin() -> int:
     globals()['_V241_STORAGE_EPOCH'] = epoch
     globals()['_V241_RESTORE_ACTIVE'] = True
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
+    globals()['_V222_RESTORE_QUIET_UNTIL'] = max(float(globals().get('_V222_RESTORE_QUIET_UNTIL', 0.0) or 0.0), _v153_time.time() + 180.0)
     sched = globals().get('DELAYED_SCHEDULER')
     if sched is not None:
         for key in ('mega-delta-batch-v90', 'mega-global-quiet-v90', 'mega-global-max-v90', 'mega-global-retry-v90', 'mega-global-user-idle-v190', 'telegram-delta-batch-v234', 'telegram-full-quiet-v234', 'telegram-full-max-v234', 'config-checkpoint-sync-v234'):
@@ -9769,8 +9770,18 @@ def _v241_restore_storage_barrier_begin() -> int:
 def _v241_restore_storage_barrier_end(epoch: int, success: bool) -> None:
     globals()['_V241_RESTORE_ACTIVE'] = False
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = False
+    # OCH12.22: keep remote diagnostic/MEGA work quiet while Python/glibc and
+    # MEGAcmd release the restore peak.  Normal Telegram/SQLite work is not paused.
+    globals()['_V222_RESTORE_QUIET_UNTIL'] = _v153_time.time() + (150.0 if success else 45.0)
     try:
-        bot_journal('restore_storage_barrier_v241', int(OWNER_ID or 0) or None, f'end epoch={int(epoch)}; success={int(bool(success))}')
+        sched = globals().get('DELAYED_SCHEDULER')
+        release = globals().get('_r222_release_mega_after_restore')
+        if sched is not None and callable(release):
+            sched.schedule('r222-release-mega-after-restore', 2.0, release, 0)
+    except Exception:
+        pass
+    try:
+        bot_journal('restore_storage_barrier_v241', int(OWNER_ID or 0) or None, f'end epoch={int(epoch)}; success={int(bool(success))}; quiet_sec={150 if success else 45}')
     except Exception:
         pass
 
@@ -9818,7 +9829,7 @@ def _v153_backup_before_restore() -> str:
             except Exception:
                 route_fast = False
         compact_fn = globals().get('_r80_store_pre_restore_gz')
-        if route_fast and callable(compact_fn):
+        if (not redis_ok) and route_fast and callable(compact_fn):
             try:
                 r1_mega_ok, detail = compact_fn(gz, 'manual_restore')
                 r1_mega_ok = bool(r1_mega_ok)
@@ -9828,7 +9839,7 @@ def _v153_backup_before_restore() -> str:
 
         # 3) Normal R2 -> MEGA path, but bounded. A dead R2 must not freeze restore.
         heavy_ok = False
-        if not route_fast:
+        if (not redis_ok) and (not route_fast):
             base_fn = globals().get('_split_peer_base'); headers_fn = globals().get('_split_headers')
             base = str(base_fn() if callable(base_fn) else '').rstrip('/')
             if base and callable(headers_fn):
@@ -10315,22 +10326,29 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
         else:
             _v153_apply_tenant_restore(str(row['raw']), str(row['tenant_id']), str(mode))
             restored_failed = _v153_restore_failed_tasks_from_db(str(row['raw']), set((int(x) for x in (row.get('manifest') or {}).get('chat_ids') or [])))
+        # OCH12.22: the restored DB is already canonical on disk.  Release any cold
+        # values touched by validation/rebuild before remote recovery work begins.
+        try:
+            evict_fn = globals().get('_v222_restore_evict_cold_now')
+            evict_report = evict_fn() if callable(evict_fn) else {}
+            bot_journal('restore_cold_evict_v222', int(row['chat_id']), str(evict_report)[:300])
+        except Exception:
+            pass
         constitution_result = _v240_restore_reanchor_guaranteed(f'gz_restore:{scope}:{mode}')
         remote_ok = bool(constitution_result.get('remote_confirmed_v240', True))
         seal_fn = globals().get('r64_publish_restore_snapshot_v271')
         seal_result = seal_fn(f'gz_restore:{scope}:{mode}') if callable(seal_fn) else {'required': False, 'ok': False, 'detail': 'HEAVY/MEGA seal helper unavailable'}
         checkpoint_required = bool((seal_result or {}).get('required'))
         checkpoint_ok = bool((seal_result or {}).get('ok'))
-        suffix = '' if remote_ok else '\n⚠️ Remote re-anchor временно pending; восстановленное состояние уже принято локально.'
-        if checkpoint_required and checkpoint_ok:
-            suffix += '\n☁️ Recovery checkpoint: полный SQLite закреплён в доступном Redis/MEGA контуре.'
-            headline = '✅ Восстановление завершено и закреплено в recovery-хранилище.'
+        mega_scheduled = bool((seal_result or {}).get('mega_scheduled'))
+        suffix = '\n✅ Восстановленное состояние принято локально.'
+        if bool((seal_result or {}).get('redis_ok')):
+            suffix += '\n🧱 Redis FULL закреплён сразу.'
         elif checkpoint_required:
-            suffix += '\n⚠️ Recovery checkpoint частично не закреплён: ' + str((seal_result or {}).get('detail') or 'unknown')[:320]
-            headline = '⚠️ База восстановлена локально, но внешний recovery checkpoint не подтверждён.'
-        else:
-            suffix += '\nℹ️ Внешний recovery checkpoint не требуется.'
-            headline = '✅ Восстановление завершено.'
+            suffix += '\n⚠️ Redis FULL не закреплён: ' + str((seal_result or {}).get('detail') or 'unknown')[:260]
+        if mega_scheduled:
+            suffix += '\n☁️ MEGA checkpoint отложен до снижения RAM; callback его не ждёт.'
+        headline = '✅ Восстановление завершено.' if (checkpoint_ok or mega_scheduled or not checkpoint_required) else '⚠️ База восстановлена локально; внешний checkpoint будет повторён позже.'
         pending_failed = _v153_failed_tasks_pending_count()
         failed_line = f'Failed-задач восстановлено: {restored_failed}.' + (f' Отложено до возврата R2: {pending_failed}.' if pending_failed else '')
         safe_edit(bot, call, f"{headline}\nGeneration: {(constitution_result.get('active') or {}).get('generation', '—')}\n{failed_line}" + suffix)
@@ -11214,58 +11232,50 @@ def _v243_mark_runtime_restore_healthy(reason: str, *, remote_confirmed: bool=Fa
         runtime_event('runtime_restore_healed_v243', detail[:700], 'INFO')
     except Exception:
         pass
+    # OCH12.22: never auto-build Google exports in FAST immediately after restore.
+    # The next normal change/manual Google action will sync; this avoids materializing
+    # cold finance ledgers while restore memory is still at its peak.
     try:
-        resume = globals().get('_v244_google_resume_after_recovery')
-        sched = globals().get('DELAYED_SCHEDULER')
-        if callable(resume):
-            if sched is not None:
-                sched.schedule('google-resume-after-recovery-v244', 1.0, resume, str(reason or 'recovery'))
-            else:
-                resume(str(reason or 'recovery'))
+        runtime_event('google_recovery_sync_deferred_v222', 'automatic FAST recovery sync suppressed; next normal/manual sync owns it', 'INFO')
     except Exception:
         pass
     return {'ok': True, 'detail': detail, 'remote_confirmed': bool(remote_confirmed), 'generation': str(generation or '')}
 
 def _canon_v240_restore_reanchor_guaranteed__002(reason: str) -> dict:
-    """Publish an accepted manual restore through HEAVY -> MEGA, never MEGA from FAST."""
+    """OCH12.22: accept the restored SQLite locally without synchronous MEGA I/O.
+
+    12.21 published a full MEGA checkpoint here and then r64 published another one.
+    During restore that doubled the largest memory operation.  Remote recovery sealing
+    is now owned only by r64: Redis immediately, optional MEGA later when RAM is safe.
+    """
     previous = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
     try:
-        push = globals().get('_split_push_snapshot_now_v263')
-        if not callable(push):
-            raise RuntimeError('HEAVY snapshot handoff is unavailable')
-        if not bool(push('manual_restore:' + str(reason or 'restore'), sync_mega=True)):
-            raise RuntimeError('HEAVY did not confirm MEGA publication')
         try:
-            cp = config_guard_accept_current_v234('restore_heavy_mega:' + str(reason)) or {}
+            cp = config_guard_accept_current_v234('restore_local_accepted_v222:' + str(reason)) or {}
         except Exception:
             cp = {}
-        total = int((constitution_semantic_manifest_from_live() or {}).get('total_records') or 0)
-        active = {'backend': 'heavy-mega', 'generation': 'HEAVY-MEGA-CONFIRMED', 'total_records': total}
-        SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', {})
-        try: runtime_event('restore_remote_reanchor_confirmed_v242', 'backend=HEAVY->MEGA', 'INFO')
-        except Exception: pass
-        try: _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=True, generation='HEAVY-MEGA-CONFIRMED')
-        except Exception: pass
-        return {'active': active, 'lineage': '', 'config_checkpoint': cp, 'remote_confirmed_v240': True, 'remote_confirmed_v242': True}
-    except Exception as exc:
-        err = str(exc)[:700]
         try:
-            cp = config_guard_accept_current_v234('restore_local_pending_heavy:' + str(reason))
+            lineage_fn = globals().get('_v239_storage_lineage')
+            lineage = str(lineage_fn(True) if callable(lineage_fn) else '')
         except Exception:
-            cp = {}
-        pending = {'at': now_local().isoformat(timespec='microseconds'), 'reason': str(reason), 'error': err,
-                   'config_generation': int((cp or {}).get('generation') or 0)}
-        try: SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', pending)
-        except Exception: pass
-        try: _v240_schedule_pending_restore_reanchor_retry(20.0)
-        except Exception: pass
-        try: runtime_event('restore_remote_reanchor_pending_v242', err, 'WARN')
-        except Exception: pass
-        try: _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=False, generation='LOCAL-PENDING')
-        except Exception: pass
-        return {'active': {'backend': 'local', 'generation': 'LOCAL-PENDING', 'total_records': int((constitution_semantic_manifest_from_live() or {}).get('total_records') or 0)},
-                'lineage': '', 'config_checkpoint': cp, 'remote_confirmed_v240': False, 'remote_confirmed_v242': False, 'warning': err}
+            lineage = ''
+        try:
+            SQLITE.set_meta('restore_control_v240', 'remote_reanchor_pending', {})
+        except Exception:
+            pass
+        active = {'backend': 'local-restored', 'generation': 'LOCAL-RESTORED'}
+        try:
+            runtime_event('restore_local_accepted_v222', f'reason={str(reason)[:180]}; remote seal deferred', 'INFO')
+        except Exception:
+            pass
+        try:
+            _v243_mark_runtime_restore_healthy(str(reason), remote_confirmed=False, generation='LOCAL-RESTORED')
+        except Exception:
+            pass
+        return {'active': active, 'lineage': lineage, 'config_checkpoint': cp,
+                'remote_confirmed_v240': False, 'remote_confirmed_v242': False,
+                'warning': 'remote recovery seal deferred'}
     finally:
         globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(previous or globals().get('_V241_RESTORE_ACTIVE', False))
 

@@ -221,6 +221,9 @@ if callable(_V176_ORIG_FULL_BACKUP):
 if callable(_V176_ORIG_JOURNAL_FLUSH):
 
     def journal_flush_to_mega(force: bool=False) -> bool:
+        quiet_fn = globals().get('restore_quiet_active_v222')
+        if callable(quiet_fn) and quiet_fn():
+            return True
         if not v176_process_enabled('journal_mega'):
             fn = globals().get('journal_flush_critical_to_mega')
             return bool(fn(force)) if callable(fn) else True

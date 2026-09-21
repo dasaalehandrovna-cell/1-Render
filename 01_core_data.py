@@ -1259,7 +1259,7 @@ class WindowActorRegistry:
         key = self._key(chat_id, message_id)
         with self._lock:
             row = self._rows.get(key) or {}
-            # OCH12.21: only a Telegram-confirmed keyboard may invalidate visible
+            # OCH12.22: only a Telegram-confirmed keyboard may invalidate visible
             # callbacks. reserve() can advance desired state before the edit; if
             # Telegram rejects that edit, the old visible keyboard must stay valid.
             current = int(row.get('delivered_state_revision') or 0)
@@ -2173,7 +2173,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.21'
+BOT_DISPLAY_NAME = 'очнись_12.22'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -4174,8 +4174,63 @@ def _journal_load_chunk_rows(local_path: str) -> list[dict]:
     except Exception:
         return []
 
+
+# OCH12.22 — manual restore is a memory-critical section.  Local SQLite/journal
+# work remains enabled, but nonessential remote MEGA/Google/checkpoint work must
+# not overlap the restore or the allocator cooldown immediately after it.
+def restore_quiet_active_v222() -> bool:
+    try:
+        if bool(globals().get('_V241_RESTORE_ACTIVE', False)):
+            return True
+        return time.time() < float(globals().get('_V222_RESTORE_QUIET_UNTIL', 0.0) or 0.0)
+    except Exception:
+        return bool(globals().get('_V241_RESTORE_ACTIVE', False))
+
+
+def _v222_restore_evict_cold_now() -> dict:
+    """Drop already-persisted cold ledgers from RAM without rewriting SQLite."""
+    out = {'evicted': 0, 'gc': 0, 'malloc_trim': False}
+    if not LOWRAM_ENABLED:
+        return out
+    try:
+        with data_lock:
+            stores = list(((data or {}).get('chats', {}) or {}).values())
+        for store in stores:
+            if not isinstance(store, dict):
+                continue
+            for key in LOWRAM_COLD_KEYS:
+                try:
+                    if dict.__contains__(store, key):
+                        dict.__delitem__(store, key)
+                        out['evicted'] += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        import gc as _gc
+        out['gc'] = int(_gc.collect() or 0)
+    except Exception:
+        pass
+    try:
+        trim_fn = globals().get('memory_malloc_trim')
+        if callable(trim_fn):
+            out['malloc_trim'] = bool(trim_fn())
+        else:
+            import ctypes as _ctypes
+            libc = _ctypes.CDLL(None)
+            fn = getattr(libc, 'malloc_trim', None)
+            if fn is not None:
+                fn.argtypes=[_ctypes.c_size_t]; fn.restype=_ctypes.c_int
+                out['malloc_trim'] = bool(fn(0))
+    except Exception:
+        pass
+    return out
+
 def journal_flush_to_mega(force: bool=False) -> bool:
     """v208: durable full diagnostic journal as batched gzip chunks; never one network call per row."""
+    if restore_quiet_active_v222():
+        return True
     global _JOURNAL_DURABLE_SEQ
     if not BOT_JOURNAL_DURABLE_ENABLED:
         return False
@@ -4235,6 +4290,8 @@ def journal_flush_to_mega(force: bool=False) -> bool:
 
 def journal_flush_critical_to_mega(force: bool=False) -> bool:
     """Persist only ERROR/CRITICAL/lifecycle rows when routine MEGA journal is disabled."""
+    if restore_quiet_active_v222():
+        return True
     if not BOT_CRITICAL_JOURNAL_DURABLE_ENABLED or not mega_is_configured():
         return True
     rows = []
@@ -10045,7 +10102,7 @@ def mega_is_configured(control_plane: bool=False) -> bool:
     gate_category = 'mega_control' if control_plane else 'mega'
     if callable(gate) and (not gate(gate_category)):
         return False
-    # OCH12.21: MEGA_ENABLED controls normal/background runtime only.
+    # OCH12.22: MEGA_ENABLED controls normal/background runtime only.
     # Explicit control-plane recovery is allowed whenever credentials/root exist.
     enabled_for_call = True if control_plane else bool(MEGA_ENABLED)
     return bool(enabled_for_call and MEGA_EMAIL and MEGA_PASSWORD and str(MEGA_BACKUP_DIR or '').strip('/'))
@@ -10292,6 +10349,8 @@ TRAFFIC_AUDIT_REMOTE_DIR = MEGA_BACKUP_DIR.rstrip('/') + '/runtime/traffic_audit
 TRAFFIC_AUDIT_REMOTE_NAME = 'latest_traffic_audit.json.gz'
 
 def traffic_audit_checkpoint_to_mega(reason: str='periodic') -> bool:
+    if restore_quiet_active_v222():
+        return True
     if not TRAFFIC_AUDIT_ENABLED or not mega_is_configured():
         return True
     tmp = ''
@@ -15006,7 +15065,7 @@ def _r24_lowram_release_if_pressure(chat_id):
         rss = float((_runtime_memory_stats() or {}).get('rss_mb', 0) or 0)
     except Exception:
         rss = 0.0
-    # OCH12.21: this is a targeted per-chat release scheduled after a durable
+    # OCH12.22: this is a targeted per-chat release scheduled after a durable
     # mutation. Do not cancel it merely because some *other* chat/pool is busy;
     # that old global busy gate allowed cold ledgers to accumulate indefinitely
     # under steady traffic. _lowram_release_chat() serializes only this chat and
@@ -15389,7 +15448,7 @@ def build_runtime_watcher_text() -> str:
     delta = snap.get('delta') or {}
     keep = snap.get('keep_alive') or {}
     lines.extend(['', 'MEGA durable tasks / delta:', f"tasks: pending {mega.get('pending', 0)} | running {mega.get('running', 0)} | failed {mega.get('failed', 0)} | done {mega.get('done', 0)} | processing {mega.get('processing', 0)}", f"task counters: saved {mega.get('persisted', 0)} | recovered {mega.get('recovered', 0)} | done {mega.get('completed', 0)} | skip {mega.get('skipped_done', 0)} | save err {mega.get('persist_errors', 0)} | final err {mega.get('finalize_errors', 0)}", f"task last error: {str(mega.get('last_error') or 'нет')[:220]}", f"delta: pending chats {delta.get('pending_chats', 0)} | last {delta.get('last_success_at') or '—'} | events {delta.get('last_event_count', 0)}", f"delta file: {os.path.basename(str(delta.get('last_file') or '—'))}", f"delta error: {str(delta.get('last_error') or 'нет')[:220]}", f"keep-alive: last ok {keep.get('last_ok_at') or keep.get('last_success_at') or '—'} | last error {str(keep.get('last_error') or 'нет')[:160]}", '', 'SHUTDOWN:', f"start {st.get('shutdown_started_at') or '—'} | finish {st.get('shutdown_finished_at') or '—'} | signal {st.get('shutdown_signal') or '—'}", f"drain={st.get('shutdown_drain_ok')} | final delta={st.get('shutdown_delta_ok')}", '', 'Предыдущий запуск:', f"Классификация: {st.get('previous_reason') or '—'}", f"Предыдущий state: {prev_state.get('phase') or '—'}", f"Предыдущий snapshot: {prev.get('captured_at') or '—'}", f"Предыдущий старт: {prev_state.get('started_at') or '—'}", f"Предыдущий shutdown: {prev_state.get('shutdown_finished_at') or 'не зафиксирован'}", f"Предыдущий signal: {prev_state.get('shutdown_signal') or '—'}", f"Предыдущий instance: {str(prev_render.get('RENDER_INSTANCE_ID') or '—')[-28:]}", f"Предыдущий commit: {str(prev_render.get('RENDER_GIT_COMMIT') or '—')[:12]}", '', f"Последняя ошибка Watcher: {str(st.get('last_error') or 'нет')[:300]}", '', lowram_status_text() if 'lowram_status_text' in globals() else 'LOW-RAM: —'])
-    # OCH12.21: Watcher is a Telegram message, not an unbounded diagnostic dump.
+    # OCH12.22: Watcher is a Telegram message, not an unbounded diagnostic dump.
     # Keep enough headroom for window marker/watermark and prevent edit_message_text
     # failures (>4096 chars), which previously left the visible diagnostic keyboard stale.
     body = '\n'.join(lines)
@@ -17889,7 +17948,7 @@ def _v186_rebuild_restore_derived(chat_id: int, daily_hint: dict | None=None) ->
     return {'records': valid, 'days': len(daily), 'balance': total, 'mode': 'materialized_target'}
 
 def _v221_restore_chat_cold_safe(chat_id: int) -> dict:
-    """OCH12.21: keep global-restore finance history cold.
+    """OCH12.22: keep global-restore finance history cold.
 
     A SQLite restore already contains canonical cold_fields.  Global rehydrate must
     never call ColdChatStore.get('records'), because that materializes every chat's
@@ -17988,7 +18047,7 @@ def _v184_post_restore_rehydrate(restored: dict | None=None, chat_ids=None) -> d
                             chats.append(int(cid))
             except Exception as exc:
                 result['errors'].append(f'tenant:{cid}:' + str(exc)[:120])
-    # OCH12.21: global restore is metadata-only for cold ledgers.  Targeted
+    # OCH12.22: global restore is metadata-only for cold ledgers.  Targeted
     # per-chat file restore may still materialize exactly that one chat.
     global_cold_safe = bool(chat_ids is None and LOWRAM_ENABLED)
     result['cold_safe_global'] = global_cold_safe

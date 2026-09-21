@@ -6007,7 +6007,7 @@ def run_manual_mega_restore(chat_id: int):
                 pass
 
 def run_manual_redis_restore(chat_id: int):
-    """OCH12.21 owner restore from Redis even when REDIS_ENABLED=0."""
+    """OCH12.22 owner restore from Redis even when REDIS_ENABLED=0."""
     global data
     chat_id=int(chat_id); backup_dir=''; restore_epoch=0; success=False
     try:

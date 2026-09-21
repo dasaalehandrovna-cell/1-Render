@@ -358,7 +358,7 @@ if ROLE=='fast':
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
        all(x in start_src for x in [
-           "OCH12.21_ONE_PASS_THEN_EMPTY",
+           "OCH12.22_ONE_PASS_THEN_EMPTY",
            "recovery ignores REDIS_ENABLED",
            "MEGA_ENABLED=0. No compare loop, no tree scan, no retry",
            "EMPTY_INIT_AFTER_ONE_PASS",
@@ -369,7 +369,7 @@ if ROLE=='fast':
        '12.21 startup must try recovery sources once regardless runtime switches, then create empty SQLite')
     ok('och1220_redis_then_mega_single_pass',
        all(x in start_src for x in ['def _restore_from_redis_startup',
-                                    'OCH12.21 one-pass Redis FULL+TAIL start',
+                                    'OCH12.22 one-pass Redis FULL+TAIL start',
                                     'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX',
                                     'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
                                     "trace['base_source'] = 'REDIS_ONE_PASS'",
@@ -381,7 +381,7 @@ if ROLE=='fast':
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
                                     "trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'",
-                                    'OCH12.21 local cache absent']) and
+                                    'OCH12.22 local cache absent']) and
        start_main_src.find('ok, detail = _restore_from_local_runtime_cache(target)') <
        start_main_src.find('ok, detail = _restore_from_redis_startup(target)') <
        start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
@@ -440,9 +440,9 @@ if ROLE=='fast':
     restore_seal_src=_fn_sources(split_src,{'r64_publish_restore_snapshot_v271'}).get('r64_publish_restore_snapshot_v271','')
     redis_sched_src=_fn_sources(split_src,{'r64_schedule_fast_redis_snapshot_v271'}).get('r64_schedule_fast_redis_snapshot_v271','')
     redis_fire_src=_fn_sources(split_src,{'_r64_periodic_redis_snapshot_fire_v271'}).get('_r64_periodic_redis_snapshot_fire_v271','')
-    ok('och125_manual_restore_reanchors_redis_and_checkpoint',
-       "globals().get('_split_push_snapshot_now_v263')" in restore_seal_src and 'sync_mega=True' in restore_seal_src and '_split_cache_snapshot_to_redis_v266' in restore_seal_src and "'redis_ok'" in restore_seal_src and "'checkpoint_ok'" in restore_seal_src,
-       'manual restore must immediately re-anchor Redis FULL and also attempt the active MEGA/checkpoint backend')
+    ok('och1222_manual_restore_single_sync_seal',
+       '_split_cache_snapshot_to_redis_v266' in restore_seal_src and 'sync_mega=True' not in restore_seal_src and '_r222_schedule_post_restore_mega' in restore_seal_src and "'redis_ok'" in restore_seal_src,
+       '12.22 manual restore may synchronously seal Redis once; MEGA must be delayed/memory-gated')
     ok('och123_redis_daily_full_scheduler',
        'def _r79_daily_snapshot_now' in split_src and 'def _r79_daily_scheduler_loop' in split_src and
        "redis_daily_snapshot_time_r79" in split_src and "callback_data='r79:redis:sched'" in split_src and
@@ -734,8 +734,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.21'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.21')
+       "BOT_DISPLAY_NAME = 'очнись_12.22'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.22')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -781,7 +781,7 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1220_empty_after_one_pass',
-       "OCH12.21_ONE_PASS_THEN_EMPTY" in start_src and
+       "OCH12.22_ONE_PASS_THEN_EMPTY" in start_src and
        "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
        "_ensure_empty_db(target)" in start_main_src and
        'def _och1214_recovery_safe_wait' not in start_src and
@@ -851,7 +851,7 @@ if ROLE=='fast':
        '12.21 must evict a touched chat under pressure even when unrelated pools are busy')
     ok('och1220_boot_memory_trim',
        'def _och1220_release_boot_memory' in start_src and 'malloc_trim' in start_src and
-       'redis_modules_unloaded' in start_src and 'OCH12.21 boot memory release' in start_src and
+       'redis_modules_unloaded' in start_src and 'OCH12.22 boot memory release' in start_src and
        'SPLIT_PREBOOT_EMPTY_INIT_R1220' in split_src,
        '12.21 must return recovery allocator memory before loading runtime and suppress empty boot publish')
     ok('och1216_watcher_ram_sources',
@@ -1089,6 +1089,32 @@ if ROLE=='fast':
     ok('och1221_redis_client_lazy_import',
        '_split_get_redis' in split_src and 'import redis as _split_redis' not in split_src,
        '12.21 FAST must not eagerly import Redis client while runtime Redis is OFF')
+
+
+    _redis_loader_src=_fn_sources(split_src,{'_split_get_redis'}).get('_split_get_redis','')
+    ok('och1222_redis_lazy_no_recursion',
+       'if _split_redis is not None:' in _redis_loader_src and 'if _split_get_redis() is not None:' not in _redis_loader_src,
+       '12.22 Redis lazy loader must never recursively call itself')
+    _reanchor_src=_fn_sources(web_src,{'_canon_v240_restore_reanchor_guaranteed__002'}).get('_canon_v240_restore_reanchor_guaranteed__002','')
+    ok('och1222_no_sync_mega_in_constitution_reanchor',
+       'sync_mega=True' not in _reanchor_src and '_split_push_snapshot_now_v263' not in _reanchor_src,
+       '12.22 local constitution acceptance may not publish MEGA in the restore callback')
+    ok('och1222_restore_quiet_remote_io',
+       'restore_quiet_active_v222' in core_src and "'_V222_RESTORE_QUIET_UNTIL'" in web_src and
+       "return False, 'restore quiet/cooldown'" in split_src,
+       '12.22 restore must pause nonessential remote work through cooldown')
+    ok('och1222_restore_redis_first_prebackup',
+       "if (not redis_ok) and route_fast and callable(compact_fn):" in web_src and
+       "if (not redis_ok) and (not route_fast):" in web_src,
+       '12.22 pre-restore must not write MEGA/R2 when Redis safety anchor already succeeded')
+    _healthy_src=_fn_sources(web_src,{'_v243_mark_runtime_restore_healthy'}).get('_v243_mark_runtime_restore_healthy','')
+    ok('och1222_no_fast_google_sync_on_restore',
+       'google_recovery_sync_deferred_v222' in _healthy_src and 'google-resume-after-recovery-v244' not in _healthy_src,
+       '12.22 restore must not auto-build Google exports during the memory peak')
+    ok('och1222_post_restore_mega_deferred',
+       '_r222_post_restore_mega_checkpoint' in split_src and "memory_heavy_allowed" in split_src and
+       '_r222_release_mega_after_restore' in split_src,
+       '12.22 MEGA checkpoint must be delayed, memory-gated and release MEGAcmd afterward')
 
 elif ROLE=='heavy':
     s=text('worker_service.py')

@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "28296c13de1f40197c974db3d545a563eeaa206f872131550258eb3362fcf0b9",
+    "01_core_data.py": "99a29fe125c4dc2b63741a6947a1911b7f3b54817d97d7194505fbec6bdb887f",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "a631cbab09bde69885fa730a9a04664575607edb22eee4d9dae0d7adfddaf194",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
-    "06_commands_callbacks.py": "ca096771bfea61955df83858712a90e867ba64a5639741214ade23f7b2729fef",
-    "07_state_web.py": "3d2e07e772d221b88d1d541a58f2597d4bd0be2a3735649fa55b2dedf28b4b9e",
+    "06_commands_callbacks.py": "0d3b777047f8ae6d44912fa0a8297bffdd580d8071902320cc463d06152b40fa",
+    "07_state_web.py": "dd9f032e8080750df708a514f4a885023cc03a9e441a253348298908864c6773",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
-    "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "5f8f3bab41fa4e5bd375ba6032e91cc552ddd654c1c57b6eae4e43d08de8e672"
+    "09_final_transport.py": "43de89967ccf7c75c01a229a584412485b276f19d86cd81daed19a007ac7d5e0",
+    "10_split_policy_offload.py": "b307ea7df7191dc9c30a9fff76dbee49b1b482bdaacc7113370c449ca1613247"
   },
-  "release": "ОЧНИСЬ_12.21-FAST-COLD-RESTORE-UI-RECOVERY",
+  "release": "ОЧНИСЬ_12.22-RESTORE-MEMORY-SINGLE-SEAL",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -407,6 +407,11 @@
     "och1221_manual_recovery_ignores_runtime_off",
     "och1221_window_actor_confirmed_revision",
     "och1221_watcher_telegram_safe",
-    "och1221_redis_client_lazy_import"
+    "och1221_redis_client_lazy_import",
+    "och1222_fix_lazy_redis_recursion",
+    "och1222_restore_single_sync_seal",
+    "och1222_restore_quiet_remote_io",
+    "och1222_no_google_restore_spike",
+    "och1222_deferred_memory_gated_mega"
   ]
 }

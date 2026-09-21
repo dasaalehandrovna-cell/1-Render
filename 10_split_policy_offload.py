@@ -875,12 +875,14 @@ import shutil as _split_shutil
 import tempfile as _split_tempfile
 import threading as _split_threading
 import time as _split_time
-# OCH12.21: Redis is recovery/runtime-optional.  Do not import the client on every
+# OCH12.22: Redis is recovery/runtime-optional.  Do not import the client on every
 # empty FAST boot; load it only when a Redis operation is actually requested.
 _split_redis = None
 def _split_get_redis():
     global _split_redis
-    if _split_get_redis() is not None:
+    # OCH12.22: 12.21 accidentally called this function recursively here.
+    # A cached module is enough; otherwise import it once on first real Redis use.
+    if _split_redis is not None:
         return _split_redis
     try:
         import importlib as _split_importlib
@@ -1669,13 +1671,88 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             _split_shutil.rmtree(workdir, ignore_errors=True)
 
 
-def r64_publish_restore_snapshot_v271(reason='restore'):
-    """R81/OCH12.6: re-anchor a successful manual restore on every available recovery backend.
+def _r222_schedule_post_restore_mega(reason='restore', delay=150.0, retry=0):
+    sched = globals().get('DELAYED_SCHEDULER')
+    if sched is None:
+        return False
+    try:
+        sched.cancel('r222-post-restore-mega')
+    except Exception:
+        pass
+    try:
+        return bool(sched.schedule('r222-post-restore-mega', max(30.0, float(delay)), _r222_post_restore_mega_checkpoint, str(reason or 'restore'), int(retry or 0)))
+    except Exception:
+        return False
 
-    Redis FULL is written immediately so a restored database cannot be followed by a
-    restart into the old daily FULL. MEGA/HEAVY checkpoint is also attempted according
-    to the active R1/R2 ownership, but no single dead backend invalidates a locally
-    completed restore when another durable backend was verified.
+
+def _r222_post_restore_mega_checkpoint(reason='restore', retry=0):
+    """One deferred MEGA FULL, never concurrent with restore or high RAM."""
+    quiet_fn = globals().get('restore_quiet_active_v222')
+    try:
+        if callable(quiet_fn) and quiet_fn():
+            return _r222_schedule_post_restore_mega(reason, 45.0, int(retry or 0) + 1)
+    except Exception:
+        pass
+    # Only normal runtime MEGA ownership gets an automatic post-restore publish.
+    try:
+        if not (_r80_mega_master_enabled() and _r71_route_is_fast('mega')):
+            return False
+    except Exception:
+        return False
+    allow = globals().get('memory_heavy_allowed')
+    if callable(allow):
+        try:
+            ok, _detail = allow('post-restore-mega-checkpoint')
+            if not ok:
+                return _r222_schedule_post_restore_mega(reason, 60.0, int(retry or 0) + 1)
+        except Exception:
+            pass
+    try:
+        ok, detail = _r80_snapshot_full_compact('post-restore-' + str(reason or 'restore')[:72])
+        try:
+            bot_journal('r222_post_restore_mega_checkpoint', int(OWNER_ID or 0), f'ok={int(bool(ok))}; retry={int(retry or 0)}; {str(detail)[:260]}', 'INFO' if ok else 'WARN')
+        except Exception:
+            pass
+        if not ok and int(retry or 0) < 6:
+            _r222_schedule_post_restore_mega(reason, min(600.0, 60.0 * (2 ** min(3, int(retry or 0)))), int(retry or 0) + 1)
+        return bool(ok)
+    finally:
+        try:
+            DELAYED_SCHEDULER.schedule('r222-release-mega-after-restore', 3.0, _r222_release_mega_after_restore, 0)
+        except Exception:
+            pass
+
+
+def _r222_release_mega_after_restore(retry=0):
+    """Release MEGAcmd immediately after restore work instead of waiting 75s."""
+    try:
+        if _och1210_mega_busy():
+            if int(retry or 0) < 6:
+                DELAYED_SCHEDULER.schedule('r222-release-mega-after-restore', 10.0, _r222_release_mega_after_restore, int(retry or 0) + 1)
+            return False
+        import shutil as _r222_shutil, subprocess as _r222_subprocess
+        exe = _r222_shutil.which('mega-quit')
+        if not exe:
+            return False
+        _r222_subprocess.run([exe], stdout=_r222_subprocess.DEVNULL, stderr=_r222_subprocess.DEVNULL, timeout=6, check=False)
+        gc_fn = globals().get('_memory_gc')
+        if gc_fn is not None and hasattr(gc_fn, 'collect'):
+            gc_fn.collect()
+        trim_fn = globals().get('memory_malloc_trim')
+        if callable(trim_fn):
+            trim_fn()
+        try: bot_journal('r222_mega_released_after_restore', int(OWNER_ID or 0), f'retry={int(retry or 0)}')
+        except Exception: pass
+        return True
+    except Exception:
+        return False
+
+
+def r64_publish_restore_snapshot_v271(reason='restore'):
+    """OCH12.22: one light synchronous recovery seal, never two MEGA FULLs.
+
+    Redis FULL is the immediate restart anchor when REDIS_URL exists.  MEGA is queued
+    exactly once after the restore quiet period and only when memory allows it.
     """
     results=[]
     redis_configured=bool(_r61_effective_redis_url())
@@ -1687,29 +1764,21 @@ def r64_publish_restore_snapshot_v271(reason='restore'):
             results.append(('redis',redis_ok,str((_SPLIT_STATE or {}).get('redis_fallback_last_error') or 'ok')[:240]))
         except Exception as exc:
             results.append(('redis',False,f'{type(exc).__name__}: {str(exc)[:200]}'))
-
-    checkpoint_fn=globals().get('_split_push_snapshot_now_v263')
-    checkpoint_ok=False
-    checkpoint_attempted=callable(checkpoint_fn)
-    if checkpoint_attempted:
-        try:
-            checkpoint_ok=bool(checkpoint_fn('manual_restore:'+str(reason or 'restore')[:120],sync_mega=True))
-            results.append(('checkpoint',checkpoint_ok,('ok' if checkpoint_ok else str((_R32_EVENT_STATE or {}).get('last_error') or 'checkpoint failed')[:240])))
-        except Exception as exc:
-            results.append(('checkpoint',False,f'{type(exc).__name__}: {str(exc)[:200]}'))
-
-    required=bool(redis_configured or checkpoint_attempted)
-    ok=bool(redis_ok or checkpoint_ok) if required else True
-    detail='; '.join(f'{name}={int(good)}:{msg}' for name,good,msg in results) or 'no remote recovery backend configured'
+    mega_scheduled=False
     try:
-        bot_journal('r81_restore_reanchor',int(OWNER_ID or 0),f'ok={int(ok)}; reason={str(reason)[:120]}; {detail[:500]}')
+        if _r80_mega_master_enabled() and _r71_route_is_fast('mega'):
+            mega_scheduled=bool(_r222_schedule_post_restore_mega('manual_restore:'+str(reason or 'restore')[:100],150.0,0))
+    except Exception:
+        mega_scheduled=False
+    required=bool(redis_configured)
+    ok=bool(redis_ok) if required else True
+    detail='; '.join(f'{name}={int(good)}:{msg}' for name,good,msg in results) or 'Redis recovery backend not configured'
+    try:
+        bot_journal('r81_restore_reanchor',int(OWNER_ID or 0),f'ok={int(ok)}; redis={int(redis_ok)}; mega_scheduled={int(mega_scheduled)}; reason={str(reason)[:120]}; {detail[:360]}')
     except Exception:
         pass
-    return {
-        'required':required,'ok':ok,'detail':detail[:700],
-        'backend':'+'.join(name for name,good,_ in results if good) or 'local',
-        'redis_ok':bool(redis_ok),'checkpoint_ok':bool(checkpoint_ok),
-    }
+    return {'required':required,'ok':ok,'detail':detail[:700],'backend':'redis' if redis_ok else 'local',
+            'redis_ok':bool(redis_ok),'checkpoint_ok':False,'mega_scheduled':bool(mega_scheduled)}
 
 def _och111_hot_ui_busy():
     try:
@@ -3161,7 +3230,7 @@ def runtime_mark_ready(detail: str=''):
     except Exception as exc:
         try: log_error(f'R6 boot-ready sync: {exc}')
         except Exception: pass
-    # OCH12.21: boot/load work can leave allocator arenas resident. Compact them
+    # OCH12.22: boot/load work can leave allocator arenas resident. Compact them
     # once after READY; normal memory-guard trimming continues afterwards.
     try:
         import gc as _och1220_gc
@@ -9287,10 +9356,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10159,7 +10228,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10198,7 +10267,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10248,7 +10317,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10271,13 +10340,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10333,7 +10402,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'}; live_source_index=on")
 except Exception:
     pass
 
@@ -10955,6 +11024,9 @@ def _r79_remote_full_meta(client=None):
             except Exception: pass
 
 def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
+    quiet_fn = globals().get('restore_quiet_active_v222')
+    if callable(quiet_fn) and quiet_fn():
+        return False, 'restore quiet/cooldown'
     with _R79_REDIS_DAILY_LOCK:
         if _R79_REDIS_DAILY_STATE.get('running'):
             return False,'daily Redis FULL already running'
@@ -11229,7 +11301,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.21'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.22'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11284,6 +11356,9 @@ def _r80_store_pre_restore_gz(local_gz, reason='manual_restore'):
 
 def _r80_snapshot_full_compact(reason='daily'):
     """Background-only R1 MEGA checkpoint. Exactly latest.sqlite3.gz + tail.json.gz + head.json."""
+    quiet_fn = globals().get('restore_quiet_active_v222')
+    if callable(quiet_fn) and quiet_fn() and not str(reason or '').startswith('post-restore-'):
+        return False, 'restore quiet/cooldown'
     with _R80_MEGA_LOCK:
         if _R80_MEGA_STATE.get('running'): return False,'compact MEGA job already running'
         _R80_MEGA_STATE['running']=True
@@ -11400,6 +11475,9 @@ def _r80_collect_compact_tail():
     return rows,redis_error
 
 def _r80_flush_compact_tail(reason='periodic'):
+    quiet_fn = globals().get('restore_quiet_active_v222')
+    if callable(quiet_fn) and quiet_fn():
+        return False, 'restore quiet/cooldown'
     work=None
     try:
         if not _r80_mega_runtime_ready(): return False,'R1 MEGA compact runtime not enabled/ready'
@@ -11557,7 +11635,7 @@ def _r221_manual_mega_ready():
 def r81_manual_compact_mega_restore():
     """Restore exact compact_v80 head/latest/tail. Never mega-find or scan history.
 
-    OCH12.21: explicit owner recovery works even when MEGA_ENABLED=0; that flag
+    OCH12.22: explicit owner recovery works even when MEGA_ENABLED=0; that flag
     suppresses background/runtime MEGA only.
     """
     work=None
@@ -11626,7 +11704,7 @@ def r81_manual_compact_mega_restore():
         if work: _split_shutil.rmtree(work,ignore_errors=True)
 
 def _r221_manual_redis_restore_sqlite():
-    """OCH12.21 owner-triggered Redis FULL+TAIL restore independent of REDIS_ENABLED.
+    """OCH12.22 owner-triggered Redis FULL+TAIL restore independent of REDIS_ENABLED.
 
     The runtime switch stays OFF.  This function reads Redis directly, builds a
     temporary candidate, replays canonical R32 events page-by-page, then hands the
@@ -12626,7 +12704,7 @@ def _r70_routes_keyboard():
 try:
     _och1210_route_migration_once()
     _r71_apply_runtime_side_effects()
-    # OCH12.21: do not keep an idle MEGA reaper thread on the normal FAST profile.
+    # OCH12.22: do not keep an idle MEGA reaper thread on the normal FAST profile.
     # _r71_apply_runtime_side_effects() starts it only if MEGA/checkpoints are
     # actually routed to R1.
     bot_journal('r83_r1_normal_profile_loaded', int(OWNER_ID or 0), f'routes={_r71_load_routes()}; r2_enabled={int(_och1210_r2_enabled())}; peer_ping={_split_os.getenv("PEER_PING_ENABLED")}; mega_idle={int(_OCH1210_MEGA_IDLE_SEC)}s')
