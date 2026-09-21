@@ -9253,10 +9253,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10125,7 +10125,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10164,7 +10164,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10214,7 +10214,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10237,13 +10237,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10299,7 +10299,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11195,7 +11195,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.17'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.18'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -12191,7 +12191,7 @@ _OCH1210_PARENT_KEEPALIVE_PING_PEER = globals().get('keepalive_ping_peer_once')
 _OCH1210_PARENT_REANCHOR_RETRY = globals().get('_v240_retry_pending_restore_reanchor')
 _OCH1210_PARENT_MEGA_RUN = globals().get('_mega_run')
 _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
-_OCH1210_MEGA_IDLE_SEC = max(120.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC', '240') or '240'))
+_OCH1210_MEGA_IDLE_SEC = max(45.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC', '75') or '75'))
 _OCH1210_MEGA_REAPER_STARTED = False
 _OCH1210_MEGA_REAPER_LOCK = _split_threading.RLock()
 
@@ -12398,11 +12398,11 @@ def _och1210_quit_mega_server_if_idle() -> bool:
 
 
 def _och1210_mega_idle_reaper_loop():
-    _split_time.sleep(60.0)
+    _split_time.sleep(30.0)
     while True:
         try: _och1210_quit_mega_server_if_idle()
         except Exception: pass
-        _split_time.sleep(60.0)
+        _split_time.sleep(30.0)
 
 
 def _och1210_start_mega_idle_reaper():

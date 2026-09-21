@@ -585,6 +585,41 @@ def _memory_cgroup_snapshot() -> dict:
         out['percent'] = None
     return out
 
+def _memory_cgroup_stat_v1218() -> dict:
+    """Small cgroup-v2 breakdown used by Watcher without walking Python objects."""
+    path = '/sys/fs/cgroup/memory.stat'
+    if not os.path.exists(path):
+        return {}
+    wanted = {'anon', 'file', 'shmem', 'slab', 'kernel', 'kernel_stack', 'pagetables', 'sock', 'file_mapped', 'file_dirty'}
+    out = {}
+    try:
+        for line in Path(path).read_text(errors='ignore').splitlines():
+            parts = line.split()
+            if len(parts) != 2 or parts[0] not in wanted:
+                continue
+            try:
+                out[parts[0] + '_mb'] = round(int(parts[1]) / (1024.0 * 1024.0), 1)
+            except Exception:
+                pass
+    except Exception:
+        return {}
+    return out
+
+def _memory_thread_groups_v1218() -> dict:
+    """Compact inventory: reveals which lazy subsystems actually woke up."""
+    try:
+        import re as _mem_re
+        from collections import Counter as _MemCounter
+        c = _MemCounter()
+        for t in threading.enumerate():
+            name = str(getattr(t, 'name', '') or 'unnamed')
+            # Collapse Thread-42 / scheduler-3 style numeric suffixes.
+            name = _mem_re.sub(r'[-_]\d+$', '-#', name)
+            c[name] += 1
+        return dict(c.most_common(20))
+    except Exception:
+        return {}
+
 def _memory_proc_rollup() -> dict:
     out = {}
     path = '/proc/self/smaps_rollup'
@@ -863,7 +898,7 @@ def _memory_worker_environment() -> dict:
     return {name: os.getenv(name) for name in names if os.getenv(name) is not None}
 
 def _memory_structure_snapshot(deep: bool=False) -> dict:
-    result = {'threads': threading.active_count(), 'open_fds': None, 'worker_stack_kb': globals().get('_BOT_THREAD_STACK_KB'), 'glibc_allocator_v248': dict(globals().get('_GLIBC_ALLOCATOR_V248') or {}), 'soft_trim_mb': MEMORY_SOFT_TRIM_MB, 'worker_env_overrides': _memory_worker_environment()}
+    result = {'threads': threading.active_count(), 'thread_groups': _memory_thread_groups_v1218(), 'cgroup_stat': _memory_cgroup_stat_v1218(), 'open_fds': None, 'worker_stack_kb': globals().get('_BOT_THREAD_STACK_KB'), 'glibc_allocator_v248': dict(globals().get('_GLIBC_ALLOCATOR_V248') or {}), 'soft_trim_mb': MEMORY_SOFT_TRIM_MB, 'worker_env_overrides': _memory_worker_environment()}
     try:
         result['open_fds'] = len(os.listdir('/proc/self/fd'))
     except Exception:

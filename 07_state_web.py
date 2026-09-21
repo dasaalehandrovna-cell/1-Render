@@ -4013,7 +4013,7 @@ class _V260WebhookInboxStore:
         self.read_conn = sqlite3.connect(str(self.path), timeout=1.0, check_same_thread=False)
         self.read_conn.row_factory = sqlite3.Row
         self._configure(self.read_conn, writer=False)
-        # OCH12.17 RAM: durable inbox writer starts on the first mutation.
+        # OCH12.18 RAM: durable inbox writer starts on the first mutation.
         self.thread = None
         self.thread_start_lock = threading.Lock()
 
@@ -5783,6 +5783,39 @@ def main():
         except Exception as e:
             runtime_event('boot_sqlite_snapshot_error', f'backend={_backend_name}; {e}', 'WARN')
     data = load_data()
+    # OCH12.18: start_front may already have assembled the final SQLite from a
+    # verified Redis FULL+TAIL (or the same-container event cache).  Bind the
+    # configuration checkpoint to that *final* reconstructed state before the
+    # Configuration Guard runs.  Previously the binding could still describe the
+    # older FULL snapshot, producing a false generation/hash mismatch and a slow
+    # remote repair attempt even though the Redis tail had been replayed correctly.
+    try:
+        _och1218_trace_raw = str(os.getenv('R68_RESTORE_TRACE_JSON', '') or os.getenv('R49_RESTORE_TRACE_JSON', '') or '').strip()
+        _och1218_trace = json.loads(_och1218_trace_raw) if _och1218_trace_raw else {}
+        _och1218_source = str((_och1218_trace or {}).get('base_source') or '').upper()
+        if _split_preboot_authoritative_r19 and _och1218_source in {'REDIS_FAST', 'REDIS_SAFE_RETRY', 'LOCAL_RUNTIME_CACHE_FAST'}:
+            # Re-anchor locally without creating a new generation and without
+            # scheduling any remote sync before READY. Redis FULL+TAIL has already
+            # reconstructed the final SQLite, so the old snapshot binding is stale
+            # by definition if the tail contained configuration changes.
+            _och1218_proj = config_guard_projection_v234()
+            _och1218_hash = _v234_config_hash(_och1218_proj)
+            _och1218_binding = SQLITE.get_meta('boot_restore_binding_v240', 'selected', {}) or {}
+            _och1218_binding = dict(_och1218_binding) if isinstance(_och1218_binding, dict) else {}
+            _och1218_gen = int((data.get('_global_settings') or {}).get(CONFIG_GUARD_GENERATION_KEY_V234) or SQLITE.get_meta(CONFIG_GUARD_META_KIND_V234, 'generation', 0) or _och1218_binding.get('config_generation_v240') or 1)
+            _och1218_lineage = str(_v239_storage_lineage(create=True) or _och1218_binding.get('storage_lineage_v239') or '')
+            _och1218_cp = _v234_checkpoint_from_projection(_och1218_proj, max(1, _och1218_gen), 'preboot_final_state_v1218')
+            SQLITE.set_meta(CONFIG_GUARD_META_KIND_V234, 'latest', _och1218_cp)
+            SQLITE.set_meta(CONFIG_GUARD_META_KIND_V234, 'generation', max(1, _och1218_gen))
+            SQLITE.set_meta(CONFIG_GUARD_META_KIND_V234, 'last_signature', _och1218_hash)
+            _och1218_binding['config_generation_v240'] = max(1, _och1218_gen)
+            _och1218_binding['config_hash_v240'] = _och1218_hash
+            _och1218_binding['config_lineage_v240'] = _och1218_lineage
+            _och1218_binding['storage_lineage_v239'] = str(_och1218_binding.get('storage_lineage_v239') or _och1218_lineage)
+            SQLITE.set_meta('boot_restore_binding_v240', 'selected', _och1218_binding)
+            runtime_event('config_guard_preboot_rebound_v1218', f"source={_och1218_source}; gen={max(1, _och1218_gen)}; hash={_och1218_hash[:12]}")
+    except Exception as _och1218_bind_exc:
+        runtime_event('config_guard_preboot_rebind_warn_v1218', str(_och1218_bind_exc)[:500], 'WARN')
     try:
         storage_profile_apply_boot_hint_v237_1()
     except Exception as exc:
@@ -6072,9 +6105,12 @@ def main():
             except Exception:
                 pass
     try:
-        if bool(globals().get('mega_contour_enabled_v234', lambda: False)()):
+        _archive_on_boot_v1218 = str(os.getenv('MEGA_SOURCE_ARCHIVE_ON_BOOT', '0') or '0').strip().lower() in {'1','true','yes','on','да'}
+        if _archive_on_boot_v1218 and bool(globals().get('mega_contour_enabled_v234', lambda: False)()):
             if not MAINTENANCE_TASK_POOL.submit('archive-current-bot-source', archive_current_bot_source_to_mega):
                 log_error('bot source archive maintenance queue full')
+        elif not _archive_on_boot_v1218:
+            runtime_event('mega_source_archive_deferred_v1218', 'boot archive disabled; source archival is not a READY dependency')
     except Exception as exc:
         log_error(f'bot source archive schedule: {exc}')
     if LOWRAM_ENABLED and (not db_restored) and (not RESTORE_GUARD_ACTIVE) and bool(globals().get('CONFIG_GUARD_BOOT_VERIFIED_V234', False)):

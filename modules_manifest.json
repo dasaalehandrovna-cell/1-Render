@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "9964dbbb6a9737cde5539b507923095eaa81aeec61d9a2d0a7fb06535bcded5a",
+    "01_core_data.py": "8a8ddd62fa935a1b99506d9818a493ada212d62ed30e9e2fcb50368e4fbc2a48",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
-    "03_diagnostics_memory.py": "f6f8c90b41bbd3287a0d9f5974db26fb9e68fe1e48b5dba8736cc927a3445157",
+    "03_diagnostics_memory.py": "a631cbab09bde69885fa730a9a04664575607edb22eee4d9dae0d7adfddaf194",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "35ed257b111b060a84b0693243acb69de573a2f6b248fee255750b01a52e45f0",
-    "07_state_web.py": "b91adbafbe389aa531e1e08b40a6f31d916b938cf90acb01fb5768b3c8c73e66",
+    "07_state_web.py": "3d2e07e772d221b88d1d541a58f2597d4bd0be2a3735649fa55b2dedf28b4b9e",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "ac8ac5fdac768dcffb7bd18038e1ab20f5e174efc8215f9e44b1b50110aa864b"
+    "10_split_policy_offload.py": "7de482593551f6d3f2b15bd40299ac72ed96ac49abb04d044d0bc6bcd722509b"
   },
-  "release": "ОЧНИСЬ_12.17-COMPACT-ONLY-STARTUP-RECOVERY",
+  "release": "ОЧНИСЬ_12.18-FAST-REDIS-MEGA-FALLBACK-RAM-DIAGNOSTICS",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -387,6 +387,12 @@
     "och1217_streaming_load_chats",
     "och1217_lazy_fast_log_writer",
     "och1217_lazy_diag_writer",
-    "och1217_heavy_lazy_openpyxl"
+    "och1217_heavy_lazy_openpyxl",
+    "och1218_ephemeral_local_probe_no_sqlite_open_when_missing",
+    "och1218_redis_full_tail_immediate_authority",
+    "och1218_mega_startup_fallback_only",
+    "och1218_preboot_config_binding_reanchor",
+    "och1218_watcher_cgroup_children_threads",
+    "och1218_mega_idle_75s_and_no_boot_source_archive"
   ]
 }

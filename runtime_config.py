@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.16-ram-control"
+CONFIG_VERSION = "vys-262-och12.18-fast-boot-ram"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -176,6 +176,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "MEGA_LOGIN_TIMEOUT": "120",
     "MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT": "5",
     "MEGA_STARTUP_COMPARE_GET_TIMEOUT": "12",
+    "MEGA_SOURCE_ARCHIVE_ON_BOOT": "0",
     "R80_MEGA_COMPACT_FLUSH_SEC": "90",
     "R80_MEGA_COMPACT_MAX_EVENTS": "12000",
     "R80_MEGA_COMPACT_RETRY_SEC": "300",

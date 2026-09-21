@@ -355,27 +355,31 @@ if ROLE=='fast':
     # FAST compares only compact_v80/head.json and downloads fixed latest/tail only
     # when MEGA proves newer or Redis/local recovery is unavailable. No tree scans.
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
+    start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('r56_fast_startup_mega_master_switch',
        all(x in start_src for x in ['def _r80_compact_mega_compare_restore','compact_v80',
                                     "mega_master_enabled = _bool('MEGA_ENABLED', True)",
                                     'MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls']) and
        'mega-find' not in compact_src and '/internal/snapshot' not in start_src,
        'MEGA_ENABLED must hard-gate all startup MEGA I/O; enabled startup must use fixed compact objects only')
-    ok('och124_fast_startup_redis_first_compact_mega_compare',
-       all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.17 REDIS FULL+TAIL startup restore start',
+    ok('och1218_fast_startup_redis_then_mega_fallback',
+       all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.18 REDIS FULL+TAIL startup restore start',
                                     'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX','Redis TAIL incomplete:',
                                     '_apply_r32_events(candidate,events)','redis_candidate.sqlite3',
-                                    '_r80_compact_mega_compare_restore(target,have_current=current_valid)']) and
-       start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_src.find('_r80_compact_mega_compare_restore(target,have_current=current_valid)'),
-       'FAST must restore Redis FULL+TAIL first, then do a bounded compact MEGA freshness comparison')
+                                    "trace['base_source'] = 'REDIS_FAST'",
+                                    "trace['mega_action'] = 'DEFERRED'",
+                                    '_r80_compact_mega_compare_restore(target, have_current=False)']) and
+       start_main_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
+       '12.18 must accept verified Redis FULL+TAIL immediately and contact compact MEGA only as fallback')
     ok('r68_local_cache_before_external_restore',
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
-                                    "trace['base_source'] = 'LOCAL_RUNTIME_CACHE'"]) and
-       start_src.find('local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)') <
-       start_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') <
-       start_src.find('_r80_compact_mega_compare_restore(target,have_current=current_valid)'),
-       'same-container local cache must be attempted before Redis and compact MEGA')
+                                    "trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'",
+                                    'local cache absent -> Redis immediately']) and
+       start_main_src.find('local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)') <
+       start_main_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') <
+       start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
+       'same-container local cache must be used only when present, before Redis and MEGA fallback')
     ok('r68_local_files_packaged_config',
        all(x in cfg_src for x in [
            '"LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local"',
@@ -721,8 +725,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.17'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.17')
+       "BOT_DISPLAY_NAME = 'очнись_12.18'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.18')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -768,7 +772,7 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1214_disaster_safe_no_empty_boot',
-       "OCH12.17_REDIS_COMPACT_ONLY_SAFE_NO_EMPTY_BOOT" in start_src and
+       "OCH12.18_FAST_REDIS_THEN_MEGA_FALLBACK" in start_src and
        'def _och1214_recovery_safe_wait' in start_src and
        "OCHNIS_ALLOW_EMPTY_INIT" in start_src and
        "base_source'] = 'EMPTY_INIT'" not in start_src and
