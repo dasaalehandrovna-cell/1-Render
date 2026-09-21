@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "cf30f820b8b353c8446a53275c0f0feac23984db6401aa04d999deeb1077ce84",
+    "01_core_data.py": "ee590821fd668c0ef068c03e3aa6955a1d2aed8b957691db1a27322f2834dfaf",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "a631cbab09bde69885fa730a9a04664575607edb22eee4d9dae0d7adfddaf194",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
@@ -23,9 +23,9 @@
     "07_state_web.py": "3d2e07e772d221b88d1d541a58f2597d4bd0be2a3735649fa55b2dedf28b4b9e",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "899401c4b5b5a8370a556c58116256a215f189752191f3f9fefac379cf9c552b"
+    "10_split_policy_offload.py": "2071f3457851078bba6e1ff2a36ba82e4b4fec6f911f6fd062ef8aee0b99087d"
   },
-  "release": "ОЧНИСЬ_12.19-FAST-RECOVERY-TAIL-REPAIR-RAM",
+  "release": "ОЧНИСЬ_12.20-FAST-ONE-PASS-LEAN-BOOT-RAM",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -396,6 +396,12 @@
     "och1218_mega_idle_75s_and_no_boot_source_archive",
     "och1219_mega_legacy_descriptor_tail_repair",
     "och1219_redis_event_stream_repairs_mega_tail_without_full",
-    "och1219_compact_writer_materializes_outbox_descriptors"
+    "och1219_compact_writer_materializes_outbox_descriptors",
+    "och1220_one_pass_recovery_then_empty",
+    "och1220_recovery_ignores_runtime_switches",
+    "och1220_boot_gc_malloc_trim",
+    "och1220_lowram_targeted_chat_evict",
+    "och1220_lean_waitress_sqlite_readers",
+    "och1220_empty_boot_remote_publish_guard"
   ]
 }

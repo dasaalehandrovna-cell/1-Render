@@ -141,7 +141,7 @@ if ROLE=='fast':
 
     ns={}; exec(text('runtime_config.py'),ns)
     env=ns.get('FRONT_INTERNAL_ENV') or {}
-    limits={'BOT_THREAD_STACK_KB':512,'UI_WORKERS':2,'FAST_UI_WORKERS':2,'WINDOW_RENDER_WORKERS':2,'CALLBACK_ACK_WORKERS':2,'UI_CLEANUP_WORKERS':1,'UI_DELETE_WORKERS':1,'DELTA_WORKERS':1,'BACKGROUND_WORKERS':1,'SCHEDULER_WORKERS':2,'R21_HEAVY_DISPATCH_WORKERS':2,'BOT_JOURNAL_MAX':600,'R32_EVENT_QUEUE_MAX':5000,'WEBHOOK_WORKERS':2}
+    limits={'BOT_THREAD_STACK_KB':512,'UI_WORKERS':2,'FAST_UI_WORKERS':2,'WINDOW_RENDER_WORKERS':2,'CALLBACK_ACK_WORKERS':2,'UI_CLEANUP_WORKERS':1,'UI_DELETE_WORKERS':1,'DELTA_WORKERS':1,'BACKGROUND_WORKERS':1,'SCHEDULER_WORKERS':1,'R21_HEAVY_DISPATCH_WORKERS':2,'BOT_JOURNAL_MAX':300,'R32_EVENT_QUEUE_MAX':5000,'WEBHOOK_WORKERS':2}
     bad=[]
     for k,maxv in limits.items():
         try:
@@ -344,8 +344,8 @@ if ROLE=='fast':
        'owner-message interceptor must call the single existing canonical owner')
     ok('r49_waitress_bounded_http',
        'waitress' in req_src.lower() and 'from waitress import serve' in web_src and 'app.run(' not in web_src and
-       "WEBHOOK_MAX_CONNECTIONS\": \"8\"" in cfg_src and "WAITRESS_THREADS\": \"4\"" in cfg_src,
-       'FAST must use bounded Waitress and webhook max_connections=8')
+       "WEBHOOK_MAX_CONNECTIONS\": \"4\"" in cfg_src and "WAITRESS_THREADS\": \"2\"" in cfg_src,
+       'FAST must use bounded Waitress with lean 2-thread/4-connection front')
     ok('r68_restore_trace_present',
        'R68_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R68]' in start_src and
        'LOCAL_RESTORE_TRACE_FILE' in cfg_src and '_r68_write_restore_trace_file' in start_src and
@@ -356,30 +356,36 @@ if ROLE=='fast':
     # when MEGA proves newer or Redis/local recovery is unavailable. No tree scans.
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
-    ok('r56_fast_startup_mega_master_switch',
-       all(x in start_src for x in ['def _r80_compact_mega_compare_restore','compact_v80',
-                                    "mega_master_enabled = _bool('MEGA_ENABLED', True)",
-                                    'MEGA disabled by Render MEGA_ENABLED=0; zero MEGA startup calls']) and
+    ok('och1220_one_pass_recovery_ignores_switches',
+       all(x in start_src for x in [
+           "OCH12.20_ONE_PASS_THEN_EMPTY",
+           "recovery ignores REDIS_ENABLED",
+           "MEGA_ENABLED=0. No compare loop, no tree scan, no retry",
+           "EMPTY_INIT_AFTER_ONE_PASS",
+           "SPLIT_PREBOOT_EMPTY_INIT_R1220",
+       ]) and
+       'def _och1214_recovery_safe_wait' not in start_src and
        'mega-find' not in compact_src and '/internal/snapshot' not in start_src,
-       'MEGA_ENABLED must hard-gate all startup MEGA I/O; enabled startup must use fixed compact objects only')
-    ok('och1218_fast_startup_redis_then_mega_fallback',
-       all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.19 REDIS FULL+TAIL startup restore start',
-                                    'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX','Redis TAIL incomplete:',
-                                    '_apply_r32_events(candidate,events)','redis_candidate.sqlite3',
-                                    "trace['base_source'] = 'REDIS_FAST'",
-                                    "trace['mega_action'] = 'DEFERRED'",
+       '12.20 startup must try recovery sources once regardless runtime switches, then create empty SQLite')
+    ok('och1220_redis_then_mega_single_pass',
+       all(x in start_src for x in ['def _restore_from_redis_startup',
+                                    'OCH12.20 one-pass Redis FULL+TAIL start',
+                                    'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX',
+                                    'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
+                                    "trace['base_source'] = 'REDIS_ONE_PASS'",
+                                    "trace['base_source'] = 'MEGA_COMPACT_ONE_PASS'",
                                     '_r80_compact_mega_compare_restore(target, have_current=False)']) and
-       start_main_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') < start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
-       '12.19 must accept verified Redis FULL+TAIL immediately and contact compact MEGA only as fallback')
+       start_main_src.find('ok, detail = _restore_from_redis_startup(target)') < start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
+       '12.20 must try Redis once before compact MEGA and never retry either source')
     ok('r68_local_cache_before_external_restore',
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
                                     "trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'",
-                                    'local cache absent -> Redis immediately']) and
-       start_main_src.find('local_cache_ok, local_cache_detail = _restore_from_local_runtime_cache(target)') <
-       start_main_src.find('redis_ok, redis_detail = _restore_from_redis_startup(target)') <
+                                    'OCH12.20 local cache absent']) and
+       start_main_src.find('ok, detail = _restore_from_local_runtime_cache(target)') <
+       start_main_src.find('ok, detail = _restore_from_redis_startup(target)') <
        start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
-       'same-container local cache must be used only when present, before Redis and MEGA fallback')
+       'same-container cache must be checked once before Redis and MEGA')
     ok('r68_local_files_packaged_config',
        all(x in cfg_src for x in [
            '"LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local"',
@@ -469,10 +475,13 @@ if ROLE=='fast':
        'RECOVERY SAFE MODE' not in web_src and 'SPLIT_RECOVERY_SAFE_MODE' not in web_src and
        'SPLIT_RECOVERY_SAFE_MODE' not in split_src and 'SPLIT_RECOVERY_SAFE_MODE' not in start_src,
        'legacy runtime SPLIT_RECOVERY_SAFE_MODE flag must stay removed; 12.14 preboot recovery-safe wait is a separate startup policy')
-    ok('och128_normal_empty_boot',
-       'def _ensure_empty_db' in start_src and 'OCHNIS_ALLOW_EMPTY_INIT' in start_src and
-       "trace['base_source'] = 'EMPTY_INIT_EXPLICIT' if empty_ok else 'EMPTY_INIT_FAILED'" in start_src,
-       'legacy empty bootstrap remains available only as explicit first-install opt-in; production auto-empty is forbidden by 12.14')
+    ok('och1220_normal_empty_boot',
+       'def _ensure_empty_db' in start_src and
+       "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
+       "trace['empty_init_attempted'] = True" in start_src and
+       'OCHNIS_ALLOW_EMPTY_INIT' not in _fn_sources(start_src,{'main'}).get('main',''),
+       '12.20 must create empty SQLite automatically after the one recovery pass')
+
 
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
@@ -725,8 +734,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.19'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.19')
+       "BOT_DISPLAY_NAME = 'очнись_12.20'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.20')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -771,13 +780,13 @@ if ROLE=='fast':
        "submit_latest('v263-fwd-index-root-v214'" in split_src and
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
-    ok('och1214_disaster_safe_no_empty_boot',
-       "OCH12.19_FAST_REDIS_THEN_MEGA_REPAIR" in start_src and
-       'def _och1214_recovery_safe_wait' in start_src and
-       "OCHNIS_ALLOW_EMPTY_INIT" in start_src and
-       "base_source'] = 'EMPTY_INIT'" not in start_src and
-       "base_source'] = 'RECOVERY_SAFE_WAIT'" in start_src,
-       'production recovery must wait/retry Redis/MEGA instead of silently booting an empty database')
+    ok('och1220_empty_after_one_pass',
+       "OCH12.20_ONE_PASS_THEN_EMPTY" in start_src and
+       "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
+       "_ensure_empty_db(target)" in start_main_src and
+       'def _och1214_recovery_safe_wait' not in start_src and
+       'while not _db_valid(target)' not in start_src,
+       '12.20 must never loop forever when recovery sources are missing; one pass then empty SQLite')
     ok('och1217_startup_compact_only_no_legacy_tree_scan',
        'def _r80_compact_mega_compare_restore' in start_src and
        'def _discover_pre_restore_remotes' not in start_src and
@@ -787,11 +796,12 @@ if ROLE=='fast':
        '/database/latest_bot_state.sqlite3.gz' not in start_src and
        'MEGA_IMMUTABLE_OR_PRERESTORE' not in start_src and
        start_src.count('_restore_from_mega_startup(target)') == 0,
-       'cold startup and safe-wait must use only fixed compact_v80 objects and never scan historical MEGA trees')
-    ok('och1217_cold_compact_uses_recovery_timeout',
-       "MEGA_LOGIN_TIMEOUT','120" in start_src and "MEGA_TIMEOUT','120" in start_src and
+       'cold startup must use only fixed compact_v80 objects and never scan historical MEGA trees')
+    ok('och1220_cold_compact_bounded_once',
+       "MEGA_STARTUP_RECOVERY_LOGIN_TIMEOUT','20" in start_src and
+       "MEGA_STARTUP_RECOVERY_GET_TIMEOUT','25" in start_src and
        "MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT','12" in start_src,
-       'cold compact restore must allow normal MEGA login time while verified-local compare stays bounded')
+       '12.20 cold MEGA recovery must be bounded because there is no retry loop')
     ok('och1215_compact_tail_not_hidden_by_stale_head',
        'on a cold restore always inspect tail.json.gz' in start_src and
        'claimed_tail_max=max(expected_tail_max,tail_obj_max)' in start_src and
@@ -834,9 +844,16 @@ if ROLE=='fast':
     ok('och1216_sqlite_reader_ram_bound',
        'SQLITE_READER_CACHE_KB' in cfg_src and 'SQLITE_READER_MMAP_MB' in cfg_src and 'mmap_size={mmap_mb * 1024 * 1024}' in core_src,
        'SQLite readers must use bounded cache and configurable zero mmap')
-    ok('och1216_lowram_threshold_effective',
-       'max(220.0' in core_src and 'R24_LOWRAM_EVICT_RSS_MB' in cfg_src and '"270"' in cfg_src,
-       'packaged 270 MB low-RAM eviction must not be silently clamped to 320 MB')
+    ok('och1220_lowram_targeted_evict',
+       'max(180.0' in core_src and 'R24_LOWRAM_EVICT_RSS_MB' in cfg_src and '"210"' in cfg_src and
+       'if rss >= R24_LOWRAM_EVICT_RSS_MB:' in core_src and
+       'if rss >= R24_LOWRAM_EVICT_RSS_MB and not _lowram_business_busy()' not in core_src,
+       '12.20 must evict a touched chat under pressure even when unrelated pools are busy')
+    ok('och1220_boot_memory_trim',
+       'def _och1220_release_boot_memory' in start_src and 'malloc_trim' in start_src and
+       'redis_modules_unloaded' in start_src and 'OCH12.20 boot memory release' in start_src and
+       'SPLIT_PREBOOT_EMPTY_INIT_R1220' in split_src,
+       '12.20 must return recovery allocator memory before loading runtime and suppress empty boot publish')
     ok('och1216_watcher_ram_sources',
        'RAM — источники:' in core_src and 'sqlite_readers' in all_py.get('03_diagnostics_memory.py','') and 'process_rollup' in all_py.get('03_diagnostics_memory.py',''),
        'Watcher must expose RAM sources, SQLite readers and proc rollup')

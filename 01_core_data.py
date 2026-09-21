@@ -1405,7 +1405,7 @@ MAINTENANCE_TASK_POOL = BACKGROUND_TASK_POOL
 GENERAL_TASK_POOL = BACKGROUND_TASK_POOL
 JOURNAL_TASK_POOL = KeyedTaskPool('journal-file', _env_int('JOURNAL_FILE_WORKERS', 1, 1, 2), _env_int('JOURNAL_FILE_MAX_PENDING', 20, 10, 100))
 PERSIST_LATEST_TASK_POOL = LatestKeyedTaskPool('persist-latest', _env_int('PERSIST_LATEST_WORKERS', 1, 1, 2), _env_int('PERSIST_LATEST_MAX_KEYS', 64, 16, 256))
-DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 2, 2, 8), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
+DELAYED_TASK_POOL = KeyedTaskPool('scheduler', _env_int('SCHEDULER_WORKERS', 1, 1, 8), _env_int('SCHEDULER_MAX_PENDING', 1200, 100, 5000))
 DOZVON_TASK_POOL = KeyedTaskPool('dozvon', _env_int('DOZVON_WORKERS', 1, 1, 2), _env_int('DOZVON_MAX_PENDING', 100, 10, 500))
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
 CALLBACK_ACK_SCHEDULER = DelayedTaskScheduler(CALLBACK_ACK_TASK_POOL)
@@ -2165,7 +2165,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.19'
+BOT_DISPLAY_NAME = 'очнись_12.20'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -14988,14 +14988,19 @@ def _lowram_business_busy() -> bool:
 
 # OCH12.16: 12.15 packaged 270 MB but the old hard minimum (320 MB) silently
 # defeated it. Allow proactive eviction before a 512 MB container approaches OOM.
-R24_LOWRAM_EVICT_RSS_MB = max(220.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '270') or '270')))
+R24_LOWRAM_EVICT_RSS_MB = max(180.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '210') or '210')))
 
 def _r24_lowram_release_if_pressure(chat_id):
     try:
         rss = float((_runtime_memory_stats() or {}).get('rss_mb', 0) or 0)
     except Exception:
         rss = 0.0
-    if rss >= R24_LOWRAM_EVICT_RSS_MB and not _lowram_business_busy():
+    # OCH12.20: this is a targeted per-chat release scheduled after a durable
+    # mutation. Do not cancel it merely because some *other* chat/pool is busy;
+    # that old global busy gate allowed cold ledgers to accumulate indefinitely
+    # under steady traffic. _lowram_release_chat() serializes only this chat and
+    # performs SQLite I/O after releasing the chat lock.
+    if rss >= R24_LOWRAM_EVICT_RSS_MB:
         return _lowram_release_chat(chat_id)
     return False
 

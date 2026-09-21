@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.19-recovery-tail-repair"
+CONFIG_VERSION = "vys-262-och12.20-one-pass-lean-boot"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -28,7 +28,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "BOT_THREAD_STACK_KB": "384",
     "SCHEDULER_WORKERS": "1",
     "R21_HEAVY_DISPATCH_WORKERS": "1",
-    "BOT_JOURNAL_MAX": "350",
+    "BOT_JOURNAL_MAX": "250",
     "MEMORY_EVENT_KEEP": "100",
     "MEMORY_SAFE_RESTART_ENABLED": "0",
     "MEMORY_SOFT_TRIM_MB": "155",
@@ -84,10 +84,10 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R38_MEGA_EVENT_MIN_GAP_SEC": "1.0",
     "R38_FAST_JOB_WAIT_SEC": "3600",
     # R35 aliases remain only for rollback compatibility.
-    "R24_LOWRAM_EVICT_RSS_MB": "270",
-    "SQLITE_READER_CACHE_KB": "384",
+    "R24_LOWRAM_EVICT_RSS_MB": "210",
+    "SQLITE_READER_CACHE_KB": "128",
     "SQLITE_READER_MMAP_MB": "0",
-    "FAST_LOG_QUEUE_MAX": "2500",
+    "FAST_LOG_QUEUE_MAX": "1000",
     "SHORT_CALLBACK_LOCAL_HOT_MAX": "2048",
     "CALLBACK_DURABLE_MAX_PENDING": "500",
     "CALLBACK_JOURNAL_MAX_PENDING": "400",
@@ -96,8 +96,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "WEBHOOK_DONE_TTL_SECONDS": "240",
     "UI_CLEANUP_MAX_PENDING": "400",
     "WEBHOOK_WORKERS": "2",
-    "WEBHOOK_MAX_CONNECTIONS": "8",
-    "WAITRESS_THREADS": "4",
+    "WEBHOOK_MAX_CONNECTIONS": "4",
+    "WAITRESS_THREADS": "2",
     "WEBHOOK_INBOX_WRITE_QUEUE_MAX": "1000",
     "WEBHOOK_STUCK_WARN_SECONDS": "5",
     "R25_TRACE_SLOW_LOCK_SEC": "0.020",
