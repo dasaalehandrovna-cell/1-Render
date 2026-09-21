@@ -344,7 +344,7 @@ if ROLE=='fast':
        'owner-message interceptor must call the single existing canonical owner')
     ok('r49_waitress_bounded_http',
        'waitress' in req_src.lower() and 'from waitress import serve' in web_src and 'app.run(' not in web_src and
-       "WEBHOOK_MAX_CONNECTIONS\": \"8\"" in cfg_src and "WAITRESS_THREADS\": \"6\"" in cfg_src,
+       "WEBHOOK_MAX_CONNECTIONS\": \"8\"" in cfg_src and "WAITRESS_THREADS\": \"4\"" in cfg_src,
        'FAST must use bounded Waitress and webhook max_connections=8')
     ok('r68_restore_trace_present',
        'R68_RESTORE_TRACE_JSON' in start_src and '[RESTORE TRACE R68]' in start_src and
@@ -362,7 +362,7 @@ if ROLE=='fast':
        'mega-find' not in compact_src and '/internal/snapshot' not in start_src,
        'MEGA_ENABLED must hard-gate all startup MEGA I/O; enabled startup must use fixed compact objects only')
     ok('och124_fast_startup_redis_first_compact_mega_compare',
-       all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.3 REDIS FULL+TAIL startup restore start',
+       all(x in start_src for x in ['def _restore_from_redis_startup','OCH12.17 REDIS FULL+TAIL startup restore start',
                                     'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX','Redis TAIL incomplete:',
                                     '_apply_r32_events(candidate,events)','redis_candidate.sqlite3',
                                     '_r80_compact_mega_compare_restore(target,have_current=current_valid)']) and
@@ -721,8 +721,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.15'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.15')
+       "BOT_DISPLAY_NAME = 'очнись_12.17'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.17')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -768,18 +768,26 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1214_disaster_safe_no_empty_boot',
-       "OCH12.15_REDIS_COMPACT_GENERATION_PRERESTORE_SAFE_NO_EMPTY_BOOT" in start_src and
+       "OCH12.17_REDIS_COMPACT_ONLY_SAFE_NO_EMPTY_BOOT" in start_src and
        'def _och1214_recovery_safe_wait' in start_src and
        "OCHNIS_ALLOW_EMPTY_INIT" in start_src and
        "base_source'] = 'EMPTY_INIT'" not in start_src and
        "base_source'] = 'RECOVERY_SAFE_WAIT'" in start_src,
        'production recovery must wait/retry Redis/MEGA instead of silently booting an empty database')
-    ok('och1215_startup_deep_mega_fallback_wired',
-       start_src.count('_restore_from_mega_startup(target)') >= 2 and
-       'MEGA_IMMUTABLE_OR_PRERESTORE' in start_src and
-       'MEGA_IMMUTABLE_OR_PRERESTORE_SAFE_RETRY' in start_src and
-       'def _discover_pre_restore_remotes' in start_src,
-       'cold startup and safe-wait must actually use manifest/generation/pre_restore fallback after compact_v80')
+    ok('och1217_startup_compact_only_no_legacy_tree_scan',
+       'def _r80_compact_mega_compare_restore' in start_src and
+       'def _discover_pre_restore_remotes' not in start_src and
+       '/database/current_manifest.json' not in start_src and
+       '/database/generations' not in start_src and
+       '/database/pre_restore' not in start_src and
+       '/database/latest_bot_state.sqlite3.gz' not in start_src and
+       'MEGA_IMMUTABLE_OR_PRERESTORE' not in start_src and
+       start_src.count('_restore_from_mega_startup(target)') == 0,
+       'cold startup and safe-wait must use only fixed compact_v80 objects and never scan historical MEGA trees')
+    ok('och1217_cold_compact_uses_recovery_timeout',
+       "MEGA_LOGIN_TIMEOUT','120" in start_src and "MEGA_TIMEOUT','120" in start_src and
+       "MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT','12" in start_src,
+       'cold compact restore must allow normal MEGA login time while verified-local compare stays bounded')
     ok('och1215_compact_tail_not_hidden_by_stale_head',
        'on a cold restore always inspect tail.json.gz' in start_src and
        'tail_obj_max=max' not in start_src and 'effective_tail_max=max(expected_tail_max,tail_obj_max)' in start_src and
@@ -814,10 +822,19 @@ if ROLE=='fast':
        'def _och1210_split_ping_once' in split_src and 'def _och1210_keepalive_peer_enabled' in split_src,
        'R1-only normal profile must make old peer loops zero-network')
     ok('och1210_memory_economy',
-       '"MEMORY_SAFE_RESTART_ENABLED": "0"' in cfg_src and '"MEMORY_HEAVY_BLOCK_MB": "360"' in cfg_src and
+       '"MEMORY_SAFE_RESTART_ENABLED": "0"' in cfg_src and '"MEMORY_HEAVY_BLOCK_MB": "320"' in cfg_src and
        '"R80_MEGA_COMPACT_FLUSH_SEC": "180"' in cfg_src and 'def _och1210_mega_idle_reaper_loop' in split_src and
        "_r83_shutil.which('mega-quit')" in split_src,
        'memory guard must trim/block instead of self-restart and release idle MEGAcmd server')
+    ok('och1216_sqlite_reader_ram_bound',
+       'SQLITE_READER_CACHE_KB' in cfg_src and 'SQLITE_READER_MMAP_MB' in cfg_src and 'mmap_size={mmap_mb * 1024 * 1024}' in core_src,
+       'SQLite readers must use bounded cache and configurable zero mmap')
+    ok('och1216_lowram_threshold_effective',
+       'max(220.0' in core_src and 'R24_LOWRAM_EVICT_RSS_MB' in cfg_src and '"270"' in cfg_src,
+       'packaged 270 MB low-RAM eviction must not be silently clamped to 320 MB')
+    ok('och1216_watcher_ram_sources',
+       'RAM — источники:' in core_src and 'sqlite_readers' in all_py.get('03_diagnostics_memory.py','') and 'process_rollup' in all_py.get('03_diagnostics_memory.py',''),
+       'Watcher must expose RAM sources, SQLite readers and proc rollup')
     ok('r73_identity_normalization',
        'def _final_bot_identity_text' in final_transport and "re.sub(r'очнись_\\d+(?:\\.\\d+)?'" in final_transport and
        final_transport.count('_final_bot_identity_text(') >= 4,

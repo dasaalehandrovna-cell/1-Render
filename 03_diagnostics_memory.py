@@ -515,10 +515,10 @@ def _memory_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 MEMORY_GUARD_ENABLED = str(os.getenv('MEMORY_GUARD_ENABLED', '1') or '1').strip().lower() not in {'0', 'false', 'off', 'no'}
 MEMORY_GUARD_INTERVAL_SECONDS = _memory_env_float('MEMORY_GUARD_INTERVAL_SECONDS', 30.0, 10.0, 300.0)
 MEMORY_SOFT_TRIM_MB = _memory_env_float('MEMORY_SOFT_TRIM_MB', 175.0, 128.0, 1024.0)
-MEMORY_WARNING_MB = _memory_env_float('MEMORY_WARNING_MB', 300.0, 128.0, 2048.0)
-MEMORY_HIGH_MB = _memory_env_float('MEMORY_HIGH_MB', 350.0, MEMORY_WARNING_MB + 10.0, 3072.0)
-MEMORY_CRITICAL_MB = _memory_env_float('MEMORY_CRITICAL_MB', 400.0, MEMORY_HIGH_MB + 10.0, 4096.0)
-MEMORY_EMERGENCY_MB = _memory_env_float('MEMORY_EMERGENCY_MB', 440.0, MEMORY_CRITICAL_MB + 10.0, 4096.0)
+MEMORY_WARNING_MB = _memory_env_float('MEMORY_WARNING_MB', 270.0, 128.0, 2048.0)
+MEMORY_HIGH_MB = _memory_env_float('MEMORY_HIGH_MB', 310.0, MEMORY_WARNING_MB + 10.0, 3072.0)
+MEMORY_CRITICAL_MB = _memory_env_float('MEMORY_CRITICAL_MB', 350.0, MEMORY_HIGH_MB + 10.0, 4096.0)
+MEMORY_EMERGENCY_MB = _memory_env_float('MEMORY_EMERGENCY_MB', 395.0, MEMORY_CRITICAL_MB + 10.0, 4096.0)
 MEMORY_HEAVY_BLOCK_MB = _memory_env_float('MEMORY_HEAVY_BLOCK_MB', 360.0, MEMORY_HIGH_MB, 4096.0)
 MEMORY_TRIM_COOLDOWN_SECONDS = _memory_env_float('MEMORY_TRIM_COOLDOWN_SECONDS', 45.0, 5.0, 600.0)
 MEMORY_EVENT_KEEP = _memory_env_int('MEMORY_EVENT_KEEP', 200, 50, 1000)
@@ -671,7 +671,7 @@ def _memory_effective_thresholds(snapshot: dict | None=None) -> dict:
         limit = float(snap.get('limit_mb') or 0.0)
     except Exception:
         limit = 0.0
-    return {'warning': max(MEMORY_WARNING_MB, limit * 0.58) if limit else MEMORY_WARNING_MB, 'high': max(MEMORY_HIGH_MB, limit * 0.68) if limit else MEMORY_HIGH_MB, 'critical': max(MEMORY_CRITICAL_MB, limit * 0.78) if limit else MEMORY_CRITICAL_MB, 'emergency': max(MEMORY_EMERGENCY_MB, limit * 0.86) if limit else MEMORY_EMERGENCY_MB, 'heavy_block': max(MEMORY_HEAVY_BLOCK_MB, limit * 0.77) if limit else MEMORY_HEAVY_BLOCK_MB, 'safe_restart': max(MEMORY_SAFE_RESTART_MB, limit * 0.89) if limit else MEMORY_SAFE_RESTART_MB}
+    return {'warning': max(MEMORY_WARNING_MB, limit * 0.52) if limit else MEMORY_WARNING_MB, 'high': max(MEMORY_HIGH_MB, limit * 0.60) if limit else MEMORY_HIGH_MB, 'critical': max(MEMORY_CRITICAL_MB, limit * 0.68) if limit else MEMORY_CRITICAL_MB, 'emergency': max(MEMORY_EMERGENCY_MB, limit * 0.76) if limit else MEMORY_EMERGENCY_MB, 'heavy_block': max(MEMORY_HEAVY_BLOCK_MB, limit * 0.62) if limit else MEMORY_HEAVY_BLOCK_MB, 'safe_restart': max(MEMORY_SAFE_RESTART_MB, limit * 0.84) if limit else MEMORY_SAFE_RESTART_MB}
 
 def memory_level(snapshot: dict | None=None) -> str:
     snap = snapshot or memory_quick_snapshot()
@@ -885,6 +885,30 @@ def _memory_structure_snapshot(deep: bool=False) -> dict:
     except Exception:
         pass
     try:
+        sqlite_obj = globals().get('SQLITE')
+        result['sqlite_readers'] = sqlite_obj.reader_status() if sqlite_obj is not None and hasattr(sqlite_obj, 'reader_status') else {}
+    except Exception:
+        result['sqlite_readers'] = {}
+    try:
+        buffers = {}
+        for label, gname in (('fast_log', '_FAST_LOG_QUEUE'), ('r32_events', '_R32_EVENT_Q'), ('r45_diag', '_R45_DIAG_Q')):
+            q = globals().get(gname)
+            if q is not None and hasattr(q, 'qsize'):
+                try: buffers[label] = int(q.qsize())
+                except Exception: pass
+        for label, gname in (('short_callbacks', '_short_callback_store'), ('callback_mirror', '_CALLBACK_MIRROR_PENDING'), ('file_jobs_state', '_FILE_JOB_STATE')):
+            obj = globals().get(gname)
+            if obj is not None:
+                try: buffers[label] = len(obj)
+                except Exception: pass
+        result['buffers'] = buffers
+    except Exception:
+        result['buffers'] = {}
+    try:
+        result['process_rollup'] = _memory_proc_rollup()
+    except Exception:
+        result['process_rollup'] = {}
+    try:
         audit_fn = globals().get('runtime_audit_metrics')
         if callable(audit_fn):
             result['audit_metrics'] = audit_fn()
@@ -934,7 +958,7 @@ def memory_runtime_summary() -> dict:
         wd = wd_fn() if callable(wd_fn) else {}
     except Exception:
         wd = {}
-    return {'level': memory_level(quick), 'quick': quick, 'state': state, 'children_rss_mb': round(sum((float(x.get('rss_mb') or 0.0) for x in children)), 1), 'children': children[:8], 'window_diagnostics': wd}
+    return {'level': memory_level(quick), 'quick': quick, 'state': state, 'children_rss_mb': round(sum((float(x.get('rss_mb') or 0.0) for x in children)), 1), 'children': children[:8], 'window_diagnostics': wd, 'structures': _memory_structure_snapshot(deep=False)}
 
 def memory_forensics_snapshot(deep: bool=False) -> dict:
     quick = memory_quick_snapshot()

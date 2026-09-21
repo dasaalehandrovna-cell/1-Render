@@ -446,7 +446,7 @@ def _install_requests_traffic_audit():
     return True
 _install_requests_traffic_audit()
 try:
-    _BOT_THREAD_STACK_KB = max(512, min(8192, int(os.getenv('BOT_THREAD_STACK_KB', '512') or '512')))
+    _BOT_THREAD_STACK_KB = max(384, min(8192, int(os.getenv('BOT_THREAD_STACK_KB', '384') or '384')))
     threading.stack_size(_BOT_THREAD_STACK_KB * 1024)
 except Exception:
     _BOT_THREAD_STACK_KB = 0
@@ -2130,7 +2130,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.15'
+BOT_DISPLAY_NAME = 'очнись_12.17'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2370,6 +2370,13 @@ class SQLiteState:
         self.read_conn = None  # compatibility handle; OCH12 reads use thread-local connections
         self._read_tls = threading.local()
         self._read_generation = 0
+        # OCH12.16 RAM: readers remain thread-local (no hot-path read lock), but their
+        # private SQLite page cache is deliberately small and mmap is disabled.
+        # The old 2 MB cache + 32 MB mmap per long-lived worker made RSS grow as
+        # more worker lanes touched SQLite.
+        self._reader_stats_lock = threading.Lock()
+        self._reader_threads_seen = set()
+        self._reader_connections_created = 0
         self._init_db()
         self._open_reader()
         self._writer_cv = threading.Condition(threading.RLock())
@@ -2484,13 +2491,44 @@ class SQLiteState:
         conn = sqlite3.connect(self.path, check_same_thread=False, timeout=1.5)
         conn.row_factory = sqlite3.Row
         try:
+            cache_kb = max(128, min(2048, int(os.getenv('SQLITE_READER_CACHE_KB', '384') or '384')))
+        except Exception:
+            cache_kb = 384
+        try:
+            mmap_mb = max(0, min(16, int(os.getenv('SQLITE_READER_MMAP_MB', '0') or '0')))
+        except Exception:
+            mmap_mb = 0
+        try:
             conn.execute('PRAGMA busy_timeout=1500')
             conn.execute('PRAGMA query_only=ON')
-            conn.execute('PRAGMA cache_size=-2048')
-            conn.execute('PRAGMA mmap_size=33554432')
+            conn.execute(f'PRAGMA cache_size=-{cache_kb}')
+            conn.execute(f'PRAGMA mmap_size={mmap_mb * 1024 * 1024}')
+        except Exception:
+            pass
+        try:
+            with self._reader_stats_lock:
+                self._reader_connections_created += 1
+                self._reader_threads_seen.add(int(threading.get_ident()))
         except Exception:
             pass
         return conn
+
+    def reader_status(self) -> dict:
+        try:
+            with self._reader_stats_lock:
+                created = int(self._reader_connections_created or 0)
+                threads_seen = len(self._reader_threads_seen)
+        except Exception:
+            created = 0; threads_seen = 0
+        try:
+            cache_kb = max(128, min(2048, int(os.getenv('SQLITE_READER_CACHE_KB', '384') or '384')))
+        except Exception:
+            cache_kb = 384
+        try:
+            mmap_mb = max(0, min(16, int(os.getenv('SQLITE_READER_MMAP_MB', '0') or '0')))
+        except Exception:
+            mmap_mb = 0
+        return {'connections_created': created, 'threads_seen': threads_seen, 'generation': int(self._read_generation or 0), 'cache_kb_each': cache_kb, 'mmap_mb_each': mmap_mb}
 
     def _open_reader(self):
         """OCH12: invalidate thread-local WAL readers after DB replacement."""
@@ -14891,7 +14929,9 @@ def _lowram_business_busy() -> bool:
     except Exception:
         return True
 
-R24_LOWRAM_EVICT_RSS_MB = max(320.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '430') or '430')))
+# OCH12.16: 12.15 packaged 270 MB but the old hard minimum (320 MB) silently
+# defeated it. Allow proactive eviction before a 512 MB container approaches OOM.
+R24_LOWRAM_EVICT_RSS_MB = max(220.0, min(700.0, float(os.getenv('R24_LOWRAM_EVICT_RSS_MB', '270') or '270')))
 
 def _r24_lowram_release_if_pressure(chat_id):
     try:
@@ -14938,7 +14978,7 @@ def _lowram_idle_sweep_job():
         runtime_event('lowram_idle_evict_error', str(e), 'WARN')
     finally:
         try:
-            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 120.0, _lowram_idle_sweep_job)
+            DELAYED_SCHEDULER.schedule('lowram-idle-sweep', 60.0, _lowram_idle_sweep_job)
         except Exception:
             pass
 
@@ -15225,6 +15265,11 @@ def build_runtime_watcher_text() -> str:
     memrt = snap.get('memory_runtime') or {}
     memquick = memrt.get('quick') or {}
     memstate = memrt.get('state') or {}
+    memstruct = memrt.get('structures') or {}
+    memroll = memstruct.get('process_rollup') or {}
+    sqlite_readers = memstruct.get('sqlite_readers') or {}
+    membuffers = memstruct.get('buffers') or {}
+    cold_by_key = memstruct.get('cold_fields_by_key') or {}
     local_files = snap.get('local_files') or {}
     prev = snap.get('previous_runtime') or {}
     prev_state = prev.get('state') or {}
@@ -15234,7 +15279,7 @@ def build_runtime_watcher_text() -> str:
     commit = str(ren.get('RENDER_GIT_COMMIT') or '—')
     instance = str(ren.get('RENDER_INSTANCE_ID') or '—')
     restore_trace = st.get('restore_trace') or {}
-    lines = ['🖥 Render / Сервер — Watcher', f'Состояние: {status}', f"Фаза: {st.get('phase') or '—'}", f'Версия: {VERSION}', f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}", f"Старт: {st.get('started_at') or '—'}", f"READY: {st.get('ready_at') or '—'}", f"BOOT: {(st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—')} сек", '', 'Render:', f"Instance: {(instance[-28:] if instance != '—' else instance)}", f"Commit: {(commit[:12] if commit != '—' else commit)}", f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}", f"Region/type: {ren.get('RENDER_REGION') or '—'} / {ren.get('RENDER_SERVICE_TYPE') or '—'}", f"PID/host: {proc.get('pid')} / {proc.get('hostname')}", '', 'Ресурсы:', f"Python RAM: {(proc.get('rss_mb') if proc.get('rss_mb') is not None else '—')} MB; пик: {(proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—')} MB", f"Контейнер RAM: {(proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—')} MB; пик: {(proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—')} MB", f"RAM лимит cgroup: {(proc.get('limit_mb') if proc.get('limit_mb') is not None else '—')} MB; контейнер: {(proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—')}%", f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count', '—')} | malloc_trim {memstate.get('malloc_trim_count', '—')} | blocked exports {memstate.get('blocked_heavy_jobs', '—')}", f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb', '—')} MB", f"Диск: занято {(disk.get('used_mb') if disk.get('used_mb') is not None else '—')} MB; свободно {(disk.get('free_mb') if disk.get('free_mb') is not None else '—')} MB", f"Потоков Python: {proc.get('threads')}", f"Runtime объекты: операции {audit.get('operation_items', '—')} | integrity {audit.get('integrity_events', '—')} | forward outcomes {audit.get('forward_outcomes', '—')} | fin batches {audit.get('finance_forward_batches', '—')}", f"Кэши/буферы: finance {audit.get('finance_cache_entries', '—')} | expense {audit.get('expense_drafts', '—')} | journal {audit.get('journal_buffer_rows', '—')} | reminder mode {audit.get('reminder_mode', '—')}", '', 'BOOT / Telegram gate:', f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}", f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}", f"Webhook получено: {st.get('webhook_received', 0)}", f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}", f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}", '', 'Очереди P/A | done err rej | max wait:']
+    lines = ['🖥 Render / Сервер — Watcher', f'Состояние: {status}', f"Фаза: {st.get('phase') or '—'}", f'Версия: {VERSION}', f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}", f"Старт: {st.get('started_at') or '—'}", f"READY: {st.get('ready_at') or '—'}", f"BOOT: {(st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—')} сек", '', 'Render:', f"Instance: {(instance[-28:] if instance != '—' else instance)}", f"Commit: {(commit[:12] if commit != '—' else commit)}", f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}", f"Region/type: {ren.get('RENDER_REGION') or '—'} / {ren.get('RENDER_SERVICE_TYPE') or '—'}", f"PID/host: {proc.get('pid')} / {proc.get('hostname')}", '', 'Ресурсы:', f"Python RAM: {(proc.get('rss_mb') if proc.get('rss_mb') is not None else '—')} MB; пик: {(proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—')} MB", f"Контейнер RAM: {(proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—')} MB; пик: {(proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—')} MB", f"RAM лимит cgroup: {(proc.get('limit_mb') if proc.get('limit_mb') is not None else '—')} MB; контейнер: {(proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—')}%", f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count', '—')} | malloc_trim {memstate.get('malloc_trim_count', '—')} | blocked exports {memstate.get('blocked_heavy_jobs', '—')}", f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb', '—')} MB", f"Диск: занято {(disk.get('used_mb') if disk.get('used_mb') is not None else '—')} MB; свободно {(disk.get('free_mb') if disk.get('free_mb') is not None else '—')} MB", f"Потоков Python: {proc.get('threads')}", f"Runtime объекты: операции {audit.get('operation_items', '—')} | integrity {audit.get('integrity_events', '—')} | forward outcomes {audit.get('forward_outcomes', '—')} | fin batches {audit.get('finance_forward_batches', '—')}", f"Кэши/буферы: finance {audit.get('finance_cache_entries', '—')} | expense {audit.get('expense_drafts', '—')} | journal {audit.get('journal_buffer_rows', '—')} | reminder mode {audit.get('reminder_mode', '—')}", '', 'RAM — источники:', f"anon {memroll.get('anonymous_mb', '—')} MB | private dirty {memroll.get('private_dirty_mb', '—')} MB | shared clean {memroll.get('shared_clean_mb', '—')} MB", f"SQLite readers: threads {sqlite_readers.get('threads_seen', '—')} | created {sqlite_readers.get('connections_created', '—')} | cache {sqlite_readers.get('cache_kb_each', '—')} KB/reader | mmap {sqlite_readers.get('mmap_mb_each', '—')} MB/reader", f"Cold fields: loaded {memstruct.get('cold_fields_loaded', '—')} | records {cold_by_key.get('records', 0)} | ARS {cold_by_key.get('ars_records', 0)} | USD {cold_by_key.get('usd_records', 0)} | secret {cold_by_key.get('secret_messages', 0)}", f"RAM buffers: log {membuffers.get('fast_log', 0)} | R32 {membuffers.get('r32_events', 0)} | diag {membuffers.get('r45_diag', 0)} | short-cb {membuffers.get('short_callbacks', 0)} | jobs {membuffers.get('file_jobs_state', 0)}", '', 'BOOT / Telegram gate:', f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}", f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}", f"Webhook получено: {st.get('webhook_received', 0)}", f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}", f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}", '', 'Очереди P/A | done err rej | max wait:']
     if isinstance(restore_trace, dict) and restore_trace:
         lines.extend([
             '', 'RESTORE TRACE R68:',

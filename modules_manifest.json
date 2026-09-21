@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "740d3edf5def9113ebd831aaeec7ab2244e4c5a8b763c62f4adb1eeaeae7bf6f",
+    "01_core_data.py": "f2829642d3cff7d1ada4a60ef363855129eb07c86cafd41c732ca31f89bcb811",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
-    "03_diagnostics_memory.py": "a79dd0e07573bbaf498dbb68ed1c6bfced6485f478fbb49e21a474a5ca8cc06e",
+    "03_diagnostics_memory.py": "f6f8c90b41bbd3287a0d9f5974db26fb9e68fe1e48b5dba8736cc927a3445157",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
     "06_commands_callbacks.py": "35ed257b111b060a84b0693243acb69de573a2f6b248fee255750b01a52e45f0",
     "07_state_web.py": "fddb290665917f82ad0ae0c290a2a3e38bd639f82b4f74da9034dfe40914bc36",
     "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
     "09_final_transport.py": "1da23354ea71d2fcfbd885a2a30f70330d20bcb7c10a83462f47343ad66ecd9f",
-    "10_split_policy_offload.py": "077d8b87e9d388bd202f903a289be63696908cb013cfd3c3e41eb52f8c6bf6ee"
+    "10_split_policy_offload.py": "986926655e7a148fc6c690b0d7909ba4afb1f6f038cb40a2476087bf5d26ca10"
   },
-  "release": "ОЧНИСЬ_12.15-MEGA-RECOVERY-CONTRACT-SYNC",
+  "release": "ОЧНИСЬ_12.17-COMPACT-ONLY-STARTUP-RECOVERY",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -370,6 +370,13 @@
     "och1215_named_pre_restore_unified_path",
     "och1215_constitution_sync_immutable_publish",
     "och1215_stale_head_tail_visibility",
-    "och1215_compact_tail_full_baseline_identity"
+    "och1215_compact_tail_full_baseline_identity",
+    "och12.16_sqlite_reader_cache_384kb_mmap_off",
+    "och12.16_lowram_270mb_effective",
+    "och12.16_ram_sources_watcher",
+    "och12.16_bounded_runtime_buffers",
+    "och1217_compact_only_startup_recovery",
+    "och1217_no_legacy_mega_tree_scan",
+    "och1217_cold_mega_login_timeout"
   ]
 }
