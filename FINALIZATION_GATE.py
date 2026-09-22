@@ -358,7 +358,7 @@ if ROLE=='fast':
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
        all(x in start_src for x in [
-           "OCH12.22_ONE_PASS_THEN_EMPTY",
+           "OCH12.23_ONE_PASS_THEN_EMPTY",
            "recovery ignores REDIS_ENABLED",
            "MEGA_ENABLED=0. No compare loop, no tree scan, no retry",
            "EMPTY_INIT_AFTER_ONE_PASS",
@@ -369,7 +369,7 @@ if ROLE=='fast':
        '12.21 startup must try recovery sources once regardless runtime switches, then create empty SQLite')
     ok('och1220_redis_then_mega_single_pass',
        all(x in start_src for x in ['def _restore_from_redis_startup',
-                                    'OCH12.22 one-pass Redis FULL+TAIL start',
+                                    'OCH12.23 one-pass Redis FULL+TAIL start',
                                     'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX',
                                     'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
                                     "trace['base_source'] = 'REDIS_ONE_PASS'",
@@ -381,7 +381,7 @@ if ROLE=='fast':
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
                                     "trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'",
-                                    'OCH12.22 local cache absent']) and
+                                    'OCH12.23 local cache absent']) and
        start_main_src.find('ok, detail = _restore_from_local_runtime_cache(target)') <
        start_main_src.find('ok, detail = _restore_from_redis_startup(target)') <
        start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
@@ -734,8 +734,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.22'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.22')
+       "BOT_DISPLAY_NAME = 'очнись_12.23'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.23')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -781,7 +781,7 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1220_empty_after_one_pass',
-       "OCH12.22_ONE_PASS_THEN_EMPTY" in start_src and
+       "OCH12.23_ONE_PASS_THEN_EMPTY" in start_src and
        "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
        "_ensure_empty_db(target)" in start_main_src and
        'def _och1214_recovery_safe_wait' not in start_src and
@@ -851,7 +851,7 @@ if ROLE=='fast':
        '12.21 must evict a touched chat under pressure even when unrelated pools are busy')
     ok('och1220_boot_memory_trim',
        'def _och1220_release_boot_memory' in start_src and 'malloc_trim' in start_src and
-       'redis_modules_unloaded' in start_src and 'OCH12.22 boot memory release' in start_src and
+       'redis_modules_unloaded' in start_src and 'OCH12.23 boot memory release' in start_src and
        'SPLIT_PREBOOT_EMPTY_INIT_R1220' in split_src,
        '12.21 must return recovery allocator memory before loading runtime and suppress empty boot publish')
     ok('och1216_watcher_ram_sources',
@@ -1115,6 +1115,30 @@ if ROLE=='fast':
        '_r222_post_restore_mega_checkpoint' in split_src and "memory_heavy_allowed" in split_src and
        '_r222_release_mega_after_restore' in split_src,
        '12.22 MEGA checkpoint must be delayed, memory-gated and release MEGAcmd afterward')
+
+    _constitution_live_src=_fn_sources(core_src,{'constitution_semantic_manifest_from_live'}).get('constitution_semantic_manifest_from_live','')
+    _constitution_sql_src=_fn_sources(core_src,{'constitution_semantic_manifest_from_sqlite'}).get('constitution_semantic_manifest_from_sqlite','')
+    ok('och1223_constitution_sqlite_cold_boot',
+       'constitution_semantic_manifest_from_sqlite(SQLITE.path)' in _constitution_live_src and 'get_chat_store(' not in _constitution_live_src and
+       '_constitution_sqlite_chat_semantics' in core_src and "SELECT DISTINCT chat_id FROM cold_fields" in _constitution_sql_src,
+       '12.23 constitution verification must scan SQLite one chat at a time without faulting ColdChatStore ledgers')
+    ok('och1223_boot_migrations_cold_sqlite',
+       '_v223_boot_migrate_record_uids_cold' in rel_src and '_v223_boot_migrate_source_index_cold' in rel_src and
+       '_v223_boot_migrate_record_uids_cold(int(cid_s))' in rel_src and '_v223_boot_migrate_source_index_cold(int(cid_s))' in rel_src,
+       '12.23 boot UID/source-index migrations must use bounded SQLite helpers, not runtime hot-path migrations')
+    _currency_ensure_src=_fn_sources(all_py.get('05_finance_ui.py',''),{'_ensure_currency_ledgers'}).get('_ensure_currency_ledgers','')
+    ok('och1223_currency_ensure_no_cold_fault',
+       'cold_store = bool(LOWRAM_ENABLED and isinstance(store, ColdChatStore))' in _currency_ensure_src and
+       'if not cold_store:' in _currency_ensure_src,
+       '12.23 currency metadata checks must not load cold ARS/USD ledgers')
+    _flush_src=_fn_sources(core_src,{'_lowram_flush_chat'}).get('_lowram_flush_chat','')
+    ok('och1223_boot_no_daily_fanout',
+       "_OCH1223_BOOT_COLD_FENCE" in _flush_src and 'if _boot_cold_fence and (not dict.__contains__(store, daily_key))' in _flush_src,
+       '12.23 boot reads may not synthesize three daily mirrors for every chat')
+    _ready_src=_fn_sources(split_src,{'runtime_mark_ready'}).get('runtime_mark_ready','')
+    ok('och1223_pre_ready_cold_evict',
+       '_och1223_boot_evict_all_cold' in core_src and "_ev('pre_ready')" in _ready_src and "globals()['_OCH1223_BOOT_COLD_FENCE'] = False" in _ready_src,
+       '12.23 must evict any boot-faulted cold fields before READY')
 
 elif ROLE=='heavy':
     s=text('worker_service.py')

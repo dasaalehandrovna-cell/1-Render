@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: local crash cache, Redis daily FULL+TAIL, then MEGA fallback.
 
-OCH12.22 recovery policy:
+OCH12.23 recovery policy:
 - same-container local cache is only a crash breadcrumb;
 - Redis is trusted only as one verified daily FULL plus its complete logical TAIL;
 - legacy/incomplete Redis recovery is rejected before touching a valid live SQLite;
@@ -197,7 +197,7 @@ def _ensure_empty_db(path: Path) -> tuple[bool, str]:
 
 
 def _db_revision(path: Path, *, validated: bool=False) -> float:
-    # OCH12.22: callers that already ran PRAGMA quick_check can reuse that result.
+    # OCH12.23: callers that already ran PRAGMA quick_check can reuse that result.
     # This avoids repeating SQLite integrity scans during the BOOT decision tree.
     if not validated and not _db_valid(path):
         return 0.0
@@ -314,7 +314,7 @@ def _mega_missing(detail: str) -> bool:
     return any(x in low for x in ('not found', 'no such', 'does not exist', "couldn't find", 'couldn\'t find'))
 
 
-# OCH12.22: historical manifest/generation/pre_restore discovery intentionally removed.
+# OCH12.23: historical manifest/generation/pre_restore discovery intentionally removed.
 # Startup recovery uses fixed compact_v80 objects only; no mega-find/tree scan is allowed.
 
 
@@ -662,7 +662,7 @@ def _replay_mega_event_segments(target: Path, root: str, mega_timeout: int) -> t
 
 
 def _restore_from_mega_startup(target: Path) -> tuple[bool, str]:
-    """OCH12.22 compatibility wrapper: exact compact_v80 only.
+    """OCH12.23 compatibility wrapper: exact compact_v80 only.
 
     No manifest, generation, pre_restore, legacy latest or MEGA tree scan is
     permitted from startup.  The actual fixed-object restore is centralized in
@@ -966,14 +966,14 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
         return False,'MEGA_BACKUP_DIR empty','KEEP'
     head_remote,latest_remote,tail_remote=_r80_compact_mega_paths()
     quick=bool(have_current and _db_valid(target))
-    # OCH12.22: short compare timeouts are only safe when a verified local DB already exists.
+    # OCH12.23: short compare timeouts are only safe when a verified local DB already exists.
     # On a cold restore MEGAcmd login can legitimately take tens of seconds; use the normal
     # recovery timeouts so removal of the obsolete deep fallback cannot strand startup.
     if quick:
         login_timeout=max(5,min(60,int(os.getenv('MEGA_STARTUP_COMPARE_LOGIN_TIMEOUT','12') or '12')))
         get_timeout=max(5,min(180,int(os.getenv('MEGA_STARTUP_COMPARE_GET_TIMEOUT','12') or '12')))
     else:
-        # OCH12.22: one-pass cold recovery is bounded. A slow/unreachable MEGA must
+        # OCH12.23: one-pass cold recovery is bounded. A slow/unreachable MEGA must
         # not hold a Free Render boot for minutes; after this single attempt the
         # launcher falls through to an empty SQLite as explicitly requested.
         login_timeout=max(8,min(45,int(os.getenv('MEGA_STARTUP_RECOVERY_LOGIN_TIMEOUT','20') or '20')))
@@ -1011,7 +1011,7 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
         tail_count=int((head or {}).get('tail_count') or 0) if head_valid else 0
         expected_tail_max=int((head or {}).get('tail_max_revision') or 0) if head_valid else 0
         tail_applied=0
-        # OCH12.22: on a cold restore always inspect tail.json.gz even when HEAD says
+        # OCH12.23: on a cold restore always inspect tail.json.gz even when HEAD says
         # tail_count=0.  A crash can happen after TAIL promotion and before HEAD; HEAD
         # is the commit record, but it must not make an already-durable newer TAIL invisible.
         tail_path,tail_detail=_r80_get_exact(tail_remote,work/'tail',get_timeout)
@@ -1029,7 +1029,7 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
             if tail_base_db and candidate_db_before_tail and abs(tail_base_db-candidate_db_before_tail)>0.000001:
                 return False,f'compact tail belongs to different FULL tail_db={tail_base_db:.6f} latest_db={candidate_db_before_tail:.6f}','KEEP'
 
-            # OCH12.22 repair path for the 12.18 writer bug.  12.18 could write
+            # OCH12.23 repair path for the 12.18 writer bug.  12.18 could write
             # durable outbox descriptors into tail.json.gz.  They increased
             # tail_max_revision/tail_count but had no payload, so the old reader
             # rejected the same immutable backup forever in RECOVERY SAFE WAIT.
@@ -1069,7 +1069,7 @@ def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tu
                     return False,f'compact tail revision incomplete {recovered_max} < {claimed_tail_max}','KEEP'
             if legacy_desc:
                 trace_note=(
-                    f'OCH12.22 repaired legacy descriptor tail raw={len(raw_events)} valid={len(valid_events)} '
+                    f'OCH12.23 repaired legacy descriptor tail raw={len(raw_events)} valid={len(valid_events)} '
                     f'descriptors={len(legacy_desc)} unrecovered={degraded_desc}; {repair_detail}'
                 )
             else:
@@ -1163,7 +1163,7 @@ def main():
     target = _db_path()
     started = time.time()
 
-    # OCH12.22 ONE-PASS recovery. Render Free normally loses the local filesystem
+    # OCH12.23 ONE-PASS recovery. Render Free normally loses the local filesystem
     # on a redeploy, so every source is tried at most once and there is NEVER a
     # RECOVERY SAFE WAIT loop. Recovery ignores REDIS_ENABLED / MEGA_ENABLED: the
     # switches still control normal runtime, but disaster recovery uses any source
@@ -1174,7 +1174,7 @@ def main():
     local_revision_before = _db_revision(target, validated=True) if local_valid_before else 0.0
     trace = {
         'schema': 5,
-        'policy': 'OCH12.22_ONE_PASS_THEN_EMPTY',
+        'policy': 'OCH12.23_ONE_PASS_THEN_EMPTY',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': local_found,
@@ -1198,14 +1198,14 @@ def main():
             ok, detail = _restore_from_local_runtime_cache(target)
             trace['local_cache_ok'] = bool(ok)
             trace['local_cache_detail'] = str(detail)[:900]
-            print(f'[SPLIT FRONT] OCH12.22 one-pass local-cache ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.23 one-pass local-cache ok={int(bool(ok))} detail={str(detail)[:500]}', flush=True)
             if ok and _db_valid(target):
                 current_valid = True
                 trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'
         elif not current_valid:
             trace['local_cache_ok'] = False
             trace['local_cache_detail'] = f'absent: {local_gz}'
-            print('[SPLIT FRONT] OCH12.22 local cache absent', flush=True)
+            print('[SPLIT FRONT] OCH12.23 local cache absent', flush=True)
 
         # 2) Redis FULL+TAIL exactly once whenever a URL exists, even when
         # REDIS_ENABLED=0 / REDIS_START_ENABLED=0 in Render. Runtime remains OFF.
@@ -1214,14 +1214,14 @@ def main():
         trace['redis_url_present'] = redis_url_present
         if not current_valid and redis_url_present:
             trace['redis_contacted'] = True
-            print('[SPLIT FRONT] OCH12.22 one-pass Redis FULL+TAIL start (recovery ignores REDIS_ENABLED)', flush=True)
+            print('[SPLIT FRONT] OCH12.23 one-pass Redis FULL+TAIL start (recovery ignores REDIS_ENABLED)', flush=True)
             try:
                 ok, detail = _restore_from_redis_startup(target)
             except Exception as exc:
                 ok, detail = False, f'{type(exc).__name__}: {exc}'
             trace['redis_ok'] = bool(ok)
             trace['redis_detail'] = str(detail)[:900]
-            print(f'[SPLIT FRONT] OCH12.22 one-pass Redis ok={int(bool(ok))} detail={str(detail)[:700]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.23 one-pass Redis ok={int(bool(ok))} detail={str(detail)[:700]}', flush=True)
             if ok and _db_valid(target):
                 current_valid = True
                 trace['base_source'] = 'REDIS_ONE_PASS'
@@ -1246,7 +1246,7 @@ def main():
             trace['mega_ok'] = bool(ok)
             trace['mega_detail'] = str(detail)[:900]
             trace['mega_action'] = str(action)
-            print(f'[SPLIT FRONT] OCH12.22 one-pass MEGA ok={int(bool(ok))} action={action} detail={str(detail)[:700]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.23 one-pass MEGA ok={int(bool(ok))} action={action} detail={str(detail)[:700]}', flush=True)
             if ok and action == 'RESTORE' and _db_valid(target):
                 current_valid = True
                 trace['base_source'] = 'MEGA_COMPACT_ONE_PASS'
@@ -1261,9 +1261,9 @@ def main():
             trace['empty_init_attempted'] = True
             trace['empty_init_ok'] = bool(empty_ok)
             trace['empty_init_detail'] = str(empty_detail)[:500]
-            print(f'[SPLIT FRONT] OCH12.22 recovery sources exhausted -> EMPTY SQLite ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
+            print(f'[SPLIT FRONT] OCH12.23 recovery sources exhausted -> EMPTY SQLite ok={int(bool(empty_ok))} detail={str(empty_detail)[:300]}', flush=True)
             if not empty_ok or not _db_valid(target):
-                raise RuntimeError('OCH12.22 could not create fallback empty SQLite: ' + str(empty_detail))
+                raise RuntimeError('OCH12.23 could not create fallback empty SQLite: ' + str(empty_detail))
             current_valid = True
             trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'
 
@@ -1320,7 +1320,7 @@ def main():
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
         print('[RESTORE TRACE R68]', trace_json, flush=True)
         boot_mem_release = _och1220_release_boot_memory()
-        print(f'[SPLIT FRONT] OCH12.22 boot memory release {boot_mem_release}', flush=True)
+        print(f'[SPLIT FRONT] OCH12.23 boot memory release {boot_mem_release}', flush=True)
 
         # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after

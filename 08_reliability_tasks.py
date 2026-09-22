@@ -10901,6 +10901,74 @@ try:
 except Exception:
     pass
 
+def _v223_boot_migrate_record_uids_cold(chat_id: int) -> int:
+    """BOOT-only UID migration that never attaches cold ledgers to ColdChatStore."""
+    cid = int(chat_id); store = get_chat_store(cid)
+    if not (LOWRAM_ENABLED and isinstance(store, ColdChatStore)):
+        return int(migrate_finance_record_uids(cid) or 0)
+    changed = 0
+    for rec_key, daily_key in (('records','daily_records'),('ars_records','ars_daily_records'),('usd_records','usd_daily_records')):
+        rows = SQLITE.get_cold(cid, rec_key, []) or []
+        local_changed = 0
+        for rec in rows:
+            if not isinstance(rec, dict):
+                continue
+            before = str(rec.get('record_uid') or '')
+            after = ensure_finance_record_uid(cid, rec)
+            if after and after != before:
+                local_changed += 1
+        if local_changed:
+            SQLITE.set_cold(cid, rec_key, rows)
+            SQLITE.set_cold(cid, daily_key, _lowram_rebuild_daily(rows))
+            changed += local_changed
+        rows = None
+    return changed
+
+
+def _v223_boot_migrate_source_index_cold(chat_id: int) -> int:
+    """BOOT-only persistent message index migration, bounded to one ledger at a time."""
+    cid = int(chat_id); store = get_chat_store(cid)
+    if not (LOWRAM_ENABLED and isinstance(store, ColdChatStore)):
+        return int(migrate_finance_source_index_v257(cid) or 0)
+    idx = store.setdefault('_finance_source_index_v257', {})
+    if not isinstance(idx, dict):
+        idx = {}; store['_finance_source_index_v257'] = idx
+    changed = 0
+    for ledger, daily_key in (('records','daily_records'),('ars_records','ars_daily_records'),('usd_records','usd_daily_records')):
+        rows = SQLITE.get_cold(cid, ledger, []) or []
+        rows_changed = False
+        for rec in rows:
+            if not isinstance(rec, dict):
+                continue
+            uid_before = str(rec.get('record_uid') or '')
+            try: uid = ensure_finance_record_uid(cid, rec)
+            except Exception: uid = uid_before
+            if uid != uid_before: rows_changed = True
+            mids = _record_message_ids_v257(rec)
+            for mid in mids:
+                row = {'record_uid':str(uid or ''),'id':int(rec.get('id') or 0),'ledger':ledger,'operation_key':str(rec.get('operation_key') or '')}
+                before = dict(idx.get(str(mid)) or {})
+                idx[str(mid)] = row
+                if before != row: changed += 1
+            if mids:
+                mid = min(mids)
+                for key in ('source_msg_id','origin_msg_id','msg_id'):
+                    if not rec.get(key): rec[key] = mid; rows_changed = True
+                if not rec.get('source_order_msg_id'): rec['source_order_msg_id'] = mid; rows_changed = True
+                if not rec.get('operation_key') and 'finance_operation_key' in globals():
+                    try: rec['operation_key'] = finance_operation_key(cid, mid, 'main'); rows_changed = True
+                    except Exception: pass
+        if rows_changed:
+            SQLITE.set_cold(cid, ledger, rows)
+            SQLITE.set_cold(cid, daily_key, _lowram_rebuild_daily(rows))
+        rows = None
+    try:
+        SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
+    except Exception:
+        pass
+    return changed
+
+
 def _v168_migrate_all_record_uids_once():
     gs = data.setdefault('_global_settings', {})
     if str(gs.get('record_uid_schema') or '') == 'v168':
@@ -10908,7 +10976,7 @@ def _v168_migrate_all_record_uids_once():
     changed = 0
     for cid_s in list((data.get('chats') or {}).keys()):
         try:
-            changed += int(migrate_finance_record_uids(int(cid_s)) or 0)
+            changed += int(_v223_boot_migrate_record_uids_cold(int(cid_s)) or 0)
         except Exception as exc:
             try:
                 log_error(f'v168 startup UID migration {cid_s}: {exc}')
@@ -10948,7 +11016,7 @@ try:
                 if str(gs.get('finance_source_index_schema') or '') != 'v257':
                     migrated = 0
                     for cid_s in list((data.get('chats') or {}).keys()):
-                        try: migrated += int(migrate_finance_source_index_v257(int(cid_s)) or 0)
+                        try: migrated += int(_v223_boot_migrate_source_index_cold(int(cid_s)) or 0)
                         except Exception as exc:
                             try: log_error(f'v257 finance source index migration {cid_s}: {exc}')
                             except Exception: pass

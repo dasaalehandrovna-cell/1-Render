@@ -2173,7 +2173,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.22'
+BOT_DISPLAY_NAME = 'очнись_12.23'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2855,6 +2855,10 @@ class SQLiteState:
 SQLITE = SQLiteState(DB_FILE)
 LOWRAM_ENABLED = _env_bool('LOWRAM_ENABLED', '1')
 LOWRAM_COLD_KEYS = {'records', 'daily_records', 'daily_records_by_date', 'ars_records', 'ars_daily_records', 'ars_daily_records_by_date', 'usd_records', 'usd_daily_records', 'usd_daily_records_by_date', 'secret_messages'}
+# OCH12.23: until READY, cold finance history must remain SQLite-backed.
+# Boot checks/migrations may inspect it transiently, but must not pin every chat in RAM.
+_OCH1223_BOOT_COLD_FENCE = True
+_OCH1223_BOOT_COLD_KEYS = {'records','daily_records','ars_records','ars_daily_records','usd_records','usd_daily_records'}
 LOWRAM_LIST_KEYS = {'records', 'ars_records', 'usd_records', 'secret_messages'}
 LOWRAM_DB_REMOTE_DIR_NAME = 'database'
 LOWRAM_DB_LATEST_NAME = 'latest_bot_state.sqlite3.gz'
@@ -2966,9 +2970,14 @@ def _lowram_flush_chat(chat_id: int, store: dict | None=None, evict: bool=False)
     store = store if isinstance(store, dict) else (data.get('chats', {}) or {}).get(str(cid)) if isinstance(data, dict) else None
     if not isinstance(store, dict):
         return ({}, {})
-    # Keep the existing derived mirrors coherent in RAM, but do not touch SQLite.
+    # OCH12.23: during BOOT a diagnostic/migration read of records must not fan out
+    # into three additional daily mirrors for every chat.  Existing loaded daily mirrors
+    # are kept coherent; after READY the historical behaviour remains unchanged.
+    _boot_cold_fence = bool(globals().get('_OCH1223_BOOT_COLD_FENCE', False))
     for rec_key, daily_key in (('records', 'daily_records'), ('ars_records', 'ars_daily_records'), ('usd_records', 'usd_daily_records')):
         if dict.__contains__(store, rec_key):
+            if _boot_cold_fence and (not dict.__contains__(store, daily_key)):
+                continue
             records = dict.__getitem__(store, rec_key) or []
             daily = _lowram_rebuild_daily(records)
             dict.__setitem__(store, daily_key, daily)
@@ -2988,6 +2997,62 @@ def _lowram_flush_chat(chat_id: int, store: dict | None=None, evict: bool=False)
             with _LOWRAM_LOCK:
                 _LOWRAM_STATS['cold_evictions'] += 1
     return (meta_payload, cold_batch)
+
+
+def _och1223_boot_evict_all_cold(reason: str='boot_finalize') -> dict:
+    """Drop boot-faulted cold ledgers from Python RAM without rewriting SQLite.
+
+    Restore already made SQLite authoritative.  This is intentionally a RAM-only eviction:
+    never serialize the materialized lists again just because a boot verifier inspected them.
+    """
+    removed = 0
+    chats = 0
+    try:
+        for _cid, store in list((data.get('chats', {}) or {}).items()):
+            if not isinstance(store, ColdChatStore):
+                continue
+            one = 0
+            for key in tuple(globals().get('_OCH1223_BOOT_COLD_KEYS') or LOWRAM_COLD_KEYS):
+                if dict.__contains__(store, key):
+                    dict.pop(store, key, None)
+                    one += 1
+            if one:
+                chats += 1
+                removed += one
+                try:
+                    store._cold_loaded.difference_update(globals().get('_OCH1223_BOOT_COLD_KEYS') or LOWRAM_COLD_KEYS)
+                except Exception:
+                    pass
+        if removed:
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS['cold_evictions'] += int(removed)
+    except Exception as exc:
+        try: log_error(f'OCH12.23 boot cold eviction: {exc}')
+        except Exception: pass
+    trim = {'gc':0,'malloc_trim':False}
+    try:
+        import gc as _gc
+        trim['gc'] = int(_gc.collect() or 0)
+    except Exception:
+        pass
+    try:
+        fn = globals().get('memory_malloc_trim')
+        if callable(fn):
+            trim['malloc_trim'] = bool(fn())
+        else:
+            import ctypes as _ctypes
+            libc = _ctypes.CDLL(None)
+            mt = getattr(libc,'malloc_trim',None)
+            if mt is not None:
+                mt.argtypes=[_ctypes.c_size_t]; mt.restype=_ctypes.c_int
+                trim['malloc_trim']=bool(mt(0))
+    except Exception:
+        pass
+    try:
+        runtime_event('och1223_boot_cold_evict', f'reason={reason}; fields={removed}; chats={chats}; trim={trim}', 'INFO')
+    except Exception:
+        pass
+    return {'fields':removed,'chats':chats,'trim':trim}
 
 
 def _lowram_memory_snapshot() -> dict:
@@ -18061,13 +18126,15 @@ def _v184_post_restore_rehydrate(restored: dict | None=None, chat_ids=None) -> d
         except Exception as exc:
             result['errors'].append(f'chat:{cid}:' + str(exc)[:120])
     try:
+        # balance metadata is already persisted; this stays O(chats) and does not fault records.
         rebuild_global_records()
     except Exception as exc:
         result['errors'].append('global:' + str(exc)[:160])
     try:
         state['forward_index'] = {}
         _load_forward_index_from_data(state)
-        _rebuild_forward_index_from_finance_records(state)
+        if not state.get('forward_index'):
+            _rebuild_forward_index_from_finance_records(state)
     except Exception as exc:
         result['errors'].append('forward_rebuild:' + str(exc)[:160])
     if chat_ids is None:
@@ -19803,43 +19870,64 @@ def _constitution_ledger_highwater() -> dict:
         pass
     return best if isinstance(best, dict) else {}
 
-def constitution_semantic_manifest_from_live() -> dict:
-    chats_out = {}
-    chat_ids = set()
-    try:
-        chat_ids.update((int(x) for x in (SQLITE.load_chats() or {}).keys()))
-    except Exception:
-        pass
-    try:
-        chat_ids.update((int(x) for x in (data.get('chats', {}) or {}).keys()))
-    except Exception:
-        pass
-    try:
-        cold_ids = SQLITE.cold_chat_ids(('records', 'ars_records', 'usd_records'))
-        chat_ids.update((int(x) for x in cold_ids or []))
-    except Exception as exc:
+def _constitution_sqlite_chat_semantics(conn, chat_id: int, store_meta: dict | None=None) -> dict:
+    """Bounded semantic scan: one chat at a time, never attach cold rows to ColdChatStore."""
+    seen = {}
+    for key, raw in conn.execute("SELECT k,v FROM cold_fields WHERE chat_id=? AND k IN ('records','ars_records','usd_records')", (str(chat_id),)).fetchall():
         try:
-            log_error(f'constitution cold chat enumeration: {exc}')
+            rows = json.loads(raw) if raw else []
         except Exception:
-            pass
-    total = 0
-    for cid in sorted(chat_ids):
-        try:
-            store = get_chat_store(int(cid))
-            row = _constitution_chat_semantics(cid, store)
-            if row['record_count'] or is_finance_mode(int(cid)):
-                chats_out[str(cid)] = row
-                total += int(row['record_count'])
-        except Exception as exc:
+            rows = []
+        for idx, rec in enumerate(rows or []):
+            if not isinstance(rec, dict):
+                continue
+            rkey = _constitution_record_key(rec, idx)
+            old = seen.get(rkey)
+            if old is None or len(rec) > len(old):
+                seen[rkey] = rec
+        rows = None
+    rows = list(seen.values())
+    days = sorted({d for d in (_constitution_record_day(r) for r in rows) if d})
+    ars_sum = 0.0; usd_sum = 0.0; usd_events = 0; keys = []
+    for idx, rec in enumerate(rows):
+        keys.append(_constitution_record_key(rec, idx))
+        try: ars_sum += float(rec.get('amount', 0) or 0)
+        except Exception: pass
+        if 'usd_amount' in rec:
             try:
-                log_error(f'constitution manifest chat {cid}: {exc}')
-            except Exception:
-                pass
-    seq, anchor = _constitution_integrity_state()
-    high = _constitution_ledger_highwater()
-    manifest = {'kind': 'telegram_bot_data_constitution_manifest', 'schema_version': DATA_CONSTITUTION_SCHEMA, 'bot_version': VERSION, 'created_at': now_local().isoformat(timespec='microseconds'), 'total_records': int(total), 'finance_chat_count': len(chats_out), 'chats': chats_out, 'integrity_seq': int(seq), 'integrity_anchor': anchor, 'ledger_highwater_seq': int(high.get('seq') or 0), 'ledger_highwater_hash': str(high.get('hash') or ''), 'storage_lineage_v239': _v239_storage_lineage(create=True)}
+                u = float(rec.get('usd_amount', 0) or 0); usd_sum += u
+                if abs(u) > 0 or bool(rec.get('usd_only')): usd_events += 1
+            except Exception: pass
+        elif str(rec.get('currency') or '').upper() == 'USD':
+            try: usd_sum += float(rec.get('amount',0) or 0); usd_events += 1
+            except Exception: pass
+    keys.sort()
+    return {'chat_id':int(chat_id),'record_count':len(rows),'usd_event_count':int(usd_events),'earliest_day':days[0] if days else '','latest_day':days[-1] if days else '','ars_sum':round(ars_sum,6),'usd_sum':round(usd_sum,6),'record_keys_hash':hashlib.sha256('\n'.join(keys).encode('utf-8')).hexdigest()}
+
+
+def constitution_semantic_manifest_from_live() -> dict:
+    # OCH12.23: SQLite is the durable source of truth in LOW-RAM mode.  Never fault
+    # every chat's records into Python just to verify the restored database.
+    if LOWRAM_ENABLED:
+        try:
+            return constitution_semantic_manifest_from_sqlite(SQLITE.path)
+        except Exception as exc:
+            try: log_error(f'constitution LOWRAM SQLite semantic fallback: {exc}')
+            except Exception: pass
+    chats_out = {}; total = 0
+    for cid_s, store in (data.get('chats', {}) or {}).items():
+        try:
+            cid = int(cid_s); row = _constitution_chat_semantics(cid, store)
+            if row['record_count'] or is_finance_mode(cid):
+                chats_out[str(cid)] = row; total += int(row['record_count'])
+        except Exception as exc:
+            try: log_error(f'constitution manifest chat {cid_s}: {exc}')
+            except Exception: pass
+    seq, anchor = _constitution_integrity_state(); high = _constitution_ledger_highwater()
+    manifest = {'kind':'telegram_bot_data_constitution_manifest','schema_version':DATA_CONSTITUTION_SCHEMA,'bot_version':VERSION,'created_at':now_local().isoformat(timespec='microseconds'),'total_records':int(total),'finance_chat_count':len(chats_out),'chats':chats_out,'integrity_seq':int(seq),'integrity_anchor':anchor,'ledger_highwater_seq':int(high.get('seq') or 0),'ledger_highwater_hash':str(high.get('hash') or ''),'storage_lineage_v239':_v239_storage_lineage(create=True)}
     manifest['semantic_hash'] = hashlib.sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()
     return manifest
+
 
 def constitution_semantic_manifest_from_sqlite(path: str) -> dict:
     conn = sqlite3.connect(str(path))
@@ -19847,78 +19935,57 @@ def constitution_semantic_manifest_from_sqlite(path: str) -> dict:
         qc = conn.execute('PRAGMA quick_check').fetchone()
         if not qc or str(qc[0]).lower() != 'ok':
             raise RuntimeError(f'SQLite quick_check failed: {qc}')
-        chats_meta = {}
-        for cid, raw in conn.execute('SELECT chat_id,v FROM chats').fetchall():
+        chat_ids = set()
+        for (cid,) in conn.execute('SELECT chat_id FROM chats'):
+            chat_ids.add(str(cid))
+        for (cid,) in conn.execute("SELECT DISTINCT chat_id FROM cold_fields WHERE k IN ('records','ars_records','usd_records')"):
+            chat_ids.add(str(cid))
+        chats_out = {}; total = 0
+        for cid in sorted(chat_ids, key=lambda x: int(x) if str(x).lstrip('-').isdigit() else str(x)):
+            meta = {}
             try:
-                chats_meta[str(cid)] = json.loads(raw) if raw else {}
+                rowm = conn.execute('SELECT v FROM chats WHERE chat_id=?',(str(cid),)).fetchone()
+                meta = json.loads(rowm[0]) if rowm and rowm[0] else {}
             except Exception:
-                chats_meta[str(cid)] = {}
-        cold = defaultdict(dict)
-        for cid, key, raw in conn.execute('SELECT chat_id,k,v FROM cold_fields').fetchall():
-            if str(key) not in {'records', 'ars_records', 'usd_records'}:
-                continue
+                meta = {}
             try:
-                cold[str(cid)][str(key)] = json.loads(raw) if raw else []
-            except Exception:
-                cold[str(cid)][str(key)] = []
-        chats_out = {}
-        total = 0
-        for cid in sorted(set(chats_meta) | set(cold), key=lambda x: int(x) if str(x).lstrip('-').isdigit() else str(x)):
-            store = dict(chats_meta.get(cid) or {})
-            store.update(cold.get(cid) or {})
-            try:
-                row = _constitution_chat_semantics(int(cid), store)
+                row = _constitution_sqlite_chat_semantics(conn, int(cid), meta)
             except Exception:
                 continue
-            if row['record_count'] or bool((store.get('settings') or {}).get('finance_mode')):
-                chats_out[str(cid)] = row
-                total += int(row['record_count'])
-        integrity_seq = 0
-        ledger_seq = 0
-        ledger_hash = ''
-        root = {}
+            if row['record_count'] or bool((meta.get('settings') or {}).get('finance_mode')):
+                chats_out[str(cid)] = row; total += int(row['record_count'])
+            meta = None
+        integrity_seq = 0; ledger_seq = 0; ledger_hash = ''; root = {}
         try:
             root_raw = conn.execute("SELECT v FROM kv WHERE k='root'").fetchone()
             root = json.loads(root_raw[0]) if root_raw and root_raw[0] else {}
             integ = (root.get('_global_settings') or {}).get('finance_integrity_v141') or {}
             integrity_seq = int(integ.get('event_seq') or 0)
             root_high = (root.get('_global_settings') or {}).get('data_constitution_ledger_highwater') or {}
-            ledger_seq = int(root_high.get('seq') or 0)
-            ledger_hash = str(root_high.get('hash') or '')
-        except Exception:
-            pass
+            ledger_seq = int(root_high.get('seq') or 0); ledger_hash = str(root_high.get('hash') or '')
+        except Exception: pass
         try:
             hrow = conn.execute("SELECT v FROM meta WHERE kind='data_constitution' AND k='ledger_highwater'").fetchone()
             high = json.loads(hrow[0]) if hrow and hrow[0] else {}
             if int(high.get('seq') or 0) > ledger_seq:
-                ledger_seq = int(high.get('seq') or 0)
-                ledger_hash = str(high.get('hash') or '')
-        except Exception:
-            pass
+                ledger_seq = int(high.get('seq') or 0); ledger_hash = str(high.get('hash') or '')
+        except Exception: pass
         try:
-            if int(ledger_seq or 0) < int(integrity_seq or 0):
-                for _k, _raw in conn.execute("SELECT k,v FROM meta WHERE kind='data_constitution_pending'").fetchall():
-                    try:
-                        _ev = json.loads(_raw) if isinstance(_raw, str) else _raw
-                    except Exception:
-                        continue
-                    if not isinstance(_ev, dict) or _ev.get('kind') != 'telegram_bot_finance_immutable_ledger':
-                        continue
-                    _seq = int(_ev.get('seq') or 0)
-                    if _seq > ledger_seq:
-                        ledger_seq = _seq
-                        ledger_hash = str(_ev.get('event_hash') or '')
-        except Exception:
-            pass
-        storage_lineage = ''
+            if ledger_seq < integrity_seq:
+                for _k,_raw in conn.execute("SELECT k,v FROM meta WHERE kind='data_constitution_pending'"):
+                    try: ev=json.loads(_raw) if isinstance(_raw,str) else _raw
+                    except Exception: continue
+                    if isinstance(ev,dict) and ev.get('kind')=='telegram_bot_finance_immutable_ledger' and int(ev.get('seq') or 0)>ledger_seq:
+                        ledger_seq=int(ev.get('seq') or 0); ledger_hash=str(ev.get('event_hash') or '')
+        except Exception: pass
+        storage_lineage=''
         try:
-            lrow = conn.execute('SELECT v FROM meta WHERE kind=? AND k=?', (STORAGE_LINEAGE_META_KIND_V239, STORAGE_LINEAGE_META_KEY_V239)).fetchone()
-            lval = json.loads(lrow[0]) if lrow and lrow[0] else {}
-            storage_lineage = str((lval or {}).get('lineage') or '') if isinstance(lval, dict) else str(lval or '')
-        except Exception:
-            storage_lineage = ''
-        manifest = {'kind': 'telegram_bot_data_constitution_manifest', 'schema_version': DATA_CONSTITUTION_SCHEMA, 'bot_version': VERSION, 'created_at': now_local().isoformat(timespec='microseconds'), 'total_records': int(total), 'finance_chat_count': len(chats_out), 'chats': chats_out, 'integrity_seq': int(integrity_seq), 'ledger_highwater_seq': int(ledger_seq), 'ledger_highwater_hash': ledger_hash, 'storage_lineage_v239': storage_lineage}
-        manifest['semantic_hash'] = hashlib.sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()
+            lrow=conn.execute('SELECT v FROM meta WHERE kind=? AND k=?',(STORAGE_LINEAGE_META_KIND_V239,STORAGE_LINEAGE_META_KEY_V239)).fetchone()
+            lval=json.loads(lrow[0]) if lrow and lrow[0] else {}
+            storage_lineage=str((lval or {}).get('lineage') or '') if isinstance(lval,dict) else str(lval or '')
+        except Exception: pass
+        manifest={'kind':'telegram_bot_data_constitution_manifest','schema_version':DATA_CONSTITUTION_SCHEMA,'bot_version':VERSION,'created_at':now_local().isoformat(timespec='microseconds'),'total_records':int(total),'finance_chat_count':len(chats_out),'chats':chats_out,'integrity_seq':int(integrity_seq),'ledger_highwater_seq':int(ledger_seq),'ledger_highwater_hash':ledger_hash,'storage_lineage_v239':storage_lineage}
+        manifest['semantic_hash']=hashlib.sha256(json.dumps(manifest,ensure_ascii=False,sort_keys=True,separators=(',', ':'),default=str).encode('utf-8')).hexdigest()
         return manifest
     finally:
         conn.close()

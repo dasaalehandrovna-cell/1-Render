@@ -204,18 +204,25 @@ def gomonk_info_label(chat_id: int, currency: str | None=None) -> str:
     return f'🧳 Гомонковые {cur} ВКЛ' if gomonk_enabled(chat_id, currency) else f'🧳 Гомонковые {cur} ВЫКЛ'
 
 def _ensure_currency_ledgers(store: dict) -> str:
-    """Инициализирует независимые ARS/USD контуры без потери старых данных."""
+    """Initialize ledger metadata without faulting cold histories on LOW-RAM.
+
+    OCH12.23: merely asking which currency is active must never load records/ARS/USD
+    arrays from SQLite.  Legacy data are migrated lazily when that chat is actually used.
+    """
     settings = store.setdefault('settings', {})
     active = str(settings.get('_active_currency_ledger') or '').lower()
+    cold_store = bool(LOWRAM_ENABLED and isinstance(store, ColdChatStore))
     if active not in {'ars', 'usd'}:
         active = 'ars'
         settings['_active_currency_ledger'] = active
-        store.setdefault('ars_records', copy.deepcopy(store.get('records', []) or []))
-        store.setdefault('ars_daily_records', copy.deepcopy(store.get('daily_records', {}) or {}))
+        if not cold_store:
+            store.setdefault('ars_records', copy.deepcopy(store.get('records', []) or []))
+            store.setdefault('ars_daily_records', copy.deepcopy(store.get('daily_records', {}) or {}))
         store.setdefault('ars_balance', float(store.get('balance', 0) or 0))
         store.setdefault('ars_next_id', int(store.get('next_id', 1) or 1))
-    store.setdefault('usd_records', [])
-    store.setdefault('usd_daily_records', {})
+    if not cold_store:
+        store.setdefault('usd_records', [])
+        store.setdefault('usd_daily_records', {})
     store.setdefault('usd_balance', 0.0)
     store.setdefault('usd_next_id', 1)
     return active

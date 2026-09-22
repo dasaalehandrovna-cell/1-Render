@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "99a29fe125c4dc2b63741a6947a1911b7f3b54817d97d7194505fbec6bdb887f",
+    "01_core_data.py": "f951cbd695269e082f27c6b3f5f96162dfd600f6c7dc094ef33545e94c695220",
     "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
     "03_diagnostics_memory.py": "a631cbab09bde69885fa730a9a04664575607edb22eee4d9dae0d7adfddaf194",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
-    "05_finance_ui.py": "c76a9d10e2d59c0247c08ca568f015018550ecfd8f215f10d8c43960101def8d",
+    "05_finance_ui.py": "fbbfe4c98aee6f02ee3ee0fb4f7aa8be108f67328a4b662b4229ad497f1ac853",
     "06_commands_callbacks.py": "0d3b777047f8ae6d44912fa0a8297bffdd580d8071902320cc463d06152b40fa",
     "07_state_web.py": "dd9f032e8080750df708a514f4a885023cc03a9e441a253348298908864c6773",
-    "08_reliability_tasks.py": "94c625e2f581665fe3e00127a50b991c330df01f8991d49b2514e9cac41c9209",
+    "08_reliability_tasks.py": "f12fb457bf6b76c355d12013f7cd175104a913f370b718185fb03bc93dda9cd7",
     "09_final_transport.py": "43de89967ccf7c75c01a229a584412485b276f19d86cd81daed19a007ac7d5e0",
-    "10_split_policy_offload.py": "b307ea7df7191dc9c30a9fff76dbee49b1b482bdaacc7113370c449ca1613247"
+    "10_split_policy_offload.py": "d065b521e81505a4a4c570a73976ba9394ea06ba0cf268b2e984e4539bceae7f"
   },
-  "release": "ОЧНИСЬ_12.22-RESTORE-MEMORY-SINGLE-SEAL",
+  "release": "ОЧНИСЬ_12.23-SQLITE-COLD-BOOT",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -412,6 +412,11 @@
     "och1222_restore_single_sync_seal",
     "och1222_restore_quiet_remote_io",
     "och1222_no_google_restore_spike",
-    "och1222_deferred_memory_gated_mega"
+    "och1222_deferred_memory_gated_mega",
+    "och1223_constitution_sqlite_cold_boot",
+    "och1223_boot_uid_source_index_bounded",
+    "och1223_currency_metadata_no_cold_fault",
+    "och1223_no_boot_daily_fanout",
+    "och1223_pre_ready_cold_evict"
   ]
 }
