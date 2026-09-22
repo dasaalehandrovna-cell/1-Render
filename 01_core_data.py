@@ -5067,6 +5067,17 @@ def send_journal_file_to_owner(chat_id: int, limit: int=3000):
             pass
         return False
     return True
+
+# O9 secret-window runtime constants/state.
+# OCH12.24 build-fix: keep this block independent from journal export replacements.
+O9_SECRET_CLICK_WINDOW_SECONDS = 3.0
+O9_SECRET_WAIT_SECONDS = 90
+O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS = 30
+_o9_secret_clicks = {}
+_o9_secret_click_lock = threading.RLock()
+_o9_secret_action_timers = {}
+_o9_secret_wait_timers = {}
+
 BOT_SOURCE_ARCHIVE_DIR = os.getenv('MEGA_BOT_SOURCE_ARCHIVE_DIR', f"{MEGA_BACKUP_DIR.rstrip('/')}/runtime/bot_versions").strip() or f"{MEGA_BACKUP_DIR.rstrip('/')}/runtime/bot_versions"
 
 def _current_version_journal_since_ts() -> str:

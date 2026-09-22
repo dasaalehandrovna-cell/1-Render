@@ -14,7 +14,7 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "64a9d1490ea3320a21007f2ff14841685a00a76fcc17d208afbe0527d0dd7f15",
+    "01_core_data.py": "cb47ce90f99d7bfb659eb7f1cb7c6d9afbb48bed820f5fa5d335ea6de9f48294",
     "02_transport_safety.py": "94a0fe0f2cb613a6d89e6db5d10dd6691994b2c3762521d7742fbefd6217eb89",
     "03_diagnostics_memory.py": "59d5796c4f91bdcb4e9a5a6b8da79f83d894e3b04f7ffd37e06f3a42b2afd59b",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
@@ -429,6 +429,7 @@
     "och1224_scheduler_busy_coalescing",
     "och1224_peer_threads_removed_single_render",
     "och1224_memory_guard_idle_mega_reclaim",
-    "och1224_diagnostic_ram_ring_reduction"
+    "och1224_diagnostic_ram_ring_reduction",
+    "och1224_o9_startup_smoke_fix"
   ]
 }

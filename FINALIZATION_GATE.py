@@ -1148,6 +1148,9 @@ if ROLE=='fast':
     journal_export_src=_fn_sources(core_src,{'_send_journal_file_to_owner_sync'}).get('_send_journal_file_to_owner_sync','')
     ram_trim_src=_fn_sources(diag_src,{'memory_trim'}).get('memory_trim','')
     delayed_src=_fn_sources(core_src,{'_worker'}).get('_worker','')
+    ok('och1224_o9_secret_runtime_state_present',
+       all(x in core_src for x in ['O9_SECRET_CLICK_WINDOW_SECONDS = 3.0','O9_SECRET_WAIT_SECONDS = 90','_o9_secret_click_lock = threading.RLock()','_o9_secret_wait_timers = {}']),
+       'O9 secret wait constants/timer state must survive journal refactors and deterministic startup')
     ok('och1224_single_render_hard_invariant',
        '"OCH1224_SINGLE_RENDER": "1"' in cfg_src and 'if _OCH1224_SINGLE_RENDER:' in split_src and "clean = {k: 'fast' for k in _R71_ROUTE_KEYS}" in split_src and 'return False\n    return not _och1210_all_fast()' in split_src,
        '12.24 must ignore restored R2 routes and keep all contours on FAST')
