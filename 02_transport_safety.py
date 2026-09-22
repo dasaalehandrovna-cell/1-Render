@@ -1995,6 +1995,22 @@ def _v236_config_guard_boot_telegram() -> dict:
         return report
 
 def _canon_config_guard_boot_verify_v234__002() -> dict:
+    # OCH12.24: start_front already selected the authoritative SQLite.  Configuration
+    # Guard must validate/anchor that local state only; it must not re-open MEGA during
+    # BOOT and turn a 15s recovery into a multi-minute remote compare.
+    if str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R20', '') or '').strip().casefold() in {'1','true','yes','on'}:
+        global CONFIG_GUARD_BOOT_VERIFIED_V234, CONFIG_GUARD_LAST_REPORT_V234
+        try:
+            cp = config_guard_accept_current_v234('split_preboot_authoritative_v1224')
+            report = {'ok': True, 'mode': 'split_local_authority_v1224', 'repaired': False,
+                      'generation': int((cp or {}).get('generation') or 0),
+                      'metrics': (cp or {}).get('metrics') or {},
+                      'reason': 'start_front authoritative SQLite; remote boot compare skipped'}
+        except Exception as exc:
+            report = {'ok': False, 'mode': 'split_local_authority_v1224', 'reason': str(exc)[:420]}
+        CONFIG_GUARD_BOOT_VERIFIED_V234 = bool(report.get('ok'))
+        CONFIG_GUARD_LAST_REPORT_V234 = report
+        return report
     if storage_profile_v237_1() == STORAGE_PROFILE_LOCAL_V237_1:
         return _V236_CONFIG_GUARD_BOOT_MEGA() if callable(_V236_CONFIG_GUARD_BOOT_MEGA) else {'ok': True, 'mode': 'local_only_v237_1'}
     if telegram_durable_primary_v234():

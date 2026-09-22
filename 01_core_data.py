@@ -925,7 +925,7 @@ class DelayedTaskScheduler:
                 if same_key_busy:
                     self._busy_requeues += 1
                     retry_count = int(self._retry_counts.get(key, 0) or 0)
-                    retry_delay = 0.35
+                    retry_delay = 1.75  # OCH12.24: same-key work is coalesced; do not spin every 350 ms
                 else:
                     self._failed_dispatch += 1
                     retry_count = int(self._retry_counts.get(key, 0) or 0) + 1
@@ -2173,7 +2173,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.23'
+BOT_DISPLAY_NAME = 'очнись_12.24'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2855,7 +2855,7 @@ class SQLiteState:
 SQLITE = SQLiteState(DB_FILE)
 LOWRAM_ENABLED = _env_bool('LOWRAM_ENABLED', '1')
 LOWRAM_COLD_KEYS = {'records', 'daily_records', 'daily_records_by_date', 'ars_records', 'ars_daily_records', 'ars_daily_records_by_date', 'usd_records', 'usd_daily_records', 'usd_daily_records_by_date', 'secret_messages'}
-# OCH12.23: until READY, cold finance history must remain SQLite-backed.
+# OCH12.24: until READY, cold finance history must remain SQLite-backed.
 # Boot checks/migrations may inspect it transiently, but must not pin every chat in RAM.
 _OCH1223_BOOT_COLD_FENCE = True
 _OCH1223_BOOT_COLD_KEYS = {'records','daily_records','ars_records','ars_daily_records','usd_records','usd_daily_records'}
@@ -2970,7 +2970,7 @@ def _lowram_flush_chat(chat_id: int, store: dict | None=None, evict: bool=False)
     store = store if isinstance(store, dict) else (data.get('chats', {}) or {}).get(str(cid)) if isinstance(data, dict) else None
     if not isinstance(store, dict):
         return ({}, {})
-    # OCH12.23: during BOOT a diagnostic/migration read of records must not fan out
+    # OCH12.24: during BOOT a diagnostic/migration read of records must not fan out
     # into three additional daily mirrors for every chat.  Existing loaded daily mirrors
     # are kept coherent; after READY the historical behaviour remains unchanged.
     _boot_cold_fence = bool(globals().get('_OCH1223_BOOT_COLD_FENCE', False))
@@ -3027,7 +3027,7 @@ def _och1223_boot_evict_all_cold(reason: str='boot_finalize') -> dict:
             with _LOWRAM_LOCK:
                 _LOWRAM_STATS['cold_evictions'] += int(removed)
     except Exception as exc:
-        try: log_error(f'OCH12.23 boot cold eviction: {exc}')
+        try: log_error(f'OCH12.24 boot cold eviction: {exc}')
         except Exception: pass
     trim = {'gc':0,'malloc_trim':False}
     try:
@@ -3232,6 +3232,7 @@ def get_recent_errors(limit: int=20):
         return []
 BOT_JOURNAL_MAX = int(os.getenv('BOT_JOURNAL_MAX', '1600') or '1600')
 BOT_JOURNAL_FILE = os.getenv('BOT_JOURNAL_FILE', 'bot_journal.jsonl').strip() or 'bot_journal.jsonl'
+_JOURNAL_BOOT_ID = f"{int(time.time())}-{os.getpid()}-{secrets.token_hex(3)}"
 BOT_ACTION_LOG = deque(maxlen=BOT_JOURNAL_MAX)
 bot_journal_lock = threading.RLock()
 _JOURNAL_FILE_LOCK = threading.RLock()
@@ -3990,6 +3991,7 @@ def _journal_rotate_local_locked() -> None:
 def _journal_write_row(row: dict):
     try:
         line = json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n'
+        os.makedirs(os.path.dirname(os.path.abspath(BOT_JOURNAL_FILE)) or '.', exist_ok=True)
         with _JOURNAL_FILE_LOCK:
             _journal_rotate_local_locked()
             with open(BOT_JOURNAL_FILE, 'a', encoding='utf-8') as jf:
@@ -4002,6 +4004,7 @@ def _journal_write_rows_batch_v214(rows):
         return
     try:
         payload = ''.join(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n' for row in rows)
+        os.makedirs(os.path.dirname(os.path.abspath(BOT_JOURNAL_FILE)) or '.', exist_ok=True)
         with _JOURNAL_FILE_LOCK:
             _journal_rotate_local_locked()
             with open(BOT_JOURNAL_FILE, 'a', encoding='utf-8') as jf:
@@ -4059,7 +4062,7 @@ def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str='', lev
         _fs = FINANCE_TASK_POOL.stats()
         _fws = FORWARD_TASK_POOL.stats()
         _ds = DELTA_TASK_POOL.stats() if 'DELTA_TASK_POOL' in globals() else {}
-        row = {'ts': _journal_ts(), 'level': str(level or 'INFO'), 'action': str(action or '')[:160], 'chat_id': str(chat_id) if chat_id is not None else '', 'chat_name': '', 'detail': str(detail or '')[:3000], 'thread': threading.current_thread().name, 'profile': active_bot_behavior_profile() if 'data' in globals() and isinstance(data, dict) else 'startup', 'bot_version': str(globals().get('VERSION') or 'startup'), 'render_commit': str(os.getenv('RENDER_GIT_COMMIT', '') or ''), 'webhook_pending': _ws.get('pending', 0), 'webhook_active': _ws.get('active', 0), 'ui_pending': _uis.get('pending', 0), 'ui_active': _uis.get('active', 0), 'finance_pending': _fs.get('pending', 0), 'finance_active': _fs.get('active', 0), 'forward_pending': _fws.get('pending', 0), 'forward_active': _fws.get('active', 0), 'delta_pending': _ds.get('pending', 0), 'general_pending': GENERAL_TASK_POOL.stats().get('pending', 0), 'backup_pending': BACKUP_TASK_POOL.stats().get('pending', 0), 'runtime_phase': str((globals().get('_RUNTIME_STATE') or {}).get('phase') or ''), 'runtime_ready': bool((globals().get('_RUNTIME_STATE') or {}).get('ready', False))}
+        row = {'ts': _journal_ts(), 'level': str(level or 'INFO'), 'action': str(action or '')[:160], 'chat_id': str(chat_id) if chat_id is not None else '', 'chat_name': '', 'detail': str(detail or '')[:3000], 'thread': threading.current_thread().name, 'profile': active_bot_behavior_profile() if 'data' in globals() and isinstance(data, dict) else 'startup', 'bot_version': str(globals().get('VERSION') or 'startup'), 'render_commit': str(os.getenv('RENDER_GIT_COMMIT', '') or ''), 'webhook_pending': _ws.get('pending', 0), 'webhook_active': _ws.get('active', 0), 'ui_pending': _uis.get('pending', 0), 'ui_active': _uis.get('active', 0), 'finance_pending': _fs.get('pending', 0), 'finance_active': _fs.get('active', 0), 'forward_pending': _fws.get('pending', 0), 'forward_active': _fws.get('active', 0), 'delta_pending': _ds.get('pending', 0), 'general_pending': GENERAL_TASK_POOL.stats().get('pending', 0), 'backup_pending': BACKUP_TASK_POOL.stats().get('pending', 0), 'runtime_phase': str((globals().get('_RUNTIME_STATE') or {}).get('phase') or ''), 'runtime_ready': bool((globals().get('_RUNTIME_STATE') or {}).get('ready', False)), 'boot_id': _JOURNAL_BOOT_ID, 'pid': os.getpid()}
         # OCH12: journal metadata may not contend with live UI for data/chat state.
         # Name resolution is optional and disabled by default; chat_id remains canonical.
         try:
@@ -4992,95 +4995,57 @@ def _v228_prev_handle_journal_filename_input(msg) -> bool:
             pass
         return False
 
+def _journal_stream_local_events_v1224(fh, *, bot_version_filter: str='', boot_id_filter: str='') -> int:
+    """Stream the independent local append-only journal without building a runtime dump in RAM."""
+    count = 0
+    paths = []
+    for idx in range(BOT_JOURNAL_LOCAL_KEEP_FILES, 0, -1):
+        path = f'{BOT_JOURNAL_FILE}.{idx}'
+        if os.path.exists(path):
+            paths.append(path)
+    if os.path.exists(BOT_JOURNAL_FILE):
+        paths.append(BOT_JOURNAL_FILE)
+    for path in paths:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as src:
+                for line in src:
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    if bot_version_filter and str(row.get('bot_version') or '') != str(bot_version_filter):
+                        continue
+                    if boot_id_filter and str(row.get('boot_id') or '') != str(boot_id_filter):
+                        continue
+                    _journal_write_export_row(fh, row)
+                    count += 1
+        except Exception:
+            continue
+    return count
+
 def _send_journal_file_to_owner_sync(chat_id: int, limit: int=3000):
-    """Build/send diagnostics inside EXPORT_TASK_POOL; never block Telegram webhook workers."""
+    """OCH12.24: export only the independent event journal. Runtime snapshot is separate."""
     if not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, '📓 Журнал доступен только владельцу.', HELPER_DELETE_DELAY)
-        return
-    bot_journal('journal_export_requested', chat_id, f'limit={limit}; streaming=1; memory_guard=1')
-    _file_job_progress('фиксирую свежий журнал в MEGA', force=True)
-    try:
-        journal_flush_to_mega(True)
-    except Exception:
-        pass
-    pressure = _runtime_memory_pressure()
-    if str(pressure.get('level')) in {'high', 'critical'}:
-        _runtime_emergency_trim('journal_export')
-    diag = _journal_diagnostic_snapshot()
+        return False
+    bot_journal('journal_export_requested', chat_id, f'local_only=1; boot_id={_JOURNAL_BOOT_ID}')
     tmp_path = None
     try:
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
         tmp_path = os.path.join(MEGA_LOCAL_TMP_DIR, journal_download_filename('full'))
         with open(tmp_path, 'w', encoding='utf-8') as fh:
-            fh.write('📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n')
+            fh.write('📓 НЕЗАВИСИМЫЙ ЖУРНАЛ СОБЫТИЙ ОЧНИСЬ\n')
             fh.write(f'Создан: {_journal_ts()}\nВерсия: {VERSION}\n')
-            fh.write('ВАЖНО: время старта Python != время начала Render deploy.\n')
-            fh.write('v123: edit consistency + 💰Перес clean insert + exact edit witnesses; LOW-RAM remains active.\n\n')
-            fh.write('==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n')
-            json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
-            fh.write('\n\n==================== TRAFFIC AUDIT SNAPSHOT ====================\n')
-            try:
-                traffic_snap_fn = globals().get('traffic_audit_snapshot')
-                traffic_text_fn = globals().get('traffic_audit_text')
-                traffic_snap = traffic_snap_fn() if callable(traffic_snap_fn) else {'available': False}
-                json.dump(traffic_snap, fh, ensure_ascii=False, indent=2, default=str)
-                if callable(traffic_text_fn):
-                    for _scope in ('process', 'today', 'month'):
-                        fh.write(f'\n\n--- {_scope.upper()} ---\n')
-                        fh.write(str(traffic_text_fn(_scope) or ''))
-            except Exception as e:
-                fh.write(f'traffic audit snapshot unavailable: {e}')
-            fh.write('\n\n==================== DURABLE JOURNAL ====================\n')
-            json.dump(journal_durable_stats(), fh, ensure_ascii=False, indent=2, default=str)
-            fh.write('\n\n==================== MEMORY FORENSICS ====================\n')
-            try:
-                mem_fn = globals().get('memory_forensics_snapshot')
-                json.dump(mem_fn(deep=True) if callable(mem_fn) else {'available': False}, fh, ensure_ascii=False, indent=2, default=str)
-            except Exception as e:
-                fh.write(f'memory forensics unavailable: {e}')
-            fh.write('\n\n==================== RUNTIME EVENTS ====================\n')
-            try:
-                with _RUNTIME_LOCK:
-                    runtime_rows = list(_RUNTIME_EVENTS)
-                for r in runtime_rows:
-                    fh.write(f"{r.get('ts', '')} | {r.get('level', '')} | {r.get('event', '')} | {r.get('detail', '')}\n")
-            except Exception as e:
-                fh.write(f'runtime events unavailable: {e}\n')
-            fh.write('\n==================== WINDOW MUTATION TRACE ====================\n')
-            try:
-                window_tail_fn = globals().get('window_diagnostic_tail')
-                window_rows = window_tail_fn(800) if callable(window_tail_fn) else []
-                for row in window_rows:
-                    fh.write(json.dumps(row, ensure_ascii=False, default=str, separators=(',', ':')) + '\n')
-                fh.write(f'[window trace rows: {len(window_rows)}]\n')
-            except Exception as e:
-                fh.write(f'window diagnostics unavailable: {e}\n')
-            fh.write('\n==================== ACTION JOURNAL (MEGA STREAM) ====================\n')
-            _file_job_progress('читаю журнал из MEGA', force=True)
-            remote_count = _journal_stream_mega_rows_to_file(fh, int(limit))
-            fh.write(f'\n[MEGA rows streamed: {remote_count}]\n')
-            fh.write('\n==================== CURRENT PROCESS TAIL ====================\n')
-            seen_tail = set()
-            for r in _journal_merge_rows(_journal_read_file_rows(300), get_recent_journal(300), limit=600):
-                key = _journal_row_key(r)
-                if key in seen_tail:
-                    continue
-                seen_tail.add(key)
-                _journal_write_export_row(fh, r)
-            fh.write('\n==================== INTERPRETATION KEYS ====================\n')
-            fh.write('deploy_new_commit_*: Git commit changed — strong deploy evidence.\n')
-            fh.write('planned_restart_same_commit: same commit + graceful SIGTERM.\n')
-            fh.write('probable_render_idle_*: probable sleep/wake estimate.\n')
-            fh.write('probable_memory_oom_or_hard_kill: cgroup OOM event or memory peak >=90% of limit.\n')
-            fh.write('process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n')
-            fh.write('v125: fast 3-day 💰Перес repaint, global Excel mode and verified Notes/Comments separation.\n')
-            fh.write('window_stale_edit_apply: отложенное старое обновление применилось после другого изменения этого сообщения.\n')
-            fh.write('window_recreated: старое окно не удалось изменить, поэтому бот создал новое сообщение.\n')
-            fh.write('window_duplicate_marker_candidate: одновременно обнаружены два окна с одинаковой меткой.\n')
-            fh.write('window_registry_changed: реестр переименовал/переклассифицировал то же Telegram-сообщение.\n')
-        _file_job_progress('отправляю файл в Telegram', force=True)
+            fh.write(f'Текущий boot_id: {_JOURNAL_BOOT_ID}\n')
+            fh.write('Источник: локальный append-only JSONL; без SQLite/data/Redis/MEGA runtime snapshot.\n')
+            fh.write('=' * 78 + '\n')
+            count = _journal_stream_local_events_v1224(fh)
+            fh.write('=' * 78 + '\n')
+            fh.write(f'Строк событий: {count}\n')
         with open(tmp_path, 'rb') as fh:
-            _tg_call_retry(bot.send_document, chat_id, fh, caption='📓 Максимальный журнал: Render + бот + очереди + MEGA (single-flight v120)', timeout=120, purpose='journal_send_document')
+            _tg_call_retry(bot.send_document, chat_id, fh, caption=f'📓 Независимый журнал событий · {VERSION}', timeout=120, purpose='journal_send_document')
         return True
     finally:
         try:
@@ -5088,13 +5053,6 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int=3000):
                 os.remove(tmp_path)
         except Exception:
             pass
-O9_SECRET_CLICK_WINDOW_SECONDS = 3.0
-O9_SECRET_WAIT_SECONDS = 90
-O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS = 30
-_o9_secret_clicks = {}
-_o9_secret_click_lock = threading.RLock()
-_o9_secret_action_timers = {}
-_o9_secret_wait_timers = {}
 
 def send_journal_file_to_owner(chat_id: int, limit: int=3000):
     """Queue one maximum journal export; repeated taps are coalesced."""
@@ -5121,39 +5079,22 @@ def _current_version_journal_since_ts() -> str:
 def _send_current_version_journal_to_owner_sync(chat_id: int, limit: int=5000):
     tmp_path = None
     try:
-        _file_job_progress('фиксирую последние строки журнала', force=True)
-        try:
-            journal_flush_to_mega(True)
-        except Exception:
-            pass
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
         tmp_path = os.path.join(MEGA_LOCAL_TMP_DIR, journal_download_filename('current'))
         with open(tmp_path, 'w', encoding='utf-8') as fh:
-            fh.write('📓 ЖУРНАЛ ТЕКУЩЕЙ ВЕРСИИ БОТА\n')
-            fh.write(f'Версия: {VERSION}\n')
-            fh.write(f"Commit: {str(os.getenv('RENDER_GIT_COMMIT', '') or '—')}\n")
-            fh.write(f"Текущий Python start: {str((globals().get('_RUNTIME_STATE') or {}).get('started_at') or '—')}\n")
-            fh.write(f"Создан: {now_local().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
+            fh.write('📓 ЖУРНАЛ СОБЫТИЙ ТЕКУЩЕЙ ВЕРСИИ\n')
+            fh.write(f'Версия: {VERSION}\nCommit: {str(os.getenv("RENDER_GIT_COMMIT", "") or "—")}\n')
+            fh.write(f'Текущий boot_id: {_JOURNAL_BOOT_ID}\n')
             fh.write('=' * 78 + '\n')
-            _file_job_progress('читаю журнал этой версии из MEGA', force=True)
-            count = _journal_stream_mega_rows_to_file(fh, int(limit), bot_version_filter=str(VERSION), since_ts=_current_version_journal_since_ts())
+            count = _journal_stream_local_events_v1224(fh, bot_version_filter=str(VERSION))
             fh.write('=' * 78 + '\n')
-            fh.write(f'Строк: {count}\n')
-            fh.write('\nRUNTIME EVENTS CURRENT PROCESS\n')
-            for ev in list(globals().get('_RUNTIME_EVENTS') or []):
-                if isinstance(ev, dict):
-                    fh.write(f"{ev.get('ts', '')} | {ev.get('level', '')} | {ev.get('event', '')} | {ev.get('detail', '')}\n")
-            fh.write('\nR26 FAST TRACE CURRENT PROCESS\n')
-            for _trace_line in r26_diag_trace_snapshot(int(os.getenv('R26_TRACE_EXPORT_ROWS','4000') or '4000')):
-                fh.write(str(_trace_line) + '\n')
-        _file_job_progress('отправляю журнал текущей версии', force=True)
+            fh.write(f'Строк версии: {count}\n')
         with open(tmp_path, 'rb') as fh:
-            _tg_call_retry(bot.send_document, int(chat_id), fh, caption=f'📓 Журнал текущей версии: {VERSION}', timeout=120, purpose='current_version_journal_send')
+            _tg_call_retry(bot.send_document, int(chat_id), fh, caption=f'📓 Журнал событий: {VERSION}', timeout=120, purpose='current_version_journal_send')
         return True
     finally:
         try:
-            if tmp_path and os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
         except Exception:
             pass
 
@@ -5586,6 +5527,7 @@ def today_key() -> str:
 WINDOW_MARK_RE = re.compile('(?:^|\\s)([СФП]\\d{1,6}|[ов]\\d{1,3})(?:-\\(W[A-Z0-9]{6,12}\\))?(?:\\s*[⏳⏰])?\\s*$', re.IGNORECASE)
 _WINDOW_MARK_GROUPS = ('С', 'Ф', 'П')
 WINDOW_MARKER_CONSTANTS = {'br:open': 'Ф54', 'br:p:*': 'Ф54', 'br:c:*': 'Ф54', 'br:t:*': 'Ф54', 'br:changes': 'Ф54', 'br:dl': 'Ф233', 'v153:json:menu': 'Ф168', 'v153:json:global': 'Ф233', 'v153:json:tenant:*': 'Ф233', 'v237:storage:*': 'Ф54', 'v238:storage:*': 'Ф54', 'v240:modes:*': 'Ф54', 'v176:back_info': 'Ф54', 'v255:constitution:loss_toggle': 'Ф233', 'forward_menu_style_toggle': 'П1', 'fw_': 'П2', 'fw_back_root': 'П3', 'fw_back_src': 'П4', 'fw_back_tgt:*': 'П5', 'fw_finpair:*': 'П6', 'fw_finpair:*:ab': 'П7', 'fw_finpair:*:ba': 'П8', 'fw_mode:*': 'П9', 'fw_mode:*:del': 'П10', 'fw_mode:*:from': 'П11', 'fw_mode:*:to': 'П12', 'fw_mode:*:two': 'П13', 'fw_new_back_src': 'П14', 'fw_new_clear:*': 'П15', 'fw_new_fin:*': 'П16', 'fw_new_fin:*:ab': 'П17', 'fw_new_fin:*:ba': 'П18', 'fw_new_mode:*': 'П19', 'fw_new_mode:*:from': 'П20', 'fw_new_mode:*:to': 'П21', 'fw_new_mode:*:two': 'П22', 'fw_new_pair:*': 'П23', 'fw_new_src:*': 'П24', 'fw_new_tgt:*': 'П25', 'fw_open': 'П26', 'fw_probe_all': 'П27', 'fw_probe_one:*': 'П28', 'fw_removed_list': 'П29', 'fw_src:*': 'П30', 'fw_tgt:*': 'П31', 'secbacklist': 'С1', 'secchatcal:*': 'С2', 'secclose': 'С3', 'secday:*': 'С4', 'secdel:*': 'С5', 'secdelgo:*': 'С6', 'secdelt:*': 'С7', 'secedit:*': 'С8', 'secedfull:*': 'С8', 'secedselected:*': 'С9', 'secedtoggle:*': 'С10', 'seclist:*': 'С11', 'secmclose': 'С12', 'secmedia:*': 'С13', 'secmon:*': 'С14', 'secmonthlist:*': 'С15', 'secmwait': 'С16', 'secret_cancel': 'С17', 'sectoggle:*': 'С18', 'secview:*': 'С19', 'total_secret_mask_toggle': 'С20', 'additional_owners': 'Ф1', 'addown:*': 'Ф2', 'v168:owners_circle:*': 'Ф2', 'articles_desc': 'Ф3', 'aux_close': 'Ф4', 'bp:collapse': 'Ф5', 'bp:open': 'Ф6', 'buttons_current_toggle': 'Ф7', 'c:*': 'Ф8', 'cat_': 'Ф9', 'cat_add': 'Ф10', 'cat_add_cancel': 'Ф11', 'cat_close': 'Ф12', 'cat_del_menu': 'Ф13', 'cat_del_selected': 'Ф14', 'cat_del_toggle:*': 'Ф15', 'cat_desc': 'Ф16', 'cat_edit_menu': 'Ф17', 'cat_edit_pick:*': 'Ф18', 'cat_m:*': 'Ф19', 'cat_months': 'Ф20', 'cat_months_y:*': 'Ф21', 'cat_pick_end2:*': 'Ф22', 'cat_pick_end:*': 'Ф23', 'cat_pick_set_end2:*': 'Ф24', 'cat_pick_set_end:*': 'Ф25', 'cat_pick_set_start:*': 'Ф26', 'cat_pick_start:*': 'Ф27', 'cat_range_custom2:*': 'Ф28', 'cat_range_custom:*': 'Ф29', 'cat_rng:*': 'Ф30', 'cat_show:*': 'Ф31', 'cat_show_wk:*': 'Ф32', 'cat_show_wthu:*': 'Ф33', 'cat_today': 'Ф34', 'cat_wk:*': 'Ф35', 'cat_wthu:*': 'Ф36', 'catx:*': 'Ф37', 'cbx:*': 'Ф38', 'd:*': 'Ф39', 'd:*:back_main': 'Ф40', 'd:*:backup_menu': 'Ф41', 'd:*:bk_channel': 'Ф42', 'd:*:bk_chat': 'Ф43', 'd:*:bk_mega': 'Ф44', 'd:*:calendar': 'Ф45', 'd:*:cancel_edit': 'Ф46', 'd:*:csv_all': 'Ф47', 'd:*:del_selected': 'Ф48', 'd:*:edit_list': 'Ф49', 'd:*:edit_menu': 'Ф50', 'd:*:fin_windows_menu': 'Ф51', 'd:*:forward_finmode_menu': 'Ф52', 'd:*:forward_menu': 'Ф53', 'd:*:info': 'Ф54', 'd:*:next': 'Ф55', 'd:*:open': 'Ф56', 'd:*:prev': 'Ф57', 'd:*:report': 'Ф59', 'd:*:usd_month': 'Ф177', 'd:*:today': 'Ф60', 'd:*:total': 'Ф61', 'dzv:*': 'Ф62', 'dzv:close': 'Ф63', 'fc:*': 'Ф64', 'finance:plain_window': 'Ф65', 'finance_day5_toggle': 'Ф66', 'fv:*': 'Ф67', 'fv:*:bk_channel:*': 'Ф68', 'fv:*:bk_chat:*': 'Ф69', 'fv:*:bk_mega:*': 'Ф70', 'fv:*:calendar:*': 'Ф71', 'fv:*:cancel_edit:*': 'Ф72', 'fv:*:clear_delete_back:*': 'Ф73', 'fv:*:csv_menu:*': 'Ф74', 'fv:*:del_selected:*': 'Ф75', 'fv:*:edit_list:*': 'Ф76', 'fv:*:info:*': 'Ф77', 'fv:*:open:*': 'Ф78', 'fv:*:report:*': 'Ф79', 'fv:*:usd_month:*': 'Ф178', 'fv:*:reset:*': 'Ф80', 'fv:*:total:*': 'Ф81', 'fvcat_': 'Ф82', 'fvcatx:*': 'Ф83', 'icon_buttons_toggle': 'Ф84', 'restore_guard_toggle': 'Ф165', 'mega_manual_restore': 'Ф166', 'v234:config:*': 'Ф233', 'v242:mdb:*': 'Ф233', 'main_close:*': 'Ф167', 'runtime_watcher': 'Ф168', 'runtime_events': 'Ф169', 'runtime_snapshot_now': 'Ф170', 'excel_style_toggle': 'Ф171', 'excel_style_menu': 'Ф171', 'excel_style_set:*': 'Ф171', 'runtime_export': 'Ф172', 'info_close': 'Ф85', 'info_finance_off': 'Ф86', 'journal_back': 'Ф87', 'journal_file': 'Ф88', 'journal_current_file': 'Ф173', 'journal_bot_source': 'Ф174', 'fwdcopy_edit_copy': 'Ф175', 'itxt:*': 'Ф176', 'journal_open': 'Ф89', 'journal_compact_toggle': 'Ф89', 'journal_compact_interval_menu': 'Ф89', 'journal_compact_interval:*': 'Ф89', 'journal_verbose_toggle': 'Ф89', 'journal_name_edit': 'Ф89', 'journal_name_cancel': 'Ф89', 'journal_name_reset': 'Ф89', 'traffic_audit': 'Ф9998', 'traffic_audit:*': 'Ф9998', 'journal_toggle': 'Ф90', 'legacy_common:*': 'Ф91', 'legacy_owner:*': 'Ф92', 'markup:plain': 'Ф93', 'ncb:*': 'Ф94', 'ncb:*:no': 'Ф95', 'ncb:*:yes': 'Ф96', 'none': 'Ф97', 'ojr:*': 'Ф98', 'ojr:*:no': 'Ф99', 'ojr:*:yes': 'Ф100', 'rep:*': 'Ф101', 'rep_close': 'Ф102', 'rep_today': 'Ф103', 'cat_pick_start_record:*': 'Ф104', 'cat_pick_end3:*': 'Ф105', 'cat_pick_set_end3:*': 'Ф106', 'cat_pick_end_record:*': 'Ф107', 'cat_range_records:*': 'Ф110', 'cat_show_records:*': 'Ф109', 'cat_back_records:*': 'Ф149', 'exp_pick_start:*': 'Ф111', 'exp_pick_set_start:*': 'Ф112', 'exp_pick_start_record:*': 'Ф113', 'exp_pick_end:*': 'Ф114', 'exp_pick_set_end:*': 'Ф115', 'exp_pick_end_record:*': 'Ф116', 'exp_style_period:*': 'Ф179', 'exp_send_period_style:*': 'Ф180', 'exp_style_exact:*': 'Ф181', 'exp_send_exact_style:*': 'Ф182', 'internal_timers': 'Ф183', 'itmr_pick:*': 'Ф184', 'itmr_digit:*': 'Ф185', 'itmr_unit:*': 'Ф186', 'itmr_backspace': 'Ф187', 'itmr_clear': 'Ф188', 'itmr_apply': 'Ф189', 'itmr_back_info': 'Ф190', 'exp_new_period_toggle:*': 'Ф179', 'exp_new_period_send:*': 'Ф180', 'exp_new_exact_toggle:*': 'Ф181', 'exp_new_exact_send:*': 'Ф182', 'exp_send:*:csv:*': 'Ф117', 'exp_send:*:xlsx:*': 'Ф118', 'd:*:backup_mass_chat': 'Ф119', 'd:*:backup_mass_channel': 'Ф120', 'd:*:backup_mass_mega': 'Ф121', 'cat_prompt_back': 'Ф122', 'info_instruction': 'Ф123', 'info_queues': 'Ф124', 'mega_priority_toggle': 'Ф125', 'journal_chats_open': 'Ф126', 'journal_chats_open:*': 'Ф127', 'journal_chat_toggle:*': 'Ф128', 'journal_chats_back': 'Ф129', 'main_articles_toggle': 'Ф130', 'cat_main_edit:*': 'Ф131', 'version_menu': 'Ф132', 'version_page:*': 'Ф132', 'version_select:*': 'Ф133', 'version_back': 'Ф134', 'main_financial_values_toggle': 'Ф135', 'keepalive_status': 'Ф136', 'gomonk_open': 'Ф137', 'gomonk_open:*': 'Ф137', 'gomonk_toggle': 'Ф138', 'gomonk_toggle:*': 'Ф138', 'gomonk_back': 'Ф139', 'gomonk_back:*': 'Ф139', 'remaining_open:*': 'Ф140', 'remaining_toggle:*': 'Ф141', 'cat_pick_today_start': 'Ф142', 'cat_usd_toggle_records:*': 'Ф143', 'usd_display_toggle': 'Ф144', 'currency_menu': 'Ф145', 'currency_select:*': 'Ф146', 'currency_back': 'Ф147', 'info_delta_status': 'Ф148', 'cat_usd_toggle_period:*': 'Ф150', 'cat_order_open_sum:*': 'Ф151', 'cat_order_select_sum:*': 'Ф151', 'cat_order_position_sum:*': 'Ф151', 'cat_order_open_exact:*': 'Ф152', 'cat_order_select_exact:*': 'Ф152', 'cat_order_position_exact:*': 'Ф152', 'cat_order_move_sum:*': 'Ф153', 'cat_order_move_exact:*': 'Ф154', 'cat_other_sort:*': 'Ф155', 'cat_other_sort_toggle:*': 'Ф156', 'cat_other_sort_choose:*': 'Ф157', 'cat_other_sort_target:*': 'Ф158', 'cat_pick_today_end:*': 'Ф159', 'exp_send:*:xlsxstat:*': 'Ф160', 'forward_copy_edit_mode_toggle': 'Ф161', 'fwdcopy_edit': 'Ф162', 'fwdcopy_edit_cancel': 'Ф163', 'd:*:usd_tx_toggle': 'Ф164', 'rem:*': 'Ф191', 'mega_tasks_check': 'Ф192', 'mega_tasks_recover': 'Ф193', 'mega_tasks_retry_failed': 'Ф194', 'nav_prev': 'Ф195', 'chat_desc_menu:*': 'Ф196', 'chat_desc_open:*': 'Ф197', 'chat_desc_page:*': 'Ф197', 'expense_shortcut_info': 'Ф198', 'expense_shortcut_pick': 'Ф199', 'expense_shortcut_target:*': 'Ф200', 'expense_shortcut_regenerate': 'Ф201', 'expense_shortcut_test': 'Ф202', 'expense_shortcut_send_url': 'Ф203', 'process_center': 'Ф204', 'problem_tasks': 'Ф205', 'safety_profile_toggle': 'Ф206', 'safety_profile_open': 'Ф206', 'integrity_status': 'Ф207', 'expense_inbox_open': 'Ф208', 'expense_draft_open:*': 'Ф209', 'expense_draft_resolved:*': 'Ф210', 'expense_draft_dismiss:*': 'Ф210', 'expense_evening_toggle': 'Ф211', 'expense_evening_now': 'Ф212', 'expense_evening_done': 'Ф213', 'security_roles:*': 'Ф214', 'security_role_user:*': 'Ф215', 'security_role_set:*': 'Ф216', 'careful_restore_toggle': 'Ф251', 'v215:mode:*': 'Ф256', 'v215:mode:back': 'Ф255', 'info': 'Ф54', 'edit_list': 'Ф49', 'csv_menu': 'Ф74', 'command_window_id': 'Ф40', 'о1': 'О1'}
+WINDOW_MARKER_CONSTANTS.update({'ram_inspector':'Ф168','ram_inspector:*':'Ф168'})
 WINDOW_MARKER_UNKNOWN = {'С': 'С9998', 'Ф': 'Ф9998', 'П': 'П9998'}
 _WINDOW_MARKER_UNKNOWN_LOGGED = {}
 _WINDOW_MARKER_UNKNOWN_LOG_TTL = 600.0
@@ -19906,7 +19848,7 @@ def _constitution_sqlite_chat_semantics(conn, chat_id: int, store_meta: dict | N
 
 
 def constitution_semantic_manifest_from_live() -> dict:
-    # OCH12.23: SQLite is the durable source of truth in LOW-RAM mode.  Never fault
+    # OCH12.24: SQLite is the durable source of truth in LOW-RAM mode.  Never fault
     # every chat's records into Python just to verify the restored database.
     if LOWRAM_ENABLED:
         try:
@@ -20759,6 +20701,20 @@ def constitution_boot_verify_after_restore() -> dict:
             result = {'ok': False, 'mode': 'telegram_bootstrap', 'live': live, 'reason': str(exc)}
             DATA_CONSTITUTION_LAST_VERIFY = result
             return result
+    # OCH12.24 single-Render boot: absence of an embedded historical manifest is
+    # not a reason to contact MEGA after start_front already selected SQLite.  The
+    # live semantic manifest is computed directly from SQLite and accepted as a local
+    # warning-only baseline; later explicit backup can publish it.
+    if str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R20', '') or '').strip().casefold() in {'1','true','yes','on'}:
+        result = {'ok': True, 'mode': 'split_local_only_v1224', 'live': live,
+                  'reason': 'start_front authoritative SQLite; remote constitution boot compare skipped',
+                  'warning_only': True}
+        DATA_CONSTITUTION_LAST_VERIFY = result
+        try:
+            runtime_event('data_constitution_boot_verify', f"ok=True; mode=split_local_only_v1224; records={live.get('total_records')}", 'INFO')
+        except Exception:
+            pass
+        return result
     gate = globals().get('external_access_allowed_v233')
     if callable(gate) and (not gate('mega')):
         result = {'ok': True, 'mode': 'local_only_v233', 'live': live, 'reason': 'remote constitution verification paused by Render+Telegram-only mode', 'warning_only': True}

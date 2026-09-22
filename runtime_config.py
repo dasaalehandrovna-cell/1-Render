@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.23-sqlite-cold-boot"
+CONFIG_VERSION = "vys-262-och12.24-ram-finalization-single-render"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,13 +23,26 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     # Process / role
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
+    # OCH12.24: single-Render final profile. Render #2 is treated as unavailable.
+    "OCH1224_SINGLE_RENDER": "1",
+    "PEER_PING_ENABLED": "0",
+    "OCH1224_BOOT_REMOTE_PROBES": "0",
+    "OCH1224_JOURNAL_LOCAL_ONLY": "1",
+    "OCH1224_MEGA_ZERO_RESIDENT": "1",
+    "MEGA_ZERO_RESIDENT_DELAY_SEC": "8",
+    "BOT_JOURNAL_DURABLE_ENABLED": "0",
+    "BOT_CRITICAL_JOURNAL_DURABLE_ENABLED": "0",
     "RENDER_TELEGRAM_ONLY": "1",
     "MALLOC_ARENA_MAX": "2",
     "BOT_THREAD_STACK_KB": "384",
     "SCHEDULER_WORKERS": "1",
     "R21_HEAVY_DISPATCH_WORKERS": "1",
-    "BOT_JOURNAL_MAX": "250",
-    "MEMORY_EVENT_KEEP": "100",
+    "BOT_JOURNAL_MAX": "180",
+    "R26_TRACE_RING_ROWS": "500",
+    "WINDOW_ACTOR_MAX_WINDOWS": "600",
+    "WINDOW_DIAGNOSTICS_TAIL_LIMIT": "250",
+    "WINDOW_DIAGNOSTICS_STATE_LIMIT": "400",
+    "MEMORY_EVENT_KEEP": "60",
     "MEMORY_SAFE_RESTART_ENABLED": "0",
     "MEMORY_SOFT_TRIM_MB": "155",
     "MEMORY_TRIM_COOLDOWN_SECONDS": "30",
@@ -37,8 +50,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R80_MEGA_COMPACT_FLUSH_SEC": "180",
     "R80_MEGA_COMPACT_RETRY_SEC": "600",
     "FINANCE_INTEGRITY_KEEP": "500",
-    "R45_DIAG_RING_ROWS": "400",
-    "R45_DIAG_QUEUE_ROWS": "800",
+    "R45_DIAG_RING_ROWS": "250",
+    "R45_DIAG_QUEUE_ROWS": "400",
 
     # R26: FAST isolation + forensic trace + bounded full rebase cadence.
     "UI_WORKERS": "2",
@@ -66,7 +79,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R28_STATE_MIRROR_DELAY_SEC": "30",
     "R28_FULL_SNAPSHOT_MIN_INTERVAL_SEC": "300",
     "R32_EVENT_STREAM_ENABLED": "1",
-    "R32_EVENT_QUEUE_MAX": "2500",
+    "R32_EVENT_QUEUE_MAX": "1200",
     "R40_EVENT_DB_BUSY_MS": "120",
     "R32_EVENT_BATCH_DELAY_SEC": "0.65",
     "R32_EVENT_BATCH_MAX": "192",
@@ -90,7 +103,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "FAST_LOG_QUEUE_MAX": "1000",
     "SHORT_CALLBACK_LOCAL_HOT_MAX": "2048",
     "CALLBACK_DURABLE_MAX_PENDING": "500",
-    "CALLBACK_JOURNAL_MAX_PENDING": "400",
+    "CALLBACK_JOURNAL_MAX_PENDING": "250",
+    "BOT_JOURNAL_FILE_PENDING_MAX": "600",
     "WINDOW_DIAGNOSTICS_TAIL_LIMIT": "500",
     "WINDOW_DIAGNOSTICS_STATE_LIMIT": "700",
     "WEBHOOK_DONE_TTL_SECONDS": "240",
@@ -111,7 +125,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     # Render Free may wipe these files on redeploy/restart; they are acceleration /
     # same-instance crash breadcrumbs only. Long-term durability remains Redis/HEAVY/MEGA.
     "LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local",
-    "BOT_JOURNAL_FILE": "/tmp/vys262_fast_local/bot_journal.jsonl",
+    "BOT_JOURNAL_FILE": "/tmp/och_journal/events.jsonl",
     "WEBHOOK_INBOX_DB_FILE": "/tmp/vys262_fast_local/webhook.sqlite3",
     "R40_EVENT_OUTBOX_DIR": "/tmp/vys262_fast_local",
     "PREBOOT_WEBHOOK_SPOOL_FILE": "/tmp/vys262_fast_local/preboot_webhooks.ndjson",

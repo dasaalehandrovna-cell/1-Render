@@ -15,7 +15,7 @@ import time as _v155_time
 from collections import deque as _v155_deque
 V155_BUTTON_AUDIT_ENABLED = str(_v155_os.getenv('BUTTON_OUTCOME_AUDIT', '1') or '1').strip().lower() not in {'0', 'false', 'off', 'no'}
 _V155_BUTTON_AUDIT_LOCK = _v155_threading.RLock()
-_V155_BUTTON_AUDIT_RECENT = _v155_deque(maxlen=500)
+_V155_BUTTON_AUDIT_RECENT = _v155_deque(maxlen=200)
 _V155_BUTTON_AUDIT_INSTALLED = 0
 
 def _v155_source_marker(call) -> str:

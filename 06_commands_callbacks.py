@@ -1836,6 +1836,25 @@ def on_callback(call):
                 text = traffic_audit_text(scope) if 'traffic_audit_text' in globals() else '📶 Аудит трафика недоступен.'
             safe_edit(bot, call, text, reply_markup=kbt)
             return
+        if data_str == 'ram_inspector' or data_str.startswith('ram_inspector:'):
+            if not is_owner_chat(chat_id):
+                return
+            mode = data_str.split(':', 1)[1] if ':' in data_str else 'overview'
+            if mode == 'trim':
+                result = ram_inspector_trim_v1224()
+                try:
+                    bot.answer_callback_query(call.id, f"RAM cleanup: cold={int((result.get('evicted') or {}).get('fields') or 0)}", show_alert=False)
+                except Exception:
+                    pass
+                mode = 'overview'
+            kbr = types.InlineKeyboardMarkup(row_width=2)
+            kbr.row(IB('📊 Обзор', callback_data='ram_inspector'), IB('🐍 Heap', callback_data='ram_inspector:heap'))
+            kbr.row(IB('📦 Импорты', callback_data='ram_inspector:modules'), IB('🧊 Cold data', callback_data='ram_inspector:cold'))
+            kbr.row(IB('🧵 Потоки', callback_data='ram_inspector:threads'), IB('👶 Процессы', callback_data='ram_inspector:children'))
+            kbr.row(IB('📚 Буферы/очереди', callback_data='ram_inspector:buffers'), IB('🧹 Cold + GC', callback_data='ram_inspector:trim'))
+            kbr.row(IB('🔙 Назад в Инфо', callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB('❌ Закрыть', callback_data='info_close'))
+            safe_edit(bot, call, ram_inspector_text_v1224(mode), reply_markup=kbr)
+            return
         # R72: runtime_watcher is owned exclusively by the v153 diagnostic route.
         if data_str == 'runtime_events':
             if not is_owner_chat(chat_id):
@@ -6340,9 +6359,10 @@ def start_keep_alive_thread():
         if _keep_alive_thread is None or not _keep_alive_thread.is_alive():
             _keep_alive_thread = threading.Thread(target=keep_alive_task, name='keep-alive-watchdog', daemon=True)
             _keep_alive_thread.start()
-        if _peer_keep_alive_thread is None or not _peer_keep_alive_thread.is_alive():
-            _peer_keep_alive_thread = threading.Thread(target=peer_keep_alive_task, name='peer-keep-alive-watchdog', daemon=True)
-            _peer_keep_alive_thread.start()
+        if str(os.getenv('OCH1224_SINGLE_RENDER', '0') or '0').strip().lower() not in {'1','true','yes','on'}:
+            if _peer_keep_alive_thread is None or not _peer_keep_alive_thread.is_alive():
+                _peer_keep_alive_thread = threading.Thread(target=peer_keep_alive_task, name='peer-keep-alive-watchdog', daemon=True)
+                _peer_keep_alive_thread.start()
         return _keep_alive_thread
 
 # v262

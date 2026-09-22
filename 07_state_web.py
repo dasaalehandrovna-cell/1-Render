@@ -5695,10 +5695,21 @@ def main():
     _v211_ensure_web_server_started('boot-immediate-v250')
     runtime_set_phase('boot_port_bound_v250', 'порт Render открыт; начинаю выбор storage и восстановление')
     threading.Thread(target=_v211_boot_bind_failsafe, name='v211-web-bind-failsafe', daemon=True).start()
-    try:
-        _boot_profile = storage_profile_bootstrap_v237_1()
-    except Exception:
-        _boot_profile = storage_profile_v237_1()
+    # OCH12.24: start_front is the only boot restore authority.  When it has
+    # already selected/installed SQLite, do not run the legacy storage-profile
+    # discovery because that probes MEGA/Telegram again and can add minutes + RAM.
+    _split_preboot_authoritative_r19 = str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R20', '') or '').strip().casefold() in {'1','true','yes','on'}
+    _split_preboot_revision_r19 = str(os.getenv('SPLIT_PREBOOT_REVISION_R20', '') or '').strip()
+    if _split_preboot_authoritative_r19:
+        _boot_profile = STORAGE_PROFILE_LOCAL_V237_1
+        globals()['_STORAGE_PROFILE_BOOT_HINT_V237_1'] = STORAGE_PROFILE_LOCAL_V237_1
+        globals()['_STORAGE_PROFILE_BOOT_SOURCE_V238'] = 'split_preboot_authoritative_v1224'
+        globals()['_STORAGE_PROFILE_RESTORE_BACKEND_V246'] = 'split'
+    else:
+        try:
+            _boot_profile = storage_profile_bootstrap_v237_1()
+        except Exception:
+            _boot_profile = storage_profile_v237_1()
     try:
         runtime_event('boot_storage_authority_v238', f"profile={_boot_profile}; source={globals().get('_STORAGE_PROFILE_BOOT_SOURCE_V238', 'unknown')}; mega_root={globals().get('MEGA_BACKUP_DIR', '')}")
     except Exception:
@@ -5711,8 +5722,6 @@ def main():
     _local_primary = not (_tg_primary or _mega_primary)
     _render_selected = bool(_boot_profile == STORAGE_PROFILE_LOCAL_V237_1)
     _backend_name = 'Telegram durable' if _tg_primary else 'MEGA' if _mega_primary else 'Render local'
-    _split_preboot_authoritative_r19 = str(os.getenv('SPLIT_PREBOOT_AUTHORITATIVE_R20', '') or '').strip().casefold() in {'1','true','yes','on'}
-    _split_preboot_revision_r19 = str(os.getenv('SPLIT_PREBOOT_REVISION_R20', '') or '').strip()
     if _split_preboot_authoritative_r19:
         # R19: start_front has already chosen the freshest Worker/Redis/local SQLite.
         # Disable every legacy boot source for this process so there is exactly one
@@ -5817,7 +5826,15 @@ def main():
     except Exception as _och1218_bind_exc:
         runtime_event('config_guard_preboot_rebind_warn_v1218', str(_och1218_bind_exc)[:500], 'WARN')
     try:
-        storage_profile_apply_boot_hint_v237_1()
+        if _split_preboot_authoritative_r19:
+            _root = data.setdefault('_global_settings', {})
+            _root[STORAGE_PROFILE_KEY_V237_1] = STORAGE_PROFILE_LOCAL_V237_1
+            _root['render_telegram_only_v233'] = True
+            _root['mega_contour_enabled_v234'] = False
+            _root['telegram_durable_enabled_v237_1'] = False
+            runtime_event('storage_profile_apply_v1224', 'split authoritative -> local runtime; no remote control beacon during BOOT')
+        else:
+            storage_profile_apply_boot_hint_v237_1()
     except Exception as exc:
         try:
             runtime_event('storage_profile_apply_v246', str(exc), 'WARN')
@@ -5906,7 +5923,7 @@ def main():
         runtime_event('r68_restore_trace_parse_error', str(_trace_exc), 'WARN')
     try:
         purge = globals().get('purge_legacy_mega_root_state_v238')
-        if callable(purge):
+        if callable(purge) and (not _split_preboot_authoritative_r19):
             purge(True)
     except Exception as exc:
         runtime_event('mega_root_legacy_state_purge_warn_v238', str(exc), 'WARN')
@@ -5941,10 +5958,14 @@ def main():
             _RUNTIME_STATE['restore_ok'] = False
             _RUNTIME_STATE['restore_detail'] = 'DATA CONSTITUTION ERROR: ' + str(exc)[:420]
         runtime_event('boot_data_constitution_error', str(exc), 'ERROR')
-    runtime_set_phase('boot_watcher_previous', 'читаю предыдущий runtime snapshot')
+    runtime_set_phase('boot_watcher_previous', 'предыдущий runtime: локально, без MEGA на BOOT')
     try:
-        prev_runtime = runtime_load_previous_snapshot()
-        prev_reason = runtime_classify_previous(prev_runtime)
+        if _split_preboot_authoritative_r19:
+            prev_runtime = {}
+            prev_reason = 'split_authority_remote_previous_skipped_v1224'
+        else:
+            prev_runtime = runtime_load_previous_snapshot()
+            prev_reason = runtime_classify_previous(prev_runtime)
         with _RUNTIME_LOCK:
             _RUNTIME_STATE['previous_reason'] = prev_reason
         runtime_event('previous_runtime', prev_reason)
@@ -5996,7 +6017,10 @@ def main():
         runtime_event('journal_v208_boot_policy', f'migrated={int(migrated_v208)} full={int(is_journal_registration_enabled())} compact={int(journal_compact_remote_effective_enabled())} interval={journal_compact_interval_seconds()}s')
     except Exception as e:
         runtime_event('journal_v208_boot_policy_error', str(e), 'ERROR')
-    journal_start_durable_loop()
+    if str(os.getenv('OCH1224_JOURNAL_LOCAL_ONLY','1') or '1').strip().casefold() not in {'1','true','yes','on'}:
+        journal_start_durable_loop()
+    else:
+        runtime_event('journal_local_only_v1224', 'append-only local journal; no MEGA journal loop on FAST BOOT')
     try:
         if 'tenant_v148_bootstrap' in globals():
             tenant_report = tenant_v148_bootstrap()
@@ -6035,7 +6059,14 @@ def main():
     _restore_runtime_state_from_data(data)
     restore_finance_window_runtime_state()
     if not RESTORE_GUARD_ACTIVE:
-        save_data(data)
+        # OCH12.24: start_front already installed/validated the authoritative SQLite.
+        # Do not rewrite the entire restored state during BOOT; that recreates a large
+        # serialization/cache peak before the first user request.  Normal runtime
+        # mutations persist their own changes after READY.
+        if _split_preboot_authoritative_r19:
+            runtime_event('och1224_boot_full_save_skipped', 'authoritative SQLite already installed by start_front', 'INFO')
+        else:
+            save_data(data)
         data['forward_rules'] = load_forward_rules()
         try:
             if 'tenant_v148_enforce_forward_isolation' in globals():
@@ -6053,7 +6084,7 @@ def main():
         log_error(f'initialize_delta_baseline: {e}')
     runtime_set_phase('boot_task_registry', 'читаю durable tasks pending/running')
     boot_recovery_remaining = 0
-    if mega_tasks_active():
+    if mega_tasks_active() and (not _split_preboot_authoritative_r19):
         try:
             task_stats = mega_task_refresh_registry()
             log_info(f"[DURABLE TASKS STARTUP:{task_stats.get('backend', 'mega')}] pending={task_stats.get('pending', 0)} running={task_stats.get('running', 0)} failed={task_stats.get('failed', 0)} done={task_stats.get('done', 0)}")
@@ -6100,10 +6131,11 @@ def main():
                 runtime_continue_boot_recovery_background()
         else:
             runtime_mark_ready('SQLite/config + final deploy delta catch-up; настройки и durable tasks проверены')
-            try:
-                journal_flush_to_mega(True)
-            except Exception:
-                pass
+            if str(os.getenv('OCH1224_JOURNAL_LOCAL_ONLY','1') or '1').strip().casefold() not in {'1','true','yes','on'}:
+                try:
+                    journal_flush_to_mega(True)
+                except Exception:
+                    pass
     try:
         _archive_on_boot_v1218 = str(os.getenv('MEGA_SOURCE_ARCHIVE_ON_BOOT', '0') or '0').strip().lower() in {'1','true','yes','on','да'}
         if _archive_on_boot_v1218 and bool(globals().get('mega_contour_enabled_v234', lambda: False)()):

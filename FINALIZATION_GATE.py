@@ -358,7 +358,7 @@ if ROLE=='fast':
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
        all(x in start_src for x in [
-           "OCH12.23_ONE_PASS_THEN_EMPTY",
+           "OCH12.24_ONE_PASS_THEN_EMPTY",
            "recovery ignores REDIS_ENABLED",
            "MEGA_ENABLED=0. No compare loop, no tree scan, no retry",
            "EMPTY_INIT_AFTER_ONE_PASS",
@@ -369,7 +369,7 @@ if ROLE=='fast':
        '12.21 startup must try recovery sources once regardless runtime switches, then create empty SQLite')
     ok('och1220_redis_then_mega_single_pass',
        all(x in start_src for x in ['def _restore_from_redis_startup',
-                                    'OCH12.23 one-pass Redis FULL+TAIL start',
+                                    'OCH12.24 one-pass Redis FULL+TAIL start',
                                     'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX',
                                     'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
                                     "trace['base_source'] = 'REDIS_ONE_PASS'",
@@ -381,7 +381,7 @@ if ROLE=='fast':
        all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
                                     'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
                                     "trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'",
-                                    'OCH12.23 local cache absent']) and
+                                    'OCH12.24 local cache absent']) and
        start_main_src.find('ok, detail = _restore_from_local_runtime_cache(target)') <
        start_main_src.find('ok, detail = _restore_from_redis_startup(target)') <
        start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
@@ -734,8 +734,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.23'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.23')
+       "BOT_DISPLAY_NAME = 'очнись_12.24'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.24')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -781,7 +781,7 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1220_empty_after_one_pass',
-       "OCH12.23_ONE_PASS_THEN_EMPTY" in start_src and
+       "OCH12.24_ONE_PASS_THEN_EMPTY" in start_src and
        "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
        "_ensure_empty_db(target)" in start_main_src and
        'def _och1214_recovery_safe_wait' not in start_src and
@@ -851,7 +851,7 @@ if ROLE=='fast':
        '12.21 must evict a touched chat under pressure even when unrelated pools are busy')
     ok('och1220_boot_memory_trim',
        'def _och1220_release_boot_memory' in start_src and 'malloc_trim' in start_src and
-       'redis_modules_unloaded' in start_src and 'OCH12.23 boot memory release' in start_src and
+       'redis_modules_unloaded' in start_src and 'OCH12.24 boot memory release' in start_src and
        'SPLIT_PREBOOT_EMPTY_INIT_R1220' in split_src,
        '12.21 must return recovery allocator memory before loading runtime and suppress empty boot publish')
     ok('och1216_watcher_ram_sources',
@@ -1139,6 +1139,51 @@ if ROLE=='fast':
     ok('och1223_pre_ready_cold_evict',
        '_och1223_boot_evict_all_cold' in core_src and "_ev('pre_ready')" in _ready_src and "globals()['_OCH1223_BOOT_COLD_FENCE'] = False" in _ready_src,
        '12.23 must evict any boot-faulted cold fields before READY')
+
+    # OCH12.24 — one-Render RAM finalization.
+    cfg_src=all_py.get('runtime_config.py',''); diag_src=all_py.get('03_diagnostics_memory.py',''); ui_src=all_py.get('05_finance_ui.py',''); cb_src=all_py.get('06_commands_callbacks.py',''); start_src=all_py.get('start_front.py','')
+    main_src=_fn_sources(web_src,{'main'}).get('main','')
+    redis_once_src=_fn_sources(start_src,{'_restore_from_redis_startup_once'}).get('_restore_from_redis_startup_once','')
+    redis_wrap_src=_fn_sources(start_src,{'_restore_from_redis_startup'}).get('_restore_from_redis_startup','')
+    journal_export_src=_fn_sources(core_src,{'_send_journal_file_to_owner_sync'}).get('_send_journal_file_to_owner_sync','')
+    ram_trim_src=_fn_sources(diag_src,{'memory_trim'}).get('memory_trim','')
+    delayed_src=_fn_sources(core_src,{'_worker'}).get('_worker','')
+    ok('och1224_single_render_hard_invariant',
+       '"OCH1224_SINGLE_RENDER": "1"' in cfg_src and 'if _OCH1224_SINGLE_RENDER:' in split_src and "clean = {k: 'fast' for k in _R71_ROUTE_KEYS}" in split_src and 'return False\n    return not _och1210_all_fast()' in split_src,
+       '12.24 must ignore restored R2 routes and keep all contours on FAST')
+    ok('och1224_mega_master_switch_preserved',
+       'master_allowed' in split_src and "mega_render_enabled" in split_src and "use_fast = bool(use_fast and master_allowed)" in split_src,
+       'forcing ownership to FAST must not turn MEGA_ENABLED=0 back on for ordinary runtime')
+    ok('och1224_no_dead_peer_threads',
+       "if not str(_split_os.getenv('OCH1224_SINGLE_RENDER'" in split_src and "if str(os.getenv('OCH1224_SINGLE_RENDER'" in cb_src,
+       'single-render mode must not allocate peer watchdog threads')
+    ok('och1224_startfront_redis_reconnect_once',
+       'stage=GET_FULL' in start_src and 'technical reconnect once' in redis_wrap_src and redis_wrap_src.count('_restore_from_redis_startup_once(target)')==2 and 'TAIL_MGET' in redis_once_src,
+       'Redis recovery needs staged diagnostics and exactly one transport reconnect')
+    ok('och1224_boot_no_second_remote_probe',
+       "split_preboot_authoritative_v1224" in main_src and "split_authority_remote_previous_skipped_v1224" in main_src and 'storage_profile_bootstrap_v237_1()' in main_src,
+       'main must recognize start_front authority before legacy remote probes')
+    ok('och1224_boot_skips_full_resave',
+       'och1224_boot_full_save_skipped' in main_src and 'if _split_preboot_authoritative_r19:' in main_src,
+       'authoritative restored SQLite must not be fully serialized again before READY')
+    ok('och1224_mega_zero_resident',
+       '_och1224_hard_release_mega_runtime' in split_src and '_OCH1224_MEGA_CLEANUP_KEY' in split_src and "DELAYED_SCHEDULER.schedule(_OCH1224_MEGA_CLEANUP_KEY" in split_src and "comm in {'mega-cmd-server', 'mega-exec'}" in split_src,
+       'MEGAcmd must be released after discrete FAST operations without a permanent reaper')
+    ok('och1224_no_immediate_mega_bootstrap_full',
+       "_boot_age >= 300.0" in split_src and "if (not st.get('last_full_at')) and (not _stable):" in split_src and "_r80_queue_compact_full('runtime-bootstrap')" not in split_src,
+       'MEGA cold backup must not create a full checkpoint immediately after restore')
+    ok('och1224_journal_independent_local',
+       '/tmp/och_journal/events.jsonl' in cfg_src and '"BOT_JOURNAL_DURABLE_ENABLED": "0"' in cfg_src and '_journal_stream_local_events_v1224' in core_src and 'journal_flush_to_mega' not in journal_export_src and '_journal_stream_mega_rows_to_file' not in journal_export_src,
+       'event journal export must be local append-only and independent of MEGA/runtime snapshot')
+    ok('och1224_ram_inspector',
+       'ram_inspector_snapshot_v1224' in diag_src and "callback_data='ram_inspector'" in ui_src and "data_str.startswith('ram_inspector:')" in cb_src and 'tracemalloc постоянно НЕ включён' in diag_src,
+       'Info must expose low-overhead RAM breakdown without permanently enabling tracemalloc')
+    ok('och1224_scheduler_busy_coalescing',
+       'retry_delay = 1.75' in delayed_src and 'same_key_busy' in delayed_src,
+       'same-key delayed tasks must not spin/requeue every 350ms')
+    ok('och1224_memory_guard_releases_idle_mega',
+       "current_level in {'high', 'critical', 'emergency'}" in ram_trim_src and '_och1224_hard_release_mega_runtime' in ram_trim_src and '_och1210_mega_busy' in ram_trim_src,
+       'memory guard should reclaim optional idle MEGAcmd before requesting restart')
 
 elif ROLE=='heavy':
     s=text('worker_service.py')

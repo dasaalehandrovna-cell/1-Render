@@ -2265,7 +2265,11 @@ _r11_split_legacy_delta_noop()
 
 # R48 FINAL: R11 persistence wrapper folded into persist_finance_chat_local_fast in 04.
 
-_split_threading.Thread(target=_split_peer_loop, name='v262-front-peer', daemon=True).start()
+if not str(_split_os.getenv('OCH1224_SINGLE_RENDER', '0') or '0').strip().lower() in {'1','true','yes','on'}:
+    _split_threading.Thread(target=_split_peer_loop, name='v262-front-peer', daemon=True).start()
+else:
+    try: runtime_event('och1224_peer_thread_skipped', 'Render #2 disabled by single-render invariant', 'INFO')
+    except Exception: pass
 
 # ---------------------------------------------------------------------------
 # r4 continuity layer: deploy/restart must be invisible to the Telegram user.
@@ -3212,14 +3216,14 @@ except Exception:
 # Suppress boot-time snapshot storms and publish exactly one fully migrated state at READY.
 _RUNTIME_MARK_READY_CORE = _canon_runtime_mark_ready__001
 def runtime_mark_ready(detail: str=''):
-    # OCH12.23: READY means the restored DB is cold again.  Any boot verifier that
+    # OCH12.24: READY means the restored DB is cold again.  Any boot verifier that
     # transiently faulted ledgers must release them before Telegram traffic resumes.
     try:
         _ev = globals().get('_och1223_boot_evict_all_cold')
         if callable(_ev):
             _ev('pre_ready')
     except Exception as exc:
-        try: log_error(f'OCH12.23 pre-READY cold eviction: {exc}')
+        try: log_error(f'OCH12.24 pre-READY cold eviction: {exc}')
         except Exception: pass
     globals()['_OCH1223_BOOT_COLD_FENCE'] = False
     result = _RUNTIME_MARK_READY_CORE(detail)
@@ -8760,6 +8764,7 @@ _R71_ROUTE_LABELS = {
     'mega': '🗄 MEGA backup / recovery / runtime',
 }
 _R71_ROUTE_DEFAULTS = {k: 'heavy' for k in _R71_ROUTE_KEYS}
+_OCH1224_SINGLE_RENDER = str(_split_os.getenv('OCH1224_SINGLE_RENDER', '0') or '0').strip().lower() in {'1','true','yes','on'}
 _R71_ROUTE_LOCK = _split_threading.RLock() if '_split_threading' in globals() else __import__('threading').RLock()
 _R71_ROUTE_CACHE = None
 _R71_ROUTE_META_NS = 'runtime_owner_routes_r71'
@@ -8786,6 +8791,8 @@ def _r71_load_routes(force=False):
         except Exception:
             row = {}
         clean = {k: _r71_normalize_owner(row.get(k, _R71_ROUTE_DEFAULTS[k])) for k in _R71_ROUTE_KEYS}
+        if _OCH1224_SINGLE_RENDER:
+            clean = {k: 'fast' for k in _R71_ROUTE_KEYS}
         _R71_ROUTE_CACHE = clean
         return dict(clean)
 
@@ -8800,8 +8807,23 @@ def _r71_route_is_fast(kind):
 
 
 def _r71_apply_runtime_side_effects():
-    """Enable local MEGA only while its owner is R1; keep R2 default isolated."""
+    """Apply routing without overriding the Render master MEGA switch.
+
+    OCH12.24 forces ownership to FAST because R2 is dead, but MEGA_ENABLED=0 must
+    still mean no ordinary runtime MEGA.  BOOT/manual recovery have their own
+    explicit emergency permission and may use credentials without turning background
+    MEGA on.
+    """
     use_fast = _r71_route_is_fast('mega')
+    master_allowed = True
+    if _OCH1224_SINGLE_RENDER:
+        try:
+            import runtime_config as _r71_rc
+            _fn = getattr(_r71_rc, 'mega_render_enabled', None)
+            master_allowed = bool(_fn()) if callable(_fn) else bool(getattr(_r71_rc, '_MEGA_RENDER_ENABLED', False))
+        except Exception:
+            master_allowed = bool(globals().get('MEGA_ENABLED', False))
+        use_fast = bool(use_fast and master_allowed)
     try:
         if 'MEGA_ENABLED' in globals():
             globals()['MEGA_ENABLED'] = bool(use_fast)
@@ -8823,6 +8845,9 @@ def _r71_apply_runtime_side_effects():
 def _r71_save_routes(routes, reason='switch'):
     global _R71_ROUTE_CACHE
     clean = {k: _r71_normalize_owner((routes or {}).get(k, _R71_ROUTE_DEFAULTS[k])) for k in _R71_ROUTE_KEYS}
+    if _OCH1224_SINGLE_RENDER:
+        clean = {k: 'fast' for k in _R71_ROUTE_KEYS}
+        reason = 'och12.24-single-render-forced'
     with _R71_ROUTE_LOCK:
         _R71_ROUTE_CACHE = dict(clean)
         try:
@@ -9217,7 +9242,12 @@ def _r71_contour_callback_guard(call, resolved):
     elif raw == 'r71:all:fast':
         _r71_set_all('fast')
     elif raw == 'r71:all:heavy':
-        _r71_set_all('heavy')
+        if _OCH1224_SINGLE_RENDER:
+            _r71_set_all('fast')
+            try: bot.answer_callback_query(call.id, 'Render #2 отключён в 12.24: все контуры остаются на FAST.', show_alert=True)
+            except Exception: pass
+        else:
+            _r71_set_all('heavy')
     # OCH12.6/R82: auxiliary failed-task restore is replayed only in background
     # after durability ownership returns to R2. Never block this menu/UI callback.
     try:
@@ -9366,10 +9396,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10238,7 +10268,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10277,7 +10307,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10327,7 +10357,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10350,13 +10380,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10412,7 +10442,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11311,7 +11341,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.23'),
+        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.24'),
         'updated_at':_split_time.time(),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
@@ -11966,11 +11996,27 @@ def _r80_compact_scheduler_loop():
             if _r80_mega_runtime_ready():
                 now=now_local(); today=now.date().isoformat(); at=_r79_redis_daily_time(False); hh,mm=[int(x) for x in at.split(':',1)]
                 with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
-                if not st.get('last_full_at'):
-                    _r80_queue_compact_full('runtime-bootstrap')
-                elif (now.hour,now.minute)>=(hh,mm) and str(st.get('last_full_date') or '')!=today and not _och111_hot_ui_busy():
+                _boot_age = 0.0
+                try:
+                    _boot_age = max(0.0, _split_time.monotonic() - float(globals().get('_RUNTIME_STARTED_MONO') or _split_time.monotonic()))
+                except Exception:
+                    _boot_age = 0.0
+                _mem_ok = True
+                try:
+                    _mh = globals().get('memory_heavy_allowed')
+                    if callable(_mh):
+                        _mh_res = _mh('mega-compact-scheduler')
+                        _mem_ok = bool(_mh_res[0]) if isinstance(_mh_res, tuple) else bool(_mh_res)
+                except Exception:
+                    _mem_ok = False
+                _stable = bool(globals().get('runtime_is_ready', lambda: False)()) and _boot_age >= 300.0 and _mem_ok
+                # OCH12.24: never publish a bootstrap FULL immediately after restore/restart.
+                # The restored SQLite is already authoritative; MEGA remains a cold backup.
+                if (not st.get('last_full_at')) and (not _stable):
+                    pass
+                elif (now.hour,now.minute)>=(hh,mm) and str(st.get('last_full_date') or '')!=today and _stable and not _och111_hot_ui_busy():
                     _r80_queue_compact_full('daily-'+today)
-                elif st.get('tail_dirty') and not st.get('running') and not _och111_hot_ui_busy() and _split_time.time()-float(st.get('last_tail_at') or 0.0)>=max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_FLUSH_SEC','90') or '90')):
+                elif st.get('tail_dirty') and not st.get('running') and _stable and not _och111_hot_ui_busy() and _split_time.time()-float(st.get('last_tail_at') or 0.0)>=max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_FLUSH_SEC','90') or '90')):
                     pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
                     queued=False
                     try:
@@ -12026,9 +12072,13 @@ def _r70_routes_keyboard():
     kb.row(_r71_route_button('google'),_r71_route_button('files'))
     kb.row(_r71_route_button('diagnostics'),_r71_route_button('mega'))
     kb.row(_r71_route_button('durability'),_r71_route_button('checkpoints'))
-    kb.row(IB('🚨 R2 НЕТ → ВСЁ #1',callback_data='r71:all:fast'),IB('🛰 Вернуть ВСЁ → #2',callback_data='r71:all:heavy'))
-    kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
-    kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
+    kb.row(IB('🚨 R2 НЕТ → ВСЁ #1',callback_data='r71:all:fast'),IB('⛔ Render #2 выключен',callback_data='r71:all:heavy'))
+    if _OCH1224_SINGLE_RENDER:
+        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('⛔ Render #2 отключён',callback_data='r71:all:heavy'))
+        kb.row(IB('❌ Закрыть',callback_data='info_close'))
+    else:
+        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
+        kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
 
 _R80_CONTOUR_CORE=contour_callback_guard
@@ -12453,6 +12503,10 @@ _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
 _OCH1210_MEGA_IDLE_SEC = max(45.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC', '75') or '75'))
 _OCH1210_MEGA_REAPER_STARTED = False
 _OCH1210_MEGA_REAPER_LOCK = _split_threading.RLock()
+_OCH1224_MEGA_ZERO_RESIDENT = str(_split_os.getenv('OCH1224_MEGA_ZERO_RESIDENT', '0') or '0').strip().lower() in {'1','true','yes','on'}
+_OCH1224_MEGA_ZERO_DELAY = max(3.0, float(_split_os.getenv('MEGA_ZERO_RESIDENT_DELAY_SEC', '8') or '8'))
+_OCH1224_MEGA_CLEANUP_KEY = 'och1224-mega-zero-resident'
+
 
 
 def _och1210_all_fast() -> bool:
@@ -12463,6 +12517,8 @@ def _och1210_all_fast() -> bool:
 
 
 def _och1210_r2_enabled() -> bool:
+    if _OCH1224_SINGLE_RENDER:
+        return False
     return not _och1210_all_fast()
 
 
@@ -12593,6 +12649,96 @@ def _och1210_retry_pending_restore_reanchor():
 _v240_retry_pending_restore_reanchor = _och1210_retry_pending_restore_reanchor
 
 
+def _och1224_hard_release_mega_runtime() -> dict:
+    """Release MEGAcmd after a discrete operation; FAST must not keep it resident."""
+    out = {'quit': False, 'term': 0, 'kill': 0, 'survivors': 0}
+    try:
+        import shutil as _msh, subprocess as _msp, signal as _msig
+        exe = _msh.which('mega-quit')
+        if exe:
+            try:
+                _msp.run([exe], stdout=_msp.DEVNULL, stderr=_msp.DEVNULL, timeout=5, check=False)
+                out['quit'] = True
+            except Exception:
+                pass
+        me = int(_split_os.getpid())
+        victims = []
+        for ent in _split_os.listdir('/proc'):
+            if not str(ent).isdigit():
+                continue
+            pid = int(ent)
+            if pid in {0, 1, me}:
+                continue
+            try:
+                comm = open(f'/proc/{pid}/comm', 'r', encoding='utf-8', errors='ignore').read().strip()
+            except Exception:
+                continue
+            if comm in {'mega-cmd-server', 'mega-exec'}:
+                victims.append(pid)
+        for pid in victims:
+            try:
+                _split_os.kill(pid, _msig.SIGTERM); out['term'] += 1
+            except Exception:
+                pass
+        if victims:
+            _split_time.sleep(0.15)
+        def _alive_non_zombie(pid):
+            try:
+                stat = open(f'/proc/{pid}/stat', 'r', encoding='utf-8', errors='ignore').read().split()
+                return bool(len(stat) > 2 and stat[2] != 'Z')
+            except Exception:
+                return False
+        survivors = [pid for pid in victims if _alive_non_zombie(pid)]
+        for pid in survivors:
+            try:
+                _split_os.kill(pid, _msig.SIGKILL); out['kill'] += 1
+            except Exception:
+                pass
+        if survivors:
+            _split_time.sleep(0.05)
+        out['survivors'] = sum(1 for pid in survivors if _alive_non_zombie(pid))
+    except Exception as exc:
+        out['error'] = f'{type(exc).__name__}: {str(exc)[:160]}'
+    try:
+        gc_fn = globals().get('_memory_gc')
+        if gc_fn is not None and hasattr(gc_fn, 'collect'):
+            gc_fn.collect()
+        trim_fn = globals().get('memory_malloc_trim')
+        if callable(trim_fn):
+            trim_fn()
+    except Exception:
+        pass
+    try:
+        bot_journal('och1224_mega_zero_resident_release', int(OWNER_ID or 0), str(out))
+    except Exception:
+        pass
+    return out
+
+
+def _och1224_release_mega_if_quiet():
+    if not _OCH1224_MEGA_ZERO_RESIDENT:
+        return False
+    if _och1210_mega_busy():
+        try:
+            DELAYED_SCHEDULER.schedule(_OCH1224_MEGA_CLEANUP_KEY, _OCH1224_MEGA_ZERO_DELAY, _och1224_release_mega_if_quiet)
+        except Exception:
+            pass
+        return False
+    _och1224_hard_release_mega_runtime()
+    return True
+
+
+def _och1224_schedule_mega_release():
+    if not _OCH1224_MEGA_ZERO_RESIDENT:
+        return
+    try:
+        # latest-wins key: a multi-command MEGA sequence continuously pushes the
+        # cleanup deadline forward, then one cleanup runs after the sequence is quiet.
+        DELAYED_SCHEDULER.schedule(_OCH1224_MEGA_CLEANUP_KEY, _OCH1224_MEGA_ZERO_DELAY, _och1224_release_mega_if_quiet)
+    except Exception:
+        pass
+
+
 def _och1210_mega_run(cmd: str, args=None, timeout=None, check: bool=True, control_plane: bool=False):
     global _OCH1210_MEGA_LAST_ACTIVITY
     _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
@@ -12602,6 +12748,7 @@ def _och1210_mega_run(cmd: str, args=None, timeout=None, check: bool=True, contr
         return _OCH1210_PARENT_MEGA_RUN(cmd, args=args, timeout=timeout, check=check, control_plane=control_plane)
     finally:
         _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
+        _och1224_schedule_mega_release()
 
 
 _mega_run = _och1210_mega_run
@@ -12666,6 +12813,8 @@ def _och1210_mega_idle_reaper_loop():
 
 def _och1210_start_mega_idle_reaper():
     global _OCH1210_MEGA_REAPER_STARTED
+    if _OCH1224_MEGA_ZERO_RESIDENT:
+        return
     with _OCH1210_MEGA_REAPER_LOCK:
         if _OCH1210_MEGA_REAPER_STARTED:
             return
@@ -12705,9 +12854,13 @@ def _r70_routes_keyboard():
     kb.row(_r71_route_button('google'),_r71_route_button('files'))
     kb.row(_r71_route_button('diagnostics'),_r71_route_button('mega'))
     kb.row(_r71_route_button('durability'),_r71_route_button('checkpoints'))
-    kb.row(IB('✅ R2 НЕТ · ВСЁ #1',callback_data='r71:all:fast'),IB('🛰 Включить R2 → #2',callback_data='r71:all:heavy'))
-    kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
-    kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
+    kb.row(IB('✅ R2 НЕТ · ВСЁ #1',callback_data='r71:all:fast'),IB('⛔ Render #2 выключен',callback_data='r71:all:heavy'))
+    if _OCH1224_SINGLE_RENDER:
+        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('⛔ Render #2 отключён',callback_data='r71:all:heavy'))
+        kb.row(IB('❌ Закрыть',callback_data='info_close'))
+    else:
+        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
+        kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
 
 

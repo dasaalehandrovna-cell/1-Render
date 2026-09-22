@@ -17,8 +17,8 @@ import tempfile as _v196_tempfile
 V176_FILE_MARKER = 'v178_global_performance_final'
 V176_SETTINGS_KEY = 'process_control_v176'
 _V176_LOCK = _v176_threading.RLock()
-_V176_PERF = _v176_collections.deque(maxlen=240)
-_V177_PERF_STAGES = _v176_collections.deque(maxlen=720)
+_V176_PERF = _v176_collections.deque(maxlen=160)
+_V177_PERF_STAGES = _v176_collections.deque(maxlen=320)
 _V177_PERF_LOCAL = _v176_threading.local()
 
 def v177_perf_stage(name: str, elapsed: float) -> None:

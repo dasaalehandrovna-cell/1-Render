@@ -206,7 +206,7 @@ def gomonk_info_label(chat_id: int, currency: str | None=None) -> str:
 def _ensure_currency_ledgers(store: dict) -> str:
     """Initialize ledger metadata without faulting cold histories on LOW-RAM.
 
-    OCH12.23: merely asking which currency is active must never load records/ARS/USD
+    OCH12.24: merely asking which currency is active must never load records/ARS/USD
     arrays from SQLite.  Legacy data are migrated lazily when that chat is actually used.
     """
     settings = store.setdefault('settings', {})
@@ -5246,9 +5246,14 @@ def build_journal_v208_menu_text() -> str:
 
 def build_journal_v208_menu_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(IB(journal_toggle_label(), callback_data='journal_toggle_open'), IB('✅ MEGA gzip' if journal_compact_remote_effective_enabled() else '⬜ MEGA gzip', callback_data='journal_compact_toggle'))
-    kb.row(IB(f'⏱ Batch: {journal_compact_interval_seconds() // 60} мин', callback_data='journal_compact_interval_menu'), IB('✅ Telegram API verbose' if verbose_telegram_journal_enabled() else '⬜ Telegram API verbose', callback_data='journal_verbose_toggle'))
-    kb.row(IB('📄 Полный диагностический журнал', callback_data='journal_file'))
+    if str(os.getenv('OCH1224_JOURNAL_LOCAL_ONLY', '0') or '0').strip().lower() in {'1','true','yes','on'}:
+        kb.row(IB(journal_toggle_label(), callback_data='journal_toggle_open'), IB('🧱 Local JSONL · независимо', callback_data='journal_open'))
+        kb.row(IB('✅ Telegram API verbose' if verbose_telegram_journal_enabled() else '⬜ Telegram API verbose', callback_data='journal_verbose_toggle'))
+    else:
+        kb.row(IB(journal_toggle_label(), callback_data='journal_toggle_open'), IB('✅ MEGA gzip' if journal_compact_remote_effective_enabled() else '⬜ MEGA gzip', callback_data='journal_compact_toggle'))
+        kb.row(IB(f'⏱ Batch: {journal_compact_interval_seconds() // 60} мин', callback_data='journal_compact_interval_menu'), IB('✅ Telegram API verbose' if verbose_telegram_journal_enabled() else '⬜ Telegram API verbose', callback_data='journal_verbose_toggle'))
+    kb.row(IB('📓 Независимый журнал событий', callback_data='journal_file'))
+    kb.row(IB('🖥 Runtime ZIP / состояние', callback_data='runtime_export'))
     kb.row(IB('📓 Журнал текущей версии', callback_data='journal_current_file'))
     _jfull = journal_download_base_name_for('full')
     _jf = _jfull if len(_jfull) <= 24 else _jfull[:21] + '…'
@@ -5289,7 +5294,10 @@ def _v177_legacy_0216_build_info_keyboard(chat_id: int):
         if layout == 'v83':
             kb.row(IB(main_article_buttons_label(chat_id), callback_data='main_articles_toggle'))
         if version_mode_feature('keepalive_menu'):
-            kb.row(IB('💓 Самопеленг', callback_data='keepalive_status'), IB('🛰 Второй сервер', callback_data='keepalive_peer'))
+            if str(os.getenv('OCH1224_SINGLE_RENDER', '0') or '0').strip().lower() in {'1','true','yes','on'}:
+                kb.row(IB('💓 Самопеленг', callback_data='keepalive_status'))
+            else:
+                kb.row(IB('💓 Самопеленг', callback_data='keepalive_status'), IB('🛰 Второй сервер', callback_data='keepalive_peer'))
         kb.row(IB('⏱ Внутренние таймеры', callback_data='internal_timers'))
         kb.row(IB('☁️ Google Чт–Ср', callback_data=f'v169:gmenu:{int(chat_id)}'))
         kb.row(IB('📱 Быстрый расход iPhone', callback_data='expense_shortcut_info'))
@@ -5299,7 +5307,7 @@ def _v177_legacy_0216_build_info_keyboard(chat_id: int):
         kb.row(IB('🔗 Целостность финансов', callback_data='integrity_status'))
         kb.row(IB(excel_table_style_label(chat_id), callback_data='excel_style_menu'))
         kb.row(IB('📘 Инструкция', callback_data='info_instruction'), IB('🚦 Очереди', callback_data='info_queues'))
-        kb.row(IB('🖥 Render / Сервер', callback_data='runtime_watcher'))
+        kb.row(IB('🧠 RAM', callback_data='ram_inspector'), IB('🖥 Render / Сервер', callback_data='runtime_watcher'))
         if active_bot_behavior_profile() in {'v93_current', 'v92_current', 'v91_current', 'v90_current'}:
             kb.row(IB('🧩 Delta / snapshots', callback_data='info_delta_status'))
         if is_primary_owner(chat_id):

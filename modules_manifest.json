@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "f951cbd695269e082f27c6b3f5f96162dfd600f6c7dc094ef33545e94c695220",
-    "02_transport_safety.py": "17fc6c90b95acd0723f095cc41e5871bd4f330ae0c2a1315ecc767587bdf8583",
-    "03_diagnostics_memory.py": "a631cbab09bde69885fa730a9a04664575607edb22eee4d9dae0d7adfddaf194",
+    "01_core_data.py": "64a9d1490ea3320a21007f2ff14841685a00a76fcc17d208afbe0527d0dd7f15",
+    "02_transport_safety.py": "94a0fe0f2cb613a6d89e6db5d10dd6691994b2c3762521d7742fbefd6217eb89",
+    "03_diagnostics_memory.py": "59d5796c4f91bdcb4e9a5a6b8da79f83d894e3b04f7ffd37e06f3a42b2afd59b",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
-    "05_finance_ui.py": "fbbfe4c98aee6f02ee3ee0fb4f7aa8be108f67328a4b662b4229ad497f1ac853",
-    "06_commands_callbacks.py": "0d3b777047f8ae6d44912fa0a8297bffdd580d8071902320cc463d06152b40fa",
-    "07_state_web.py": "dd9f032e8080750df708a514f4a885023cc03a9e441a253348298908864c6773",
-    "08_reliability_tasks.py": "f12fb457bf6b76c355d12013f7cd175104a913f370b718185fb03bc93dda9cd7",
-    "09_final_transport.py": "43de89967ccf7c75c01a229a584412485b276f19d86cd81daed19a007ac7d5e0",
-    "10_split_policy_offload.py": "d065b521e81505a4a4c570a73976ba9394ea06ba0cf268b2e984e4539bceae7f"
+    "05_finance_ui.py": "a1bbd15eb8a57bf7509bbd03728660bcc5dacfa2ba017957c5ef6eca440462b0",
+    "06_commands_callbacks.py": "dfb7df011167769b44fb07a5ce7bdbf8d4904fa151fdccd40a004bfbf22695bb",
+    "07_state_web.py": "0fed59a517485eedbeec47c0d55964d1ad00597375df00aaa0f006105b92e798",
+    "08_reliability_tasks.py": "0716588c014e5f48fbe1e2efcaf6183417beab10f180bf47d63e5c9d13de1423",
+    "09_final_transport.py": "bcde634ed040844b6d4f8a820b0a0f646d29c50d4b8a3fe68d60b9f562ef4418",
+    "10_split_policy_offload.py": "7034e8c04bf7bd3f26cb0f480d1f6c5e54f031800df1d383fa9d3a42b810f108"
   },
-  "release": "ОЧНИСЬ_12.23-SQLITE-COLD-BOOT",
+  "release": "ОЧНИСЬ_12.24-RAM-FINALIZATION-SINGLE-RENDER",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -417,6 +417,18 @@
     "och1223_boot_uid_source_index_bounded",
     "och1223_currency_metadata_no_cold_fault",
     "och1223_no_boot_daily_fanout",
-    "och1223_pre_ready_cold_evict"
+    "och1223_pre_ready_cold_evict",
+    "och1224_single_render_hard_invariant",
+    "och1224_no_duplicate_boot_remote_probe",
+    "och1224_redis_transport_reconnect_once",
+    "och1224_mega_zero_resident",
+    "och1224_no_immediate_mega_bootstrap_full",
+    "och1224_boot_skip_full_resave",
+    "och1224_independent_event_journal",
+    "och1224_ram_inspector",
+    "och1224_scheduler_busy_coalescing",
+    "och1224_peer_threads_removed_single_render",
+    "och1224_memory_guard_idle_mega_reclaim",
+    "och1224_diagnostic_ram_ring_reduction"
   ]
 }

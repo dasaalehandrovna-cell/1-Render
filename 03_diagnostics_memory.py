@@ -1,5 +1,4 @@
 # v262
-
 # --- ИСТОЧНИК: 16_window_diagnostics.py ---
 import inspect as _window_diag_inspect
 WINDOW_DIAGNOSTICS_ENABLED = str(os.getenv('WINDOW_DIAGNOSTICS_ENABLED', '1') or '1').strip().lower() not in {'0', 'false', 'off', 'no'}
@@ -801,6 +800,17 @@ def memory_trim(reason: str='manual', level: str | None=None, force: bool=False)
         except Exception as exc:
             _memory_emit('memory_lowram_flush_error', {'reason': reason, 'error': str(exc)[:300]}, 'WARN')
     _memory_compact_logs(current_level)
+    # OCH12.24: before considering a restart, reclaim optional MEGAcmd children.
+    # Never kill an active MEGA operation; zero-resident cleanup only runs when quiet.
+    if current_level in {'high', 'critical', 'emergency'}:
+        try:
+            busy_fn = globals().get('_och1210_mega_busy')
+            mega_busy = bool(busy_fn()) if callable(busy_fn) else False
+            release_fn = globals().get('_och1224_hard_release_mega_runtime')
+            if (not mega_busy) and callable(release_fn):
+                release_fn()
+        except Exception:
+            pass
     try:
         _memory_gc.collect()
     except Exception:
@@ -1650,4 +1660,120 @@ def handle_category_edit_message(msg) -> bool:
         send_and_auto_delete(chat_id, '❌ Не понял формат. Пример:\nРЕМОНТ: гипсокартон, шпаклевка, краска', 20)
         return True
 
+
+# --- OCH12.24 RAM Inspector -------------------------------------------------
+def _ram_loaded_modules_v1224() -> dict:
+    """Loaded-module inventory. File sizes are diagnostics only, never claimed as RSS."""
+    names = tuple(sys.modules.keys()) if 'sys' in globals() else ()
+    groups = {
+        'redis': ('redis',),
+        'telebot': ('telebot',),
+        'flask': ('flask', 'werkzeug', 'jinja2'),
+        'waitress': ('waitress',),
+        'requests': ('requests', 'urllib3'),
+        'excel/xml': ('openpyxl', 'xlsxwriter', 'xml'),
+        'google': ('google', 'googleapiclient', 'oauth2client'),
+        'numpy/pandas': ('numpy', 'pandas'),
+    }
+    out = {}
+    for label, prefixes in groups.items():
+        matched = [n for n in names if any(n == p or n.startswith(p + '.') for p in prefixes)]
+        bytes_on_disk = 0
+        files = set()
+        for n in matched:
+            try:
+                mod = sys.modules.get(n)
+                fn = getattr(mod, '__file__', '') or ''
+                if fn and os.path.isfile(fn) and fn not in files:
+                    files.add(fn); bytes_on_disk += int(os.path.getsize(fn))
+            except Exception:
+                pass
+        out[label] = {'loaded': bool(matched), 'modules': len(matched), 'file_mb': round(bytes_on_disk / 1024 / 1024, 2)}
+    return {'module_count': len(names), 'groups': out}
+
+
+def ram_inspector_snapshot_v1224() -> dict:
+    mem = memory_runtime_summary()
+    structures = (mem.get('structures') or {})
+    return {
+        'memory': mem,
+        'modules': _ram_loaded_modules_v1224(),
+        'queues': structures.get('queues') or {},
+        'buffers': structures.get('buffers') or {},
+        'cold_fields_loaded': int(structures.get('cold_fields_loaded') or 0),
+        'cold_fields_by_key': structures.get('cold_fields_by_key') or {},
+        'thread_groups': structures.get('thread_groups') or {},
+        'audit': structures.get('audit_metrics') or {},
+        'sqlite_readers': structures.get('sqlite_readers') or {},
+    }
+
+
+def ram_inspector_text_v1224(mode: str='overview') -> str:
+    mode = str(mode or 'overview').strip().casefold()
+    snap = ram_inspector_snapshot_v1224()
+    mem = snap['memory']; q = mem.get('quick') or {}; struct = mem.get('structures') or {}
+    roll = struct.get('process_rollup') or {}; cgs = struct.get('cgroup_stat') or {}
+    lines = [f'🧠 RAM · {globals().get("BOT_DISPLAY_NAME") or globals().get("VERSION") or "очнись"}', '']
+    if mode in {'modules','imports'}:
+        mods = snap['modules']
+        lines += [f'📦 Загружено Python-модулей: {mods.get("module_count", 0)}', 'Размер файла ниже ≠ RAM; это только индикатор, что подсистема загружена.']
+        for label, row in (mods.get('groups') or {}).items():
+            lines.append(f"{'✅' if row.get('loaded') else '⬜'} {label}: modules={row.get('modules',0)} · files≈{row.get('file_mb',0)} MB")
+    elif mode == 'cold':
+        lines += [f"🧊 Cold fields в RAM: {snap.get('cold_fields_loaded',0)}"]
+        for k,v in sorted((snap.get('cold_fields_by_key') or {}).items()): lines.append(f'• {k}: {v}')
+        lines += ['', f"SQLite readers: {(snap.get('sqlite_readers') or {}).get('threads_seen','—')} threads · cache {(snap.get('sqlite_readers') or {}).get('cache_kb_each','—')} KB"]
+    elif mode == 'threads':
+        lines += [f"🧵 Python threads: {struct.get('threads', threading.active_count())}"]
+        for k,v in sorted((snap.get('thread_groups') or {}).items(), key=lambda x:(-int(x[1]),x[0]))[:18]: lines.append(f'• {k}: {v}')
+    elif mode == 'children':
+        lines += [f"👶 Дочерние процессы: {len(mem.get('children') or [])} · RSS {mem.get('children_rss_mb',0)} MB"]
+        if not mem.get('children'): lines.append('• нет')
+        for row in (mem.get('children') or [])[:16]: lines.append(f"• pid {row.get('pid')} · {row.get('name')} · {row.get('rss_mb','—')} MB")
+    elif mode in {'buffers','queues'}:
+        lines += ['📚 Буферы:']
+        for k,v in sorted((snap.get('buffers') or {}).items()): lines.append(f'• {k}: {v}')
+        lines += ['', '🚦 Очереди pending/active:']
+        for name,row in sorted((snap.get('queues') or {}).items()):
+            p=int((row or {}).get('pending') or 0); a=int((row or {}).get('active') or 0)
+            if p or a: lines.append(f'• {name}: {p}/{a}')
+        audit=snap.get('audit') or {}
+        lines += ['', f"Runtime: operations {audit.get('operation_items',0)} · integrity {audit.get('integrity_events',0)} · expense {audit.get('expense_drafts',0)} · journal {audit.get('journal_buffer_rows',0)}"]
+    elif mode == 'heap':
+        import gc as _gc1224
+        lines += ['🐍 Python heap / allocator:', f"RSS {q.get('python_rss_mb','—')} MB · anon {roll.get('anonymous_mb','—')} MB · private dirty {roll.get('private_dirty_mb','—')} MB", f"GC counters: {list(_gc1224.get_count())}", f"glibc arenas: {(struct.get('glibc_allocator_v248') or {}).get('arena_max','—')}", 'tracemalloc постоянно НЕ включён, чтобы сам не расходовал RAM.']
+    else:
+        lines += [
+            f"Python RSS: {q.get('python_rss_mb','—')} MB · peak {q.get('python_peak_rss_mb','—')} MB",
+            f"Container: {q.get('container_current_mb','—')} MB · peak {q.get('container_peak_mb','—')} MB / {q.get('limit_mb','—')} MB",
+            f"Level: {mem.get('level','—')}",
+            f"anon/private dirty: {roll.get('anonymous_mb','—')} / {roll.get('private_dirty_mb','—')} MB",
+            f"cgroup anon/file/kernel: {cgs.get('anon_mb','—')} / {cgs.get('file_mb','—')} / {cgs.get('kernel_mb','—')} MB",
+            f"Children: {mem.get('children_rss_mb',0)} MB · processes {len(mem.get('children') or [])}",
+            f"Cold fields loaded: {snap.get('cold_fields_loaded',0)}",
+            f"Threads: {struct.get('threads', threading.active_count())}",
+            f"Python modules loaded: {(snap.get('modules') or {}).get('module_count',0)}",
+        ]
+        loaded = [k for k,v in ((snap.get('modules') or {}).get('groups') or {}).items() if v.get('loaded')]
+        lines.append('Loaded subsystems: ' + (', '.join(loaded) if loaded else '—'))
+    lines += ['', 'SQLite должна быть постоянной истиной; RAM — только временный рабочий кэш.']
+    return '\n'.join(lines)[:3300]
+
+
+def ram_inspector_trim_v1224() -> dict:
+    before = memory_quick_snapshot()
+    evicted = {'fields':0}
+    try:
+        fn = globals().get('_och1223_boot_evict_all_cold')
+        if callable(fn): evicted = fn('manual_ram_inspector_v1224') or evicted
+    except Exception:
+        pass
+    try:
+        memory_trim('manual_ram_inspector_v1224', force=True)
+    except Exception:
+        try:
+            _memory_gc.collect(); memory_malloc_trim()
+        except Exception:
+            pass
+    return {'before': before, 'after': memory_quick_snapshot(), 'evicted': evicted}
 # v262
