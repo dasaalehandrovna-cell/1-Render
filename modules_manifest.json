@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "cb47ce90f99d7bfb659eb7f1cb7c6d9afbb48bed820f5fa5d335ea6de9f48294",
-    "02_transport_safety.py": "94a0fe0f2cb613a6d89e6db5d10dd6691994b2c3762521d7742fbefd6217eb89",
-    "03_diagnostics_memory.py": "59d5796c4f91bdcb4e9a5a6b8da79f83d894e3b04f7ffd37e06f3a42b2afd59b",
+    "01_core_data.py": "8dd4e1cdadd26c9924ec61be6b225c212e1093582aeeeadec429766b1e7002b1",
+    "02_transport_safety.py": "3c014c4c112ff3a54acfd0d85d872768d59206859346675aa3027c62e13a8400",
+    "03_diagnostics_memory.py": "114a09623f979034fb4aa461a58beabe317c53d5b56e9d91a9fc9b611a98a4c5",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "a1bbd15eb8a57bf7509bbd03728660bcc5dacfa2ba017957c5ef6eca440462b0",
-    "06_commands_callbacks.py": "dfb7df011167769b44fb07a5ce7bdbf8d4904fa151fdccd40a004bfbf22695bb",
+    "06_commands_callbacks.py": "e7f0895fcc681d0375b3d6ccd038f45b1f28725c43438c727b0ce68d54031b62",
     "07_state_web.py": "0fed59a517485eedbeec47c0d55964d1ad00597375df00aaa0f006105b92e798",
     "08_reliability_tasks.py": "0716588c014e5f48fbe1e2efcaf6183417beab10f180bf47d63e5c9d13de1423",
     "09_final_transport.py": "bcde634ed040844b6d4f8a820b0a0f646d29c50d4b8a3fe68d60b9f562ef4418",
-    "10_split_policy_offload.py": "7034e8c04bf7bd3f26cb0f480d1f6c5e54f031800df1d383fa9d3a42b810f108"
+    "10_split_policy_offload.py": "6fadde47153579fbaf9ab33c159faf1648076cc29b3f2bdde5f76d15b4ec02a4"
   },
-  "release": "ОЧНИСЬ_12.24-RAM-FINALIZATION-SINGLE-RENDER",
+  "release": "ОЧНИСЬ_12.25-MEGA-TRANSACTION-RAM-DEEP",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -430,6 +430,11 @@
     "och1224_peer_threads_removed_single_render",
     "och1224_memory_guard_idle_mega_reclaim",
     "och1224_diagnostic_ram_ring_reduction",
-    "och1224_o9_startup_smoke_fix"
+    "och1224_o9_startup_smoke_fix",
+    "och1225_mega_cli_serialized",
+    "och1225_mega_cold_standby",
+    "och1225_mega_safe_idle_release",
+    "och1225_deep_ram_inspector",
+    "och1225_finance_edit_forward_anchor"
   ]
 }

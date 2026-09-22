@@ -1851,7 +1851,8 @@ def on_callback(call):
             kbr.row(IB('📊 Обзор', callback_data='ram_inspector'), IB('🐍 Heap', callback_data='ram_inspector:heap'))
             kbr.row(IB('📦 Импорты', callback_data='ram_inspector:modules'), IB('🧊 Cold data', callback_data='ram_inspector:cold'))
             kbr.row(IB('🧵 Потоки', callback_data='ram_inspector:threads'), IB('👶 Процессы', callback_data='ram_inspector:children'))
-            kbr.row(IB('📚 Буферы/очереди', callback_data='ram_inspector:buffers'), IB('🧹 Cold + GC', callback_data='ram_inspector:trim'))
+            kbr.row(IB('📚 Буферы/очереди', callback_data='ram_inspector:buffers'), IB('🔬 Deep RAM', callback_data='ram_inspector:deep'))
+            kbr.row(IB('🧹 Cold + GC', callback_data='ram_inspector:trim'))
             kbr.row(IB('🔙 Назад в Инфо', callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB('❌ Закрыть', callback_data='info_close'))
             safe_edit(bot, call, ram_inspector_text_v1224(mode), reply_markup=kbr)
             return

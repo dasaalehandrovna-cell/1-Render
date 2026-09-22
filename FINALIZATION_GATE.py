@@ -734,8 +734,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.24'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.24')
+       "BOT_DISPLAY_NAME = 'очнись_12.25'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.25')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -1187,6 +1187,40 @@ if ROLE=='fast':
     ok('och1224_memory_guard_releases_idle_mega',
        "current_level in {'high', 'critical', 'emergency'}" in ram_trim_src and '_och1224_hard_release_mega_runtime' in ram_trim_src and '_och1210_mega_busy' in ram_trim_src,
        'memory guard should reclaim optional idle MEGAcmd before requesting restart')
+
+    # OCH12.25 — serialized MEGA cold-standby + deep RAM diagnostics.
+    mega_parallel_src=_fn_sources(all_py.get('02_transport_safety.py',''),{'mega_parallel_execute_v240'}).get('mega_parallel_execute_v240','')
+    mega_run_src=_fn_sources(split_src,{'_och1210_mega_run'}).get('_och1210_mega_run','')
+    mega_release_src=_fn_sources(split_src,{'_och1224_hard_release_mega_runtime'}).get('_och1224_hard_release_mega_runtime','')
+    mega_quiet_src=_fn_sources(split_src,{'_och1224_release_mega_if_quiet'}).get('_och1224_release_mega_if_quiet','')
+    edit_src=_fn_sources(split_src,{'handle_finance_edit'}).get('handle_finance_edit','')
+    deep_src=_fn_sources(diag_src,{'ram_inspector_deep_snapshot_v1225','_ram_deep_size_v1225'})
+    ok('och1225_mega_cli_serialized',
+       'with MEGA_COMMAND_LOCK:' in mega_parallel_src and 'subprocess.run' in mega_parallel_src and '_OCH1225_MEGA_CMD_ACTIVE' in mega_run_src,
+       'all MEGAcmd CLI commands must be serialized; LOGIN/PUT/RM may never overlap')
+    ok('och1225_mega_cold_standby_default',
+       "_OCH1225_FAST_AUTO_MEGA = str(_split_os.getenv('OCH1225_FAST_AUTO_MEGA', '0')" in split_src and 'active=bool(use_fast and master and _OCH1225_FAST_AUTO_MEGA)' in split_src and "_r80_queue_compact_full('r1-owner-switch-bootstrap')" not in _fn_sources(split_src,{'_r71_apply_runtime_side_effects'}).get('_r71_apply_runtime_side_effects',''),
+       'FAST automatic MEGA must default OFF while BOOT/manual recovery remains separate')
+    ok('och1225_mega_cleanup_never_kills_active_command',
+       "return {'skipped': 'command_active'" in mega_release_src and '_OCH1225_MEGA_CMD_ACTIVE' in mega_quiet_src + mega_release_src and '_V178_MEGA_SESSION_OK_UNTIL = 0.0' in mega_release_src,
+       'zero-resident cleanup must not race an active MEGAcmd command and must invalidate session cache')
+    ok('och1225_no_cleanup_watchdog_spin',
+       'DELAYED_SCHEDULER.schedule' not in mega_quiet_src and 'The command that finishes last' in mega_quiet_src,
+       'idle cleanup must be latest-wins from command completion, not a self-rescheduling killer loop')
+    ok('och1225_deep_ram_on_demand',
+       'ram_inspector_deep_snapshot_v1225' in diag_src and '_ram_deep_size_v1225' in diag_src and "callback_data='ram_inspector:deep'" in cb_src and 'ColdChatStore.__getitem__' in diag_src,
+       'RAM Inspector must provide bounded on-demand deep sizing without materialising cold SQLite fields')
+    ok('och1225_finance_edit_follows_forward_anchor',
+       'get_forward_links(int(chat_id), int(msg.message_id))' in edit_src and 'finance_edit_anchor_from_forward_v1225' in edit_src and 'anchor_chat_id' in edit_src,
+       'native edit of a finance source message must follow its durable forwarded record when source chat has no local ledger row')
+    r80_start_src=_fn_sources(split_src,{'_r80_start_compact_scheduler'}).get('_r80_start_compact_scheduler','')
+    r80_dirty_src=_fn_sources(split_src,{'_r80_mark_tail_dirty'}).get('_r80_mark_tail_dirty','')
+    ok('och1225_auto_mega_has_no_background_thread',
+       'if not _OCH1225_FAST_AUTO_MEGA:' in r80_start_src and 'return False' in r80_start_src and 'if not _OCH1225_FAST_AUTO_MEGA:' in r80_dirty_src,
+       'cold-standby FAST must not allocate the R80 MEGA scheduler or accumulate dirty tail state')
+    ok('och1225_auto_mega_flag_defined_before_first_apply',
+       split_src.find('_OCH1225_FAST_AUTO_MEGA =') >= 0 and split_src.find('_OCH1225_FAST_AUTO_MEGA =') < split_src.find('_r71_load_routes(force=True); _r71_apply_runtime_side_effects()'),
+       'cold-standby flag must exist before the first runtime side-effect application during module import')
 
 elif ROLE=='heavy':
     s=text('worker_service.py')

@@ -2170,10 +2170,12 @@ def _v240_priority_exit():
         _V240_PAR_CV.notify_all()
 
 def mega_parallel_execute_v240(exe: str, cmd: str, args, timeout_value):
-    """Execute MEGAcmd with bounded parallelism and per-shard serialization."""
-    if not MEGA_SHARDED_STORAGE_V240:
-        with MEGA_COMMAND_LOCK:
-            return subprocess.run([exe] + list(args or []), capture_output=True, text=True, timeout=timeout_value)
+    """OCH12.25: one MEGAcmd command at a time on the 512 MB FAST instance.
+
+    v240 used per-shard parallel subprocesses.  MEGAcmd itself owns one account/session
+    daemon, so login/put/rm from different lanes can race even when the remote paths are
+    unrelated.  Keep the shard metadata/layout, but serialize the actual CLI command.
+    """
     lane, resource, priority = _v240_lane_and_resource(cmd, args)
     lane_sem = _V240_LANE_SEM.get(lane) or _V240_LANE_SEM['misc']
     resource_lock = _v240_resource_lock(resource)
@@ -2189,7 +2191,10 @@ def mega_parallel_execute_v240(exe: str, cmd: str, args, timeout_value):
             row['started'] += 1
             row['peak'] = max(row['peak'], row['active'])
         try:
-            cp = subprocess.run([exe] + list(args or []), capture_output=True, text=True, timeout=timeout_value)
+            # OCH12.25 transaction fence: MEGAcmd has a single session state.
+            # Never allow LOGIN/PUT/RM/MV/GET to overlap across lanes.
+            with MEGA_COMMAND_LOCK:
+                cp = subprocess.run([exe] + list(args or []), capture_output=True, text=True, timeout=timeout_value)
             with _V240_PAR_STATS_LOCK:
                 _V240_PAR_STATS['completed'] += 1
                 _V240_PAR_STATS['by_lane'][lane]['completed'] += 1

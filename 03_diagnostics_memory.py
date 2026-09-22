@@ -1708,6 +1708,70 @@ def ram_inspector_snapshot_v1224() -> dict:
     }
 
 
+def _ram_deep_size_v1225(obj, *, max_nodes: int=60000, max_depth: int=10) -> dict:
+    """Bounded on-demand deep-size estimate of already-loaded Python objects.
+
+    It never dereferences ColdChatStore keys through ``get`` and never enables
+    tracemalloc.  The seen-set exists only while the owner presses Deep RAM.
+    """
+    import sys as _sys1225
+    from collections import deque as _deque1225
+    seen=set(); stack=[(obj,0)]; total=0; nodes=0; truncated=False
+    while stack:
+        cur,depth=stack.pop(); oid=id(cur)
+        if oid in seen: continue
+        seen.add(oid); nodes += 1
+        try: total += int(_sys1225.getsizeof(cur))
+        except Exception: pass
+        if nodes >= int(max_nodes): truncated=True; break
+        if depth >= int(max_depth): continue
+        try:
+            if isinstance(cur, dict):
+                # dict.items() only walks currently resident keys; it does not call
+                # ColdChatStore.__getitem__ for absent/cold fields.
+                for k,v in dict.items(cur) if type(cur) is not dict else cur.items():
+                    stack.append((k,depth+1)); stack.append((v,depth+1))
+            elif isinstance(cur,(list,tuple,set,frozenset,_deque1225)):
+                for v in cur: stack.append((v,depth+1))
+        except Exception:
+            pass
+    return {'bytes':total,'mb':round(total/1024/1024,2),'nodes':nodes,'truncated':truncated}
+
+
+def ram_inspector_deep_snapshot_v1225() -> dict:
+    """Measure the main resident roots without materialising SQLite cold ledgers."""
+    candidates=[]
+    for name in ('data','forward_map','_OPERATION_ITEMS','_OPERATION_ORDER','_RUNTIME_EVENTS',
+                 'BOT_ACTION_LOG','BOT_ERROR_LOG','_MEMORY_EVENTS','_MEMORY_ACTIVE',
+                 '_R80_MEGA_TAIL_EVENTS','_R45_DIAG_EVENTS','_SHORT_CALLBACK_EVENTS'):
+        if name in globals(): candidates.append((name,globals().get(name)))
+    # Known durable/runtime containers may use different historical names.
+    for name,obj in list(globals().items()):
+        low=str(name).lower()
+        if name.startswith('__') or any(name==n for n,_ in candidates): continue
+        if any(tok in low for tok in ('operation_ledger','finance_integrity','expense_draft','file_jobs_state')):
+            if isinstance(obj,(dict,list,deque,set,tuple)):
+                candidates.append((name,obj))
+    rows=[]
+    deadline=time.monotonic()+2.5
+    for name,obj in candidates[:40]:
+        if time.monotonic()>deadline: break
+        row=_ram_deep_size_v1225(obj,max_nodes=30000,max_depth=9); row['name']=name; rows.append(row)
+    rows.sort(key=lambda r:float(r.get('mb') or 0),reverse=True)
+    # Resident chat stores, individually, are often more actionable than one total data{}.
+    chats=[]
+    d=globals().get('data')
+    if isinstance(d,dict):
+        try:
+            items=list(dict.items(d) if type(d) is not dict else d.items())
+            for key,val in items:
+                if str(key).lstrip('-').isdigit() and isinstance(val,dict) and time.monotonic()<=deadline:
+                    r=_ram_deep_size_v1225(val,max_nodes=12000,max_depth=8); r['chat']=str(key); chats.append(r)
+            chats.sort(key=lambda r:float(r.get('mb') or 0),reverse=True)
+        except Exception: pass
+    return {'roots':rows[:18],'chats':chats[:12],'measured_at':time.time()}
+
+
 def ram_inspector_text_v1224(mode: str='overview') -> str:
     mode = str(mode or 'overview').strip().casefold()
     snap = ram_inspector_snapshot_v1224()
@@ -1739,6 +1803,18 @@ def ram_inspector_text_v1224(mode: str='overview') -> str:
             if p or a: lines.append(f'• {name}: {p}/{a}')
         audit=snap.get('audit') or {}
         lines += ['', f"Runtime: operations {audit.get('operation_items',0)} · integrity {audit.get('integrity_events',0)} · expense {audit.get('expense_drafts',0)} · journal {audit.get('journal_buffer_rows',0)}"]
+    elif mode in {'deep','deep_ram'}:
+        deep=ram_inspector_deep_snapshot_v1225()
+        lines += ['🔬 Deep RAM · оценка уже загруженных Python-объектов:', 'SQLite cold-поля специально не материализуются.']
+        for row in deep.get('roots') or []:
+            mark='+' if row.get('truncated') else ''
+            lines.append(f"• {row.get('name')}: ≈{row.get('mb')} MB{mark} · nodes={row.get('nodes')}")
+        if deep.get('chats'):
+            lines += ['', 'Крупнейшие resident chat stores:']
+            for row in deep.get('chats') or []:
+                mark='+' if row.get('truncated') else ''
+                lines.append(f"• chat {row.get('chat')}: ≈{row.get('mb')} MB{mark}")
+        lines += ['', '+ = достигнут лимит обхода; реальный размер может быть больше.']
     elif mode == 'heap':
         import gc as _gc1224
         lines += ['🐍 Python heap / allocator:', f"RSS {q.get('python_rss_mb','—')} MB · anon {roll.get('anonymous_mb','—')} MB · private dirty {roll.get('private_dirty_mb','—')} MB", f"GC counters: {list(_gc1224.get_count())}", f"glibc arenas: {(struct.get('glibc_allocator_v248') or {}).get('arena_max','—')}", 'tracemalloc постоянно НЕ включён, чтобы сам не расходовал RAM.']

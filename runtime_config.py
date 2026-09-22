@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.24-ram-finalization-single-render"
+CONFIG_VERSION = "vys-262-och12.25-mega-transaction-ram-deep"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,13 +23,12 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     # Process / role
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
-    # OCH12.24: single-Render final profile. Render #2 is treated as unavailable.
+    # OCH12.25: single-Render profile. Render #2 is treated as unavailable.
     "OCH1224_SINGLE_RENDER": "1",
     "PEER_PING_ENABLED": "0",
     "OCH1224_BOOT_REMOTE_PROBES": "0",
     "OCH1224_JOURNAL_LOCAL_ONLY": "1",
     "OCH1224_MEGA_ZERO_RESIDENT": "1",
-    "MEGA_ZERO_RESIDENT_DELAY_SEC": "8",
     "BOT_JOURNAL_DURABLE_ENABLED": "0",
     "BOT_CRITICAL_JOURNAL_DURABLE_ENABLED": "0",
     "RENDER_TELEGRAM_ONLY": "1",
@@ -180,10 +179,13 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "SPLIT_ALLOW_EMPTY_BOOT": "0",
     "SPLIT_EMERGENCY_MEGA": "1",
 
-    # Heavy services are remote on Front.  MEGA credentials may still exist only
-    # for emergency boot restore, but normal MEGA runtime stays disabled here.
+    # MEGA credentials may exist for BOOT/manual recovery, but automatic FAST
+    # MEGA runtime is cold-standby by default on the single 512 MB Render.
     "MEGA_ENABLED": "0",
     "MEGA_AUTORESTORE": "0",
+    "OCH1225_FAST_AUTO_MEGA": "0",
+    "MEGA_ZERO_RESIDENT_DELAY_SEC": "25",
+    "MEGA_PARALLEL_MAX": "1",
     "TG_DURABLE_ENABLED": "0",
     "TELEGRAM_DURABLE_ENABLED": "0",
     "MEGA_TIMEOUT": "120",
