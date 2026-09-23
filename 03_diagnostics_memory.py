@@ -792,11 +792,18 @@ def memory_trim(reason: str='manual', level: str | None=None, force: bool=False)
         busy = bool(idle_fn()) if callable(idle_fn) else True
     except Exception:
         busy = True
-    if not busy:
+    # OCH12.27: a normal 155 MB soft trim must never serialize every chat.
+    # In 12.26 this ran every ~30 s, held data_lock while copying root state and
+    # generated a storm of save_chat/R32 descriptors.  Normal trim is allocator/log
+    # maintenance only.  Cold SQLite eviction remains owned by lowram-idle-sweep,
+    # while warning/high/critical/emergency may still force a full cold flush.
+    cold_flush = False
+    if (not busy) and current_level in {'warning', 'high', 'critical', 'emergency'}:
         try:
             flush_fn = globals().get('_lowram_flush_all_hot')
             if callable(flush_fn):
                 flush_fn(evict=True)
+                cold_flush = True
         except Exception as exc:
             _memory_emit('memory_lowram_flush_error', {'reason': reason, 'error': str(exc)[:300]}, 'WARN')
     _memory_compact_logs(current_level)
@@ -821,7 +828,7 @@ def memory_trim(reason: str='manual', level: str | None=None, force: bool=False)
         _MEMORY_STATE['last_trim_at'] = now_local().isoformat(timespec='seconds') if 'now_local' in globals() else datetime.now(timezone.utc).isoformat(timespec='seconds')
         _MEMORY_STATE['last_trim_reason'] = str(reason)
         _MEMORY_STATE['trim_count'] = int(_MEMORY_STATE.get('trim_count') or 0) + 1
-    detail = {'reason': reason, 'level': current_level, 'busy': busy, 'malloc_trim': trimmed, 'before': before, 'after': after}
+    detail = {'reason': reason, 'level': current_level, 'busy': busy, 'cold_flush': cold_flush, 'malloc_trim': trimmed, 'before': before, 'after': after}
     _memory_emit('memory_trim', detail, 'WARN' if current_level in {'high', 'critical', 'emergency'} else 'INFO')
     return detail
 _MEMORY_SECRET_KEY_RE = re.compile('(?:pass(?:word)?|secret|token|api[_-]?key|credential|auth|login)', re.I)
@@ -941,6 +948,15 @@ def _memory_structure_snapshot(deep: bool=False) -> dict:
             if q is not None and hasattr(q, 'qsize'):
                 try: buffers[label] = int(q.qsize())
                 except Exception: pass
+        # OCH12.27: the R32 queue now carries logical-key tokens while the latest
+        # descriptor lives in the coalescing map. Show the real pending footprint.
+        try:
+            pending_map = globals().get('_R32_EVENT_PENDING')
+            overflow_map = globals().get('_R32_EVENT_OVERFLOW_ORDER')
+            if isinstance(pending_map, dict): buffers['r32_events_pending'] = len(pending_map)
+            if isinstance(overflow_map, dict): buffers['r32_events_overflow'] = len(overflow_map)
+        except Exception:
+            pass
         for label, gname in (('short_callbacks', '_short_callback_store'), ('callback_mirror', '_CALLBACK_MIRROR_PENDING'), ('file_jobs_state', '_FILE_JOB_STATE')):
             obj = globals().get(gname)
             if obj is not None:

@@ -5493,6 +5493,9 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
+    '• 12.27: если canonical MEGA базы нет, создаётся пустая SQLite и владелец получает точные пути поиска.\n'
+    '• 12.27: normal soft-trim больше не делает массовый save всех чатов каждые ~30 секунд.\n'
+    '• 12.27: R32 state-events coalesce latest-wins по логическому ключу вместо переполнения RAM-очереди.\n'
     '• R84: стартовое окно читает фактический Redis runtime/master из runtime_config.\n'
     '• R57: MEGA, Redis и Telegram backup-channel имеют независимые Render master-switches.\n'
     '• Redis не участвует в Telegram hot-path; включение из меню выполняется фоном.\n'
@@ -5579,6 +5582,7 @@ def _r57_restore_source_info() -> tuple[str, dict]:
         'LOCAL_RUNTIME_CACHE': 'локальный R68 cache (SQLite.gz + events.jsonl)',
         'LOCAL_SQLITE_NEWER_OR_MEGA_UNAVAILABLE': 'локальная SQLite',
         'EMPTY_INIT_MEGA_DISABLED': 'новая SQLite · MEGA отключена',
+        'EMPTY_INIT_MEGA_MISSING': 'пустая SQLite · MEGA база не восстановлена',
         'EMPTY_INIT': 'новая SQLite',
         'MEGA_RESTORE_FAILED': 'MEGA не восстановлена',
     }
@@ -5594,7 +5598,30 @@ def _r57_startup_keyboard(details: bool = False):
     return kb
 
 def _r57_startup_compact_text() -> str:
-    source, _trace = _r57_restore_source_info()
+    source, trace = _r57_restore_source_info()
+    base=str((trace or {}).get('base_source') or '')
+    if base.startswith('EMPTY_INIT') or str(os.getenv('OCH1227_EMPTY_BOOT','0') or '0')=='1':
+        diag=(trace or {}).get('mega_diag') if isinstance((trace or {}).get('mega_diag'),dict) else {}
+        paths=list((trace or {}).get('mega_paths_checked') or diag.get('paths_checked') or [])
+        root=str((trace or {}).get('mega_root') or diag.get('root') or os.getenv('MEGA_BACKUP_DIR','') or '—')
+        kind=str(diag.get('failure_kind') or '')
+        reason=str((trace or {}).get('empty_init_reason') or (trace or {}).get('mega_detail') or os.getenv('OCH1227_EMPTY_BOOT_REASON','') or 'источник восстановления не найден')[:700]
+        if diag.get('root_exists') is False or kind=='root_missing':
+            folder=f'Папка MEGA НЕ НАЙДЕНА: {root}'
+        elif diag.get('database_exists') is False or kind=='database_missing':
+            folder=f'Папка database НЕ НАЙДЕНА: {root.rstrip("/")}/database'
+        elif kind=='manifest_missing':
+            folder='Папка MEGA есть, но current_manifest.json не найден.'
+        elif kind=='login_failed':
+            folder='MEGA недоступна: вход не выполнен.'
+        else:
+            folder='MEGA база не восстановлена.'
+        shown='\n'.join('• '+str(p)[:220] for p in paths[:5]) or '• пути не проверялись (нет root/credentials)'
+        guard=str(os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD','0') or '0')=='1'
+        guard_line='\n🛡 Автозапись в MEGA заблокирована, чтобы не перезаписать возможную старую базу.' if guard else ''
+        return (f'⚠️ {BOT_DISPLAY_NAME} запущен ПУСТЫМ · {VERSION}\n'
+                f'База MEGA не восстановлена. {folder}\n'
+                f'Причина: {reason}\n\nИскал:\n{shown}{guard_line}')
     return f"✅ {BOT_DISPLAY_NAME} запущен · {VERSION}\nВосстановление: {source}"
 
 def _r57_startup_details_text() -> str:
@@ -5632,6 +5659,15 @@ def _r57_startup_details_text() -> str:
             details.append(f"Revision: {trace.get('final_revision')}")
         if trace.get('error'):
             details.append(f"Restore error: {str(trace.get('error'))[:240]}")
+        if str(trace.get('base_source') or '').startswith('EMPTY_INIT'):
+            _diag=trace.get('mega_diag') if isinstance(trace.get('mega_diag'),dict) else {}
+            details.append(f"EMPTY BOOT: ДА · причина {str(trace.get('empty_init_reason') or trace.get('mega_detail') or '—')[:420]}")
+            details.append(f"MEGA root: {str(trace.get('mega_root') or _diag.get('root') or '—')[:240]}")
+            details.append(f"MEGA folder status: root={_diag.get('root_exists')} database={_diag.get('database_exists')} kind={_diag.get('failure_kind') or '—'}")
+            _paths=list(trace.get('mega_paths_checked') or _diag.get('paths_checked') or [])
+            if _paths:
+                details.append('MEGA искал: ' + ' | '.join(str(x)[:180] for x in _paths[:6]))
+            details.append(f"MEGA write guard: {'ВКЛ' if trace.get('empty_boot_mega_write_guard') else 'ВЫКЛ'}")
     if _RUNTIME_STATE.get('restore_detail'):
         details.append(f"Детали: {str(_RUNTIME_STATE.get('restore_detail'))[:420]}")
     return '\n'.join(details)
@@ -5643,13 +5679,20 @@ def _v211_notify_owner_ready_once():
         with _RUNTIME_LOCK:
             if _RUNTIME_STATE.get('owner_ready_notice_sent'):
                 return True
-            _RUNTIME_STATE['owner_ready_notice_sent'] = True
         owner_id = int(OWNER_ID)
         bot.send_message(owner_id, _r57_startup_compact_text(), reply_markup=_r57_startup_keyboard(False))
+        # Mark only after Telegram accepted the message.  Empty-recovery warning is
+        # important enough that a transient network error must not suppress it forever.
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE['owner_ready_notice_sent'] = True
         return True
     except Exception as exc:
         try:
             log_error(f'notify owner READY r57: {exc}')
+        except Exception:
+            pass
+        try:
+            DELAYED_SCHEDULER.schedule('owner-ready-notice-r57', 5.0, _v211_notify_owner_ready_once)
         except Exception:
             pass
         return False
@@ -6145,7 +6188,11 @@ def main():
             runtime_event('mega_source_archive_deferred_v1218', 'boot archive disabled; source archival is not a READY dependency')
     except Exception as exc:
         log_error(f'bot source archive schedule: {exc}')
-    if LOWRAM_ENABLED and (not db_restored) and (not RESTORE_GUARD_ACTIVE) and bool(globals().get('CONFIG_GUARD_BOOT_VERIFIED_V234', False)):
+    # OCH12.27: an EMPTY_INIT must never be published by this legacy seed path.
+    # Confirmed-empty MEGA is bootstrapped only by canonical generation durability;
+    # uncertain MEGA failures are protected by OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD.
+    _och1227_empty_boot = str(os.getenv('OCH1227_EMPTY_BOOT','0') or '0').strip().lower() in {'1','true','yes','on'}
+    if LOWRAM_ENABLED and (not db_restored) and (not _och1227_empty_boot) and (not RESTORE_GUARD_ACTIVE) and bool(globals().get('CONFIG_GUARD_BOOT_VERIFIED_V234', False)):
 
         def _seed_primary_db_snapshot():
             try:

@@ -2,14 +2,14 @@
 #!/usr/bin/env python3
 """Render #1 launcher: canonical MEGA generation restore; Redis is cache only.
 
-OCH12.26 recovery policy:
+OCH12.27 recovery policy:
 - a valid local SQLite is reused only as the already-running working database;
 - when local SQLite is missing/invalid, the ONLY durable restore source is MEGA;
 - MEGA restore reads database/current_manifest.json and its exact immutable generation;
 - database/deltas/current_tail.json.gz is replayed only when it belongs to that generation;
 - Redis/Valkey is never consulted for startup restore and may be empty without data loss;
 - compact_v80 is legacy-only and is not part of canonical startup recovery;
-- if MEGA cannot provide a valid generation, startup fails closed and never creates an empty database;
+- if no valid local/MEGA generation can be recovered, startup creates an empty SQLite, records exact MEGA paths/probes, and the owner is warned after READY;
 - MEGAcmd is quit after the bounded restore transaction.
 """
 from __future__ import annotations
@@ -1005,6 +1005,32 @@ def _och1226_generation_paths() -> tuple[str, str]:
     return root + '/database/current_manifest.json', root + '/database/deltas/current_tail.json.gz'
 
 
+def _och1227_set_mega_diag(diag: dict) -> None:
+    try:
+        os.environ['OCH1227_MEGA_RESTORE_DIAG_JSON'] = json.dumps(diag or {}, ensure_ascii=False, separators=(',',':'))
+    except Exception:
+        pass
+
+
+def _och1227_probe_mega_path(remote: str, timeout_sec: int=20) -> tuple[bool | None, str]:
+    """Exact folder/object existence probe; never scans the MEGA tree."""
+    remote=str(remote or '').strip()
+    if not remote:
+        return False,'empty path'
+    try:
+        p=_run(['mega-ls', remote], timeout=max(5,min(45,int(timeout_sec or 20))))
+        if p.returncode==0:
+            return True,'exists'
+        detail=(p.stderr or p.stdout or 'mega-ls failed').strip()[:300]
+        return (False if _mega_missing(detail) else None),detail
+    except subprocess.TimeoutExpired:
+        return None,f'mega-ls timeout after {timeout_sec}s'
+    except FileNotFoundError:
+        return None,'MEGAcmd is not installed'
+    except Exception as exc:
+        return None,f'{type(exc).__name__}: {str(exc)[:220]}'
+
+
 def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
     """Restore the exact canonical immutable MEGA generation + matching current tail.
 
@@ -1013,9 +1039,12 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
     tail that claims the current generation is validated strictly before application.
     """
     root = _canonical_mega_root().rstrip('/')
+    diag={'schema':1,'root':root,'paths_checked':[],'login_ok':False,'root_exists':None,'database_exists':None,'failure_kind':''}
     if not root:
+        diag['failure_kind']='root_not_configured'; _och1227_set_mega_diag(diag)
         return False, 'MEGA_BACKUP_DIR empty'
     manifest_remote, tail_remote = _och1226_generation_paths()
+    diag['manifest_path']=manifest_remote; diag['tail_path']=tail_remote
     try:
         login_timeout = max(20, min(180, int(float(os.getenv('MEGA_LOGIN_TIMEOUT', '120') or '120'))))
     except Exception:
@@ -1025,16 +1054,41 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
     except Exception:
         get_timeout = 120
     logged, login_detail = _mega_login(login_timeout)
+    diag['login_ok']=bool(logged); diag['login_detail']=str(login_detail)[:300]
     if not logged:
+        diag['failure_kind']='login_failed'; _och1227_set_mega_diag(diag)
         return False, 'MEGA login: ' + str(login_detail)
-    work = Path(tempfile.mkdtemp(prefix='ochnis126_mega_generation_'))
+    probe_timeout=min(25,get_timeout)
+    root_exists,root_detail=_och1227_probe_mega_path(root,probe_timeout)
+    diag['paths_checked'].append(root); diag['root_exists']=root_exists; diag['root_probe_detail']=root_detail
+    if root_exists is False:
+        diag['failure_kind']='root_missing'; _och1227_set_mega_diag(diag)
+        try: _run(['mega-logout'],timeout=8)
+        except Exception: pass
+        try: _run(['mega-quit'],timeout=5)
+        except Exception: pass
+        return False, f'MEGA root folder missing: {root}'
+    database_remote=root+'/database'
+    db_exists,db_detail=_och1227_probe_mega_path(database_remote,probe_timeout)
+    diag['paths_checked'].append(database_remote); diag['database_exists']=db_exists; diag['database_probe_detail']=db_detail
+    if db_exists is False:
+        diag['failure_kind']='database_missing'; _och1227_set_mega_diag(diag)
+        try: _run(['mega-logout'],timeout=8)
+        except Exception: pass
+        try: _run(['mega-quit'],timeout=5)
+        except Exception: pass
+        return False, f'MEGA database folder missing: {database_remote}'
+    work = Path(tempfile.mkdtemp(prefix='ochnis127_mega_generation_'))
     try:
+        diag['paths_checked'].append(manifest_remote)
         manifest_path, detail = _r80_get_exact(manifest_remote, work / 'manifest', get_timeout)
         if manifest_path is None:
+            diag['failure_kind']='manifest_missing' if _mega_missing(detail) else 'manifest_unavailable'; diag['manifest_detail']=str(detail)[:300]; _och1227_set_mega_diag(diag)
             return False, 'current_manifest unavailable: ' + str(detail)
         try:
             manifest = json.loads(manifest_path.read_text(encoding='utf-8')) or {}
         except Exception as exc:
+            diag['failure_kind']='manifest_decode'; diag['manifest_detail']=f'{type(exc).__name__}: {str(exc)[:180]}'; _och1227_set_mega_diag(diag)
             return False, f'current_manifest decode {type(exc).__name__}: {str(exc)[:180]}'
         generation = str((manifest or {}).get('generation') or '').strip()
         remote_generation = str((manifest or {}).get('remote_generation') or '').strip()
@@ -1044,9 +1098,12 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
             remote_generation = root + '/database/generations/' + generation
         expected_prefix = root + '/database/generations/'
         if (not generation) or (not remote_generation.startswith(expected_prefix)):
+            diag['failure_kind']='manifest_noncanonical'; _och1227_set_mega_diag(diag)
             return False, 'current_manifest does not point to canonical database/generations'
+        diag['generation_path']=remote_generation; diag['paths_checked'].append(remote_generation)
         gen_path, detail = _r80_get_exact(remote_generation, work / 'generation', get_timeout)
         if gen_path is None:
+            diag['failure_kind']='generation_missing' if _mega_missing(detail) else 'generation_unavailable'; diag['generation_detail']=str(detail)[:300]; _och1227_set_mega_diag(diag)
             return False, 'generation unavailable: ' + str(detail)
         expected_gz = str((manifest or {}).get('gzip_sha256') or '').strip().lower()
         if expected_gz:
@@ -1065,6 +1122,7 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
 
         tail_applied = 0
         tail_note = 'tail absent'
+        diag['paths_checked'].append(tail_remote)
         tail_path, tail_detail = _r80_get_exact(tail_remote, work / 'tail', min(get_timeout, 90))
         if tail_path is not None:
             try:
@@ -1117,8 +1175,15 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
                 Path(str(target) + suffix).unlink(missing_ok=True)
             except Exception:
                 pass
+        diag['failure_kind']=''; diag['restore_ok']=True; diag['generation']=generation; diag['tail_detail']=tail_note; _och1227_set_mega_diag(diag)
         return True, f'MEGA generation restore OK generation={generation}; {tail_note}; db={_db_revision(target):.6f}'
     finally:
+        try:
+            if not diag.get('restore_ok') and not diag.get('failure_kind'):
+                diag['failure_kind']='integrity_or_validation_failed'
+            _och1227_set_mega_diag(diag)
+        except Exception:
+            pass
         try:
             _run(['mega-logout'], timeout=8)
         except Exception:
@@ -1389,7 +1454,7 @@ def main():
     local_revision_before = _db_revision(target, validated=True) if local_valid_before else 0.0
     trace = {
         'schema': 5,
-        'policy': 'OCH12.26_MEGA_GENERATION_ONLY_FAIL_CLOSED',
+        'policy': 'OCH12.27_MEGA_GENERATION_OR_EMPTY_NOTIFY_OWNER',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': local_found,
@@ -1409,54 +1474,91 @@ def main():
         # OCH12.26: local SQLite is not a restore source; it is merely the already
         # active working file if this container/process retained it.  If it is absent
         # or invalid, the only durable source of truth is canonical MEGA generation.
-        trace['policy'] = 'OCH12.26_MEGA_GENERATION_ONLY_FAIL_CLOSED'
+        trace['policy'] = 'OCH12.27_MEGA_GENERATION_OR_EMPTY_NOTIFY_OWNER'
         trace['local_cache_contacted'] = False
         trace['redis_contacted'] = False
         trace['redis_restore_disabled_v1226'] = True
-        trace['redis_detail'] = 'Redis is cache-only in 12.26; startup restore disabled'
+        trace['redis_detail'] = 'Redis is cache-only; startup restore uses local working DB or canonical MEGA generation'
 
         mega_root = _canonical_mega_root()
         mega_creds = bool(str(os.getenv('MEGA_SESSION', '') or '').strip() or
                           (str(os.getenv('MEGA_EMAIL', '') or '').strip() and str(os.getenv('MEGA_PASSWORD', '') or '')))
+        trace['mega_root'] = mega_root
         trace['mega_render_enabled'] = bool(_bool('MEGA_ENABLED', False))
         trace['mega_root_present'] = bool(mega_root)
         trace['mega_credentials_present'] = bool(mega_creds)
         trace['mega_contract'] = 'database/current_manifest.json -> database/generations/<generation> + database/deltas/current_tail.json.gz'
+        empty_reason=''
+        mega_diag={}
         if not current_valid:
-            if not (mega_root and mega_creds):
+            if mega_root and mega_creds:
+                trace['mega_contacted'] = True
+                print('[SPLIT FRONT] OCH12.27 canonical MEGA generation restore start', flush=True)
+                try:
+                    ok, detail = _och1226_restore_from_mega_generation(target)
+                except Exception as exc:
+                    ok, detail = False, f'{type(exc).__name__}: {exc}'
+                try:
+                    mega_diag=json.loads(str(os.getenv('OCH1227_MEGA_RESTORE_DIAG_JSON','') or '{}')) or {}
+                except Exception:
+                    mega_diag={}
+                trace['mega_diag']=mega_diag
+                trace['mega_paths_checked']=list(mega_diag.get('paths_checked') or [])
+                trace['mega_ok'] = bool(ok)
+                trace['mega_detail'] = str(detail)[:1200]
+                trace['mega_action'] = 'RESTORE' if ok else 'EMPTY_INIT'
+                print(f'[SPLIT FRONT] OCH12.27 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
+                if ok and _db_valid(target):
+                    current_valid = True
+                    trace['base_source'] = 'MEGA_GENERATION_V126'
+                else:
+                    empty_reason='canonical MEGA restore failed: '+str(detail)[:700]
+            else:
                 trace['mega_contacted'] = False
                 trace['mega_ok'] = False
-                trace['mega_detail'] = 'MEGA root/credentials absent'
-                trace['fail_closed'] = True
-                raise RuntimeError('OCH12.26 FAIL-CLOSED: local SQLite unavailable and MEGA credentials/root are absent')
-            trace['mega_contacted'] = True
-            print('[SPLIT FRONT] OCH12.26 canonical MEGA generation restore start', flush=True)
-            try:
-                ok, detail = _och1226_restore_from_mega_generation(target)
-            except Exception as exc:
-                ok, detail = False, f'{type(exc).__name__}: {exc}'
-            trace['mega_ok'] = bool(ok)
-            trace['mega_detail'] = str(detail)[:1200]
-            trace['mega_action'] = 'RESTORE' if ok else 'FAIL_CLOSED'
-            print(f'[SPLIT FRONT] OCH12.26 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
-            if ok and _db_valid(target):
-                current_valid = True
-                trace['base_source'] = 'MEGA_GENERATION_V126'
-            else:
-                trace['fail_closed'] = True
-                trace['base_source'] = 'MEGA_RESTORE_FAILED'
-                raise RuntimeError('OCH12.26 FAIL-CLOSED: canonical MEGA restore failed: ' + str(detail)[:900])
+                if not mega_root:
+                    why='MEGA_BACKUP_DIR not configured'
+                    failure_kind='root_not_configured'
+                else:
+                    why='MEGA credentials absent; remote paths were not checked'
+                    failure_kind='credentials_absent'
+                trace['mega_detail'] = why
+                mega_diag={'schema':1,'root':mega_root,'paths_checked':[],'failure_kind':failure_kind,'root_exists':None,'login_ok':False}
+                trace['mega_diag']=mega_diag; trace['mega_paths_checked']=[]
+                empty_reason=why
+
+            if not current_valid:
+                trace['empty_init_attempted'] = True
+                empty_ok, empty_detail = _ensure_empty_db(target)
+                trace['empty_init_ok'] = bool(empty_ok)
+                trace['empty_init_detail'] = str(empty_detail)[:500]
+                if not empty_ok:
+                    raise RuntimeError('OCH12.27 empty SQLite initialization failed: '+str(empty_detail)[:700])
+                current_valid=True
+                trace['base_source']='EMPTY_INIT_MEGA_MISSING'
+                trace['empty_init_reason']=empty_reason
+                os.environ['SPLIT_PREBOOT_EMPTY_INIT_R1220']='1'
+                os.environ['OCH1227_EMPTY_BOOT']='1'
+                os.environ['OCH1227_EMPTY_BOOT_REASON']=empty_reason[:1000]
+                failure_kind=str((mega_diag or {}).get('failure_kind') or '')
+                confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing','root_not_configured'}
+                # If MEGA was merely slow/corrupt/unreachable, do not let this new empty
+                # process overwrite a possibly valid remote current_manifest automatically.
+                protect=bool(str(os.getenv('OCH1227_EMPTY_BOOT_PROTECT_UNCERTAIN_MEGA','1') or '1').strip().lower() in {'1','true','yes','on'} and not confirmed_absent)
+                os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='1' if protect else '0'
+                trace['empty_boot_mega_write_guard']=protect
+                print(f'[SPLIT FRONT] OCH12.27 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard={int(protect)}',flush=True)
         else:
             trace['mega_contacted'] = False
             trace['mega_ok'] = None
             trace['mega_detail'] = 'valid local working SQLite retained; no restore required'
             trace['mega_action'] = 'KEEP_LOCAL_WORKING_DB'
-
-        # Empty initialization after a failed restore is forbidden in 12.26.
-        trace['empty_init_attempted'] = False
-        trace['empty_init_ok'] = False
-        trace['empty_init_detail'] = 'forbidden by OCH12.26 fail-closed recovery contract'
-        os.environ['SPLIT_PREBOOT_EMPTY_INIT_R1220'] = '0'
+            trace['empty_init_attempted'] = False
+            trace['empty_init_ok'] = False
+            trace['empty_init_detail'] = 'not needed'
+            os.environ['SPLIT_PREBOOT_EMPTY_INIT_R1220'] = '0'
+            os.environ['OCH1227_EMPTY_BOOT']='0'
+            os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1509,7 +1611,7 @@ def main():
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
         print('[RESTORE TRACE R68]', trace_json, flush=True)
         boot_mem_release = _och1220_release_boot_memory()
-        print(f'[SPLIT FRONT] OCH12.26 boot memory release {boot_mem_release}', flush=True)
+        print(f'[SPLIT FRONT] OCH12.27 boot memory release {boot_mem_release}', flush=True)
 
         # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after

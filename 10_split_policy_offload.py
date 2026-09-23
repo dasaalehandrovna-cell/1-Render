@@ -4980,7 +4980,7 @@ def _r49_redis_button():
 def _r60_redis_menu_text(extra=''):
     st=_r49_redis_runtime_state(); enabled=bool(st.get('enabled'))
     lines=[
-        '⚡ REDIS · CACHE ONLY · 12.26','',
+        '⚡ REDIS · CACHE ONLY · 12.27','',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
         f'FAST runtime={"ON" if enabled else "OFF"}',
@@ -5707,7 +5707,7 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             return True
 
         if raw == 'r60:redis:restore':
-            try: bot.answer_callback_query(call.id,'12.26: Redis — только кэш. Восстановление выполняется только из MEGA.',show_alert=True)
+            try: bot.answer_callback_query(call.id,'12.27: Redis — только кэш. Восстановление выполняется только из MEGA.',show_alert=True)
             except Exception: pass
             return True
 
@@ -5977,7 +5977,20 @@ import time as _r32_time
 
 _R32_EVENT_STREAM_ENABLED = str(_r32_os.getenv('R32_EVENT_STREAM_ENABLED','1') or '1').strip().lower() in {'1','true','yes','on','да'}
 _R32_EVENT_Q = _r32_queue.Queue(maxsize=max(1000,min(50000,int(_r32_os.getenv('R32_EVENT_QUEUE_MAX','20000') or '20000'))))
-_R32_EVENT_STATE={'queued':0,'sent':0,'batches':0,'bytes':0,'last_ok':0.0,'last_error':'','dropped':0,'full_runtime_uploads_blocked':0,'private_peer':False,'inflight':0}
+# OCH12.27: queue contains logical keys, not duplicate descriptors.  Repeated
+# save_chat/set_cold for the same key are latest-wins before materialization.
+_R32_EVENT_PENDING_LOCK=_r32_threading.RLock()
+_R32_EVENT_PENDING={}
+_R32_EVENT_OVERFLOW_ORDER={}
+try:
+    _R32_EVENT_COALESCE_MAX=max(1200,min(20000,int(_r32_os.getenv('R32_EVENT_COALESCE_MAX','4096') or '4096')))
+except Exception:
+    _R32_EVENT_COALESCE_MAX=4096
+try:
+    _R32_EVENT_FULL_LOG_SEC=max(10.0,min(600.0,float(_r32_os.getenv('R32_EVENT_QUEUE_FULL_LOG_SEC','60') or '60')))
+except Exception:
+    _R32_EVENT_FULL_LOG_SEC=60.0
+_R32_EVENT_STATE={'queued':0,'sent':0,'batches':0,'bytes':0,'last_ok':0.0,'last_error':'','dropped':0,'coalesced':0,'overflow_coalesced':0,'last_queue_full_log':0.0,'full_runtime_uploads_blocked':0,'private_peer':False,'inflight':0}
 _R32_SQLITE_PATCHED=False
 
 # R40/R45-FIX2: durable FAST state-event outbox.
@@ -6212,32 +6225,113 @@ def _r32_descriptor(kind,key,ids=None):
 
 
 def _r32_enqueue_descriptor(kind,key,ids=None):
-    """Capture a tiny logical descriptor without any filesystem/SQLite wait.
+    """Capture one logical state key with latest-wins RAM coalescing.
 
-    R45-FIX2: this function is called from patched SQLite mutations inside Telegram
-    callbacks.  It must remain O(1) and network/disk/lock free.  The sender thread
-    persists descriptors to the durable outbox before sending them onward.
+    OCH12.27: 12.26 could enqueue the same save_chat/set_cold key hundreds of
+    times during memory/scheduler housekeeping.  The materializer always reads the
+    *current committed SQLite value*, so intermediate descriptors for the same
+    logical key are redundant.  Keep one latest descriptor per key and never touch
+    disk/network/global business locks in this hot path.
     """
     if not _R32_EVENT_STREAM_ENABLED or not _r32_ready(): return False
     try:
         desc=_r32_descriptor(kind,key,ids)
-        _R32_EVENT_Q.put_nowait(desc)
+        logical=str(desc.get('key') or desc.get('event_id') or '')[:240]
+        if not logical: return False
+        enqueue_token=False
+        with _R32_EVENT_PENDING_LOCK:
+            if logical in _R32_EVENT_PENDING:
+                _R32_EVENT_PENDING[logical]=desc
+                _R32_EVENT_STATE['coalesced']=int(_R32_EVENT_STATE.get('coalesced') or 0)+1
+            else:
+                if len(_R32_EVENT_PENDING)>=_R32_EVENT_COALESCE_MAX:
+                    _R32_EVENT_STATE['dropped']=int(_R32_EVENT_STATE.get('dropped') or 0)+1
+                    now=_r32_time.time(); last=float(_R32_EVENT_STATE.get('last_queue_full_log') or 0.0)
+                    if now-last>=_R32_EVENT_FULL_LOG_SEC:
+                        _R32_EVENT_STATE['last_queue_full_log']=now
+                        try: log_error(f'R32 coalescer saturated pending={len(_R32_EVENT_PENDING)}; primary FAST SQLite remains authoritative')
+                        except Exception: pass
+                    return False
+                _R32_EVENT_PENDING[logical]=desc
+                enqueue_token=True
+        if enqueue_token:
+            try:
+                _R32_EVENT_Q.put_nowait(logical)
+            except _r32_queue.Full:
+                # Keep the latest descriptor in the bounded map; sender drains this
+                # overflow directly after queue tokens free up.  No business data is
+                # lost and no log storm is generated every scheduler tick.
+                with _R32_EVENT_PENDING_LOCK:
+                    _R32_EVENT_OVERFLOW_ORDER[logical]=None
+                    _R32_EVENT_STATE['overflow_coalesced']=int(_R32_EVENT_STATE.get('overflow_coalesced') or 0)+1
+                now=_r32_time.time(); last=float(_R32_EVENT_STATE.get('last_queue_full_log') or 0.0)
+                if now-last>=_R32_EVENT_FULL_LOG_SEC:
+                    _R32_EVENT_STATE['last_queue_full_log']=now
+                    try: log_info(f'R32 state-event queue saturated; coalescing latest keys pending={len(_R32_EVENT_PENDING)} overflow={len(_R32_EVENT_OVERFLOW_ORDER)}')
+                    except Exception: pass
         _R32_EVENT_STATE['queued']=int(_R32_EVENT_STATE.get('queued') or 0)+1
         _R32_EVENT_STATE['last_revision_queued']=max(int(_R32_EVENT_STATE.get('last_revision_queued') or 0),int(desc.get('revision') or 0))
         _R32_EVENT_STATE['last_enqueue_durable']=False
         st=globals().get('_SPLIT_STATE')
         if isinstance(st,dict):
+            with _R32_EVENT_PENDING_LOCK: pending_now=len(_R32_EVENT_PENDING)
             st['r32_event_queued']=int(st.get('r32_event_queued') or 0)+1
-            st['r32_event_pending']=max(_R32_EVENT_Q.qsize(),int(_R32_EVENT_STATE.get('durable_pending') or 0))
+            st['r32_event_pending']=max(pending_now,int(_R32_EVENT_STATE.get('durable_pending') or 0))
             st['r40_event_durable_pending']=int(_R32_EVENT_STATE.get('durable_pending') or 0)
         return True
-    except _r32_queue.Full:
-        _R32_EVENT_STATE['dropped']=int(_R32_EVENT_STATE.get('dropped') or 0)+1
-        try: log_error('R45 state-event RAM queue full; primary FAST SQLite remains authoritative')
-        except Exception: pass
-        return False
     except Exception as exc:
         _R32_EVENT_STATE['last_error']=f'{type(exc).__name__}: {str(exc)[:180]}'; return False
+
+
+def _r32_take_pending_descriptor(timeout=0.0):
+    """Return (descriptor, queue_token_count) from queue or overflow map."""
+    logical=None; from_queue=0
+    try:
+        if timeout and timeout>0:
+            logical=_R32_EVENT_Q.get(timeout=float(timeout)); from_queue=1
+        else:
+            logical=_R32_EVENT_Q.get_nowait(); from_queue=1
+    except _r32_queue.Empty:
+        with _R32_EVENT_PENDING_LOCK:
+            if _R32_EVENT_OVERFLOW_ORDER:
+                logical=next(iter(_R32_EVENT_OVERFLOW_ORDER))
+                _R32_EVENT_OVERFLOW_ORDER.pop(logical,None)
+    if not logical:
+        return None,0
+    with _R32_EVENT_PENDING_LOCK:
+        desc=_R32_EVENT_PENDING.pop(str(logical),None)
+        _R32_EVENT_OVERFLOW_ORDER.pop(str(logical),None)
+    if not isinstance(desc,dict):
+        if from_queue:
+            try: _R32_EVENT_Q.task_done()
+            except Exception: pass
+        return None,0
+    return desc,from_queue
+
+
+def _r32_requeue_pending_descriptor(desc):
+    """Requeue a failed build without creating duplicate queue tokens."""
+    if not isinstance(desc,dict): return False
+    logical=str(desc.get('key') or desc.get('event_id') or '')[:240]
+    if not logical: return False
+    need_token=False
+    with _R32_EVENT_PENDING_LOCK:
+        current=_R32_EVENT_PENDING.get(logical)
+        if current is not None:
+            # A newer mutation for the same logical key arrived while this row was
+            # in-flight. Preserve the newest committed revision and reuse its token.
+            if int((current or {}).get('revision') or 0)<int(desc.get('revision') or 0):
+                _R32_EVENT_PENDING[logical]=desc
+            return True
+        _R32_EVENT_PENDING[logical]=desc
+        need_token=True
+    if need_token:
+        try:
+            _R32_EVENT_Q.put_nowait(logical)
+        except _r32_queue.Full:
+            with _R32_EVENT_PENDING_LOCK:
+                _R32_EVENT_OVERFLOW_ORDER[logical]=None
+    return True
 
 
 def _r32_db_path():
@@ -6387,9 +6481,15 @@ def _r43_store_events_redis(events):
         except Exception: pass
 
 def _r34_post_events(events,wire,large=False):
-    """12.26 durability ACK: MEGA canonical tail is required; Redis is best-effort cache only."""
+    """12.27 durability: canonical MEGA normally required; uncertain empty boot is local-safe mode."""
     if not _r71_route_is_fast('durability'):
         return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
+    if str(_split_os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD','0') or '0').strip().lower() in {'1','true','yes','on'}:
+        try: _r43_store_events_redis(events)
+        except Exception: pass
+        _R32_EVENT_STATE['empty_boot_local_only']=int(_R32_EVENT_STATE.get('empty_boot_local_only') or 0)+len(events or [])
+        _R32_EVENT_STATE['last_error']='empty boot MEGA write guard: SQLite authoritative; automatic MEGA overwrite blocked'
+        return True
     redis_ok=False; redis_detail='cache disabled'
     try: redis_ok,redis_detail=_r43_store_events_redis(events)
     except Exception as exc: redis_detail=f'{type(exc).__name__}: {str(exc)[:160]}'
@@ -6435,18 +6535,20 @@ def _r32_sender_loop():
         if packet is None:
             rows=[]; queue_count=0
             max_events=max(1,min(256,int(_r32_os.getenv('R32_EVENT_BATCH_MAX','96') or '96')))
-            try:
-                rows.append(_R32_EVENT_Q.get(timeout=0.7)); queue_count=1
-            except _r32_queue.Empty:
-                # R40 restart/overflow recovery: durable SQLite is authoritative for
+            first,token_count=_r32_take_pending_descriptor(timeout=0.7)
+            if first is not None:
+                rows.append(first); queue_count+=int(token_count or 0)
+            else:
+                # R40 restart recovery: durable SQLite is authoritative for
                 # descriptors not currently present in RAM.
                 rows=_r40_event_db_pending(max_events); queue_count=0
                 if not rows: continue
-            if queue_count:
+            if rows and (queue_count or _R32_EVENT_PENDING):
                 delay=max(0.08,min(1.5,float(_r32_os.getenv('R32_EVENT_BATCH_DELAY_SEC','0.35') or '0.35'))); _r32_time.sleep(delay)
                 while len(rows)<max_events:
-                    try: rows.append(_R32_EVENT_Q.get_nowait()); queue_count+=1
-                    except _r32_queue.Empty: break
+                    nxt,tokens=_r32_take_pending_descriptor(timeout=0.0)
+                    if nxt is None: break
+                    rows.append(nxt); queue_count+=int(tokens or 0)
             try:
                 _R32_EVENT_STATE['inflight']=len(rows)
                 # R45-FIX2: only the background sender touches the durable event outbox.
@@ -6464,9 +6566,9 @@ def _r32_sender_loop():
                     packet['_r68_local_journaled']=False
             except Exception as exc:
                 _R32_EVENT_STATE['last_error']=f'build {type(exc).__name__}: {str(exc)[:220]}'
-                if queue_count:
+                if rows:
                     for row in rows:
-                        try: _R32_EVENT_Q.put_nowait(row)
+                        try: _r32_requeue_pending_descriptor(row)
                         except Exception: pass
                     for _ in range(queue_count):
                         try: _R32_EVENT_Q.task_done()
@@ -6492,9 +6594,13 @@ def _r32_sender_loop():
 def r32_flush_state_events(timeout=8.0):
     deadline=_r32_time.time()+max(0.0,float(timeout or 0.0))
     while _r32_time.time()<deadline:
-        if _R32_EVENT_Q.empty() and int(_R32_EVENT_STATE.get('inflight') or 0)==0 and _r40_event_db_count()==0: return True
+        
+        with _R32_EVENT_PENDING_LOCK: pending_ram=len(_R32_EVENT_PENDING)
+        if pending_ram==0 and int(_R32_EVENT_STATE.get('inflight') or 0)==0 and _r40_event_db_count()==0: return True
         _r32_time.sleep(0.05)
-    return _R32_EVENT_Q.empty() and int(_R32_EVENT_STATE.get('inflight') or 0)==0 and _r40_event_db_count()==0
+    
+    with _R32_EVENT_PENDING_LOCK: pending_ram=len(_R32_EVENT_PENDING)
+    return pending_ram==0 and int(_R32_EVENT_STATE.get('inflight') or 0)==0 and _r40_event_db_count()==0
 
 
 def _r32_patch_sqlite():
@@ -6555,7 +6661,10 @@ def r32_event_stream_status():
     # R45-FIX2: diagnostics/UI reads cached counters only; never touch outbox SQLite.
     row=dict(_R32_EVENT_STATE)
     row['durable_pending']=int(row.get('durable_pending') or 0)
-    row['pending']=max(_R32_EVENT_Q.qsize(),int(row.get('durable_pending') or 0))
+    with _R32_EVENT_PENDING_LOCK:
+        row['ram_pending']=len(_R32_EVENT_PENDING)
+        row['overflow_pending']=len(_R32_EVENT_OVERFLOW_ORDER)
+    row['pending']=max(int(row.get('ram_pending') or 0),int(row.get('durable_pending') or 0))
     row['enabled']=bool(_R32_EVENT_STREAM_ENABLED)
     row['peer_base']=_r32_peer_base_impl()
     row['local_event_journal']=r68_local_event_journal_status()
@@ -9321,10 +9430,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10193,7 +10302,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10232,7 +10341,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10282,7 +10391,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10305,13 +10414,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10367,7 +10476,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}; live_source_index=on")
 except Exception:
     pass
 
@@ -10990,7 +11099,7 @@ def _r79_remote_full_meta(client=None):
 
 def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
     """12.26: Redis is cache-only; full SQLite snapshots are intentionally retired."""
-    return False,'OCH12.26: Redis FULL отключён — источник восстановления только MEGA'
+    return False,'OCH12.27: Redis FULL отключён — источник восстановления только MEGA'
 
 def _r79_daily_scheduler_loop():
     """12.26 compatibility stub: no Redis FULL scheduler is allowed."""
@@ -11000,7 +11109,7 @@ def _r79_start_daily_scheduler():
     """12.26: do not allocate a Redis FULL backup thread."""
     with _R79_REDIS_DAILY_LOCK:
         _R79_REDIS_DAILY_STATE['thread_started']=False
-        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.26'
+        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.27'
     return False
 
 def _r79_redis_schedule_button():
@@ -11211,6 +11320,8 @@ def _r80_compact_paths():
     } if root and base else {}
 
 def _r80_mega_runtime_ready():
+    if str(_split_os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD','0') or '0').strip().lower() in {'1','true','yes','on'}:
+        return False
     return bool(_OCH1226_MEGA_DURABILITY_ENABLED and _r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
 
 def _r80_sqlite_freshness(path):
@@ -11255,7 +11366,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'),
+        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'),
         'updated_at':_split_time.time(),
         'base_generation':str(st.get('last_full_generation') or ''),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
@@ -11358,7 +11469,7 @@ def _r80_snapshot_full_compact(reason='scheduled-generation'):
         with _R80_MEGA_LOCK:
             _R80_MEGA_STATE['last_error']=detail
             _R80_MEGA_STATE['next_retry']=_split_time.time()+max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','60') or '60'))
-        try: log_error('OCH12.26 canonical MEGA generation: '+detail)
+        try: log_error('OCH12.27 canonical MEGA generation: '+detail)
         except Exception: pass
         return False,detail
     finally:
@@ -12778,7 +12889,7 @@ def _r70_routes_text():
     lines = [
         f'🧭 <b>{BOT_DISPLAY_NAME} · R1 ПРОЦЕССЫ</b>', '',
         '✅ <b>Render #2 отключён · рабочий runtime только R1</b>', '',
-        'Хранилище 12.26:',
+        'Хранилище 12.27:',
         '☁️ MEGA — единственный источник восстановления',
         '⚡ Redis — только cache / locks / ускорение; restore из Redis запрещён',
         '💾 SQLite — рабочая локальная база', '',

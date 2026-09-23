@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "005e9edf2e2f2185739edabede829680798b35c60f25f21f43d9449ae4551cc1",
+    "01_core_data.py": "5601b8e835fd97ab43699ad378a4552bb4c62874f10877c116e771254ddfa636",
     "02_transport_safety.py": "ef675155620468cfbcd923dd2cd6a5d04d259ef6741ef7e892c8fcf9f0f2c67e",
-    "03_diagnostics_memory.py": "114a09623f979034fb4aa461a58beabe317c53d5b56e9d91a9fc9b611a98a4c5",
+    "03_diagnostics_memory.py": "c3981be233839813a0b8a85236622a8a2d2e720a13f3fb66ff02c61e42ba052c",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "a1bbd15eb8a57bf7509bbd03728660bcc5dacfa2ba017957c5ef6eca440462b0",
-    "06_commands_callbacks.py": "be11b04d100b371ff487ab3c451cda8c72e63baf193dc2e413ebfb65492da575",
-    "07_state_web.py": "0fed59a517485eedbeec47c0d55964d1ad00597375df00aaa0f006105b92e798",
+    "06_commands_callbacks.py": "6b02f693dac31e9a4642c0615bafb44f2bfd02388b46ab0f8457724a4e55e355",
+    "07_state_web.py": "5c531f2200d27e6414ddd5cd2fd3e4738e5108546f149e568bfa52722670be38",
     "08_reliability_tasks.py": "0716588c014e5f48fbe1e2efcaf6183417beab10f180bf47d63e5c9d13de1423",
     "09_final_transport.py": "bcde634ed040844b6d4f8a820b0a0f646d29c50d4b8a3fe68d60b9f562ef4418",
-    "10_split_policy_offload.py": "73e4763032a040c3dccc438d22b6e6a34faba0eacd3a98fb79dd2c04626f80d1"
+    "10_split_policy_offload.py": "7c369801ffc13e1df95e30362f838d6941f860eab22f18cd8d0f36fb2690c6c8"
   },
-  "release": "ОЧНИСЬ_12.26-MEGA-CANONICAL-HISTORY",
+  "release": "очнись_12.27",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -447,6 +447,10 @@
     "och1226_restored_tail_handoff",
     "och1226_manual_restore_same_contract",
     "och1226_redis_full_retired",
-    "och1226_manual_redis_restore_blocked"
+    "och1226_manual_redis_restore_blocked",
+    "och1227_empty_boot_owner_mega_paths",
+    "och1227_uncertain_mega_write_guard",
+    "och1227_state_event_latest_wins",
+    "och1227_soft_trim_no_full_chat_flush"
   ]
 }
