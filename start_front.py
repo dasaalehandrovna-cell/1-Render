@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: canonical MEGA generation restore; Redis is cache only.
 
-OCH12.28 recovery policy:
+OCH12.29 recovery policy:
 - a valid local SQLite is reused only as the already-running working database;
 - when local SQLite is missing/invalid, the ONLY durable restore source is MEGA;
 - MEGA restore reads database/current_manifest.json and its exact immutable generation;
@@ -1107,15 +1107,81 @@ def _och1227_probe_mega_path(remote: str, timeout_sec: int=20) -> tuple[bool | N
         return None,f'{type(exc).__name__}: {str(exc)[:220]}'
 
 
-def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
-    """Restore the exact canonical immutable MEGA generation + matching current tail.
+def _och1229_generation_name_valid(name: str) -> bool:
+    """Accept only the immutable canonical generation filename, never a remote path."""
+    name = str(name or '').strip()
+    return bool(
+        name
+        and name == os.path.basename(name)
+        and re.fullmatch(r'generation_[A-Za-z0-9._-]+\.sqlite3\.gz', name)
+    )
 
-    No Redis reads, no MEGA tree scan and no legacy compact_v80 fallback are allowed.
-    A missing/corrupt tail does not invalidate a verified immutable generation, but a
-    tail that claims the current generation is validated strictly before application.
+
+def _och1229_canonical_generation_remote(root: str, generation: str) -> str:
+    generation = str(generation or '').strip()
+    if not _och1229_generation_name_valid(generation):
+        return ''
+    return '/' + str(root or '').strip('/') + '/database/generations/' + generation
+
+
+def _och1229_list_generation_remotes(root: str, timeout_sec: int=45, limit: int=24) -> tuple[list[str], str, str]:
+    """Bounded fallback: list only database/generations, newest sortable names first.
+
+    Returns (rows, state, detail), where state is ok/missing/unavailable.  This is not
+    a whole-account scan and is used only after the active pointer cannot be trusted.
+    """
+    generations_dir='/' + str(root or '').strip('/') + '/database/generations'
+    try:
+        p=_run(['mega-find', generations_dir, '--pattern=generation_*.sqlite3.gz', '--type=f'],
+               timeout=max(10,min(90,int(timeout_sec or 45))))
+    except subprocess.TimeoutExpired:
+        return [],'unavailable',f'mega-find timeout after {timeout_sec}s'
+    except FileNotFoundError:
+        return [],'unavailable','mega-find is not installed'
+    except Exception as exc:
+        return [],'unavailable',f'{type(exc).__name__}: {str(exc)[:220]}'
+    detail=((p.stderr or '') or (p.stdout or '') or '').strip()[:300]
+    if p.returncode != 0:
+        return [],('missing' if _mega_missing(detail) else 'unavailable'),detail or f'mega-find rc={p.returncode}'
+    rows=[]
+    for row in sorted({x.strip() for x in (p.stdout or '').splitlines() if x.strip()}, reverse=True):
+        name=os.path.basename(row.rstrip('/'))
+        if not _och1229_generation_name_valid(name):
+            continue
+        # Do not accept a result that escaped the canonical generations directory.
+        norm='/' + row.strip('/')
+        if not norm.startswith(generations_dir.rstrip('/') + '/'):
+            continue
+        rows.append(norm)
+        if len(rows) >= max(1,int(limit or 24)):
+            break
+    return rows,'ok',f'found={len(rows)}'
+
+
+def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
+    """OCH12.29 canonical MEGA restore with a bounded generation fallback.
+
+    Normal order remains current_manifest -> exact immutable generation -> matching
+    current_tail.  If current_manifest is missing, malformed, noncanonical, or points
+    to an unavailable generation, 12.29 first repairs the path from the manifest's
+    safe generation filename, then scans only database/generations for the newest
+    valid generation.  Every fallback candidate must gunzip and pass SQLite
+    PRAGMA quick_check before it can become the working DB.
+
+    Redis is never a restore authority.  A fallback restore is marked for a post-READY
+    canonical reanchor so current_manifest is healed instead of leaving the next deploy
+    dependent on the same broken pointer.
     """
     root = _canonical_mega_root().rstrip('/')
-    diag={'schema':1,'root':root,'paths_checked':[],'login_ok':False,'root_exists':None,'database_exists':None,'failure_kind':''}
+    diag={'schema':2,'root':root,'paths_checked':[],'login_ok':False,'root_exists':None,
+          'database_exists':None,'failure_kind':'','fallback_used':False,'fallback_kind':'',
+          'generation_candidates':[]}
+    os.environ.pop('OCH1229_RESTORE_NEEDS_REANCHOR', None)
+    os.environ.pop('OCH1229_RESTORE_FALLBACK_KIND', None)
+    os.environ.pop('OCH1229_RESTORE_SELECTED_GENERATION', None)
+    # Do not expose an unverified manifest filename as "restored".
+    os.environ.pop('OCH1226_RESTORED_GENERATION', None)
+    os.environ.pop('OCH1226_RESTORED_GENERATION_CREATED_AT', None)
     if not root:
         diag['failure_kind']='root_not_configured'; _och1227_set_mega_diag(diag)
         return False, 'MEGA_BACKUP_DIR empty'
@@ -1154,48 +1220,157 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
         try: _run(['mega-quit'],timeout=5)
         except Exception: pass
         return False, f'MEGA database folder missing: {database_remote}'
-    work = Path(tempfile.mkdtemp(prefix='ochnis127_mega_generation_'))
+
+    work = Path(tempfile.mkdtemp(prefix='ochnis129_mega_generation_'))
     try:
+        manifest={}
+        manifest_state='unread'
+        manifest_generation=''
+        manifest_remote_generation=''
+        manifest_created_at=''
+        manifest_failure=''
+        candidates=[]
+        attempted=set()
+
         diag['paths_checked'].append(manifest_remote)
         manifest_path, detail = _r80_get_exact(manifest_remote, work / 'manifest', get_timeout)
         if manifest_path is None:
-            diag['failure_kind']='manifest_missing' if _mega_missing(detail) else 'manifest_unavailable'; diag['manifest_detail']=str(detail)[:300]; _och1227_set_mega_diag(diag)
-            return False, 'current_manifest unavailable: ' + str(detail)
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding='utf-8')) or {}
-        except Exception as exc:
-            diag['failure_kind']='manifest_decode'; diag['manifest_detail']=f'{type(exc).__name__}: {str(exc)[:180]}'; _och1227_set_mega_diag(diag)
-            return False, f'current_manifest decode {type(exc).__name__}: {str(exc)[:180]}'
-        generation = str((manifest or {}).get('generation') or '').strip()
-        remote_generation = str((manifest or {}).get('remote_generation') or '').strip()
-        os.environ['OCH1226_RESTORED_GENERATION'] = generation
-        os.environ['OCH1226_RESTORED_GENERATION_CREATED_AT'] = str((manifest or {}).get('created_at') or '')
-        if not remote_generation and generation:
-            remote_generation = root + '/database/generations/' + generation
-        expected_prefix = root + '/database/generations/'
-        if (not generation) or (not remote_generation.startswith(expected_prefix)):
-            diag['failure_kind']='manifest_noncanonical'; _och1227_set_mega_diag(diag)
-            return False, 'current_manifest does not point to canonical database/generations'
-        diag['generation_path']=remote_generation; diag['paths_checked'].append(remote_generation)
-        gen_path, detail = _r80_get_exact(remote_generation, work / 'generation', get_timeout)
-        if gen_path is None:
-            diag['failure_kind']='generation_missing' if _mega_missing(detail) else 'generation_unavailable'; diag['generation_detail']=str(detail)[:300]; _och1227_set_mega_diag(diag)
-            return False, 'generation unavailable: ' + str(detail)
-        expected_gz = str((manifest or {}).get('gzip_sha256') or '').strip().lower()
-        if expected_gz:
-            got_gz = _och1226_sha256_file(gen_path).lower()
-            if got_gz != expected_gz:
-                return False, f'generation gzip sha256 mismatch {got_gz[:12]} != {expected_gz[:12]}'
-        candidate = work / 'candidate.sqlite3'
-        ok, install_detail = _install_gzip_db(gen_path, candidate)
-        if not ok:
-            return False, 'generation invalid: ' + str(install_detail)
-        expected_sqlite = str((manifest or {}).get('sqlite_sha256') or '').strip().lower()
-        if expected_sqlite:
-            got_sqlite = _och1226_sha256_file(candidate).lower()
-            if got_sqlite != expected_sqlite:
-                return False, f'generation sqlite sha256 mismatch {got_sqlite[:12]} != {expected_sqlite[:12]}'
+            manifest_failure='manifest_missing' if _mega_missing(detail) else 'manifest_unavailable'
+            manifest_state=manifest_failure
+            diag['manifest_detail']=str(detail)[:300]
+        else:
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8')) or {}
+                manifest_state='decoded'
+            except Exception as exc:
+                manifest={}
+                manifest_failure='manifest_decode'
+                manifest_state=manifest_failure
+                diag['manifest_detail']=f'{type(exc).__name__}: {str(exc)[:180]}'
 
+        if manifest:
+            manifest_generation = str((manifest or {}).get('generation') or '').strip()
+            manifest_remote_generation = str((manifest or {}).get('remote_generation') or '').strip()
+            manifest_created_at = str((manifest or {}).get('created_at') or '')
+            canonical_from_name=_och1229_canonical_generation_remote(root, manifest_generation)
+            normalized_remote=('/' + manifest_remote_generation.strip('/')) if manifest_remote_generation else ''
+            if canonical_from_name and manifest_remote_generation == canonical_from_name:
+                candidates.append((canonical_from_name, 'manifest_canonical', manifest, True))
+            elif canonical_from_name and not manifest_remote_generation:
+                # Missing remote_generation is recoverable from the immutable filename,
+                # but the pointer should be rewritten after READY.
+                candidates.append((canonical_from_name, 'manifest_path_rebuilt', manifest, True))
+                diag['fallback_used']=True; diag['fallback_kind']='manifest_path_rebuilt'
+            elif canonical_from_name and normalized_remote == canonical_from_name:
+                # Relative/double-slash spelling is recoverable but was exactly the kind
+                # of noncanonical pointer that 12.28 rejected.  Restore now, then heal it.
+                candidates.append((canonical_from_name, 'manifest_path_normalized', manifest, True))
+                diag['fallback_used']=True; diag['fallback_kind']='manifest_path_normalized'
+            elif canonical_from_name:
+                # This is the production 12.28 failure: the pointer names a real
+                # generation but its stored remote path is not canonical.  Never trust
+                # that path; reconstruct it under the configured root.
+                candidates.append((canonical_from_name, 'manifest_noncanonical_path_repaired', manifest, True))
+                manifest_failure='manifest_noncanonical'
+                diag['manifest_remote_generation']=manifest_remote_generation[:400]
+                diag['fallback_used']=True; diag['fallback_kind']='manifest_noncanonical_path_repaired'
+            else:
+                manifest_failure='manifest_noncanonical'
+                diag['manifest_remote_generation']=manifest_remote_generation[:400]
+
+        selected_candidate=None
+        selected_generation=''
+        selected_kind=''
+        candidate_errors=[]
+
+        def _try_generation(remote_generation: str, kind: str, source_manifest: dict | None, strict_hash: bool):
+            nonlocal selected_candidate, selected_generation, selected_kind
+            norm='/' + str(remote_generation or '').strip('/')
+            generation_name=os.path.basename(norm)
+            if not _och1229_generation_name_valid(generation_name):
+                candidate_errors.append(f'{kind}: invalid generation filename {generation_name!r}')
+                return False
+            if norm in attempted:
+                return False
+            attempted.add(norm)
+            diag['paths_checked'].append(norm)
+            diag['generation_candidates'].append({'generation':generation_name,'remote':norm,'source':kind})
+            dest=work / ('generation_' + str(len(attempted)))
+            gen_path, get_detail = _r80_get_exact(norm, dest, get_timeout)
+            if gen_path is None:
+                candidate_errors.append(f'{kind}:{generation_name}: unavailable {str(get_detail)[:180]}')
+                return False
+            sm=source_manifest if isinstance(source_manifest,dict) else {}
+            if strict_hash and str(sm.get('generation') or '') == generation_name:
+                expected_gz = str(sm.get('gzip_sha256') or '').strip().lower()
+                if expected_gz:
+                    got_gz = _och1226_sha256_file(gen_path).lower()
+                    if got_gz != expected_gz:
+                        candidate_errors.append(f'{kind}:{generation_name}: gzip sha256 mismatch')
+                        return False
+            candidate = work / f'candidate_{len(attempted)}.sqlite3'
+            try:
+                ok, install_detail = _install_gzip_db(gen_path, candidate)
+            except Exception as exc:
+                candidate_errors.append(f'{kind}:{generation_name}: gzip/SQLite {type(exc).__name__}: {str(exc)[:140]}')
+                return False
+            if not ok:
+                candidate_errors.append(f'{kind}:{generation_name}: {str(install_detail)[:180]}')
+                return False
+            if strict_hash and str(sm.get('generation') or '') == generation_name:
+                expected_sqlite = str(sm.get('sqlite_sha256') or '').strip().lower()
+                if expected_sqlite:
+                    got_sqlite = _och1226_sha256_file(candidate).lower()
+                    if got_sqlite != expected_sqlite:
+                        candidate_errors.append(f'{kind}:{generation_name}: sqlite sha256 mismatch')
+                        return False
+            if not _db_valid(candidate):
+                candidate_errors.append(f'{kind}:{generation_name}: quick_check failed')
+                return False
+            selected_candidate=candidate
+            selected_generation=generation_name
+            selected_kind=kind
+            return True
+
+        # 1) Active pointer (or safe path rebuilt from its filename).
+        for remote_generation,kind,source_manifest,strict_hash in candidates:
+            if _try_generation(remote_generation,kind,source_manifest,strict_hash):
+                break
+
+        # 2) Pointer could not produce a usable DB: scan only canonical generations.
+        scan_state='not_needed'; scan_detail=''
+        if selected_candidate is None:
+            rows,scan_state,scan_detail=_och1229_list_generation_remotes(root,min(get_timeout,60),24)
+            diag['generation_scan_state']=scan_state
+            diag['generation_scan_detail']=scan_detail[:300]
+            for remote_generation in rows:
+                # Never retry a failed manifest generation without its hash checks.
+                # Other immutable generations have no pointer hash, so gzip + SQLite
+                # quick_check is the safe bounded fallback requested for 12.29.
+                if remote_generation in attempted:
+                    continue
+                if _try_generation(remote_generation,'generation_scan_fallback',None,False):
+                    diag['fallback_used']=True
+                    diag['fallback_kind']='generation_scan_fallback'
+                    break
+
+        if selected_candidate is None:
+            diag['candidate_errors']=candidate_errors[-12:]
+            if manifest_failure == 'manifest_missing' and scan_state in {'ok','missing'} and not diag['generation_candidates']:
+                diag['failure_kind']='manifest_missing_no_generations'
+                _och1227_set_mega_diag(diag)
+                return False, 'current_manifest missing and no immutable generations exist'
+            if scan_state == 'unavailable':
+                diag['failure_kind']='generation_scan_unavailable'
+            elif candidate_errors:
+                diag['failure_kind']='generation_candidates_invalid'
+            else:
+                diag['failure_kind']=manifest_failure or 'generation_missing'
+            _och1227_set_mega_diag(diag)
+            return False, ('no valid canonical MEGA generation; ' + '; '.join(candidate_errors[-4:]))[:900]
+
+        # Matching tail is optional.  It is applied only when it explicitly belongs
+        # to the selected immutable generation; a stale tail is ignored.
         tail_applied = 0
         tail_note = 'tail absent'
         diag['paths_checked'].append(tail_remote)
@@ -1203,47 +1378,54 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
         if tail_path is not None:
             try:
                 tail_obj = json.loads(gzip.decompress(tail_path.read_bytes()).decode('utf-8')) or {}
+                schema = int((tail_obj or {}).get('schema') or 0)
+                base_generation = str((tail_obj or {}).get('base_generation') or '')
+                if schema != 126:
+                    tail_note = f'noncanonical tail ignored schema={schema}'
+                elif base_generation and base_generation != selected_generation:
+                    tail_note = f'stale tail ignored base={base_generation}'
+                else:
+                    raw_events = list((tail_obj or {}).get('events') or [])
+                    invalid = [ev for ev in raw_events if not _r32_event_valid(ev)]
+                    if invalid:
+                        tail_note = f'invalid tail ignored events={len(invalid)}'
+                    else:
+                        events = sorted(raw_events, key=lambda x: (int((x or {}).get('revision') or 0), str((x or {}).get('event_id') or '')))
+                        # Apply the tail to a disposable copy first.  If validation
+                        # fails, keep the immutable generation byte-for-byte instead
+                        # of leaving a partially applied tail in the candidate.
+                        tail_candidate = work / 'candidate_with_tail.sqlite3'
+                        shutil.copy2(selected_candidate, tail_candidate)
+                        applied = 0
+                        if events:
+                            applied, _stale = _apply_r32_events(tail_candidate, events)
+                        claimed = int((tail_obj or {}).get('max_revision') or 0)
+                        got = _r32_max_revision(tail_candidate)
+                        if (claimed and got < claimed) or not _db_valid(tail_candidate):
+                            tail_note = f'incomplete tail ignored max_revision={got} < {claimed}' if claimed and got < claimed else 'invalid tail result ignored'
+                        else:
+                            selected_candidate = tail_candidate
+                            tail_applied = int(applied or 0)
+                            try:
+                                handoff = Path('/tmp/och1226_restored_tail.json.gz')
+                                shutil.copy2(tail_path, handoff)
+                                os.environ['OCH1226_RESTORED_TAIL_PATH'] = str(handoff)
+                            except Exception:
+                                os.environ.pop('OCH1226_RESTORED_TAIL_PATH', None)
+                            tail_note = f'tail events={len(events)} applied={tail_applied} max_revision={got}'
             except Exception as exc:
-                return False, f'current_tail decode {type(exc).__name__}: {str(exc)[:180]}'
-            schema = int((tail_obj or {}).get('schema') or 0)
-            base_generation = str((tail_obj or {}).get('base_generation') or '')
-            if schema != 126:
-                return False, f'current_tail schema={schema}, expected 126'
-            if base_generation and base_generation != generation:
-                tail_note = f'stale tail ignored base={base_generation}'
-            else:
-                raw_events = list((tail_obj or {}).get('events') or [])
-                invalid = [ev for ev in raw_events if not _r32_event_valid(ev)]
-                if invalid:
-                    return False, f'current_tail contains {len(invalid)} invalid R32 events'
-                events = sorted(raw_events, key=lambda x: (int((x or {}).get('revision') or 0), str((x or {}).get('event_id') or '')))
-                # Handoff the exact restored tail to the main runtime.  It must keep
-                # these events when it appends newer ones, otherwise replacing
-                # current_tail after restart could lose pre-restart deltas that are
-                # not yet part of the immutable generation.
-                try:
-                    handoff = Path('/tmp/och1226_restored_tail.json.gz')
-                    shutil.copy2(tail_path, handoff)
-                    os.environ['OCH1226_RESTORED_TAIL_PATH'] = str(handoff)
-                except Exception:
-                    os.environ.pop('OCH1226_RESTORED_TAIL_PATH', None)
-                if events:
-                    applied, _stale = _apply_r32_events(candidate, events)
-                    tail_applied = int(applied or 0)
-                claimed = int((tail_obj or {}).get('max_revision') or 0)
-                got = _r32_max_revision(candidate)
-                if claimed and got < claimed:
-                    return False, f'current_tail incomplete max_revision={got} < {claimed}'
-                tail_note = f'tail events={len(events)} applied={tail_applied} max_revision={got}'
+                tail_note = f'corrupt tail ignored {type(exc).__name__}: {str(exc)[:120]}'
         else:
             tail_note = 'tail unavailable: ' + str(tail_detail)[:160]
 
-        if not _db_valid(candidate):
+        if not _db_valid(selected_candidate):
+            diag['failure_kind']='candidate_invalid_after_tail'; _och1227_set_mega_diag(diag)
             return False, 'candidate invalid after generation/tail'
-        final_tmp = target.with_suffix(target.suffix + '.mega126.tmp')
+        final_tmp = target.with_suffix(target.suffix + '.mega129.tmp')
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(candidate, final_tmp)
+        shutil.copy2(selected_candidate, final_tmp)
         if not _db_valid(final_tmp):
+            diag['failure_kind']='final_candidate_validation_failed'; _och1227_set_mega_diag(diag)
             return False, 'final candidate validation failed'
         os.replace(final_tmp, target)
         for suffix in ('-wal', '-shm'):
@@ -1251,8 +1433,27 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
                 Path(str(target) + suffix).unlink(missing_ok=True)
             except Exception:
                 pass
-        diag['failure_kind']=''; diag['restore_ok']=True; diag['generation']=generation; diag['tail_detail']=tail_note; _och1227_set_mega_diag(diag)
-        return True, f'MEGA generation restore OK generation={generation}; {tail_note}; db={_db_revision(target):.6f}'
+
+        # Only now is the generation truly restored.
+        os.environ['OCH1226_RESTORED_GENERATION'] = selected_generation
+        if selected_generation == manifest_generation:
+            os.environ['OCH1226_RESTORED_GENERATION_CREATED_AT'] = manifest_created_at
+        else:
+            os.environ['OCH1226_RESTORED_GENERATION_CREATED_AT'] = ''
+        fallback_used = selected_kind != 'manifest_canonical'
+        if fallback_used:
+            diag['fallback_used']=True
+            diag['fallback_kind']=selected_kind
+            os.environ['OCH1229_RESTORE_NEEDS_REANCHOR']='1'
+            os.environ['OCH1229_RESTORE_FALLBACK_KIND']=selected_kind
+            os.environ['OCH1229_RESTORE_SELECTED_GENERATION']=selected_generation
+        else:
+            os.environ['OCH1229_RESTORE_NEEDS_REANCHOR']='0'
+        diag['failure_kind']=''; diag['restore_ok']=True; diag['generation']=selected_generation
+        diag['generation_source']=selected_kind; diag['tail_detail']=tail_note
+        diag['candidate_errors']=candidate_errors[-12:]
+        _och1227_set_mega_diag(diag)
+        return True, f'MEGA generation restore OK generation={selected_generation}; source={selected_kind}; {tail_note}; db={_db_revision(target):.6f}'
     finally:
         try:
             if not diag.get('restore_ok') and not diag.get('failure_kind'):
@@ -1269,7 +1470,6 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
         except Exception:
             pass
         shutil.rmtree(work, ignore_errors=True)
-
 
 def _r80_compact_mega_compare_restore(target: Path, *, have_current: bool) -> tuple[bool,str,str]:
     """OCH12.7 bounded startup compare/restore. Never scans MEGA trees.
@@ -1530,7 +1730,7 @@ def main():
     local_revision_before = _db_revision(target, validated=True) if local_valid_before else 0.0
     trace = {
         'schema': 5,
-        'policy': 'OCH12.28_MEGA_GENERATION_OR_EMPTY_AUTOSEED',
+        'policy': 'OCH12.29_MEGA_POINTER_GENERATION_FALLBACK',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': local_found,
@@ -1550,7 +1750,7 @@ def main():
         # OCH12.26: local SQLite is not a restore source; it is merely the already
         # active working file if this container/process retained it.  If it is absent
         # or invalid, the only durable source of truth is canonical MEGA generation.
-        trace['policy'] = 'OCH12.28_MEGA_GENERATION_OR_EMPTY_AUTOSEED'
+        trace['policy'] = 'OCH12.29_MEGA_POINTER_GENERATION_FALLBACK'
         trace['local_cache_contacted'] = False
         trace['redis_contacted'] = False
         trace['redis_restore_disabled_v1226'] = True
@@ -1569,7 +1769,7 @@ def main():
         if not current_valid:
             if mega_root and mega_creds:
                 trace['mega_contacted'] = True
-                print('[SPLIT FRONT] OCH12.28 canonical MEGA generation restore start', flush=True)
+                print('[SPLIT FRONT] OCH12.29 canonical MEGA generation restore start', flush=True)
                 try:
                     ok, detail = _och1226_restore_from_mega_generation(target)
                 except Exception as exc:
@@ -1583,7 +1783,7 @@ def main():
                 trace['mega_ok'] = bool(ok)
                 trace['mega_detail'] = str(detail)[:1200]
                 trace['mega_action'] = 'RESTORE' if ok else 'EMPTY_INIT'
-                print(f'[SPLIT FRONT] OCH12.28 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
+                print(f'[SPLIT FRONT] OCH12.29 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
                 if ok and _db_valid(target):
                     current_valid = True
                     trace['base_source'] = 'MEGA_GENERATION_V126'
@@ -1609,7 +1809,7 @@ def main():
                 trace['empty_init_ok'] = bool(empty_ok)
                 trace['empty_init_detail'] = str(empty_detail)[:500]
                 if not empty_ok:
-                    raise RuntimeError('OCH12.28 empty SQLite initialization failed: '+str(empty_detail)[:700])
+                    raise RuntimeError('OCH12.29 empty SQLite initialization failed: '+str(empty_detail)[:700])
                 current_valid=True
                 trace['base_source']='EMPTY_INIT_MEGA_MISSING'
                 trace['empty_init_reason']=empty_reason
@@ -1617,7 +1817,7 @@ def main():
                 os.environ['OCH1227_EMPTY_BOOT']='1'
                 os.environ['OCH1227_EMPTY_BOOT_REASON']=empty_reason[:1000]
                 failure_kind=str((mega_diag or {}).get('failure_kind') or '')
-                confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing'}
+                confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing_no_generations'}
                 os.environ['OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT']='1' if confirmed_absent else '0'
                 trace['empty_boot_confirmed_absent']=bool(confirmed_absent)
                 # If MEGA was merely slow/corrupt/unreachable, do not let this new empty
@@ -1625,7 +1825,7 @@ def main():
                 protect=bool(str(os.getenv('OCH1227_EMPTY_BOOT_PROTECT_UNCERTAIN_MEGA','1') or '1').strip().lower() in {'1','true','yes','on'} and not confirmed_absent)
                 os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='1' if protect else '0'
                 trace['empty_boot_mega_write_guard']=protect
-                print(f'[SPLIT FRONT] OCH12.28 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard={int(protect)}',flush=True)
+                print(f'[SPLIT FRONT] OCH12.29 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard={int(protect)}',flush=True)
         else:
             trace['mega_contacted'] = False
             trace['mega_ok'] = None
@@ -1690,7 +1890,7 @@ def main():
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
         print('[RESTORE TRACE R68]', trace_json, flush=True)
         boot_mem_release = _och1220_release_boot_memory()
-        print(f'[SPLIT FRONT] OCH12.28 boot memory release {boot_mem_release}', flush=True)
+        print(f'[SPLIT FRONT] OCH12.29 boot memory release {boot_mem_release}', flush=True)
 
         # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after

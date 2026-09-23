@@ -14,18 +14,18 @@
     "10_split_policy_offload.py": "v262"
   },
   "files": {
-    "01_core_data.py": "1a9ac544191a0034e735535f7b4c4ea7b38e4a0ec0a6c018980530f10c262c96",
+    "01_core_data.py": "09d727ebf2fe3227d6c5762aa2d4e1e58c470236030ceb256026b0549a4d3088",
     "02_transport_safety.py": "ef675155620468cfbcd923dd2cd6a5d04d259ef6741ef7e892c8fcf9f0f2c67e",
     "03_diagnostics_memory.py": "c3981be233839813a0b8a85236622a8a2d2e720a13f3fb66ff02c61e42ba052c",
     "04_messages_features.py": "012db312cf72e19d37a4e1b88609289919996b37651429ece0ff7801e3135eed",
     "05_finance_ui.py": "a1bbd15eb8a57bf7509bbd03728660bcc5dacfa2ba017957c5ef6eca440462b0",
-    "06_commands_callbacks.py": "0d5ca32944b175167e67b9118e33aaf39f1f03bae412b4ce69d714d3f6b2a875",
-    "07_state_web.py": "1340ea09bfe71bd22ce574844c7db86905c8a8888d72eb21d4653d9dafd06ffa",
+    "06_commands_callbacks.py": "14c402eabbfba3b9728b7143758bf26db10e351edc685cb795264264df7f93c8",
+    "07_state_web.py": "f557f32ed3dbbafee1629f2dbd4c48264d711cfbc1b82c01703f993d476da870",
     "08_reliability_tasks.py": "0716588c014e5f48fbe1e2efcaf6183417beab10f180bf47d63e5c9d13de1423",
     "09_final_transport.py": "bcde634ed040844b6d4f8a820b0a0f646d29c50d4b8a3fe68d60b9f562ef4418",
-    "10_split_policy_offload.py": "d7e8c58c85c3b24cec7d92f92209a928dd682672e90e274855a36c13e6483a01"
+    "10_split_policy_offload.py": "472172579c65a5b27ad7aaa9857cdad36b6e9283c34812d13f852d2e795e338a"
   },
-  "release": "очнись_12.28",
+  "release": "очнись_12.29",
   "release_features": [
     "info_menu_three_modes",
     "directive_business_gate",
@@ -455,6 +455,10 @@
     "och1228_mega_login_retry_after_timeout",
     "och1228_stale_megacmd_hard_reset",
     "och1228_confirmed_missing_auto_seed",
-    "och1228_startup_mega_master_status"
+    "och1228_startup_mega_master_status",
+    "och1229_manifest_path_repair",
+    "och1229_bounded_generation_scan_fallback",
+    "och1229_post_ready_canonical_reanchor",
+    "och1229_restored_generation_after_validation_only"
   ]
 }

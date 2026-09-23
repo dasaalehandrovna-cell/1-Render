@@ -5493,6 +5493,9 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
+    '• 12.29: если current_manifest повреждён/неканоничен, startup восстанавливает canonical путь по имени generation и затем ограниченно проверяет database/generations newest-first.\n'
+    '• 12.29: fallback-generation принимается только после gzip + SQLite quick_check; restored_generation фиксируется только после успешной установки.\n'
+    '• 12.29: после fallback-восстановления бот в фоне создаёт новую canonical generation и исправляет current_manifest.\n'
     '• 12.28: MEGA login получил whoami-проверку, hard-reset зависшего mega-cmd-server и реальную повторную попытку в общем timeout-бюджете.\n'
     '• 12.28: если root/database/manifest подтверждённо отсутствуют, пустой бот автоматически создаёт новую canonical MEGA generation после READY.\n'
     '• 12.27: если canonical MEGA базы нет, создаётся пустая SQLite и владелец получает точные пути поиска.\n'
@@ -5691,6 +5694,16 @@ def _r57_startup_details_text() -> str:
             details.append(f"Revision: {trace.get('final_revision')}")
         if trace.get('error'):
             details.append(f"Restore error: {str(trace.get('error'))[:240]}")
+        _diag_all=trace.get('mega_diag') if isinstance(trace.get('mega_diag'),dict) else {}
+        if _diag_all.get('fallback_used'):
+            details.append(f"MEGA fallback: {str(_diag_all.get('fallback_kind') or _diag_all.get('generation_source') or 'ДА')[:220]}")
+            details.append(f"Fallback generation: {str(_diag_all.get('generation') or '—')[:220]}")
+            _ra_done=str(os.getenv('OCH1229_REANCHOR_DONE','0') or '0')=='1'
+            _ra_need=str(os.getenv('OCH1229_RESTORE_NEEDS_REANCHOR','0') or '0')=='1'
+            details.append(f"MEGA current_manifest repair: {'ГОТОВО' if _ra_done else 'ОЖИДАЕТ' if _ra_need else 'НЕТ'}")
+            _ra_detail=str(os.getenv('OCH1229_REANCHOR_DETAIL','') or '').strip()
+            if _ra_detail:
+                details.append(f"MEGA reanchor detail: {_ra_detail[:300]}")
         if str(trace.get('base_source') or '').startswith('EMPTY_INIT'):
             _diag=trace.get('mega_diag') if isinstance(trace.get('mega_diag'),dict) else {}
             details.append(f"EMPTY BOOT: ДА · причина {str(trace.get('empty_init_reason') or trace.get('mega_detail') or '—')[:420]}")

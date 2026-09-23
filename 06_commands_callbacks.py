@@ -5916,7 +5916,7 @@ def run_manual_mega_restore(chat_id: int):
     restore_epoch = 0
     success = False
     try:
-        send_and_auto_delete(chat_id, '☁️ 12.28: читаю MEGA current_manifest → immutable generation → current_tail…', 30)
+        send_and_auto_delete(chat_id, '☁️ 12.29: читаю MEGA current_manifest → generation; при проблеме проверяю generations → current_tail…', 30)
         begin = globals().get('_v241_restore_storage_barrier_begin')
         if callable(begin):
             restore_epoch = int(begin() or 0)
@@ -6033,7 +6033,7 @@ def run_manual_redis_restore(chat_id: int):
     """12.26 policy: Redis is cache-only and is never a recovery source."""
     chat_id=int(chat_id)
     try:
-        send_and_auto_delete(chat_id,'⛔ 12.28: восстановление из Redis отключено. Redis используется только как cache/locks/ускоритель. Каноническое восстановление выполняется только из MEGA.',180)
+        send_and_auto_delete(chat_id,'⛔ 12.29: восстановление из Redis отключено. Redis используется только как cache/locks/ускоритель. Каноническое восстановление выполняется только из MEGA.',180)
         bot_journal('redis_restore_blocked_v1226',chat_id,'policy=MEGA_ONLY_RESTORE; redis=cache_only')
     except Exception:
         pass
