@@ -5493,6 +5493,9 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
+    '• 12.30: timeout mega-get больше не считается отсутствием generation: MEGAcmd перезапускается, login обновляется и generation скачивается повторно с увеличенным бюджетом.\n'
+    '• 12.30: fallback-generation восстанавливается строго как immutable SQLite без current_tail, чтобы автоматический restore совпадал с ручным.\n'
+    '• 12.30: EMPTY_INIT больше не блокирует MEGA-запись; после READY создаётся новая canonical generation. Ручное восстановление автоматически перепубликует SQLite в MEGA.\n'
     '• 12.29: если current_manifest повреждён/неканоничен, startup восстанавливает canonical путь по имени generation и затем ограниченно проверяет database/generations newest-first.\n'
     '• 12.29: fallback-generation принимается только после gzip + SQLite quick_check; restored_generation фиксируется только после успешной установки.\n'
     '• 12.29: после fallback-восстановления бот в фоне создаёт новую canonical generation и исправляет current_manifest.\n'
@@ -5590,6 +5593,7 @@ def _r57_restore_source_info() -> tuple[str, dict]:
         'EMPTY_INIT_MEGA_MISSING': 'пустая SQLite · MEGA база не восстановлена',
         'EMPTY_INIT': 'новая SQLite',
         'MEGA_RESTORE_FAILED': 'MEGA не восстановлена',
+        'MANUAL_MEGA_RESTORE': 'ручное восстановление из MEGA',
     }
     label = labels.get(source) or str(_RUNTIME_STATE.get('restore_detail') or 'локальное состояние')
     return label[:180], trace
@@ -5637,17 +5641,14 @@ def _r57_startup_compact_text() -> str:
             shown='• пути не проверялись: MEGA_BACKUP_DIR не настроен'
         else:
             shown='• пути не проверялись'
-        guard=str(os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD','0') or '0')=='1'
-        confirmed=str(os.getenv('OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT','0') or '0')=='1'
         seeded=str(os.getenv('OCH1228_EMPTY_BOOT_MEGA_SEEDED','0') or '0')=='1'
-        if guard:
-            guard_line='\n🛡 Автозапись в MEGA заблокирована, чтобы не перезаписать возможную старую базу.'
-        elif seeded:
+        needs_seed=str(os.getenv('OCH1230_EMPTY_BOOT_NEEDS_SEED','0') or '0')=='1'
+        if seeded:
             guard_line='\n✅ Новая canonical MEGA база уже создана автоматически.'
-        elif confirmed:
-            guard_line='\n🆕 Отсутствие базы подтверждено. Новая canonical MEGA база будет создана автоматически после READY.'
+        elif needs_seed:
+            guard_line='\n🆕 Бот продолжает работу. MEGA не заблокирована: при доступности будет создана новая canonical generation.'
         else:
-            guard_line=''
+            guard_line='\nMEGA write guard: ВЫКЛ.'
         return (f'⚠️ {BOT_DISPLAY_NAME} запущен ПУСТЫМ · {VERSION}\n'
                 f'База MEGA не восстановлена. {folder}\n'
                 f'Причина: {reason}\n\nИскал:\n{shown}{guard_line}')
@@ -6239,7 +6240,7 @@ def main():
         log_error(f'bot source archive schedule: {exc}')
     # OCH12.27: an EMPTY_INIT must never be published by this legacy seed path.
     # Confirmed-empty MEGA is bootstrapped only by canonical generation durability;
-    # uncertain MEGA failures are protected by OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD.
+    # OCH12.30: EMPTY_INIT is writable; canonical MEGA is reseeded/reanchored in background.
     _och1227_empty_boot = str(os.getenv('OCH1227_EMPTY_BOOT','0') or '0').strip().lower() in {'1','true','yes','on'}
     if LOWRAM_ENABLED and (not db_restored) and (not _och1227_empty_boot) and (not RESTORE_GUARD_ACTIVE) and bool(globals().get('CONFIG_GUARD_BOOT_VERIFIED_V234', False)):
 
@@ -11542,6 +11543,23 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
             except Exception:
                 pass
             save_data(data, full=True)
+            # OCH12.30: the owner-selected generation is now the live authority.
+            # Update in-session restore diagnostics immediately; the background
+            # canonical reanchor will make the next deploy use this state too.
+            try:
+                _raw_trace=str(os.getenv('R68_RESTORE_TRACE_JSON','') or '{}')
+                _trace=json.loads(_raw_trace) if _raw_trace else {}
+                if not isinstance(_trace,dict): _trace={}
+                _trace.update({'base_source':'MANUAL_MEGA_RESTORE','manual_restore_source':remote,
+                               'manual_restore_at':now_local().isoformat(timespec='seconds'),
+                               'empty_init_reason':'','empty_boot_mega_write_guard':False})
+                os.environ['R68_RESTORE_TRACE_JSON']=json.dumps(_trace,ensure_ascii=False,separators=(',',':'))
+                os.environ['OCH1227_EMPTY_BOOT']='0'
+                os.environ['OCH1227_EMPTY_BOOT_REASON']=''
+                os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
+                os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='0'
+            except Exception:
+                pass
             checkpoint_row = {'required': False, 'ok': False, 'detail': 'helper unavailable'}
             try:
                 seal = globals().get('r64_publish_restore_snapshot_v271')
@@ -11579,6 +11597,18 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
         if epoch and callable(end):
             try:
                 end(epoch, success)
+            except Exception:
+                pass
+        # OCH12.30: once a user-confirmed MEGA restore succeeded, the restored
+        # SQLite becomes the new canonical MEGA lineage automatically.  This also
+        # clears any EMPTY_INIT write fence left by the preceding deploy.
+        if success:
+            try:
+                os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
+                os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='0'
+                schedule=globals().get('_och1230_schedule_manual_mega_reanchor')
+                if callable(schedule):
+                    schedule('owner_selected_mega_database_r65',2.0,0)
             except Exception:
                 pass
         globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(previous)

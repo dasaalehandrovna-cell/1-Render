@@ -357,7 +357,7 @@ if ROLE=='fast':
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
-       'OCH12.29_MEGA_POINTER_GENERATION_FALLBACK' in start_main_src and
+       'OCH12.30_MEGA_RESILIENT_CANONICAL' in start_main_src and
        '_och1226_restore_from_mega_generation(target)' in start_main_src and
        '_restore_from_redis_startup(target)' not in start_main_src and
        '_restore_from_local_runtime_cache(target)' not in start_main_src and
@@ -427,9 +427,11 @@ if ROLE=='fast':
     restore_seal_src=_fn_sources(split_src,{'r64_publish_restore_snapshot_v271'}).get('r64_publish_restore_snapshot_v271','')
     redis_sched_src=_fn_sources(split_src,{'r64_schedule_fast_redis_snapshot_v271'}).get('r64_schedule_fast_redis_snapshot_v271','')
     redis_fire_src=_fn_sources(split_src,{'_r64_periodic_redis_snapshot_fire_v271'}).get('_r64_periodic_redis_snapshot_fire_v271','')
-    ok('och1222_manual_restore_single_sync_seal',
-       '_split_cache_snapshot_to_redis_v266' in restore_seal_src and 'sync_mega=True' not in restore_seal_src and '_r222_schedule_post_restore_mega' in restore_seal_src and "'redis_ok'" in restore_seal_src,
-       '12.22 manual restore may synchronously seal Redis once; MEGA must be delayed/memory-gated')
+    ok('och1230_manual_restore_reanchors_mega',
+       '_split_cache_snapshot_to_redis_v266' in restore_seal_src and 'sync_mega=True' not in restore_seal_src and
+       '_och1230_schedule_manual_mega_reanchor' in restore_seal_src and "'redis_ok'" in restore_seal_src and
+       'memory_heavy_allowed' in _fn_sources(split_src,{'_och1230_manual_restore_mega_reanchor'}).get('_och1230_manual_restore_mega_reanchor',''),
+       '12.30 manual restore must seal Redis and automatically re-anchor MEGA after the restore barrier with memory gating')
     ok('och123_redis_daily_full_scheduler',
        'def _r79_daily_snapshot_now' in split_src and 'def _r79_daily_scheduler_loop' in split_src and
        "redis_daily_snapshot_time_r79" in split_src and "callback_data='r79:redis:sched'" in split_src and
@@ -462,24 +464,26 @@ if ROLE=='fast':
        'RECOVERY SAFE MODE' not in web_src and 'SPLIT_RECOVERY_SAFE_MODE' not in web_src and
        'SPLIT_RECOVERY_SAFE_MODE' not in split_src and 'SPLIT_RECOVERY_SAFE_MODE' not in start_src,
        'legacy runtime SPLIT_RECOVERY_SAFE_MODE flag must stay removed; 12.14 preboot recovery-safe wait is a separate startup policy')
-    ok('och1227_normal_empty_boot_with_notice',
+    ok('och1230_normal_empty_boot_writable',
        "trace['empty_init_attempted'] = True" in start_main_src and
        '_ensure_empty_db(target)' in start_main_src and
        'OCH1227_EMPTY_BOOT_REASON' in start_main_src and
-       'OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD' in start_main_src,
-       '12.28 empty boot must be explicit, diagnosable and protect uncertain MEGA state')
+       "os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'" in start_main_src and
+       "os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='1'" in start_main_src,
+       '12.30 EMPTY_INIT must stay writable and schedule a new canonical MEGA seed instead of permanent write-guard')
     mega_login_src=_fn_sources(start_src,{'_mega_login'}).get('_mega_login','')
     ok('och1228_mega_login_timeout_retries',
        '_mega_whoami_ready' in mega_login_src and 'for attempt, budget in enumerate(budgets, start=1)' in mega_login_src and
        'continue' in mega_login_src and 'mega-login failed after retry' in mega_login_src and
        "globals().get('_och1224_hard_release_mega_processes')" in mega_login_src,
        '12.28 MEGA login must survive a stale/hung mega-cmd-server and really retry after timeout')
-    ok('och1228_confirmed_missing_autoseed',
-       'OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT' in start_main_src and
+    ok('och1230_any_empty_boot_autoseed',
+       "os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='1'" in start_main_src and
        'def _och1228_empty_boot_autoseed_worker' in split_src and
+       "OCH1230_EMPTY_BOOT_NEEDS_SEED" in _fn_sources(split_src,{'_och1228_empty_boot_autoseed_worker'}).get('_och1228_empty_boot_autoseed_worker','') and
        "_r80_snapshot_full_compact('empty-boot-autoseed')" in split_src and
        'OCH1228_EMPTY_BOOT_MEGA_SEEDED' in split_src,
-       '12.28 must create a new canonical MEGA generation after confirmed missing root/database/manifest')
+       '12.30 must publish a fresh canonical generation after any EMPTY_INIT once MEGA becomes reachable')
     ok('och1229_manifest_generation_fallback',
        'def _och1229_list_generation_remotes' in start_src and
        "'--pattern=generation_*.sqlite3.gz'" in start_src and
@@ -497,10 +501,29 @@ if ROLE=='fast':
        'manifest_missing_no_generations' in start_main_src and
        "confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing_no_generations'}" in start_main_src,
        '12.29 missing current_manifest may auto-seed only after bounded generation lookup proves no immutable generations')
-    ok('och1228_login_failed_never_autoseeds',
-       "confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing_no_generations'}" in start_main_src and
-       'login_failed' not in _fn_sources(start_src,{'main'}).get('main','').split('confirmed_absent=',1)[1].split('\n',1)[0],
-       '12.28 must never overwrite a possibly valid remote database after mere MEGA login/network failure')
+    _mega_restore_src=_fn_sources(start_src,{'_och1226_restore_from_mega_generation'}).get('_och1226_restore_from_mega_generation','')
+    ok('och1230_generation_download_retry_after_timeout',
+       'retry_timeout=max(first_timeout,240)' in _mega_restore_src and
+       "globals().get('_och1224_hard_release_mega_processes')" in _mega_restore_src and
+       '_mega_login(login_timeout)' in _mega_restore_src and
+       'generation_download_retries' in _mega_restore_src,
+       '12.30 generation mega-get timeout must reset MEGAcmd, re-login and retry instead of treating an existing file as missing')
+    ok('och1230_fallback_generation_never_replays_tail',
+       "if selected_kind == 'manifest_canonical':" in _mega_restore_src and
+       'tail skipped for fallback generation' in _mega_restore_src and
+       'fallback generation is authoritative; tail intentionally skipped' in _mega_restore_src,
+       '12.30 fallback generation must restore byte-for-byte point-in-time SQLite without current_tail replay')
+    _manual_mega_src=_fn_sources(split_src,{'_och1230_manual_restore_mega_reanchor'}).get('_och1230_manual_restore_mega_reanchor','')
+    ok('och1230_manual_reanchor_bypasses_old_cooldown',
+       "manual-restore-reanchor" in _manual_mega_src and
+       "force_reanchor=reason_s.startswith" in _fn_sources(split_src,{'_r80_snapshot_full_compact'}).get('_r80_snapshot_full_compact','') and
+       "if (not force_reanchor) and now<float" in _fn_sources(split_src,{'_r80_snapshot_full_compact'}).get('_r80_snapshot_full_compact',''),
+       '12.30 owner-confirmed manual restore must be able to publish a fresh canonical generation without stale retry cooldown')
+    ok('och1230_login_failure_does_not_permanently_block_mega',
+       "os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'" in start_main_src and
+       'OCH1230_EMPTY_BOOT_NEEDS_SEED' in start_main_src and
+       "if str(_split_os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD'" not in _fn_sources(split_src,{'_r80_mega_runtime_ready'}).get('_r80_mega_runtime_ready',''),
+       '12.30 login/network failure may start empty but must not permanently disable later MEGA durability')
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
        'def _v153_retry_pending_failed_tasks' in web_src and
@@ -752,8 +775,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.29'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src and 'запущен ПУСТЫМ' in web_src,
-       'user-visible bot and READY/empty-boot messages must identify as очнись_12.29')
+       "BOT_DISPLAY_NAME = 'очнись_12.30'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src and 'запущен ПУСТЫМ' in web_src,
+       'user-visible bot and READY/empty-boot messages must identify as очнись_12.30')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -799,7 +822,7 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1227_empty_after_one_pass',
-       'OCH12.29_MEGA_POINTER_GENERATION_FALLBACK' in start_main_src and "trace['empty_init_attempted'] = True" in start_main_src and
+       'OCH12.30_MEGA_RESILIENT_CANONICAL' in start_main_src and "trace['empty_init_attempted'] = True" in start_main_src and
        '_ensure_empty_db(target)' in start_main_src and 'mega_paths_checked' in start_main_src,
        '12.29 must start empty only after canonical MEGA + bounded generations fallback and retain path diagnostics')
     ok('och1217_startup_compact_only_no_legacy_tree_scan',
