@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: canonical MEGA generation restore; Redis is cache only.
 
-OCH12.27 recovery policy:
+OCH12.28 recovery policy:
 - a valid local SQLite is reused only as the already-running working database;
 - when local SQLite is missing/invalid, the ONLY durable restore source is MEGA;
 - MEGA restore reads database/current_manifest.json and its exact immutable generation;
@@ -258,29 +258,105 @@ def _run(args, timeout=120):
     return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
 
 
+def _mega_whoami_ready(timeout: int = 8) -> tuple[bool, str]:
+    """Cheap proof that MEGAcmd already has a usable authenticated session."""
+    try:
+        p = _run(['mega-whoami'], timeout=max(3, min(15, int(timeout or 8))))
+        detail = ((p.stdout or '') + '\n' + (p.stderr or '')).strip()[:240]
+        if p.returncode == 0 and detail:
+            low = detail.casefold()
+            if not any(x in low for x in ('not logged', 'not logged in', 'not signed', 'please login')):
+                return True, detail
+        return False, detail or f'rc={p.returncode}'
+    except subprocess.TimeoutExpired:
+        return False, f'mega-whoami timeout after {timeout}s'
+    except FileNotFoundError:
+        return False, 'MEGAcmd is not installed'
+    except Exception as exc:
+        return False, f'mega-whoami {type(exc).__name__}: {str(exc)[:160]}'
+
+
 def _mega_login(timeout: int) -> tuple[bool, str]:
+    """OCH12.28 robust bounded MEGAcmd login.
+
+    12.27 returned immediately on the first subprocess timeout, so its nominal
+    second attempt was unreachable in exactly the failure mode seen on Render.
+    12.28 first accepts an already-live session, then hard-resets stale MEGAcmd
+    children and performs two bounded login attempts.  If mega-login itself times
+    out but the server actually authenticated, mega-whoami turns that into success.
+    The configured timeout is treated as the total login budget, not per-attempt.
+    """
     session = str(os.getenv('MEGA_SESSION', '') or '').strip()
     email = str(os.getenv('MEGA_EMAIL', '') or '').strip()
     password = str(os.getenv('MEGA_PASSWORD', '') or '')
     if not session and not (email and password):
         return False, 'MEGA credentials are not configured on FAST startup'
     cmd = ['mega-login', session] if session else ['mega-login', email, password]
-    for attempt in (1, 2):
+    try:
+        total = max(20, min(180, int(timeout or 120)))
+    except Exception:
+        total = 120
+
+    # A surviving MEGAcmd daemon may already be authenticated. Do not log in twice.
+    ready, who = _mega_whoami_ready(min(8, max(3, total // 10)))
+    if ready:
+        return True, 'existing session OK'
+
+    # A stale daemon is a common Render-restart failure mode. Reset it *before*
+    # the first real login instead of only after recovery has already failed.
+    try:
+        reset = globals().get('_och1224_hard_release_mega_processes')
+        if callable(reset):
+            reset()
+    except Exception:
+        pass
+    time.sleep(0.25)
+
+    # Keep the complete operation close to MEGA_LOGIN_TIMEOUT. With 120s this is
+    # a longer first attempt plus a shorter clean retry. A previously observed
+    # healthy cold login (~48s) therefore still fits in one attempt.
+    reserve = min(16, max(6, total // 8))
+    usable = max(20, total - reserve)
+    first_budget = max(20, min(70, int(round(usable * 0.65))))
+    second_budget = max(20, usable - first_budget)
+    budgets = (first_budget, second_budget)
+    details = []
+
+    for attempt, budget in enumerate(budgets, start=1):
         if attempt == 2:
-            try: _run(['mega-logout'], timeout=20)
-            except Exception: pass
-            time.sleep(0.6)
+            try:
+                reset = globals().get('_och1224_hard_release_mega_processes')
+                if callable(reset):
+                    reset()
+            except Exception:
+                pass
+            time.sleep(0.35)
+        started = time.monotonic()
         try:
-            p = _run(cmd, timeout=timeout)
+            p = _run(cmd, timeout=budget)
+            elapsed = time.monotonic() - started
+            text = ((p.stderr or '') or (p.stdout or '') or '').strip().replace('\n', ' ')[:220]
             if p.returncode == 0:
-                return True, 'login OK'
+                return True, f'login OK attempt={attempt} elapsed={elapsed:.1f}s'
+            details.append(f'attempt={attempt} rc={p.returncode} {text}'.strip())
+            ready, who = _mega_whoami_ready(min(8, max(3, budget // 6)))
+            if ready:
+                return True, f'login session OK after rc={p.returncode} attempt={attempt}'
         except subprocess.TimeoutExpired:
-            return False, f'mega-login timeout after {timeout}s'
+            elapsed = time.monotonic() - started
+            details.append(f'attempt={attempt} timeout={budget}s elapsed={elapsed:.1f}s')
+            # MEGAcmd sometimes establishes the session before the CLI command exits.
+            ready, who = _mega_whoami_ready(min(8, max(3, budget // 6)))
+            if ready:
+                return True, f'login session OK after timeout attempt={attempt}'
+            continue
         except FileNotFoundError:
             return False, 'MEGAcmd is not installed'
         except Exception as exc:
-            return False, f'mega-login {type(exc).__name__}: {str(exc)[:160]}'
-    return False, 'mega-login rejected'
+            details.append(f'attempt={attempt} {type(exc).__name__}: {str(exc)[:160]}')
+            continue
+
+    return False, 'mega-login failed after retry: ' + '; '.join(details[-4:])[:520]
 
 
 def _canonical_mega_root() -> str:
@@ -1454,7 +1530,7 @@ def main():
     local_revision_before = _db_revision(target, validated=True) if local_valid_before else 0.0
     trace = {
         'schema': 5,
-        'policy': 'OCH12.27_MEGA_GENERATION_OR_EMPTY_NOTIFY_OWNER',
+        'policy': 'OCH12.28_MEGA_GENERATION_OR_EMPTY_AUTOSEED',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': local_found,
@@ -1474,7 +1550,7 @@ def main():
         # OCH12.26: local SQLite is not a restore source; it is merely the already
         # active working file if this container/process retained it.  If it is absent
         # or invalid, the only durable source of truth is canonical MEGA generation.
-        trace['policy'] = 'OCH12.27_MEGA_GENERATION_OR_EMPTY_NOTIFY_OWNER'
+        trace['policy'] = 'OCH12.28_MEGA_GENERATION_OR_EMPTY_AUTOSEED'
         trace['local_cache_contacted'] = False
         trace['redis_contacted'] = False
         trace['redis_restore_disabled_v1226'] = True
@@ -1493,7 +1569,7 @@ def main():
         if not current_valid:
             if mega_root and mega_creds:
                 trace['mega_contacted'] = True
-                print('[SPLIT FRONT] OCH12.27 canonical MEGA generation restore start', flush=True)
+                print('[SPLIT FRONT] OCH12.28 canonical MEGA generation restore start', flush=True)
                 try:
                     ok, detail = _och1226_restore_from_mega_generation(target)
                 except Exception as exc:
@@ -1507,7 +1583,7 @@ def main():
                 trace['mega_ok'] = bool(ok)
                 trace['mega_detail'] = str(detail)[:1200]
                 trace['mega_action'] = 'RESTORE' if ok else 'EMPTY_INIT'
-                print(f'[SPLIT FRONT] OCH12.27 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
+                print(f'[SPLIT FRONT] OCH12.28 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
                 if ok and _db_valid(target):
                     current_valid = True
                     trace['base_source'] = 'MEGA_GENERATION_V126'
@@ -1533,7 +1609,7 @@ def main():
                 trace['empty_init_ok'] = bool(empty_ok)
                 trace['empty_init_detail'] = str(empty_detail)[:500]
                 if not empty_ok:
-                    raise RuntimeError('OCH12.27 empty SQLite initialization failed: '+str(empty_detail)[:700])
+                    raise RuntimeError('OCH12.28 empty SQLite initialization failed: '+str(empty_detail)[:700])
                 current_valid=True
                 trace['base_source']='EMPTY_INIT_MEGA_MISSING'
                 trace['empty_init_reason']=empty_reason
@@ -1541,13 +1617,15 @@ def main():
                 os.environ['OCH1227_EMPTY_BOOT']='1'
                 os.environ['OCH1227_EMPTY_BOOT_REASON']=empty_reason[:1000]
                 failure_kind=str((mega_diag or {}).get('failure_kind') or '')
-                confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing','root_not_configured'}
+                confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing'}
+                os.environ['OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT']='1' if confirmed_absent else '0'
+                trace['empty_boot_confirmed_absent']=bool(confirmed_absent)
                 # If MEGA was merely slow/corrupt/unreachable, do not let this new empty
                 # process overwrite a possibly valid remote current_manifest automatically.
                 protect=bool(str(os.getenv('OCH1227_EMPTY_BOOT_PROTECT_UNCERTAIN_MEGA','1') or '1').strip().lower() in {'1','true','yes','on'} and not confirmed_absent)
                 os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='1' if protect else '0'
                 trace['empty_boot_mega_write_guard']=protect
-                print(f'[SPLIT FRONT] OCH12.27 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard={int(protect)}',flush=True)
+                print(f'[SPLIT FRONT] OCH12.28 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard={int(protect)}',flush=True)
         else:
             trace['mega_contacted'] = False
             trace['mega_ok'] = None
@@ -1559,6 +1637,7 @@ def main():
             os.environ['SPLIT_PREBOOT_EMPTY_INIT_R1220'] = '0'
             os.environ['OCH1227_EMPTY_BOOT']='0'
             os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
+            os.environ['OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT']='0'
 
         # Re-apply packaged runtime settings: Redis remains OFF regardless of stale Render tunables.
         install_internal_runtime_config('front')
@@ -1611,7 +1690,7 @@ def main():
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
         print('[RESTORE TRACE R68]', trace_json, flush=True)
         boot_mem_release = _och1220_release_boot_memory()
-        print(f'[SPLIT FRONT] OCH12.27 boot memory release {boot_mem_release}', flush=True)
+        print(f'[SPLIT FRONT] OCH12.28 boot memory release {boot_mem_release}', flush=True)
 
         # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after

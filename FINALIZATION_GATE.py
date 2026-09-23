@@ -357,12 +357,12 @@ if ROLE=='fast':
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
-       'OCH12.27_MEGA_GENERATION_OR_EMPTY_NOTIFY_OWNER' in start_main_src and
+       'OCH12.28_MEGA_GENERATION_OR_EMPTY_AUTOSEED' in start_main_src and
        '_och1226_restore_from_mega_generation(target)' in start_main_src and
        '_restore_from_redis_startup(target)' not in start_main_src and
        '_restore_from_local_runtime_cache(target)' not in start_main_src and
        '_ensure_empty_db(target)' in start_main_src,
-       '12.27 must try canonical MEGA once, then allow explicit empty initialization with owner diagnostics')
+       '12.28 must try canonical MEGA once, then allow explicit empty initialization with owner diagnostics')
     ok('och1220_redis_then_mega_single_pass',
        "trace['redis_restore_disabled_v1226'] = True" in start_main_src and
        "trace['base_source'] = 'MEGA_GENERATION_V126'" in start_main_src and
@@ -467,7 +467,23 @@ if ROLE=='fast':
        '_ensure_empty_db(target)' in start_main_src and
        'OCH1227_EMPTY_BOOT_REASON' in start_main_src and
        'OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD' in start_main_src,
-       '12.27 empty boot must be explicit, diagnosable and protect uncertain MEGA state')
+       '12.28 empty boot must be explicit, diagnosable and protect uncertain MEGA state')
+    mega_login_src=_fn_sources(start_src,{'_mega_login'}).get('_mega_login','')
+    ok('och1228_mega_login_timeout_retries',
+       '_mega_whoami_ready' in mega_login_src and 'for attempt, budget in enumerate(budgets, start=1)' in mega_login_src and
+       'continue' in mega_login_src and 'mega-login failed after retry' in mega_login_src and
+       "globals().get('_och1224_hard_release_mega_processes')" in mega_login_src,
+       '12.28 MEGA login must survive a stale/hung mega-cmd-server and really retry after timeout')
+    ok('och1228_confirmed_missing_autoseed',
+       'OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT' in start_main_src and
+       'def _och1228_empty_boot_autoseed_worker' in split_src and
+       "_r80_snapshot_full_compact('empty-boot-autoseed')" in split_src and
+       'OCH1228_EMPTY_BOOT_MEGA_SEEDED' in split_src,
+       '12.28 must create a new canonical MEGA generation after confirmed missing root/database/manifest')
+    ok('och1228_login_failed_never_autoseeds',
+       "confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing'}" in start_main_src and
+       'login_failed' not in _fn_sources(start_src,{'main'}).get('main','').split('confirmed_absent=',1)[1].split('\n',1)[0],
+       '12.28 must never overwrite a possibly valid remote database after mere MEGA login/network failure')
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
        'def _v153_retry_pending_failed_tasks' in web_src and
@@ -719,8 +735,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.27'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src and 'запущен ПУСТЫМ' in web_src,
-       'user-visible bot and READY/empty-boot messages must identify as очнись_12.27')
+       "BOT_DISPLAY_NAME = 'очнись_12.28'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src and 'запущен ПУСТЫМ' in web_src,
+       'user-visible bot and READY/empty-boot messages must identify as очнись_12.28')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -766,9 +782,9 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1227_empty_after_one_pass',
-       'OCH12.27_MEGA_GENERATION_OR_EMPTY_NOTIFY_OWNER' in start_main_src and "trace['empty_init_attempted'] = True" in start_main_src and
+       'OCH12.28_MEGA_GENERATION_OR_EMPTY_AUTOSEED' in start_main_src and "trace['empty_init_attempted'] = True" in start_main_src and
        '_ensure_empty_db(target)' in start_main_src and 'mega_paths_checked' in start_main_src,
-       '12.27 must start empty only after one canonical MEGA attempt and retain path diagnostics')
+       '12.28 must start empty only after one canonical MEGA attempt and retain path diagnostics')
     ok('och1217_startup_compact_only_no_legacy_tree_scan',
        'def _och1226_restore_from_mega_generation' in start_src and
        '/database/current_manifest.json' in start_src and '/database/generations/' in start_src and
@@ -829,7 +845,7 @@ if ROLE=='fast':
     ok('och1220_boot_memory_trim',
        '_och1220_release_boot_memory()' in start_main_src and 'boot memory release' in start_main_src and
        "trace['empty_init_attempted'] = False" in start_main_src,
-       '12.27 must trim preboot allocators before runtime import; empty boot is allowed only after canonical recovery diagnostics')
+       '12.28 must trim preboot allocators before runtime import; empty boot is allowed only after canonical recovery diagnostics')
     ok('och1216_watcher_ram_sources',
        'RAM — источники:' in core_src and 'sqlite_readers' in all_py.get('03_diagnostics_memory.py','') and 'process_rollup' in all_py.get('03_diagnostics_memory.py',''),
        'Watcher must expose RAM sources, SQLite readers and proc rollup')

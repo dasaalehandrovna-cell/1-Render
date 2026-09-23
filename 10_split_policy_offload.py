@@ -4980,7 +4980,7 @@ def _r49_redis_button():
 def _r60_redis_menu_text(extra=''):
     st=_r49_redis_runtime_state(); enabled=bool(st.get('enabled'))
     lines=[
-        '⚡ REDIS · CACHE ONLY · 12.27','',
+        '⚡ REDIS · CACHE ONLY · 12.28','',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
         f'FAST runtime={"ON" if enabled else "OFF"}',
@@ -5707,7 +5707,7 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             return True
 
         if raw == 'r60:redis:restore':
-            try: bot.answer_callback_query(call.id,'12.27: Redis — только кэш. Восстановление выполняется только из MEGA.',show_alert=True)
+            try: bot.answer_callback_query(call.id,'12.28: Redis — только кэш. Восстановление выполняется только из MEGA.',show_alert=True)
             except Exception: pass
             return True
 
@@ -9430,10 +9430,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10302,7 +10302,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10341,7 +10341,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10391,7 +10391,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10414,13 +10414,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10476,7 +10476,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11099,7 +11099,7 @@ def _r79_remote_full_meta(client=None):
 
 def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
     """12.26: Redis is cache-only; full SQLite snapshots are intentionally retired."""
-    return False,'OCH12.27: Redis FULL отключён — источник восстановления только MEGA'
+    return False,'OCH12.28: Redis FULL отключён — источник восстановления только MEGA'
 
 def _r79_daily_scheduler_loop():
     """12.26 compatibility stub: no Redis FULL scheduler is allowed."""
@@ -11109,7 +11109,7 @@ def _r79_start_daily_scheduler():
     """12.26: do not allocate a Redis FULL backup thread."""
     with _R79_REDIS_DAILY_LOCK:
         _R79_REDIS_DAILY_STATE['thread_started']=False
-        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.27'
+        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.28'
     return False
 
 def _r79_redis_schedule_button():
@@ -11366,7 +11366,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.27'),
+        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.28'),
         'updated_at':_split_time.time(),
         'base_generation':str(st.get('last_full_generation') or ''),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
@@ -11469,7 +11469,7 @@ def _r80_snapshot_full_compact(reason='scheduled-generation'):
         with _R80_MEGA_LOCK:
             _R80_MEGA_STATE['last_error']=detail
             _R80_MEGA_STATE['next_retry']=_split_time.time()+max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','60') or '60'))
-        try: log_error('OCH12.27 canonical MEGA generation: '+detail)
+        try: log_error('OCH12.28 canonical MEGA generation: '+detail)
         except Exception: pass
         return False,detail
     finally:
@@ -12051,6 +12051,70 @@ def _r80_start_compact_scheduler():
     _split_threading.Thread(target=_r80_compact_scheduler_loop,daemon=True,name='och1226-mega-canonical').start()
     return True
 
+
+def _och1228_empty_boot_autoseed_worker():
+    """Create a fresh canonical MEGA lineage immediately after a *confirmed* missing backup.
+
+    This path is intentionally forbidden for login/network/integrity failures: those
+    may hide a valid old remote database. It runs only when start_front successfully
+    logged into MEGA and positively proved root/database/current_manifest absent.
+    """
+    if str(_split_os.getenv('OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT','0') or '0').strip().lower() not in {'1','true','yes','on'}:
+        return False
+    if str(_split_os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD','0') or '0').strip().lower() in {'1','true','yes','on'}:
+        return False
+    if not _r80_mega_master_enabled():
+        return False
+    # Do not compete with boot/UI. Wait for READY, then publish in background.
+    deadline=_split_time.monotonic()+180.0
+    while _split_time.monotonic()<deadline:
+        try:
+            if bool(globals().get('runtime_is_ready',lambda:False)()):
+                break
+        except Exception:
+            pass
+        _split_time.sleep(1.0)
+    else:
+        return False
+    _split_time.sleep(3.0)
+    last=''
+    for attempt in (1,2,3):
+        try:
+            hot=globals().get('_och111_hot_ui_busy')
+            if callable(hot) and hot():
+                _split_time.sleep(2.0)
+            ok,detail=_r80_snapshot_full_compact('empty-boot-autoseed')
+            last=str(detail or '')[:360]
+            if ok:
+                _split_os.environ['OCH1228_EMPTY_BOOT_MEGA_SEEDED']='1'
+                _split_os.environ['OCH1228_EMPTY_BOOT_MEGA_SEED_DETAIL']=last
+                try:
+                    root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').rstrip('/')
+                    generation=str(_R80_MEGA_STATE.get('last_full_generation') or '—')
+                    bot.send_message(int(OWNER_ID or 0),
+                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.28"}: новая база MEGA создана.\n'
+                        f'Root: {root}\n'
+                        f'Manifest: {root}/database/current_manifest.json\n'
+                        f'Generation: {generation}')
+                except Exception:
+                    pass
+                return True
+        except Exception as exc:
+            last=f'{type(exc).__name__}: {str(exc)[:300]}'
+        with _R80_MEGA_LOCK:
+            _R80_MEGA_STATE['last_error']='empty-boot-autoseed: '+last
+        _split_time.sleep(10.0*attempt)
+    _split_os.environ['OCH1228_EMPTY_BOOT_MEGA_SEED_DETAIL']=last
+    return False
+
+
+def _och1228_start_empty_boot_autoseed():
+    if str(_split_os.getenv('OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT','0') or '0').strip().lower() not in {'1','true','yes','on'}:
+        return False
+    _split_threading.Thread(target=_och1228_empty_boot_autoseed_worker,daemon=True,name='och1228-mega-autoseed').start()
+    return True
+
+
 def _r70_routes_text():
     h=dict(_SPLIT_STATE.get('worker_health') or {}); st=dict(h.get('state') or {})
     worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
@@ -12124,7 +12188,7 @@ def _r80_contour_callback_guard(call,resolved):
 contour_callback_guard=_r80_contour_callback_guard
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r80:mega:*','Ф4072')
-    _r71_load_routes(force=True); _r71_apply_runtime_side_effects(); _r80_start_compact_scheduler()
+    _r71_load_routes(force=True); _r71_apply_runtime_side_effects(); _r80_start_compact_scheduler(); _och1228_start_empty_boot_autoseed()
     bot_journal('mega_canonical_generation_tail_v1226_loaded',int(OWNER_ID or 0),f'routes={_r71_load_routes()}; mega_master={int(_r80_mega_master_enabled())}; restored_generation={_OCH1226_RESTORED_GENERATION or "-"}; redis_restore=0')
 except Exception:
     pass
@@ -12889,7 +12953,7 @@ def _r70_routes_text():
     lines = [
         f'🧭 <b>{BOT_DISPLAY_NAME} · R1 ПРОЦЕССЫ</b>', '',
         '✅ <b>Render #2 отключён · рабочий runtime только R1</b>', '',
-        'Хранилище 12.27:',
+        'Хранилище 12.28:',
         '☁️ MEGA — единственный источник восстановления',
         '⚡ Redis — только cache / locks / ускорение; restore из Redis запрещён',
         '💾 SQLite — рабочая локальная база', '',

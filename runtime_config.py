@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.27-empty-recovery-notice-state-coalesce"
+CONFIG_VERSION = "vys-262-och12.28-mega-login-retry-empty-autoseed"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {

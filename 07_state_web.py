@@ -5493,6 +5493,8 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
+    '• 12.28: MEGA login получил whoami-проверку, hard-reset зависшего mega-cmd-server и реальную повторную попытку в общем timeout-бюджете.\n'
+    '• 12.28: если root/database/manifest подтверждённо отсутствуют, пустой бот автоматически создаёт новую canonical MEGA generation после READY.\n'
     '• 12.27: если canonical MEGA базы нет, создаётся пустая SQLite и владелец получает точные пути поиска.\n'
     '• 12.27: normal soft-trim больше не делает массовый save всех чатов каждые ~30 секунд.\n'
     '• 12.27: R32 state-events coalesce latest-wins по логическому ключу вместо переполнения RAM-очереди.\n'
@@ -5589,6 +5591,12 @@ def _r57_restore_source_info() -> tuple[str, dict]:
     label = labels.get(source) or str(_RUNTIME_STATE.get('restore_detail') or 'локальное состояние')
     return label[:180], trace
 
+try:
+    WINDOW_MARKER_CONSTANTS.setdefault('r57:startup:*','Ф257')
+except Exception:
+    pass
+
+
 def _r57_startup_keyboard(details: bool = False):
     kb = types.InlineKeyboardMarkup()
     if details:
@@ -5616,9 +5624,27 @@ def _r57_startup_compact_text() -> str:
             folder='MEGA недоступна: вход не выполнен.'
         else:
             folder='MEGA база не восстановлена.'
-        shown='\n'.join('• '+str(p)[:220] for p in paths[:5]) or '• пути не проверялись (нет root/credentials)'
+        if paths:
+            shown='\n'.join('• '+str(p)[:220] for p in paths[:5])
+        elif kind=='login_failed':
+            shown='• пути не проверялись: MEGA login не завершился, до проверки папок код не дошёл'
+        elif kind=='credentials_absent':
+            shown='• пути не проверялись: credentials отсутствуют'
+        elif kind=='root_not_configured':
+            shown='• пути не проверялись: MEGA_BACKUP_DIR не настроен'
+        else:
+            shown='• пути не проверялись'
         guard=str(os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD','0') or '0')=='1'
-        guard_line='\n🛡 Автозапись в MEGA заблокирована, чтобы не перезаписать возможную старую базу.' if guard else ''
+        confirmed=str(os.getenv('OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT','0') or '0')=='1'
+        seeded=str(os.getenv('OCH1228_EMPTY_BOOT_MEGA_SEEDED','0') or '0')=='1'
+        if guard:
+            guard_line='\n🛡 Автозапись в MEGA заблокирована, чтобы не перезаписать возможную старую базу.'
+        elif seeded:
+            guard_line='\n✅ Новая canonical MEGA база уже создана автоматически.'
+        elif confirmed:
+            guard_line='\n🆕 Отсутствие базы подтверждено. Новая canonical MEGA база будет создана автоматически после READY.'
+        else:
+            guard_line=''
         return (f'⚠️ {BOT_DISPLAY_NAME} запущен ПУСТЫМ · {VERSION}\n'
                 f'База MEGA не восстановлена. {folder}\n'
                 f'Причина: {reason}\n\nИскал:\n{shown}{guard_line}')
@@ -5632,6 +5658,11 @@ def _r57_startup_details_text() -> str:
     except Exception:
         redis_state = {}
     mega_enabled = str(os.getenv('MEGA_ENABLED', '1') or '1').strip().casefold() not in {'0','false','no','off'}
+    try:
+        import runtime_config as _r57_runtime_config_mega
+        mega_master = bool((_r57_runtime_config_mega.mega_runtime_master_state() or {}).get('master_enabled'))
+    except Exception:
+        mega_master = mega_enabled
     tg_backup_enabled = str(os.getenv('TELEGRAM_BACKUP_ENABLED', '1') or '1').strip().casefold() not in {'0','false','no','off'}
     try:
         task_stats = mega_task_registry_stats() or {}
@@ -5643,8 +5674,9 @@ def _r57_startup_details_text() -> str:
         f"Правки: {STARTUP_RELEASE_SUMMARY}",
         f"Старт: {_RUNTIME_STATE.get('started_at') or '—'}",
         f"READY: {_RUNTIME_STATE.get('ready_at') or '—'}",
-        f"Boot: {_RUNTIME_STATE.get('boot_duration_seconds') or '—'} с",
-        f"MEGA: {'ВКЛ' if mega_enabled else 'ВЫКЛ'}",
+        f"Boot runtime: {_RUNTIME_STATE.get('boot_duration_seconds') or '—'} с",
+        f"Preboot recovery: {round(float((trace or {}).get('elapsed_ms') or 0.0)/1000.0,3) if trace else '—'} с",
+        f"MEGA canonical: {'ВКЛ' if mega_master else 'ВЫКЛ'} (legacy runtime: {'ВКЛ' if mega_enabled else 'ВЫКЛ'})",
         f"Redis: {'ВКЛ' if redis_state.get('enabled') else 'ВЫКЛ'} (Render master: {'ВКЛ' if redis_state.get('master_enabled') else 'ВЫКЛ'})",
         f"Telegram backup: {'ВКЛ' if tg_backup_enabled and bool(str(os.getenv('BACKUP_CHAT_ID','') or '').strip()) else 'ВЫКЛ'}",
         f"Render: {str(os.getenv('RENDER_EXTERNAL_HOSTNAME', '') or os.getenv('RENDER_INSTANCE_ID', '') or '—')[-48:]}",
@@ -5668,6 +5700,10 @@ def _r57_startup_details_text() -> str:
             if _paths:
                 details.append('MEGA искал: ' + ' | '.join(str(x)[:180] for x in _paths[:6]))
             details.append(f"MEGA write guard: {'ВКЛ' if trace.get('empty_boot_mega_write_guard') else 'ВЫКЛ'}")
+            details.append(f"MEGA auto-seed: {'ГОТОВО' if str(os.getenv('OCH1228_EMPTY_BOOT_MEGA_SEEDED','0') or '0')=='1' else 'ОЖИДАЕТ' if str(os.getenv('OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT','0') or '0')=='1' else 'НЕТ'}")
+            _seed_detail=str(os.getenv('OCH1228_EMPTY_BOOT_MEGA_SEED_DETAIL','') or '').strip()
+            if _seed_detail:
+                details.append(f"MEGA auto-seed detail: {_seed_detail[:300]}")
     if _RUNTIME_STATE.get('restore_detail'):
         details.append(f"Детали: {str(_RUNTIME_STATE.get('restore_detail'))[:420]}")
     return '\n'.join(details)
