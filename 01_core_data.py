@@ -2173,7 +2173,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.25'
+BOT_DISPLAY_NAME = 'очнись_12.26'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -10267,7 +10267,13 @@ def _v178_mega_gate_exit() -> None:
         _V178_MEGA_PRIORITY_CV.notify_all()
 
 def _mega_exec_raw(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
-    """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
+    """One MEGAcmd command at a time; canonical 12.26 durability uses control-plane access.
+
+    MEGA_ENABLED remains OFF for legacy/background writers.  The one canonical
+    generation/tail transaction temporarily raises _V240_RECOVERY_AUTHORITY_ACTIVE,
+    which is treated exactly like an explicit control-plane call here.
+    """
+    control_plane = bool(control_plane or globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
     gate = globals().get('external_access_allowed_v233')
     gate_category = 'mega_control' if bool(control_plane) else 'mega'
     if callable(gate) and (not gate(gate_category)):
@@ -10670,7 +10676,9 @@ def _mega_find_remote_files(remote_dir: str, pattern: str, limit: int | None=Non
         return []
 
 def _mega_prune_remote_history(remote_dir: str, pattern: str, keep: int) -> int:
-    """Удаляет только лишние СТАРЫЕ исторические копии. Активный файл не затрагивается."""
+    """12.26: database backup history is append-only; legacy non-database paths may prune."""
+    if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'} and '/database/' in ('/' + str(remote_dir or '').strip('/') + '/'):
+        return 0
     rows = _mega_find_remote_files(remote_dir, pattern)
     removed = 0
     for remote_path in rows[max(1, int(keep)):]:
@@ -10683,7 +10691,9 @@ def _mega_prune_remote_history(remote_dir: str, pattern: str, keep: int) -> int:
     return removed
 
 def _mega_prune_remote_history_bounded(remote_dir: str, pattern: str, keep: int, max_remove: int=50) -> int:
-    """Incrementally reduce remote node count without a large maintenance burst."""
+    """12.26: never delete canonical database history; legacy diagnostic paths stay bounded."""
+    if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'} and '/database/' in ('/' + str(remote_dir or '').strip('/') + '/'):
+        return 0
     rows = _mega_find_remote_files(remote_dir, pattern)
     removed = 0
     for remote_path in rows[max(1, int(keep)):max(1, int(keep)) + max(1, int(max_remove))]:
@@ -10782,7 +10792,19 @@ def _mega_promote_remote_candidate(remote_candidate: str, remote_final: str, *, 
             except Exception as e:
                 log_error(f'[MEGA PROMOTE] history move deferred for {remote_old_temp}: {e}')
         else:
-            _mega_run('mega-rm', [remote_old_temp], check=False, timeout=30)
+            _no_delete = str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'}
+            _canonical_db = '/database/' in ('/' + str(remote_final or '').strip('/') + '/')
+            if _no_delete and _canonical_db:
+                try:
+                    _history = final_parent.rstrip('/') + '/history'
+                    mega_ensure_remote_path(_history)
+                    moved = _mega_run('mega-mv', [remote_old_temp, _history], check=False, timeout=60)
+                    if moved.returncode != 0:
+                        log_error(f'[MEGA PROMOTE] 12.26 history move deferred for {remote_old_temp}')
+                except Exception as e:
+                    log_error(f'[MEGA PROMOTE] 12.26 history move deferred: {e}')
+            else:
+                _mega_run('mega-rm', [remote_old_temp], check=False, timeout=30)
     return True
 
 def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None=None, *, archive_previous: bool=True) -> bool:
@@ -10825,6 +10847,13 @@ def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None=N
             archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
         ok = _mega_promote_remote_candidate(remote_candidate, remote_file, history_dir=history_dir, archive_name=archive_name)
         if not ok:
+            try:
+                if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'} and '/database/' in ('/' + str(remote_file).strip('/') + '/'):
+                    failed_dir = remote_dir.rstrip('/') + '/failed'
+                    mega_ensure_remote_path(failed_dir)
+                    _mega_run('mega-mv', [remote_candidate, failed_dir], check=False, timeout=60)
+            except Exception:
+                pass
             return False
         if archive_previous and history_dir:
             try:
@@ -20110,8 +20139,15 @@ def constitution_try_auto_clear_quarantine(force: bool=False) -> bool:
         return False
 
 def _constitution_prune_bounded_history(active_manifest: dict) -> dict:
-    """v190 bounded MEGA history: keep enough rollback points, never unlimited file growth."""
+    """12.26 canonical backup history is append-only for forensic visibility.
+
+    Nothing under the canonical database generation/manifest chain is deleted
+    automatically. Manual retention can be added later once the storage layout is
+    proven in production.
+    """
     result = {'generations': 0, 'manifests': 0, 'pointer_history': 0, 'ledger': 0}
+    if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'}:
+        return result
     try:
         prune = globals().get('_mega_prune_remote_history')
         if callable(prune):
@@ -20244,7 +20280,14 @@ def constitution_publish_sqlite_generation(raw_sqlite: str, gz_path: str, create
         remote_pointer_candidate = constitution_database_dir() + '/' + pointer_candidate_name
         archive_name = f'current_manifest_{stamp}_{digest}.json'
         if not _mega_promote_remote_candidate(remote_pointer_candidate, constitution_current_manifest_remote(), history_dir=constitution_manifest_history_dir(), archive_name=archive_name):
-            raise RuntimeError('cannot activate constitution current_manifest')
+            # 12.26 leaves a visible forensic trace instead of deleting/losing the candidate.
+            try:
+                failed_dir = constitution_database_dir() + '/failed'
+                mega_ensure_remote_path(failed_dir)
+                _mega_run('mega-mv', [remote_pointer_candidate, failed_dir], check=False, timeout=60)
+            except Exception:
+                pass
+            raise RuntimeError('cannot activate constitution current_manifest; candidate moved to database/failed when possible')
         if _env_bool('MEGA_LEGACY_DB_MIRROR_ENABLED', '0'):
             legacy_candidate_name = f'candidate_bot_state_{stamp}_{digest}.sqlite3.gz'
             legacy_local = os.path.join(workdir, legacy_candidate_name)
@@ -21700,7 +21743,7 @@ def config_guard_status_text_v234() -> str:
     rep = dict(CONFIG_GUARD_LAST_REPORT_V234 or {})
     metrics = (cp or {}).get('metrics') or _v234_config_metrics(config_guard_projection_v234())
     return f"🧩 ЗАЩИТА НАСТРОЕК v234\n\nBoot-проверка: {('✅' if CONFIG_GUARD_BOOT_VERIFIED_V234 else '⏳')}\nРежим последней проверки: {rep.get('mode') or '—'}\nАвтовосстановление: {('да' if rep.get('repaired') else 'нет')}\nПоколение config: {int((cp or {}).get('generation') or 0)}\nПересылки: {metrics.get('forward_edges', 0)} · Напоминания: {metrics.get('reminder_items', 0)}\nГомонковые entries: {metrics.get('gomonk_entries', 0)} · включено контуров/валют: {metrics.get('gomonk_enabled', 0)}\n\nПеред READY настройки сверяются независимо от финансов. Новый canonical SQLite snapshot не продвигается, пока его config-проекция не совпадает с живым состоянием."[:3900]
-MEGA_STORAGE_CONTRACT_V242 = {'schema': 1, 'root': MEGA_BACKUP_DIR, 'canonical_pointer': 'database/current_manifest.json', 'generations': 'database/generations/generation_*.sqlite3.gz', 'manifests': 'database/manifests/generation_*.json', 'legacy_latest': 'database/latest_bot_state.sqlite3.gz', 'pre_restore': 'database/pre_restore/pre_restore_*.sqlite3.gz', 'read_order': ['current_manifest', 'latest_generation_file', 'legacy_latest', 'legacy_global'], 'write_order': ['flush_sqlite', 'immutable_generation', 'manifest', 'current_manifest', 'verify']}
+MEGA_STORAGE_CONTRACT_V242 = {'schema': 126, 'root': MEGA_BACKUP_DIR, 'canonical_pointer': 'database/current_manifest.json', 'generations': 'database/generations/generation_*.sqlite3.gz', 'manifests': 'database/manifests/generation_*.json', 'current_tail': 'database/deltas/current_tail.json.gz', 'history': 'database/**/history', 'failed': 'database/**/failed', 'read_order': ['current_manifest', 'exact_generation', 'matching_current_tail'], 'write_order': ['flush_loaded_hot', 'sqlite_backup', 'immutable_generation', 'manifest', 'current_manifest', 'current_tail', 'verify'], 'redis_restore': False, 'automatic_delete': False}
 
 def _v242_embed_manifest_from_sqlite(raw_sqlite: str, created_at: str, reason: str='snapshot') -> dict:
     """Build embedded semantics FROM the immutable candidate itself, never from hot RAM.
@@ -21736,6 +21779,85 @@ def _v242_verify_published_generation(manifest: dict) -> dict:
         if not any((str(x).endswith('/' + generation) or str(x).endswith(generation) for x in found)):
             raise RuntimeError('MEGA generation uploaded but not visible in generations directory')
     return active
+
+
+def _och1226_flush_loaded_chat_stores_only() -> int:
+    """Persist only already-resident chat objects; never materialize cold SQLite fields."""
+    if not LOWRAM_ENABLED or not isinstance(data, dict):
+        return 0
+    with data_lock:
+        ids = []
+        for cid_s in list(((data.get('chats', {}) or {}).keys())):
+            try:
+                ids.append(int(cid_s))
+            except Exception:
+                pass
+    saved = 0
+    for cid in ids:
+        with locked_chat(cid):
+            store = ((data.get('chats', {}) or {}).get(str(cid)))
+            if not isinstance(store, dict):
+                continue
+            meta, cold = _lowram_flush_chat(cid, store, evict=False)
+        saved += int(SQLITE.save_chat_bundle(cid, meta, cold) or 0)
+    if saved:
+        with _LOWRAM_LOCK:
+            _LOWRAM_STATS['cold_saves'] += int(saved)
+    return saved
+
+
+def mega_publish_current_sqlite_v1226(reason: str='scheduled_generation') -> dict:
+    """Low-RAM canonical MEGA generation publisher for the single FAST Render.
+
+    The live SQLite is the persistence authority.  We flush only already-loaded chat
+    objects, use SQLite's backup API, embed/verify the generation manifest, then publish
+    an immutable generation and atomically advance current_manifest.  Crucially this
+    does NOT perform a global full-state serialization, so backup creation never clones every chat
+    and cold ledger into Python RAM.
+    """
+    global _V240_RECOVERY_AUTHORITY_ACTIVE
+    prev = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
+    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
+    workdir = tempfile.mkdtemp(prefix='och1226_generation_')
+    try:
+        if not mega_is_configured(control_plane=True):
+            raise RuntimeError('MEGA canonical control plane unavailable')
+        with MEGA_GLOBAL_BACKUP_LOCK:
+            # Persist the global/root configuration without touching every cold chat.
+            # This captures owner settings, routes, reminders/config indexes and other
+            # root state while keeping finance ledgers on their existing SQLite rows.
+            save_data(data, root_only=True)
+            flushed = _och1226_flush_loaded_chat_stores_only()
+            created_at = now_local().isoformat(timespec='microseconds')
+            raw = os.path.join(workdir, 'bot_state.sqlite3')
+            gz = raw + '.gz'
+            SQLITE.backup_to(raw)
+            embedded = _v242_embed_manifest_from_sqlite(raw, created_at, reason)
+            _lowram_gzip_file(raw, gz)
+            manifest = constitution_publish_sqlite_generation(raw, gz, created_at, allow_destructive=False)
+            manifest = dict(manifest or {})
+            _v242_verify_published_generation(manifest)
+            manifest['och1226_loaded_chat_flush_rows'] = int(flushed)
+            manifest['och1226_layout'] = 'current_manifest + immutable generation + database/deltas/current_tail'
+            try:
+                SQLITE.set_meta('mega_storage_v1226', 'last_publish', {
+                    'at': created_at,
+                    'reason': str(reason),
+                    'generation': str(manifest.get('generation') or ''),
+                    'records': int(manifest.get('total_records') or 0),
+                    'flushed_loaded_rows': int(flushed),
+                })
+            except Exception:
+                pass
+            try:
+                runtime_event('mega_generation_publish_v1226', f"reason={reason}; generation={manifest.get('generation')}; records={manifest.get('total_records')}; hot_flush={flushed}")
+            except Exception:
+                pass
+            return manifest
+    finally:
+        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(prev)
+        shutil.rmtree(workdir, ignore_errors=True)
+
 
 def mega_publish_current_sqlite_v242(reason: str='snapshot', *, manual_restore: bool=False, allow_destructive: bool=False) -> dict:
     """The single canonical full-SQLite WRITE path for v242 and future compatible code.

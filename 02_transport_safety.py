@@ -2170,7 +2170,7 @@ def _v240_priority_exit():
         _V240_PAR_CV.notify_all()
 
 def mega_parallel_execute_v240(exe: str, cmd: str, args, timeout_value):
-    """OCH12.25: one MEGAcmd command at a time on the 512 MB FAST instance.
+    """OCH12.26: one MEGAcmd command at a time on the 512 MB FAST instance.
 
     v240 used per-shard parallel subprocesses.  MEGAcmd itself owns one account/session
     daemon, so login/put/rm from different lanes can race even when the remote paths are
@@ -2191,7 +2191,7 @@ def mega_parallel_execute_v240(exe: str, cmd: str, args, timeout_value):
             row['started'] += 1
             row['peak'] = max(row['peak'], row['active'])
         try:
-            # OCH12.25 transaction fence: MEGAcmd has a single session state.
+            # OCH12.26 transaction fence: MEGAcmd has a single session state.
             # Never allow LOGIN/PUT/RM/MV/GET to overlap across lanes.
             with MEGA_COMMAND_LOCK:
                 cp = subprocess.run([exe] + list(args or []), capture_output=True, text=True, timeout=timeout_value)

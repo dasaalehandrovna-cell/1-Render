@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.25-mega-transaction-ram-deep"
+CONFIG_VERSION = "vys-262-och12.26-mega-canonical-history"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -23,7 +23,7 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     # Process / role
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
-    # OCH12.25: single-Render profile. Render #2 is treated as unavailable.
+    # OCH12.26: single-Render profile. Render #2 is treated as unavailable.
     "OCH1224_SINGLE_RENDER": "1",
     "PEER_PING_ENABLED": "0",
     "OCH1224_BOOT_REMOTE_PROBES": "0",
@@ -184,6 +184,12 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "MEGA_ENABLED": "0",
     "MEGA_AUTORESTORE": "0",
     "OCH1225_FAST_AUTO_MEGA": "0",
+    "OCH1226_MEGA_DURABILITY_ENABLED": "1",
+    "OCH1226_MEGA_ONLY_RESTORE": "1",
+    "OCH1226_REDIS_RESTORE_ENABLED": "0",
+    "OCH1226_MEGA_NO_DELETE": "1",
+    "OCH1226_MEGA_FULL_HOURS": "6",
+    "OCH1226_MEGA_DELTA_FLUSH_SEC": "90",
     "MEGA_ZERO_RESIDENT_DELAY_SEC": "25",
     "MEGA_PARALLEL_MAX": "1",
     "TG_DURABLE_ENABLED": "0",

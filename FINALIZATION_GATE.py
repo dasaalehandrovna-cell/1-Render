@@ -357,35 +357,22 @@ if ROLE=='fast':
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
-       all(x in start_src for x in [
-           "OCH12.24_ONE_PASS_THEN_EMPTY",
-           "recovery ignores REDIS_ENABLED",
-           "MEGA_ENABLED=0. No compare loop, no tree scan, no retry",
-           "EMPTY_INIT_AFTER_ONE_PASS",
-           "SPLIT_PREBOOT_EMPTY_INIT_R1220",
-       ]) and
-       'def _och1214_recovery_safe_wait' not in start_src and
-       'mega-find' not in compact_src and '/internal/snapshot' not in start_src,
-       '12.21 startup must try recovery sources once regardless runtime switches, then create empty SQLite')
+       'OCH12.26_MEGA_GENERATION_ONLY_FAIL_CLOSED' in start_main_src and
+       '_och1226_restore_from_mega_generation(target)' in start_main_src and
+       '_restore_from_redis_startup(target)' not in start_main_src and
+       '_restore_from_local_runtime_cache(target)' not in start_main_src and
+       'FAIL-CLOSED' in start_main_src,
+       '12.26 supersedes one-pass-to-empty: only canonical MEGA may recover a missing DB and failure must close')
     ok('och1220_redis_then_mega_single_pass',
-       all(x in start_src for x in ['def _restore_from_redis_startup',
-                                    'OCH12.24 one-pass Redis FULL+TAIL start',
-                                    'WORKER_REDIS_SNAPSHOT_KEY','WORKER_R32_STATE_EVENT_PREFIX',
-                                    'Redis TAIL incomplete:', '_apply_r32_events(candidate,events)',
-                                    "trace['base_source'] = 'REDIS_ONE_PASS'",
-                                    "trace['base_source'] = 'MEGA_COMPACT_ONE_PASS'",
-                                    '_r80_compact_mega_compare_restore(target, have_current=False)']) and
-       start_main_src.find('ok, detail = _restore_from_redis_startup(target)') < start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
-       '12.21 must try Redis once before compact MEGA and never retry either source')
+       "trace['redis_restore_disabled_v1226'] = True" in start_main_src and
+       "trace['base_source'] = 'MEGA_GENERATION_V126'" in start_main_src and
+       start_main_src.count('_och1226_restore_from_mega_generation(target)')==1,
+       '12.26 restore must contact canonical MEGA once; Redis recovery code may remain only as dormant legacy compatibility')
     ok('r68_local_cache_before_external_restore',
-       all(x in start_src for x in ['def _restore_from_local_runtime_cache','def _r68_load_local_events',
-                                    'LOCAL_SQLITE_SNAPSHOT_FILE','LOCAL_STATE_EVENT_JOURNAL_FILE',
-                                    "trace['base_source'] = 'LOCAL_RUNTIME_CACHE_FAST'",
-                                    'OCH12.24 local cache absent']) and
-       start_main_src.find('ok, detail = _restore_from_local_runtime_cache(target)') <
-       start_main_src.find('ok, detail = _restore_from_redis_startup(target)') <
-       start_main_src.find('_r80_compact_mega_compare_restore(target, have_current=False)'),
-       'same-container cache must be checked once before Redis and MEGA')
+       "trace['local_cache_contacted'] = False" in start_main_src and
+       "valid local working SQLite retained; no restore required" in start_main_src and
+       '_restore_from_local_runtime_cache(target)' not in start_main_src,
+       '12.26 must never treat ephemeral local cache as a recovery source; only an already-valid working DB may be retained')
     ok('r68_local_files_packaged_config',
        all(x in cfg_src for x in [
            '"LOCAL_RUNTIME_DIR": "/tmp/vys262_fast_local"',
@@ -476,13 +463,10 @@ if ROLE=='fast':
        'SPLIT_RECOVERY_SAFE_MODE' not in split_src and 'SPLIT_RECOVERY_SAFE_MODE' not in start_src,
        'legacy runtime SPLIT_RECOVERY_SAFE_MODE flag must stay removed; 12.14 preboot recovery-safe wait is a separate startup policy')
     ok('och1220_normal_empty_boot',
-       'def _ensure_empty_db' in start_src and
-       "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
-       "trace['empty_init_attempted'] = True" in start_src and
-       'OCHNIS_ALLOW_EMPTY_INIT' not in _fn_sources(start_src,{'main'}).get('main',''),
-       '12.21 must create empty SQLite automatically after the one recovery pass')
-
-
+       "trace['empty_init_attempted'] = False" in start_main_src and
+       'forbidden by OCH12.26 fail-closed recovery contract' in start_main_src and
+       '_ensure_empty_db(target)' not in start_main_src,
+       '12.26 must never create an empty financial DB after failed restore')
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
        'def _v153_retry_pending_failed_tasks' in web_src and
@@ -612,18 +596,20 @@ if ROLE=='fast':
     r80_full_src=_fn_sources(split_src,{'_r80_snapshot_full_compact'}).get('_r80_snapshot_full_compact','')
     r80_tail_src=_fn_sources(split_src,{'_r80_flush_compact_tail'}).get('_r80_flush_compact_tail','')
     ok('r80_compact_mega_fixed_nodes',
-       'compact_v80' in split_src and 'latest.sqlite3.gz' in split_src and 'tail.json.gz' in split_src and 'head.json' in split_src and
-       'mega-find' not in r80_full_src and 'mega-find' not in r80_tail_src and 'archive_previous=False' in split_src,
-       'R1 MEGA must use fixed compact FULL+TAIL+HEAD objects and never tree-scan/per-event history')
+       '/database/deltas' in _fn_sources(split_src,{'_r80_compact_root'}).get('_r80_compact_root','') and
+       'current_tail.json.gz' in r80_tail_src and "'schema':126" in r80_tail_src and
+       'mega_publish_current_sqlite_v1226' in r80_full_src and 'compact_v80' not in r80_full_src+r80_tail_src,
+       '12.26 R80 must use canonical immutable generation + one matching current_tail, never compact_v80')
     ok('r80_hotpath_no_remote_mega',
-       '_r80_mark_tail_dirty(); return True' in split_src and "submit_unique('r80-mega-compact-full'" in split_src and
-       "submit_unique('r80-mega-tail'" in split_src,
-       'MEGA checkpoint/tail work must be queued in background, never inline with user UI')
+       '_r80_mark_tail_dirty(); return True' in split_src and
+       "_r80_flush_compact_tail('durability-ack')" in _fn_sources(split_src,{'_r34_post_events'}).get('_r34_post_events','') and
+       'mega_' not in _fn_sources(split_src,{'schedule_delta_backup'}).get('schedule_delta_backup','').replace('_r80_mark_tail_dirty',''),
+       'user/UI paths may only mark durability dirty; canonical MEGA publish is owned by the background event sender/scheduler')
     ok('r80_all_to_r1_stops_raw_witness_r2',
        '_R80_HEAVY_WITNESS_EVENT=split_witness_event_v268' in split_src and
-       "if not _r71_route_is_fast('durability'):" in split_src and
-       "st['r80_witness_owner']='R1_FAST_LOCAL_INBOX+REDIS_BG'" in split_src,
-       'R1 durability failover must stop synchronous/raw witness dependence on dead R2')
+       "st['r80_witness_owner']='R1_FAST_LOCAL_INBOX+REDIS_BG'" in split_src and
+       '_split_event_bg_v268(_r80_redis_witness_background' in split_src,
+       'raw Telegram witness must stay local; Redis mirror is background cache-only and no dead R2 request is required')
     ok('r80_all_to_r1_stops_snapshot_r2',
        '_R80_HEAVY_PUSH_SNAPSHOT=_split_push_snapshot_now_v263' in split_src and
        "if not (_r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega')):" in split_src and
@@ -631,9 +617,8 @@ if ROLE=='fast':
        'R1 checkpoints failover must not send exact snapshot to dead R2')
     ok('r80_all_to_r1_stops_legacy_delta_r2',
        '_R80_HEAVY_SEND_DELTA=_split_send_delta_v267' in split_src and
-       "R1 compact FULL+TAIL owns delta durability" in split_src,
-       'R1 failover must suppress legacy R2 delta traffic')
-    # очнись_2: global Window Actor + markup-only transport contract.
+       'MEGA canonical generation+tail owns durability; Redis cache-only' in split_src,
+       'R1 canonical MEGA durability must suppress legacy R2 delta transport')
     ok('och2_window_actor_registry',
        'class WindowActorRegistry' in core_src and 'WINDOW_ACTOR_REGISTRY = WindowActorRegistry' in core_src and 'logical_window_id' in core_src and 'state_revision' in core_src,
        'each visible Telegram window must have one RAM actor with generation/state revision')
@@ -668,10 +653,9 @@ if ROLE=='fast':
     r43_cache_src=_fn_sources(split_src,{'_r43_store_events_redis'}).get('_r43_store_events_redis','')
     capsule_push_src=_fn_sources(split_src,{'_r20_capsule_push_now'}).get('_r20_capsule_push_now','')
     ok('och124_switchable_state_durability',
-       "if not _r71_route_is_fast('durability')" in r34_events_src and '_R80_HEAVY_POST_EVENTS' in r34_events_src and
-       '_r43_store_events_redis(events)' in r34_events_src and '_r80_mark_tail_dirty()' in r34_events_src and
-       'R1 failover Redis TAIL pending' in r34_events_src and 'requests.post(' not in r34_events_src,
-       'R1 emergency durability must avoid synchronous R2/network MEGA and keep Redis/local-outbox safety')
+       'MEGA canonical tail is required; Redis is best-effort cache only' in split_src and
+       'MEGA canonical tail pending' in split_src and "redis_cache_ok" in split_src,
+       '12.26 durability must require MEGA tail coverage while treating Redis only as optional cache')
     ok('och123_redis_tail_compressed_bounded_pruned',
        "R79_REDIS_TAIL_TTL_SEC','259200'" in r43_cache_src and '_r32_gzip.compress' in r43_cache_src and
        "pipe.set(f'{prefix}:event:{eid}',packed,ex=ttl)" in r43_cache_src and 'pipe.zadd(index_key' in r43_cache_src and
@@ -734,8 +718,8 @@ if ROLE=='fast':
        'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
        'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.25'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
-       'user-visible bot and READY message must identify as очнись_12.25')
+       "BOT_DISPLAY_NAME = 'очнись_12.26'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src,
+       'user-visible bot and READY message must identify as очнись_12.26')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -781,22 +765,15 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1220_empty_after_one_pass',
-       "OCH12.24_ONE_PASS_THEN_EMPTY" in start_src and
-       "trace['base_source'] = 'EMPTY_INIT_AFTER_ONE_PASS'" in start_src and
-       "_ensure_empty_db(target)" in start_main_src and
-       'def _och1214_recovery_safe_wait' not in start_src and
-       'while not _db_valid(target)' not in start_src,
-       '12.21 must never loop forever when recovery sources are missing; one pass then empty SQLite')
+       'OCH12.26 FAIL-CLOSED' in start_main_src and "trace['empty_init_attempted'] = False" in start_main_src and
+       '_ensure_empty_db(target)' not in start_main_src,
+       '12.26 deliberately replaces empty-after-one-pass with fail-closed MEGA-only restore')
     ok('och1217_startup_compact_only_no_legacy_tree_scan',
-       'def _r80_compact_mega_compare_restore' in start_src and
-       'def _discover_pre_restore_remotes' not in start_src and
-       '/database/current_manifest.json' not in start_src and
-       '/database/generations' not in start_src and
-       '/database/pre_restore' not in start_src and
-       '/database/latest_bot_state.sqlite3.gz' not in start_src and
-       'MEGA_IMMUTABLE_OR_PRERESTORE' not in start_src and
-       start_src.count('_restore_from_mega_startup(target)') == 0,
-       'cold startup must use only fixed compact_v80 objects and never scan historical MEGA trees')
+       'def _och1226_restore_from_mega_generation' in start_src and
+       '/database/current_manifest.json' in start_src and '/database/generations/' in start_src and
+       '/database/deltas/current_tail.json.gz' in start_src and
+       'mega-find' not in _fn_sources(start_src,{'_och1226_restore_from_mega_generation'}).get('_och1226_restore_from_mega_generation',''),
+       'cold startup must fetch exact current_manifest/generation/current_tail and never scan MEGA history')
     ok('och1220_cold_compact_bounded_once',
        "MEGA_STARTUP_RECOVERY_LOGIN_TIMEOUT','20" in start_src and
        "MEGA_STARTUP_RECOVERY_GET_TIMEOUT','25" in start_src and
@@ -827,10 +804,9 @@ if ROLE=='fast':
        "constitution_database_dir() + '/pre_restore'" in web_src,
        'R1 named pre_restore writer and FAST catalog must use database/pre_restore')
     ok('och1215_compact_tail_baseline_metadata',
-       "'full_db_revision':db_rev" in split_src and
-       "'full_event_revision':event_rev" in split_src and
-       "'full_db_revision':float(_R80_MEGA_STATE.get('full_db_revision') or 0.0)" in split_src,
-       'new compact tail files must identify the FULL baseline they belong to')
+       "'schema':126" in r80_tail_src and "'base_generation':generation" in r80_tail_src and
+       "'full_event_revision':full_rev" in r80_tail_src and "'max_revision':max_rev" in r80_tail_src,
+       'current_tail must identify the immutable generation baseline and covered revision')
     ok('och1210_r2_network_hard_gate',
        "_split_os.environ['PEER_PING_ENABLED'] = '0' if all_fast else '1'" in split_src and
        'R2 disabled by normal R1-only profile' in split_src and
@@ -850,10 +826,9 @@ if ROLE=='fast':
        'if rss >= R24_LOWRAM_EVICT_RSS_MB and not _lowram_business_busy()' not in core_src,
        '12.21 must evict a touched chat under pressure even when unrelated pools are busy')
     ok('och1220_boot_memory_trim',
-       'def _och1220_release_boot_memory' in start_src and 'malloc_trim' in start_src and
-       'redis_modules_unloaded' in start_src and 'OCH12.24 boot memory release' in start_src and
-       'SPLIT_PREBOOT_EMPTY_INIT_R1220' in split_src,
-       '12.21 must return recovery allocator memory before loading runtime and suppress empty boot publish')
+       '_och1220_release_boot_memory()' in start_main_src and 'boot memory release' in start_main_src and
+       "trace['empty_init_attempted'] = False" in start_main_src,
+       '12.26 must trim preboot allocators before runtime import and must not publish/create an empty boot DB')
     ok('och1216_watcher_ram_sources',
        'RAM — источники:' in core_src and 'sqlite_readers' in all_py.get('03_diagnostics_memory.py','') and 'process_rollup' in all_py.get('03_diagnostics_memory.py',''),
        'Watcher must expose RAM sources, SQLite readers and proc rollup')
@@ -1155,8 +1130,10 @@ if ROLE=='fast':
        '"OCH1224_SINGLE_RENDER": "1"' in cfg_src and 'if _OCH1224_SINGLE_RENDER:' in split_src and "clean = {k: 'fast' for k in _R71_ROUTE_KEYS}" in split_src and 'return False\n    return not _och1210_all_fast()' in split_src,
        '12.24 must ignore restored R2 routes and keep all contours on FAST')
     ok('och1224_mega_master_switch_preserved',
-       'master_allowed' in split_src and "mega_render_enabled" in split_src and "use_fast = bool(use_fast and master_allowed)" in split_src,
-       'forcing ownership to FAST must not turn MEGA_ENABLED=0 back on for ordinary runtime')
+       "globals()['MEGA_ENABLED']=False" in _fn_sources(split_src,{'_r71_apply_runtime_side_effects'}).get('_r71_apply_runtime_side_effects','') and
+       "OCH1226_MEGA_CANONICAL" in _fn_sources(split_src,{'_r71_apply_runtime_side_effects'}).get('_r71_apply_runtime_side_effects','') and
+       'mega_render_enabled' in split_src,
+       'ordinary legacy MEGA runtime must remain OFF; canonical control-plane durability is separate from Render permission')
     ok('och1224_no_dead_peer_threads',
        "if not str(_split_os.getenv('OCH1224_SINGLE_RENDER'" in split_src and "if str(os.getenv('OCH1224_SINGLE_RENDER'" in cb_src,
        'single-render mode must not allocate peer watchdog threads')
@@ -1173,8 +1150,10 @@ if ROLE=='fast':
        '_och1224_hard_release_mega_runtime' in split_src and '_OCH1224_MEGA_CLEANUP_KEY' in split_src and "DELAYED_SCHEDULER.schedule(_OCH1224_MEGA_CLEANUP_KEY" in split_src and "comm in {'mega-cmd-server', 'mega-exec'}" in split_src,
        'MEGAcmd must be released after discrete FAST operations without a permanent reaper')
     ok('och1224_no_immediate_mega_bootstrap_full',
-       "_boot_age >= 300.0" in split_src and "if (not st.get('last_full_at')) and (not _stable):" in split_src and "_r80_queue_compact_full('runtime-bootstrap')" not in split_src,
-       'MEGA cold backup must not create a full checkpoint immediately after restore')
+       '_boot_age>=300.0' in _fn_sources(split_src,{'_r80_compact_scheduler_loop'}).get('_r80_compact_scheduler_loop','').replace(' ','') and
+       '_OCH1226_RESTORED_GENERATION' in _fn_sources(split_src,{'_r80_start_compact_scheduler'}).get('_r80_start_compact_scheduler','') and
+       "_r80_queue_compact_full('runtime-bootstrap')" not in split_src,
+       'restored canonical generation must seed the baseline; periodic FULL waits for stable runtime')
     ok('och1224_journal_independent_local',
        '/tmp/och_journal/events.jsonl' in cfg_src and '"BOT_JOURNAL_DURABLE_ENABLED": "0"' in cfg_src and '_journal_stream_local_events_v1224' in core_src and 'journal_flush_to_mega' not in journal_export_src and '_journal_stream_mega_rows_to_file' not in journal_export_src,
        'event journal export must be local append-only and independent of MEGA/runtime snapshot')
@@ -1188,7 +1167,7 @@ if ROLE=='fast':
        "current_level in {'high', 'critical', 'emergency'}" in ram_trim_src and '_och1224_hard_release_mega_runtime' in ram_trim_src and '_och1210_mega_busy' in ram_trim_src,
        'memory guard should reclaim optional idle MEGAcmd before requesting restart')
 
-    # OCH12.25 — serialized MEGA cold-standby + deep RAM diagnostics.
+    # OCH12.26 — serialized MEGA cold-standby + deep RAM diagnostics.
     mega_parallel_src=_fn_sources(all_py.get('02_transport_safety.py',''),{'mega_parallel_execute_v240'}).get('mega_parallel_execute_v240','')
     mega_run_src=_fn_sources(split_src,{'_och1210_mega_run'}).get('_och1210_mega_run','')
     mega_release_src=_fn_sources(split_src,{'_och1224_hard_release_mega_runtime'}).get('_och1224_hard_release_mega_runtime','')
@@ -1199,8 +1178,10 @@ if ROLE=='fast':
        'with MEGA_COMMAND_LOCK:' in mega_parallel_src and 'subprocess.run' in mega_parallel_src and '_OCH1225_MEGA_CMD_ACTIVE' in mega_run_src,
        'all MEGAcmd CLI commands must be serialized; LOGIN/PUT/RM may never overlap')
     ok('och1225_mega_cold_standby_default',
-       "_OCH1225_FAST_AUTO_MEGA = str(_split_os.getenv('OCH1225_FAST_AUTO_MEGA', '0')" in split_src and 'active=bool(use_fast and master and _OCH1225_FAST_AUTO_MEGA)' in split_src and "_r80_queue_compact_full('r1-owner-switch-bootstrap')" not in _fn_sources(split_src,{'_r71_apply_runtime_side_effects'}).get('_r71_apply_runtime_side_effects',''),
-       'FAST automatic MEGA must default OFF while BOOT/manual recovery remains separate')
+       '_OCH1225_FAST_AUTO_MEGA = False' in split_src and
+       '_OCH1226_MEGA_DURABILITY_ENABLED' in split_src and
+       "globals()['MEGA_ENABLED']=False" in _fn_sources(split_src,{'_r71_apply_runtime_side_effects'}).get('_r71_apply_runtime_side_effects',''),
+       '12.26 retires legacy auto-MEGA while enabling only canonical generation/tail durability')
     ok('och1225_mega_cleanup_never_kills_active_command',
        "return {'skipped': 'command_active'" in mega_release_src and '_OCH1225_MEGA_CMD_ACTIVE' in mega_quiet_src + mega_release_src and '_V178_MEGA_SESSION_OK_UNTIL = 0.0' in mega_release_src,
        'zero-resident cleanup must not race an active MEGAcmd command and must invalidate session cache')
@@ -1216,11 +1197,84 @@ if ROLE=='fast':
     r80_start_src=_fn_sources(split_src,{'_r80_start_compact_scheduler'}).get('_r80_start_compact_scheduler','')
     r80_dirty_src=_fn_sources(split_src,{'_r80_mark_tail_dirty'}).get('_r80_mark_tail_dirty','')
     ok('och1225_auto_mega_has_no_background_thread',
-       'if not _OCH1225_FAST_AUTO_MEGA:' in r80_start_src and 'return False' in r80_start_src and 'if not _OCH1225_FAST_AUTO_MEGA:' in r80_dirty_src,
-       'cold-standby FAST must not allocate the R80 MEGA scheduler or accumulate dirty tail state')
+       "name='och1226-mega-canonical'" in r80_start_src and
+       '_OCH1226_MEGA_DURABILITY_ENABLED' in r80_start_src and
+       'r83-mega-idle' not in r80_start_src,
+       '12.26 may run exactly one canonical durability scheduler but must not revive legacy MEGA/reaper background loops')
     ok('och1225_auto_mega_flag_defined_before_first_apply',
        split_src.find('_OCH1225_FAST_AUTO_MEGA =') >= 0 and split_src.find('_OCH1225_FAST_AUTO_MEGA =') < split_src.find('_r71_load_routes(force=True); _r71_apply_runtime_side_effects()'),
        'cold-standby flag must exist before the first runtime side-effect application during module import')
+
+    # OCH12.26 — MEGA-only restore, immutable generations, Redis cache-only.
+    start126=_fn_sources(start_src,{'main','_och1226_restore_from_mega_generation'})
+    main126=start126.get('main',''); restore126=start126.get('_och1226_restore_from_mega_generation','')
+    pub126=_fn_sources(core_src,{'mega_publish_current_sqlite_v1226','_mega_promote_remote_candidate','_constitution_prune_bounded_history'})
+    post126=_fn_sources(split_src,{'_r34_post_events','_r80_flush_compact_tail','r81_manual_compact_mega_restore','_r80_compact_scheduler_loop','_r80_start_compact_scheduler'})
+    ok('och1226_startup_mega_generation_only',
+       '_och1226_restore_from_mega_generation(target)' in main126 and '_restore_from_redis_startup(target)' not in main126 and
+       '_r80_compact_mega_compare_restore(' not in main126 and 'def _och1226_generation_paths' in start_src and '/database/current_manifest.json' in start_src,
+       'startup must restore only exact canonical MEGA generation')
+    ok('och1226_fail_closed_no_empty_init',
+       'FAIL-CLOSED' in main126 and "empty_init_attempted'] = False" in main126 and '_ensure_empty_db(target)' not in main126,
+       'failed canonical restore must not create an empty DB')
+    ok('och1226_generation_pointer_contract',
+       "'schema': 126" in core_src and 'database/current_manifest.json' in core_src and
+       'database/generations/generation_*.sqlite3.gz' in core_src and 'database/deltas/current_tail.json.gz' in core_src,
+       'canonical storage contract must be generation pointer + exact immutable generation + matching tail')
+    ok('och1226_redis_cache_only',
+       'Redis is best-effort cache only' in post126.get('_r34_post_events','') and
+       '_r43_store_events_redis(events)' in post126.get('_r34_post_events','') and
+       "_r80_flush_compact_tail('durability-ack')" in post126.get('_r34_post_events','') and
+       '_restore_from_redis' not in restore126,
+       'Redis may accelerate/cache but can never satisfy durability or restore')
+    ok('och1226_lowram_full_generation',
+       'SQLITE.backup_to(raw)' in pub126.get('mega_publish_current_sqlite_v1226','') and
+       'save_data(data, full=True)' not in pub126.get('mega_publish_current_sqlite_v1226','') and
+       '_och1226_flush_loaded_chat_stores_only' in pub126.get('mega_publish_current_sqlite_v1226',''),
+       'full generation must use SQLite backup API without cloning all cold finance into RAM')
+    ok('och1226_database_history_no_delete',
+       'OCH1226_MEGA_NO_DELETE' in core_src and "'/history'" in pub126.get('_mega_promote_remote_candidate','') and
+       'return result' in pub126.get('_constitution_prune_bounded_history',''),
+       'canonical database history must be moved/retained, never automatically deleted')
+    ok('och1226_compact_v80_not_canonical',
+       '_r80_compact_mega_compare_restore' not in restore126 and 'compact_v80' not in post126.get('_r80_flush_compact_tail','') and
+       '/database/deltas' in _fn_sources(split_src,{'_r80_compact_root'}).get('_r80_compact_root',''),
+       'compact_v80 may remain as dormant legacy code but must not participate in canonical read/write')
+    ok('och1226_manual_restore_generation_only',
+       'constitution_download_active_generation' in post126.get('r81_manual_compact_mega_restore','') and
+       '_r80_read_redis_tail_after' not in post126.get('r81_manual_compact_mega_restore','') and '_r43_' not in post126.get('r81_manual_compact_mega_restore',''),
+       'manual restore must use the same active generation/tail contract and never repair from Redis')
+    ok('och1226_generation_tail_scheduler',
+       '_OCH1226_MEGA_FULL_HOURS' in post126.get('_r80_compact_scheduler_loop','') and
+       '_OCH1226_MEGA_DELTA_FLUSH_SEC' in post126.get('_r80_compact_scheduler_loop','') and
+       '_OCH1226_RESTORED_GENERATION' in post126.get('_r80_start_compact_scheduler',''),
+       'scheduler must roll immutable generation on bounded cadence and preserve restored baseline')
+    ok('och1226_restored_tail_handoff',
+       'OCH1226_RESTORED_TAIL_PATH' in start_src and '_och1226_seed_restored_tail_handoff' in split_src and
+       '_OCH1226_RESTORED_TAIL_ROWS' in split_src,
+       'post-restart tail rewrite must preserve already-restored deltas until next full generation')
+
+    redis_sched126=_fn_sources(split_src,{'_r79_start_daily_scheduler','_r79_daily_snapshot_now'})
+    manualmega126=_fn_sources(all_py.get('06_commands_callbacks.py',''),{'run_manual_mega_restore','run_manual_redis_restore'})
+    ok('och1226_redis_full_retired',
+       "Redis FULL отключён" in redis_sched126.get('_r79_daily_snapshot_now','') and
+       "do not allocate a Redis FULL backup thread" in redis_sched126.get('_r79_start_daily_scheduler','') and
+       'threading.Thread' not in redis_sched126.get('_r79_start_daily_scheduler',''),
+       'Redis must stay cache-only: no daily FULL snapshot thread')
+    ok('och1226_manual_redis_restore_blocked',
+       'Redis используется только как cache/locks/ускоритель' in manualmega126.get('run_manual_redis_restore','') and
+       '_r221_manual_redis_restore_sqlite' not in manualmega126.get('run_manual_redis_restore',''),
+       'manual Redis restore must be disabled by policy')
+    ok('och1226_manual_mega_lowram_rehydrate',
+       'save_data(data, root_only=True)' in manualmega126.get('run_manual_mega_restore','') and
+       'save_data(data, full=True)' not in manualmega126.get('run_manual_mega_restore','') and
+       '_och1226_flush_loaded_chat_stores_only' in manualmega126.get('run_manual_mega_restore',''),
+       'manual MEGA restore must not reserialize every chat/cold ledger into RAM')
+    ok('och1226_generation_flushes_root_settings',
+       'save_data(data, root_only=True)' in pub126.get('mega_publish_current_sqlite_v1226','') and
+       '_och1226_flush_loaded_chat_stores_only' in pub126.get('mega_publish_current_sqlite_v1226','') and
+       '_v242_verify_published_generation(manifest)' in pub126.get('mega_publish_current_sqlite_v1226',''),
+       'generation must contain current bot-wide settings + resident chat metadata and verify the activated pointer')
 
 elif ROLE=='heavy':
     s=text('worker_service.py')

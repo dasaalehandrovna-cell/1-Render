@@ -614,7 +614,7 @@ def handle_finance_edit(msg):
                     break
         except Exception:
             pass
-    # OCH12.25: an edited source message may have created finance only in a linked
+    # OCH12.26: an edited source message may have created finance only in a linked
     # destination chat.  In that case there is correctly no source-chat record.
     # Follow the durable forward map and use the destination record as the linked
     # edit anchor instead of reporting a false "record not found".
@@ -4978,41 +4978,36 @@ def _r49_redis_button():
 
 
 def _r60_redis_menu_text(extra=''):
-    st=_r49_redis_runtime_state()
-    enabled=bool(st.get('enabled'))
+    st=_r49_redis_runtime_state(); enabled=bool(st.get('enabled'))
     lines=[
-        '🧱 REDIS · R66',
-        '',
+        '⚡ REDIS · CACHE ONLY · 12.26','',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
         f'FAST runtime={"ON" if enabled else "OFF"}',
-        f'Режим={_r60_redis_mode_label(st)}',
-        f'Роль=Redis recovery: FULL SQLite 1×/сутки ({_r79_redis_daily_time(False) if "_r79_redis_daily_time" in globals() else "04:00"}) + логический TAIL; live SQLite остаётся основной базой',
         '',
-        'Логика после рестарта:',
-        '• REDIS_ENABLED=1 → Redis разрешён',
-        '• REDIS_ENABLED=0 → фон/runtime OFF; ручное/BOOT восстановление разрешено',
-        '• REDIS_START_ENABLED=1 → после deploy runtime стартует ON',
-        '• REDIS_START_ENABLED=0 → после deploy runtime стартует OFF',
-        '• кнопки ниже меняют только runtime до следующего рестарта',
+        'Роль Redis:',
+        '• быстрый cache / key-value',
+        '• locks / dedupe / временные индексы',
+        '• best-effort копия событий для скорости',
+        '',
+        '⛔ Redis НЕ является источником восстановления.',
+        '⛔ Redis FULL SQLite отключён.',
+        '☁️ Восстановление: только MEGA current_manifest → generation → current_tail.',
+        '',
+        'Redis можно полностью очистить — канонические данные бота от этого не должны пропасть.',
     ]
     detail=str(st.get('detail') or '')[:260]
-    if detail:
-        lines += ['', 'Последнее переключение: '+detail]
-    lines += [f'Render REDIS_START_ENABLED={1 if st.get("start_enabled") else 0}']
-    if extra:
-        lines += ['', str(extra)[:700]]
+    if detail: lines += ['', 'Последнее переключение: '+detail]
+    if extra: lines += ['', str(extra)[:700]]
     return window_mark('\n'.join(lines),'Ф89')
-
 
 def _r60_redis_menu_keyboard():
     kb=types.InlineKeyboardMarkup(row_width=2)
-    kb.row(IB('🟢 Включить сейчас',callback_data='r60:redis:on'),IB('⚪ Выключить сейчас',callback_data='r60:redis:off'))
+    kb.row(IB('🟢 Cache ON',callback_data='r60:redis:on'),IB('⚪ Cache OFF',callback_data='r60:redis:off'))
     kb.row(IB('🧠 Что внутри Redis',callback_data='r60:redis:inspect:0'),IB('🔄 Обновить',callback_data='r60:redis:menu'))
-    kb.row(IB('♻️ Восстановить FULL+TAIL',callback_data='r60:redis:restore'))
+    kb.row(IB('☁️ Restore только MEGA',callback_data='r60:redis:restore'))
     kb.row(IB('🔙 В Инфо',callback_data='r29:info:main'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
-
 
 def _r60_redis_ttl_text(ttl_ms):
     try: ttl=int(ttl_ms)
@@ -5712,14 +5707,8 @@ def _r29_contour_callback_guard(call, resolved: str) -> bool:
             return True
 
         if raw == 'r60:redis:restore':
-            try: bot.answer_callback_query(call.id,'Запускаю Redis FULL+TAIL restore…')
+            try: bot.answer_callback_query(call.id,'12.26: Redis — только кэш. Восстановление выполняется только из MEGA.',show_alert=True)
             except Exception: pass
-            fn=globals().get('run_manual_redis_restore')
-            pool=globals().get('RECOVERY_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
-            queued=bool(callable(fn) and pool is not None and pool.submit(f'manual-redis-restore:{cid}',fn,cid))
-            if not queued:
-                try: bot.answer_callback_query(call.id,'Очередь восстановления занята.',show_alert=True)
-                except Exception: pass
             return True
 
         if raw.startswith('r60:redis:inspect:'):
@@ -6397,56 +6386,36 @@ def _r43_store_events_redis(events):
         try: c.close()
         except Exception: pass
 
-def _r34_post_events(events, wire, large=False):
-    """OCH12: HEAVY ACK owns durability; Redis is a bounded optional mirror."""
-    base=_r32_peer_base_impl(); secret=str(_r32_os.getenv('PEER_SHARED_SECRET','') or '').strip()
-    if not base or not secret:
-        raise RuntimeError('OCH12 HEAVY peer URL/secret not configured')
-    endpoint='/internal/state/event-large' if large else '/internal/state/events'
-    # OCH12.3: mirror the immutable logical event to Redis BEFORE waiting for
-    # HEAVY.  If HEAVY is temporarily unavailable, FAST's durable outbox keeps
-    # retrying the same event_id and Redis SET/ZADD remains idempotent.
-    redis_ok,redis_detail=_r43_store_events_redis(events)
-    r=requests.post(base+endpoint,data=wire,headers={'X-Peer-Secret':secret,'User-Agent':'och12-state-events','Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(2.0,min(120.0,float(_r32_os.getenv('R32_EVENT_POST_TIMEOUT_SEC','90') or '90'))))
-    if r.status_code==413 and not large:
-        if len(events)>1:
-            mid=max(1,len(events)//2)
-            _r34_post_events(events[:mid],_r34_encode_events(events[:mid]),False)
-            _r34_post_events(events[mid:],_r34_encode_events(events[mid:]),False)
-            return True
-        return _r34_post_events(events,wire,True)
-    if not (200 <= r.status_code < 300):
-        raise RuntimeError(f'OCH12 HEAVY state events HTTP {r.status_code}: {r.text[:220]}')
-    try:
-        payload=r.json() if r.content else {}
-    except Exception:
-        payload={}
-    if not isinstance(payload,dict) or not bool(payload.get('ok')):
-        raise RuntimeError('OCH12 HEAVY ACK missing/invalid: '+str(payload)[:220])
-    max_rev=max([int(x.get('revision') or 0) for x in events] or [0])
-    ack=int(payload.get('durable_revision') or payload.get('max_revision') or 0)
-    if ack < max_rev:
-        raise RuntimeError(f'OCH12 HEAVY durable revision behind: ack={ack} required={max_rev}')
-    applied_ack=int(payload.get('applied_revision') or (ack if bool(payload.get('apply_ok',True)) else 0))
-    # When Redis runtime is ON, Redis TAIL is part of the promised recovery set.
-    # Keep the durable FAST outbox row until BOTH HEAVY and Redis have the event.
-    # A retry is safe: event_id and HEAVY application are idempotent.
-    redis_required=bool(_r61_effective_redis_url())
-    if redis_required and not redis_ok:
-        _R32_EVENT_STATE['redis_cache_ok']=False; _R32_EVENT_STATE['redis_cache_detail']=str(redis_detail)[:180]
-        raise RuntimeError('Redis TAIL mirror pending after HEAVY ACK: '+str(redis_detail)[:180])
-    _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),ack)
-    _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),applied_ack)
-    _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events)
+def _r34_post_events(events,wire,large=False):
+    """12.26 durability ACK: MEGA canonical tail is required; Redis is best-effort cache only."""
+    if not _r71_route_is_fast('durability'):
+        return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
+    redis_ok=False; redis_detail='cache disabled'
+    try: redis_ok,redis_detail=_r43_store_events_redis(events)
+    except Exception as exc: redis_detail=f'{type(exc).__name__}: {str(exc)[:160]}'
+    max_rev=max([int((x or {}).get('revision') or 0) for x in (events or [])] or [0])
+    with _R80_MEGA_LOCK:
+        for ev in (events or []):
+            if _r80_compact_event_valid(ev):
+                eid=str(ev.get('event_id') or '')
+                if eid: _R80_MEGA_TAIL_EVENTS[eid]=ev
+        _R80_MEGA_STATE['tail_dirty']=True
+        covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
+    if covered<max_rev:
+        ok,detail=_r80_flush_compact_tail('durability-ack')
+        if not ok: raise RuntimeError('MEGA canonical tail pending: '+str(detail)[:180])
+        with _R80_MEGA_LOCK: covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
+    if covered<max_rev: raise RuntimeError(f'MEGA canonical tail incomplete covered={covered} required={max_rev}')
+    _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),max_rev)
+    _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),max_rev)
+    _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events or [])
     _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
-    _R32_EVENT_STATE['bytes']=int(_R32_EVENT_STATE.get('bytes') or 0)+len(wire)
     _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
     _R32_EVENT_STATE['redis_cache_ok']=bool(redis_ok); _R32_EVENT_STATE['redis_cache_detail']=str(redis_detail)[:180]
     st=globals().get('_SPLIT_STATE')
     if isinstance(st,dict):
-        st['r32_event_sent']=int(st.get('r32_event_sent') or 0)+len(events); st['r32_event_batches']=int(st.get('r32_event_batches') or 0)+1
-        st['r32_event_bytes']=int(st.get('r32_event_bytes') or 0)+len(wire); st['r32_event_pending']=_R32_EVENT_Q.qsize(); st['r32_event_last_ok']=_r32_time.time(); st['r32_event_last_error']=''
-        st['r34_event_last_revision_acked']=ack; st['r35_event_last_revision_applied_peer']=applied_ack; st['redis_event_cache_ok']=bool(redis_ok)
+        st['r34_event_last_revision_acked']=max_rev; st['r35_event_last_revision_applied_peer']=max_rev
+        st['r80_failover_durability']='MEGA_CANONICAL_V126'; st['redis_event_cache_ok']=bool(redis_ok)
     return True
 
 def _r32_send_packet(packet):
@@ -6573,48 +6542,14 @@ def _split_schedule_idle_full_reconcile_v270(reason='need_full',delay=None):
 def _split_request_worker_full_sync_r18(reason='need_full'):
     return True,'R34 event-stream mode: full rebase not required'
 
-def _split_push_snapshot_now_v263(reason='shutdown', sync_mega=False):
-    """Send one exact SQLite image to HEAVY; only HEAVY is allowed to publish it to MEGA."""
-    try:
-        r32_flush_state_events(timeout=float(_r32_os.getenv('R32_SHUTDOWN_EVENT_FLUSH_SEC','8') or '8'))
-    except Exception:
-        pass
-    base, secret = _split_peer_base(), _split_secret()
-    if not base or not secret:
-        _R32_EVENT_STATE['last_error'] = 'HEAVY peer is not configured for exact snapshot handoff'
-        return False
-    workdir = _split_tempfile.mkdtemp(prefix='r49_front_heavy_snapshot_')
-    raw = _split_os.path.join(workdir, 'bot_state.sqlite3')
-    gz = raw + '.gz'
-    try:
-        SQLITE.backup_to(raw)
-        with open(raw, 'rb') as src, _split_gzip.open(gz, 'wb', compresslevel=1) as dst:
-            _split_shutil.copyfileobj(src, dst, length=1024 * 1024)
-        with open(gz, 'rb') as fh:
-            body = fh.read()
-        headers = {**_split_headers('vys-262-r49-fast-heavy-snapshot'),
-                   'Content-Type': 'application/gzip',
-                   'X-Snapshot-Reason': str(reason or '')[:120],
-                   'X-Split-State-Token': _split_current_state_token_v264(),
-                   'X-Snapshot-Promote-Mode': 'sync' if bool(sync_mega) else 'async'}
-        timeout = 240 if bool(sync_mega) else 30
-        r = __import__('requests').post(base + '/internal/snapshot/upload', data=body, headers=headers, timeout=timeout)
-        try: row = r.json() if r.content else {}
-        except Exception: row = {}
-        if 200 <= int(r.status_code) < 300:
-            if str(row.get('status') or '') == 'stale_ignored':
-                _R32_EVENT_STATE['last_error'] = 'HEAVY has newer snapshot; stale FAST image ignored'
-                return False
-            if bool(sync_mega) and not bool(row.get('mega_promoted')):
-                _R32_EVENT_STATE['last_error'] = 'HEAVY accepted snapshot but did not confirm MEGA promotion'
-                return False
-            return True
-        _R32_EVENT_STATE['last_error'] = f'HEAVY snapshot HTTP {r.status_code}: {str(row or r.text)[:220]}'
-    except Exception as exc:
-        _R32_EVENT_STATE['last_error'] = f'HEAVY snapshot {type(exc).__name__}: {str(exc)[:180]}'
-    finally:
-        _split_shutil.rmtree(workdir, ignore_errors=True)
-    return False
+def _split_push_snapshot_now_v263(reason='shutdown',sync_mega=False):
+    if not _OCH1226_MEGA_DURABILITY_ENABLED: return True
+    if not (_r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega')):
+        return _R80_HEAVY_PUSH_SNAPSHOT(reason,sync_mega=sync_mega)
+    if not _r80_mega_master_enabled(): return False
+    if bool(sync_mega):
+        ok,_detail=_r80_snapshot_full_compact('sync-'+str(reason or 'snapshot')[:80]); return bool(ok)
+    return bool(_r80_queue_compact_full('snapshot-'+str(reason or '')[:80]))
 
 def r32_event_stream_status():
     # R45-FIX2: diagnostics/UI reads cached counters only; never touch outbox SQLite.
@@ -8824,40 +8759,13 @@ def _r71_route_is_fast(kind):
 
 
 def _r71_apply_runtime_side_effects():
-    """Apply routing without overriding the Render master MEGA switch.
-
-    OCH12.24 forces ownership to FAST because R2 is dead, but MEGA_ENABLED=0 must
-    still mean no ordinary runtime MEGA.  BOOT/manual recovery have their own
-    explicit emergency permission and may use credentials without turning background
-    MEGA on.
-    """
-    use_fast = _r71_route_is_fast('mega')
-    master_allowed = True
-    if _OCH1224_SINGLE_RENDER:
-        try:
-            import runtime_config as _r71_rc
-            _fn = getattr(_r71_rc, 'mega_render_enabled', None)
-            master_allowed = bool(_fn()) if callable(_fn) else bool(getattr(_r71_rc, '_MEGA_RENDER_ENABLED', False))
-        except Exception:
-            master_allowed = bool(globals().get('MEGA_ENABLED', False))
-        use_fast = bool(use_fast and master_allowed)
+    """12.26: keep legacy MEGA runtime OFF; canonical control-plane durability uses its own lease."""
     try:
-        if 'MEGA_ENABLED' in globals():
-            globals()['MEGA_ENABLED'] = bool(use_fast)
-        if use_fast:
-            # start_front keeps credentials parked in env for this explicit switch.
-            if not str(globals().get('MEGA_EMAIL') or ''):
-                globals()['MEGA_EMAIL'] = str(_split_os.getenv('MEGA_EMAIL', '') or '')
-            if not str(globals().get('MEGA_PASSWORD') or ''):
-                globals()['MEGA_PASSWORD'] = str(_split_os.getenv('MEGA_PASSWORD', '') or '')
-            _split_os.environ['MEGA_ENABLED'] = '1'
-            _split_os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '0'
-        else:
-            _split_os.environ['MEGA_ENABLED'] = '0'
-            _split_os.environ['FAST_RUNTIME_MEGA_DISABLED'] = '1'
-    except Exception:
-        pass
-
+        if 'MEGA_ENABLED' in globals(): globals()['MEGA_ENABLED']=False
+        _split_os.environ['MEGA_ENABLED']='0'
+        _split_os.environ['FAST_RUNTIME_MEGA_DISABLED']='1'
+        _split_os.environ['OCH1226_MEGA_CANONICAL']='1' if _OCH1226_MEGA_DURABILITY_ENABLED else '0'
+    except Exception: pass
 
 def _r71_save_routes(routes, reason='switch'):
     global _R71_ROUTE_CACHE
@@ -9413,10 +9321,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10285,7 +10193,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10324,7 +10232,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10374,7 +10282,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10397,13 +10305,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10459,7 +10367,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11081,73 +10989,19 @@ def _r79_remote_full_meta(client=None):
             except Exception: pass
 
 def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
-    quiet_fn = globals().get('restore_quiet_active_v222')
-    if callable(quiet_fn) and quiet_fn():
-        return False, 'restore quiet/cooldown'
-    with _R79_REDIS_DAILY_LOCK:
-        if _R79_REDIS_DAILY_STATE.get('running'):
-            return False,'daily Redis FULL already running'
-        _R79_REDIS_DAILY_STATE['running']=True
-    try:
-        st=_r49_redis_runtime_state()
-        if not st.get('master_enabled') or not st.get('configured') or not st.get('enabled'):
-            raise RuntimeError('Redis FAST runtime OFF or REDIS_URL unavailable')
-        now=now_local(); date_key=now.date().isoformat(); at=_r79_redis_daily_time(False)
-        ok=bool(_split_cache_snapshot_to_redis_v266(f'{reason}:{date_key}@{at}',verify=True,use_render_url=False))
-        if not ok:
-            raise RuntimeError(str(_SPLIT_STATE.get('redis_fallback_last_error') or 'Redis FULL write failed'))
-        size=int(_SPLIT_STATE.get('redis_fallback_last_size') or 0)
-        with _R79_REDIS_DAILY_LOCK:
-            _R79_REDIS_DAILY_STATE.update({'last_date':date_key,'last_ok':_split_time.time(),'last_error':'','last_reason':str(reason),'last_size':size})
-        try: bot_journal('r79_redis_daily_full',int(OWNER_ID or 0),f'ok=1 date={date_key} time={at} size={size} reason={reason}')
-        except Exception: pass
-        return True,f'FULL сохранён · {size/1024/1024:.2f} МБ · {date_key} {at}'
-    except Exception as exc:
-        detail=f'{type(exc).__name__}: {str(exc)[:240]}'
-        with _R79_REDIS_DAILY_LOCK: _R79_REDIS_DAILY_STATE['last_error']=detail
-        try: bot_journal('r79_redis_daily_full',int(OWNER_ID or 0),f'ok=0 {detail}')
-        except Exception: pass
-        return False,detail
-    finally:
-        with _R79_REDIS_DAILY_LOCK: _R79_REDIS_DAILY_STATE['running']=False
+    """12.26: Redis is cache-only; full SQLite snapshots are intentionally retired."""
+    return False,'OCH12.26: Redis FULL отключён — источник восстановления только MEGA'
 
 def _r79_daily_scheduler_loop():
-    _split_time.sleep(12.0)
-    while True:
-        try:
-            st=_r49_redis_runtime_state()
-            if st.get('master_enabled') and st.get('configured') and st.get('enabled'):
-                now=now_local(); today=now.date().isoformat(); hhmm=_r79_redis_daily_time(False)
-                hh,mm=[int(x) for x in hhmm.split(':',1)]
-                due=(now.hour,now.minute)>=(hh,mm)
-                with _R79_REDIS_DAILY_LOCK:
-                    last_date=str(_R79_REDIS_DAILY_STATE.get('last_date') or '')
-                    checked=str(_R79_REDIS_DAILY_STATE.get('remote_check_date') or '')
-                    has_full=bool(_R79_REDIS_DAILY_STATE.get('remote_has_full'))
-                if last_date!=today and checked!=today:
-                    meta=_r79_remote_full_meta(); remote_date=str((meta or {}).get('daily_local_date') or '')
-                    # A pre-12.3 FULL is deliberately treated as absent because it
-                    # has no provable replay tail and startup will reject it anyway.
-                    has_full=bool(meta) and int((meta or {}).get('tail_schema') or 0)>=1
-                    with _R79_REDIS_DAILY_LOCK:
-                        _R79_REDIS_DAILY_STATE['remote_check_date']=today
-                        _R79_REDIS_DAILY_STATE['remote_has_full']=has_full
-                        if remote_date==today: _R79_REDIS_DAILY_STATE['last_date']=today
-                    if remote_date==today: last_date=today
-                # First deployment bootstrap: do not spend hours with TAIL-only Redis.
-                should_bootstrap=(not has_full and last_date!=today)
-                if (should_bootstrap or (due and last_date!=today)) and not _och111_hot_ui_busy():
-                    _r79_daily_snapshot_now('bootstrap' if should_bootstrap else 'daily')
-        except Exception as exc:
-            with _R79_REDIS_DAILY_LOCK: _R79_REDIS_DAILY_STATE['last_error']=f'scheduler {type(exc).__name__}: {str(exc)[:180]}'
-        _split_time.sleep(30.0)
+    """12.26 compatibility stub: no Redis FULL scheduler is allowed."""
+    return
 
 def _r79_start_daily_scheduler():
+    """12.26: do not allocate a Redis FULL backup thread."""
     with _R79_REDIS_DAILY_LOCK:
-        if _R79_REDIS_DAILY_STATE.get('thread_started'): return True
-        _R79_REDIS_DAILY_STATE['thread_started']=True
-    t=_split_threading.Thread(target=_r79_daily_scheduler_loop,daemon=True,name='redis-daily-full-r79')
-    t.start(); return True
+        _R79_REDIS_DAILY_STATE['thread_started']=False
+        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.26'
+    return False
 
 def _r79_redis_schedule_button():
     return IB('🕓 Redis FULL '+_r79_redis_daily_time(False),callback_data='r79:redis:sched')
@@ -11287,15 +11141,48 @@ _R71_ROUTE_CACHE=None
 
 _R80_MEGA_LOCK=_split_threading.RLock()
 _R80_MEGA_TAIL_EVENTS={}
-# OCH12.25: automatic FAST MEGA is opt-in. Recovery/manual control plane is separate.
-_OCH1225_FAST_AUTO_MEGA = str(_split_os.getenv('OCH1225_FAST_AUTO_MEGA', '0') or '0').strip().lower() in {'1','true','yes','on'}
+# OCH12.26 canonical durability: MEGA is the only restore source.  Redis is cache-only.
+_OCH1225_FAST_AUTO_MEGA = False  # legacy switch intentionally retired
+_OCH1226_MEGA_DURABILITY_ENABLED = str(_split_os.getenv('OCH1226_MEGA_DURABILITY_ENABLED','1') or '1').strip().lower() in {'1','true','yes','on'}
+_OCH1226_MEGA_FULL_HOURS = max(1.0, float(_split_os.getenv('OCH1226_MEGA_FULL_HOURS','6') or '6'))
+_OCH1226_MEGA_DELTA_FLUSH_SEC = max(15.0, float(_split_os.getenv('OCH1226_MEGA_DELTA_FLUSH_SEC','90') or '90'))
+_OCH1226_RESTORED_GENERATION = str(_split_os.getenv('OCH1226_RESTORED_GENERATION','') or '').strip()
+_OCH1226_RESTORED_GENERATION_CREATED_AT = str(_split_os.getenv('OCH1226_RESTORED_GENERATION_CREATED_AT','') or '').strip()
 
 _R80_MEGA_STATE={
     'thread_started':False,'tail_dirty':False,'running':False,'last_full_at':0.0,
-    'last_full_date':'','last_tail_at':0.0,'last_tail_count':0,'tail_max_revision':0,
+    'last_full_date':'','last_full_generation':_OCH1226_RESTORED_GENERATION,
+    'last_tail_at':0.0,'last_tail_count':0,'tail_max_revision':0,
     'full_event_cutoff_score':0.0,'full_event_revision':0,'full_db_revision':0.0,
     'last_error':'','next_retry':0.0,'last_head_at':0.0,
 }
+
+
+def _och1226_seed_restored_tail_handoff():
+    path=str(_split_os.getenv('OCH1226_RESTORED_TAIL_PATH','') or '').strip()
+    if not (_OCH1226_RESTORED_GENERATION and path and _split_os.path.isfile(path)):
+        return 0
+    try:
+        obj=_split_json.loads(_split_gzip.decompress(open(path,'rb').read()).decode('utf-8')) or {}
+        if int(obj.get('schema') or 0)!=126 or str(obj.get('base_generation') or '')!=_OCH1226_RESTORED_GENERATION:
+            return 0
+        rows=[]
+        for ev in list(obj.get('events') or []):
+            if isinstance(ev,dict) and int(ev.get('schema') or 0)==32 and str(ev.get('event_id') or '') and int(ev.get('revision') or 0)>0:
+                _R80_MEGA_TAIL_EVENTS[str(ev.get('event_id'))]=ev; rows.append(ev)
+        _R80_MEGA_STATE['last_full_at']=_split_time.time()
+        _R80_MEGA_STATE['last_full_generation']=_OCH1226_RESTORED_GENERATION
+        _R80_MEGA_STATE['full_event_cutoff_score']=float(obj.get('full_event_cutoff_score') or 0.0)
+        _R80_MEGA_STATE['full_event_revision']=int(obj.get('full_event_revision') or 0)
+        _R80_MEGA_STATE['full_db_revision']=float(obj.get('full_db_revision') or 0.0)
+        _R80_MEGA_STATE['last_tail_at']=_split_time.time()
+        _R80_MEGA_STATE['last_tail_count']=len(rows)
+        _R80_MEGA_STATE['tail_max_revision']=int(obj.get('max_revision') or _R80_MEGA_STATE['full_event_revision'] or 0)
+        return len(rows)
+    except Exception:
+        return 0
+
+_OCH1226_RESTORED_TAIL_ROWS=_och1226_seed_restored_tail_handoff()
 
 def _r80_mega_master_enabled():
     try:
@@ -11307,21 +11194,24 @@ def _r80_mega_master_enabled():
         return False
 
 def _r80_compact_root():
+    """12.26 canonical delta directory. Legacy compact_v80 is never written."""
     root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').strip().replace('\\','/')
     if not root: return ''
-    return '/'+root.strip('/')+'/compact_v80'
+    return '/'+root.strip('/')+'/database/deltas'
 
 def _r80_compact_paths():
     root=_r80_compact_root().rstrip('/')
+    base=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').strip().replace('\\','/')
+    base='/' + base.strip('/') if base else ''
     return {
         'root':root,
-        'head':root+'/head.json',
-        'latest':root+'/latest.sqlite3.gz',
-        'tail':root+'/tail.json.gz',
-    } if root else {}
+        'head':root+'/current_tail.meta.json',
+        'latest':base+'/database/current_manifest.json',
+        'tail':root+'/current_tail.json.gz',
+    } if root and base else {}
 
 def _r80_mega_runtime_ready():
-    return bool(_OCH1225_FAST_AUTO_MEGA and _r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
+    return bool(_OCH1226_MEGA_DURABILITY_ENABLED and _r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
 
 def _r80_sqlite_freshness(path):
     db_rev=0.0; event_rev=0
@@ -11347,22 +11237,27 @@ def _r80_write_local_json(path,obj,gzip_it=False):
     return len(raw)
 
 def _r80_mega_put_fixed(local_path,remote_path):
+    """Publish one canonical database object, archiving the previous object instead of deleting it."""
     paths=_r80_compact_paths(); root=paths.get('root')
-    if not root: return False,'MEGA compact root unavailable'
+    if not root: return False,'MEGA canonical database root unavailable'
+    prev=bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE',False))
+    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=True
     try:
-        mega_ensure_remote_path(root)
         remote_dir=remote_path.rsplit('/',1)[0] or root
         mega_ensure_remote_path(remote_dir)
-        ok=bool(mega_put_replace(str(local_path),remote_dir,remote_path.rsplit('/',1)[-1],archive_previous=False))
+        ok=bool(mega_put_replace(str(local_path),remote_dir,remote_path.rsplit('/',1)[-1],archive_previous=True))
         return ok,('ok' if ok else 'mega_put_replace returned false')
     except Exception as exc:
         return False,f'{type(exc).__name__}: {str(exc)[:220]}'
+    finally:
+        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=prev
 
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':80,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.25'),
+        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.26'),
         'updated_at':_split_time.time(),
+        'base_generation':str(st.get('last_full_generation') or ''),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
         'full_event_revision':int(st.get('full_event_revision') or 0),
         'full_event_cutoff_score':float(st.get('full_event_cutoff_score') or 0.0),
@@ -11370,7 +11265,8 @@ def _r80_current_head(extra=None):
         'tail_count':int(st.get('last_tail_count') or 0),
         'full_saved_at':float(st.get('last_full_at') or 0.0),
         'tail_saved_at':float(st.get('last_tail_at') or 0.0),
-        'layout':'fixed-latest+single-tail; no generation scan; no per-event MEGA files',
+        'layout':'database/current_manifest + immutable generation + database/deltas/current_tail',
+        'redis_restore':False,
     }
     if isinstance(extra,dict): row.update(extra)
     return row
@@ -11414,56 +11310,59 @@ def _r80_store_pre_restore_gz(local_gz, reason='manual_restore'):
         return False, f'{type(exc).__name__}: {str(exc)[:220]}'
 
 
-def _r80_snapshot_full_compact(reason='daily'):
-    """Background-only R1 MEGA checkpoint. Exactly latest.sqlite3.gz + tail.json.gz + head.json."""
-    quiet_fn = globals().get('restore_quiet_active_v222')
+def _r80_snapshot_full_compact(reason='scheduled-generation'):
+    """Create one immutable canonical SQLite generation, then reset the matching MEGA tail."""
+    quiet_fn=globals().get('restore_quiet_active_v222')
     if callable(quiet_fn) and quiet_fn() and not str(reason or '').startswith('post-restore-'):
         return False, 'restore quiet/cooldown'
     with _R80_MEGA_LOCK:
-        if _R80_MEGA_STATE.get('running'): return False,'compact MEGA job already running'
+        if _R80_MEGA_STATE.get('running'): return False,'canonical MEGA job already running'
         _R80_MEGA_STATE['running']=True
     work=None
+    prev=bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE',False))
+    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=True
     try:
-        if not _r80_mega_runtime_ready(): return False,'R1 MEGA compact runtime not enabled/ready'
+        if not _r80_mega_runtime_ready(): return False,'canonical MEGA durability not enabled/ready'
         now=_split_time.time()
         with _R80_MEGA_LOCK:
-            if now<float(_R80_MEGA_STATE.get('next_retry') or 0.0): return False,'MEGA compact retry cooldown'
-        # This entire function runs in a background pool/thread, never in callback/user lane.
+            if now<float(_R80_MEGA_STATE.get('next_retry') or 0.0): return False,'MEGA canonical retry cooldown'
         login=globals().get('mega_login_if_needed')
         if callable(login): login(control_plane=True)
-        work=_split_tempfile.mkdtemp(prefix='r80_mega_full_')
-        raw=_split_os.path.join(work,'state.sqlite3'); gz=_split_os.path.join(work,'latest.sqlite3.gz')
-        cutoff=_split_time.time(); SQLITE.backup_to(raw)
-        with open(raw,'rb') as src,_split_gzip.open(gz,'wb',compresslevel=3) as dst:
-            _split_shutil.copyfileobj(src,dst,length=1024*1024)
-        db_rev,event_rev=_r80_sqlite_freshness(raw)
-        paths=_r80_compact_paths()
-        ok,detail=_r80_mega_put_fixed(gz,paths['latest'])
-        if not ok: raise RuntimeError('latest: '+detail)
-        empty_tail={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':cutoff,'full_db_revision':db_rev,'full_event_revision':event_rev,'events':[],'max_revision':event_rev}
-        tail_local=_split_os.path.join(work,'tail.json.gz'); _r80_write_local_json(tail_local,empty_tail,True)
-        ok,detail=_r80_mega_put_fixed(tail_local,paths['tail'])
-        if not ok: raise RuntimeError('tail reset: '+detail)
+        publish=globals().get('mega_publish_current_sqlite_v1226')
+        if not callable(publish): raise RuntimeError('mega_publish_current_sqlite_v1226 unavailable')
+        manifest=dict(publish(str(reason)) or {})
+        generation=str(manifest.get('generation') or '')
+        if not generation: raise RuntimeError('canonical generation publish returned no generation')
+        work=_split_tempfile.mkdtemp(prefix='och1226_mega_tail_reset_')
+        db_rev,event_rev=_r80_sqlite_freshness(SQLITE.path)
+        cutoff=_split_time.time()
+        obj={'schema':126,'created_at':_split_time.time(),'base_generation':generation,
+             'base_created_at':str(manifest.get('created_at') or ''),'full_event_cutoff_score':cutoff,
+             'full_db_revision':db_rev,'full_event_revision':event_rev,'events':[],'max_revision':event_rev}
+        local=_split_os.path.join(work,'current_tail.json.gz'); _r80_write_local_json(local,obj,True)
+        paths=_r80_compact_paths(); ok,detail=_r80_mega_put_fixed(local,paths['tail'])
+        if not ok: raise RuntimeError('current_tail reset: '+detail)
         with _R80_MEGA_LOCK:
             _R80_MEGA_TAIL_EVENTS.clear()
             _R80_MEGA_STATE.update({'last_full_at':_split_time.time(),'last_full_date':now_local().date().isoformat(),
-                'full_event_cutoff_score':cutoff,'full_event_revision':event_rev,'full_db_revision':db_rev,
-                'last_tail_at':_split_time.time(),'last_tail_count':0,'tail_max_revision':event_rev,
-                'tail_dirty':False,'last_error':'','next_retry':0.0})
+                'last_full_generation':generation,'full_event_cutoff_score':cutoff,'full_event_revision':event_rev,
+                'full_db_revision':db_rev,'last_tail_at':_split_time.time(),'last_tail_count':0,
+                'tail_max_revision':event_rev,'tail_dirty':False,'last_error':'','next_retry':0.0})
         ok,detail=_r80_write_head(work,{'reason':str(reason)[:120]})
-        if not ok: raise RuntimeError('head: '+detail)
-        try: bot_journal('r80_mega_compact_full',int(OWNER_ID or 0),f'ok=1 reason={reason}; db={db_rev}; event={event_rev}')
+        if not ok: raise RuntimeError('current_tail meta: '+detail)
+        try: bot_journal('mega_generation_full_v1226',int(OWNER_ID or 0),f'generation={generation}; reason={reason}; db={db_rev}; event={event_rev}')
         except Exception: pass
-        return True,f'compact MEGA FULL ok db={db_rev:.6f} event={event_rev}'
+        return True,f'canonical MEGA generation={generation} event={event_rev}'
     except Exception as exc:
         detail=f'{type(exc).__name__}: {str(exc)[:240]}'
         with _R80_MEGA_LOCK:
             _R80_MEGA_STATE['last_error']=detail
-            _R80_MEGA_STATE['next_retry']=_split_time.time()+max(60.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','300') or '300'))
-        try: log_error('R80 compact MEGA full: '+detail)
+            _R80_MEGA_STATE['next_retry']=_split_time.time()+max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','60') or '60'))
+        try: log_error('OCH12.26 canonical MEGA generation: '+detail)
         except Exception: pass
         return False,detail
     finally:
+        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=prev
         with _R80_MEGA_LOCK: _R80_MEGA_STATE['running']=False
         if work: _split_shutil.rmtree(work,ignore_errors=True)
 
@@ -11497,96 +11396,89 @@ def _r80_compact_event_valid(ev):
 
 
 def _r80_collect_compact_tail():
-    with _R80_MEGA_LOCK: cutoff=float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0)
-    if cutoff<=0.0: return [],'no compact full baseline'
+    """Collect replayable events without consulting Redis. Redis is cache-only in 12.26."""
     with _R80_MEGA_LOCK:
+        cutoff=float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0)
         merged=dict(_R80_MEGA_TAIL_EVENTS)
-    # Redis is the normal source because it already contains the canonical compressed TAIL.
-    try:
-        for ev in _r80_read_redis_tail_after(cutoff):
-            eid=str((ev or {}).get('event_id') or '')
-            if eid: merged[eid]=ev
-    except Exception as exc:
-        redis_error=f'{type(exc).__name__}: {str(exc)[:180]}'
-    else: redis_error=''
-    # Durable local outbox stores tiny DESCRIPTORS, not replayable R32 events.
-    # OCH12.18 incorrectly copied those descriptors straight into compact_v80,
-    # inflating tail_max_revision with rows that startup could never apply.
-    # Materialize them from the authoritative live SQLite first.
+    if cutoff<=0.0: return [],'no canonical generation baseline'
     materialize_missed=0
     try:
-        for desc in _r40_event_db_pending(1000):
+        for desc in _r40_event_db_pending(5000):
             if float((desc or {}).get('created_at') or 0.0)+0.0000001 < cutoff: continue
             ev=desc if _r80_compact_event_valid(desc) else _r32_materialize(desc)
             if not _r80_compact_event_valid(ev):
-                materialize_missed+=1
-                continue
+                materialize_missed+=1; continue
             eid=str((ev or {}).get('event_id') or '')
             if eid: merged[eid]=ev
     except Exception:
         materialize_missed+=1
-    # Never publish malformed rows or let them define max_revision/head metadata.
     rows=sorted([ev for ev in merged.values() if _r80_compact_event_valid(ev)],key=lambda x:(int((x or {}).get('revision') or 0),str((x or {}).get('event_id') or '')))
-    if materialize_missed:
-        suffix=f'outbox descriptors pending materialization={materialize_missed}'
-        redis_error=(redis_error+'; '+suffix).strip('; ') if redis_error else suffix
     max_events=max(1000,min(50000,int(_split_os.getenv('R80_MEGA_COMPACT_MAX_EVENTS','12000') or '12000')))
-    if len(rows)>max_events: return [],f'tail too large {len(rows)} > {max_events}; new FULL required'
-    return rows,redis_error
+    if len(rows)>max_events: return [],f'tail too large {len(rows)} > {max_events}; new generation required'
+    return rows,(f'outbox materialization pending={materialize_missed}' if materialize_missed else '')
 
 def _r80_flush_compact_tail(reason='periodic'):
-    quiet_fn = globals().get('restore_quiet_active_v222')
-    if callable(quiet_fn) and quiet_fn():
-        return False, 'restore quiet/cooldown'
+    """Publish the single canonical tail for the active immutable generation."""
+    quiet_fn=globals().get('restore_quiet_active_v222')
+    if callable(quiet_fn) and quiet_fn(): return False, 'restore quiet/cooldown'
     work=None
+    prev=bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE',False))
+    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=True
     try:
-        if not _r80_mega_runtime_ready(): return False,'R1 MEGA compact runtime not enabled/ready'
+        if not _r80_mega_runtime_ready(): return False,'canonical MEGA durability not enabled/ready'
         with _R80_MEGA_LOCK:
-            if not _R80_MEGA_STATE.get('last_full_at'): return _r80_snapshot_full_compact('tail-bootstrap')
+            if not _R80_MEGA_STATE.get('last_full_generation'):
+                return _r80_snapshot_full_compact('tail-bootstrap-generation')
             if _split_time.time()<float(_R80_MEGA_STATE.get('next_retry') or 0.0): return False,'retry cooldown'
+            generation=str(_R80_MEGA_STATE.get('last_full_generation') or '')
         events,detail=_r80_collect_compact_tail()
-        if detail.startswith('tail too large'): return _r80_snapshot_full_compact('tail-rollover')
-        work=_split_tempfile.mkdtemp(prefix='r80_mega_tail_'); local=_split_os.path.join(work,'tail.json.gz')
-        max_rev=max([int((x or {}).get('revision') or 0) for x in events] or [int(_R80_MEGA_STATE.get('full_event_revision') or 0)])
-        obj={'schema':80,'created_at':_split_time.time(),'full_event_cutoff_score':float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0),'full_db_revision':float(_R80_MEGA_STATE.get('full_db_revision') or 0.0),'full_event_revision':int(_R80_MEGA_STATE.get('full_event_revision') or 0),'events':events,'max_revision':max_rev}
+        if detail.startswith('tail too large'): return _r80_snapshot_full_compact('tail-rollover-generation')
+        work=_split_tempfile.mkdtemp(prefix='och1226_mega_tail_'); local=_split_os.path.join(work,'current_tail.json.gz')
+        with _R80_MEGA_LOCK:
+            full_rev=int(_R80_MEGA_STATE.get('full_event_revision') or 0)
+            cutoff=float(_R80_MEGA_STATE.get('full_event_cutoff_score') or 0.0)
+            db_rev=float(_R80_MEGA_STATE.get('full_db_revision') or 0.0)
+        max_rev=max([int((x or {}).get('revision') or 0) for x in events] or [full_rev])
+        obj={'schema':126,'created_at':_split_time.time(),'base_generation':generation,
+             'full_event_cutoff_score':cutoff,'full_db_revision':db_rev,'full_event_revision':full_rev,
+             'events':events,'max_revision':max_rev}
         _r80_write_local_json(local,obj,True)
         paths=_r80_compact_paths(); ok,put_detail=_r80_mega_put_fixed(local,paths['tail'])
         if not ok: raise RuntimeError(put_detail)
         with _R80_MEGA_LOCK:
             _R80_MEGA_TAIL_EVENTS.clear()
-            for _ev in events:
-                _eid=str((_ev or {}).get('event_id') or '')
-                if _eid: _R80_MEGA_TAIL_EVENTS[_eid]=_ev
-            _R80_MEGA_STATE.update({'last_tail_at':_split_time.time(),'last_tail_count':len(events),'tail_max_revision':max_rev,'tail_dirty':False,'last_error':'','next_retry':0.0})
-        _r80_write_head(work,{'tail_reason':str(reason)[:120],'tail_source_warning':detail[:160]})
-        return True,f'compact tail events={len(events)} max_revision={max_rev}'
+            for ev in events:
+                eid=str((ev or {}).get('event_id') or '')
+                if eid: _R80_MEGA_TAIL_EVENTS[eid]=ev
+            _R80_MEGA_STATE.update({'last_tail_at':_split_time.time(),'last_tail_count':len(events),
+                'tail_max_revision':max_rev,'tail_dirty':False,'last_error':'','next_retry':0.0})
+        _r80_write_head(work,{'tail_reason':str(reason)[:120],'tail_warning':detail[:160]})
+        return True,f'canonical tail generation={generation} events={len(events)} max_revision={max_rev}'
     except Exception as exc:
         err=f'{type(exc).__name__}: {str(exc)[:220]}'
         with _R80_MEGA_LOCK:
             _R80_MEGA_STATE['last_error']=err; _R80_MEGA_STATE['tail_dirty']=True
-            _R80_MEGA_STATE['next_retry']=_split_time.time()+max(60.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','300') or '300'))
+            _R80_MEGA_STATE['next_retry']=_split_time.time()+max(15.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','30') or '30'))
         return False,err
     finally:
+        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=prev
         if work: _split_shutil.rmtree(work,ignore_errors=True)
 
 def _r80_mark_tail_dirty():
-    if not _OCH1225_FAST_AUTO_MEGA:
-        return False
+    if not _OCH1226_MEGA_DURABILITY_ENABLED: return False
     with _R80_MEGA_LOCK: _R80_MEGA_STATE['tail_dirty']=True
     return True
 
 def _r80_queue_compact_full(reason='route-switch'):
-    if not _OCH1225_FAST_AUTO_MEGA:
-        return False
+    if not _OCH1226_MEGA_DURABILITY_ENABLED: return False
     pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
     try:
         if pool is not None and hasattr(pool,'submit_unique'):
-            return bool(pool.submit_unique('r80-mega-compact-full',_r80_snapshot_full_compact,str(reason)))
+            return bool(pool.submit_unique('och1226-mega-generation',_r80_snapshot_full_compact,str(reason)))
     except Exception: pass
     try:
-        _split_threading.Thread(target=_r80_snapshot_full_compact,args=(str(reason),),daemon=True,name='r80-mega-full').start(); return True
+        _split_threading.Thread(target=_r80_snapshot_full_compact,args=(str(reason),),daemon=True,name='och1226-mega-generation').start(); return True
     except Exception: return False
-
 
 # ---------------------------------------------------------------------------
 # OCH12.6 / R81 — exact compact MEGA manual restore, zero tree scans.
@@ -11698,74 +11590,61 @@ def _r221_manual_mega_ready():
         return False
 
 def r81_manual_compact_mega_restore():
-    """Restore exact compact_v80 head/latest/tail. Never mega-find or scan history.
-
-    OCH12.22: explicit owner recovery works even when MEGA_ENABLED=0; that flag
-    suppresses background/runtime MEGA only.
-    """
-    work=None
+    """12.26 manual restore: exact current_manifest -> immutable generation -> matching MEGA tail. Never Redis."""
+    work=None; prev=bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE',False))
+    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=True
     try:
         if not _r221_manual_mega_ready(): return False,'MEGA credentials/CLI unavailable for manual recovery',0
-        paths=_r80_compact_paths()
-        if not paths: return False,'MEGA_BACKUP_DIR/compact_v80 unavailable',0
         login=globals().get('mega_login_if_needed')
         if callable(login): login(control_plane=True)
-        work=_split_tempfile.mkdtemp(prefix='r81_manual_compact_restore_')
-        head_path,detail=_r81_mega_get_exact(paths['head'],work,45)
-        if not head_path: return False,'compact head: '+detail,0
-        try:
-            head=_split_json.loads(open(head_path,'r',encoding='utf-8').read()) or {}
-        except Exception as exc:
-            return False,f'compact head decode {type(exc).__name__}: {str(exc)[:180]}',0
-        if int((head or {}).get('schema') or 0)!=80: return False,'compact head schema != 80',0
-        latest_path,detail=_r81_mega_get_exact(paths['latest'],work,max(60,min(180,int(float(_split_os.getenv('MEGA_TIMEOUT','120') or '120')))))
-        if not latest_path: return False,'compact latest: '+detail,0
+        work=_split_tempfile.mkdtemp(prefix='och1226_manual_generation_restore_')
+        dl=globals().get('constitution_download_active_generation')
+        if not callable(dl): return False,'constitution_download_active_generation unavailable',0
+        gz_path,manifest,detail=dl(work)
+        if not gz_path or not isinstance(manifest,dict): return False,'canonical generation: '+str(detail),0
+        generation=str(manifest.get('generation') or '')
         candidate=_split_os.path.join(work,'candidate.sqlite3')
         try:
-            with _split_gzip.open(latest_path,'rb') as src,open(candidate,'wb') as dst:
+            with _split_gzip.open(gz_path,'rb') as src,open(candidate,'wb') as dst:
                 _split_shutil.copyfileobj(src,dst,length=1024*1024)
         except Exception as exc:
-            return False,f'compact latest decompress {type(exc).__name__}: {str(exc)[:180]}',0
-        if not _r81_compact_db_valid(candidate): return False,'compact latest SQLite quick_check failed',0
-        tail_path,tail_detail=_r81_mega_get_exact(paths['tail'],work,60)
-        if not tail_path: return False,'compact tail: '+tail_detail,0
-        try:
-            tail=_split_json.loads(_split_gzip.decompress(open(tail_path,'rb').read()).decode('utf-8')) or {}
-            raw_events=list(tail.get('events') or [])
-        except Exception as exc:
-            return False,f'compact tail decode {type(exc).__name__}: {str(exc)[:180]}',0
-        expected_count=int((head or {}).get('tail_count') or 0); expected_max=int((head or {}).get('tail_max_revision') or 0)
-        def _legacy_desc(ev):
-            return bool(isinstance(ev,dict) and int(ev.get('schema') or 0)!=32 and str(ev.get('event_id') or '') and int(ev.get('revision') or 0)>0 and str(ev.get('kind') or '') and isinstance(ev.get('ids'),dict) and 'payload' not in ev)
-        legacy=[ev for ev in raw_events if _legacy_desc(ev)]
-        invalid=[ev for ev in raw_events if not _r81_compact_event_valid(ev) and not _legacy_desc(ev)]
-        if invalid: return False,f'compact tail contains {len(invalid)} unknown invalid rows',0
-        if expected_count and len(raw_events)<expected_count: return False,f'compact tail physically incomplete {len(raw_events)} < {expected_count}',0
-        merged={str(ev.get('event_id')):ev for ev in raw_events if _r81_compact_event_valid(ev)}
-        repair_detail=''
-        if legacy:
-            cutoff=float(tail.get('full_event_cutoff_score') or (head or {}).get('full_event_cutoff_score') or 0.0)
-            try:
-                repaired=_r80_read_redis_tail_after(cutoff)
-                for ev in repaired:
-                    if _r81_compact_event_valid(ev): merged[str(ev.get('event_id'))]=ev
-                repair_detail=f'redis_repair={len(repaired)}'
-            except Exception as exc:
-                repair_detail=f'redis_repair_error={type(exc).__name__}'
-        events=sorted(merged.values(),key=lambda x:(int(x.get('revision') or 0),str(x.get('event_id') or '')))
-        applied,stale=_r81_apply_compact_events(candidate,events)
-        if not _r81_compact_db_valid(candidate): return False,'compact candidate invalid after tail',applied
-        final_max=_r81_compact_max_revision(candidate)
-        unrecovered=0
-        if expected_max and final_max<expected_max:
-            if not legacy: return False,f'compact revision incomplete {final_max} < {expected_max}',applied
-            ids={str(ev.get('event_id') or '') for ev in events}; unrecovered=sum(1 for ev in legacy if str(ev.get('event_id') or '') not in ids)
+            return False,f'generation decompress {type(exc).__name__}: {str(exc)[:180]}',0
+        if not _r81_compact_db_valid(candidate): return False,'canonical generation SQLite quick_check failed',0
+        paths=_r80_compact_paths(); tail_path,tail_detail=_r81_mega_get_exact(paths['tail'],work,90)
+        applied=0
+        if tail_path:
+            try: tail=_split_json.loads(_split_gzip.decompress(open(tail_path,'rb').read()).decode('utf-8')) or {}
+            except Exception as exc: return False,f'canonical tail decode {type(exc).__name__}: {str(exc)[:180]}',0
+            if int(tail.get('schema') or 0)!=126: return False,'canonical tail schema != 126',0
+            if str(tail.get('base_generation') or '')==generation:
+                events=list(tail.get('events') or [])
+                if any(not _r81_compact_event_valid(ev) for ev in events): return False,'canonical tail contains invalid R32 event',0
+                applied,_stale=_r81_apply_compact_events(candidate,events)
+                claimed=int(tail.get('max_revision') or 0); final_max=_r81_compact_max_revision(candidate)
+                if claimed and final_max<claimed: return False,f'canonical tail incomplete {final_max} < {claimed}',applied
+        if not _r81_compact_db_valid(candidate): return False,'canonical candidate invalid after tail',applied
         SQLITE.replace_database(candidate)
-        note=f' legacy_descriptor_repair={len(legacy)} unrecovered={unrecovered} {repair_detail}' if legacy else ''
-        return True,f'compact_v80 exact restore; events={len(events)} applied={applied} stale={stale} max_revision={final_max}{note}',applied
+        # Adopt the restored canonical baseline in the live durability manager.
+        _tail_events=list((tail or {}).get('events') or []) if isinstance(locals().get('tail'),dict) else []
+        with _R80_MEGA_LOCK:
+            _R80_MEGA_TAIL_EVENTS.clear()
+            for _ev in _tail_events:
+                if _r81_compact_event_valid(_ev):
+                    _R80_MEGA_TAIL_EVENTS[str(_ev.get('event_id'))]=_ev
+            _R80_MEGA_STATE.update({
+                'last_full_generation':generation,'last_full_at':_split_time.time(),
+                'full_event_cutoff_score':float((tail or {}).get('full_event_cutoff_score') or 0.0) if isinstance(locals().get('tail'),dict) else 0.0,
+                'full_event_revision':int((tail or {}).get('full_event_revision') or 0) if isinstance(locals().get('tail'),dict) else 0,
+                'full_db_revision':float((tail or {}).get('full_db_revision') or 0.0) if isinstance(locals().get('tail'),dict) else 0.0,
+                'last_tail_at':_split_time.time(),'last_tail_count':len(_tail_events),
+                'tail_max_revision':int((tail or {}).get('max_revision') or _r81_compact_max_revision(candidate)) if isinstance(locals().get('tail'),dict) else _r81_compact_max_revision(candidate),
+                'tail_dirty':False,'last_error':'','next_retry':0.0,
+            })
+        return True,f'MEGA canonical generation restore OK generation={generation}; applied={applied}; Redis not used',applied
     except Exception as exc:
         return False,f'{type(exc).__name__}: {str(exc)[:260]}',0
     finally:
+        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=prev
         if work: _split_shutil.rmtree(work,ignore_errors=True)
 
 def _r221_manual_redis_restore_sqlite():
@@ -11853,28 +11732,14 @@ def _r221_manual_redis_restore_sqlite():
 # Honor Render's MEGA_ENABLED master switch. Runtime menus may route ownership,
 # but can never turn MEGA back on when Render explicitly supplied MEGA_ENABLED=0.
 def _r71_apply_runtime_side_effects():
-    """OCH12.25 single-Render MEGA policy.
-
-    Render's MEGA_ENABLED is permission/credentials, not a demand to run continuous
-    backups on FAST.  Automatic runtime MEGA is OFF by default; BOOT and explicit
-    owner recovery remain available through the recovery/control-plane paths.
-    """
-    use_fast=bool(_r71_route_is_fast('mega') or _r71_route_is_fast('checkpoints'))
-    master=_r80_mega_master_enabled()
-    active=bool(use_fast and master and _OCH1225_FAST_AUTO_MEGA)
+    """12.26: legacy MEGA background is always OFF; canonical control-plane durability is separate."""
     try:
-        if 'MEGA_ENABLED' in globals(): globals()['MEGA_ENABLED']=active
-        _split_os.environ['MEGA_ENABLED']='1' if active else '0'
-        _split_os.environ['FAST_RUNTIME_MEGA_DISABLED']='0' if active else '1'
-        _split_os.environ['OCH1225_MEGA_COLD_STANDBY']='0' if active else '1'
-        if active:
-            if not str(globals().get('MEGA_EMAIL') or ''): globals()['MEGA_EMAIL']=str(_split_os.getenv('MEGA_EMAIL','') or '')
-            if not str(globals().get('MEGA_PASSWORD') or ''): globals()['MEGA_PASSWORD']=str(_split_os.getenv('MEGA_PASSWORD','') or '')
-            reaper = globals().get('_och1210_start_mega_idle_reaper')
-            if callable(reaper): reaper()
-        # Deliberately NO owner-switch/bootstrap FULL here.  12.24 generated MEGA
-        # traffic immediately after boot/recovery and raced the login session.
-    except Exception: pass
+        if 'MEGA_ENABLED' in globals(): globals()['MEGA_ENABLED']=False
+        _split_os.environ['MEGA_ENABLED']='0'
+        _split_os.environ['FAST_RUNTIME_MEGA_DISABLED']='1'
+        _split_os.environ['OCH1226_MEGA_CANONICAL']='1' if _OCH1226_MEGA_DURABILITY_ENABLED else '0'
+    except Exception:
+        pass
 
 def _r71_fast_mega_ready():
     if not _r80_mega_master_enabled(): return False
@@ -11890,18 +11755,25 @@ def _r71_fast_mega_ready():
 # remains pending until MEGA compact tail covers the revision.
 _R80_HEAVY_POST_EVENTS=_r34_post_events
 def _r34_post_events(events,wire,large=False):
+    """12.26 durability ACK: MEGA canonical tail is required; Redis is best-effort cache only."""
     if not _r71_route_is_fast('durability'):
         return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
-    redis_ok,redis_detail=_r43_store_events_redis(events)
-    _r80_mark_tail_dirty()
+    redis_ok=False; redis_detail='cache disabled'
+    try: redis_ok,redis_detail=_r43_store_events_redis(events)
+    except Exception as exc: redis_detail=f'{type(exc).__name__}: {str(exc)[:160]}'
     max_rev=max([int((x or {}).get('revision') or 0) for x in (events or [])] or [0])
-    redis_required=bool(_r61_effective_redis_url())
-    if redis_required and not redis_ok:
-        raise RuntimeError('R1 failover Redis TAIL pending: '+str(redis_detail)[:180])
-    if not redis_required:
+    with _R80_MEGA_LOCK:
+        for ev in (events or []):
+            if _r80_compact_event_valid(ev):
+                eid=str(ev.get('event_id') or '')
+                if eid: _R80_MEGA_TAIL_EVENTS[eid]=ev
+        _R80_MEGA_STATE['tail_dirty']=True
+        covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
+    if covered<max_rev:
+        ok,detail=_r80_flush_compact_tail('durability-ack')
+        if not ok: raise RuntimeError('MEGA canonical tail pending: '+str(detail)[:180])
         with _R80_MEGA_LOCK: covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
-        if covered<max_rev:
-            raise RuntimeError(f'R1 failover compact MEGA tail pending covered={covered} required={max_rev}')
+    if covered<max_rev: raise RuntimeError(f'MEGA canonical tail incomplete covered={covered} required={max_rev}')
     _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),max_rev)
     _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),max_rev)
     _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events or [])
@@ -11911,12 +11783,10 @@ def _r34_post_events(events,wire,large=False):
     st=globals().get('_SPLIT_STATE')
     if isinstance(st,dict):
         st['r34_event_last_revision_acked']=max_rev; st['r35_event_last_revision_applied_peer']=max_rev
-        st['r80_failover_durability']='R1_FAST'; st['redis_event_cache_ok']=bool(redis_ok)
+        st['r80_failover_durability']='MEGA_CANONICAL_V126'; st['redis_event_cache_ok']=bool(redis_ok)
     return True
 
-# Raw Telegram witness owner in emergency R1 mode. The local webhook inbox has
-# already accepted the update, so no R2/Redis RTT is allowed before the user's
-# response. Redis witness mirroring is queued on the existing background lane.
+# Preserve the original witness/status implementations before the R1-only wrappers.
 _R80_HEAVY_WITNESS_EVENT=split_witness_event_v268
 _R80_HEAVY_EVENT_STATUS_SEND=_split_event_status_send_v268
 
@@ -11954,21 +11824,18 @@ _R80_HEAVY_PUSH_SNAPSHOT=_split_push_snapshot_now_v263
 _R80_HEAVY_SEND_DELTA=_split_send_delta_v267
 
 def _split_push_snapshot_now_v263(reason='shutdown',sync_mega=False):
-    if not _OCH1225_FAST_AUTO_MEGA:
-        return True
+    if not _OCH1226_MEGA_DURABILITY_ENABLED: return True
     if not (_r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega')):
         return _R80_HEAVY_PUSH_SNAPSHOT(reason,sync_mega=sync_mega)
-    if not _r80_mega_master_enabled():
-        return True
+    if not _r80_mega_master_enabled(): return False
     if bool(sync_mega):
-        ok,_detail=_r80_snapshot_full_compact('sync-'+str(reason or 'snapshot')[:80])
-        return bool(ok)
+        ok,_detail=_r80_snapshot_full_compact('sync-'+str(reason or 'snapshot')[:80]); return bool(ok)
     return bool(_r80_queue_compact_full('snapshot-'+str(reason or '')[:80]))
 
 def _split_send_delta_v267(reason='change'):
     if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('durability'):
         _r80_mark_tail_dirty()
-        return True,'R1 compact FULL+TAIL owns delta durability',False
+        return True,'MEGA canonical generation+tail owns durability; Redis cache-only',False
     return _R80_HEAVY_SEND_DELTA(reason)
 
 # Capsule owner in emergency mode: Redis capsule is enough to release the capsule
@@ -11981,7 +11848,7 @@ def _r20_capsule_push_now(reason='state_change'):
     try:
         payload=_r20_capsule_build(reason); raw=_split_json.dumps(payload,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8'); packed=_split_gzip.compress(raw,compresslevel=3)
         ok,detail=_r20_capsule_store_redis(payload,packed)
-        if not ok and _r61_effective_redis_url(): raise RuntimeError(detail)
+        # 12.26 Redis capsule is cache-only; failure never blocks canonical MEGA durability
         seq=int(payload.get('user_state_seq') or 0); gen=int(payload.get('config_generation') or 0)
         _R20_CAPSULE_LAST_GEN_SENT=max(_R20_CAPSULE_LAST_GEN_SENT,gen); _R20_CAPSULE_LAST_SEQ_SENT=max(_R20_CAPSULE_LAST_SEQ_SENT,seq)
         _SPLIT_STATE['capsule_last_ok']=_split_time.time(); _SPLIT_STATE['capsule_last_error']=''; _SPLIT_STATE['capsule_last_seq']=seq; _SPLIT_STATE['capsule_last_generation']=gen
@@ -12029,47 +11896,49 @@ def _r80_compact_scheduler_loop():
     while True:
         try:
             if _r80_mega_runtime_ready():
-                now=now_local(); today=now.date().isoformat(); at=_r79_redis_daily_time(False); hh,mm=[int(x) for x in at.split(':',1)]
                 with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
-                _boot_age = 0.0
+                try: _boot_age=max(0.0,_split_time.monotonic()-float(globals().get('_RUNTIME_STARTED_MONO') or _split_time.monotonic()))
+                except Exception: _boot_age=0.0
+                _mem_ok=True
                 try:
-                    _boot_age = max(0.0, _split_time.monotonic() - float(globals().get('_RUNTIME_STARTED_MONO') or _split_time.monotonic()))
-                except Exception:
-                    _boot_age = 0.0
-                _mem_ok = True
-                try:
-                    _mh = globals().get('memory_heavy_allowed')
-                    if callable(_mh):
-                        _mh_res = _mh('mega-compact-scheduler')
-                        _mem_ok = bool(_mh_res[0]) if isinstance(_mh_res, tuple) else bool(_mh_res)
-                except Exception:
-                    _mem_ok = False
-                _stable = bool(globals().get('runtime_is_ready', lambda: False)()) and _boot_age >= 300.0 and _mem_ok
-                # OCH12.24: never publish a bootstrap FULL immediately after restore/restart.
-                # The restored SQLite is already authoritative; MEGA remains a cold backup.
-                if (not st.get('last_full_at')) and (not _stable):
-                    pass
-                elif (now.hour,now.minute)>=(hh,mm) and str(st.get('last_full_date') or '')!=today and _stable and not _och111_hot_ui_busy():
-                    _r80_queue_compact_full('daily-'+today)
-                elif st.get('tail_dirty') and not st.get('running') and _stable and not _och111_hot_ui_busy() and _split_time.time()-float(st.get('last_tail_at') or 0.0)>=max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_FLUSH_SEC','90') or '90')):
-                    pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-                    queued=False
-                    try:
-                        if pool is not None and hasattr(pool,'submit_unique'): queued=bool(pool.submit_unique('r80-mega-tail',_r80_flush_compact_tail,'periodic'))
-                    except Exception: queued=False
-                    if not queued:
-                        _split_threading.Thread(target=_r80_flush_compact_tail,args=('periodic',),daemon=True,name='r80-mega-tail').start()
+                    mh=globals().get('memory_heavy_allowed')
+                    if callable(mh):
+                        rr=mh('mega-canonical-v126'); _mem_ok=bool(rr[0]) if isinstance(rr,tuple) else bool(rr)
+                except Exception: _mem_ok=False
+                _stable=bool(globals().get('runtime_is_ready',lambda:False)()) and _boot_age>=300.0 and _mem_ok and not _och111_hot_ui_busy()
+                if _stable:
+                    due_full=(not st.get('last_full_generation')) or (_split_time.time()-float(st.get('last_full_at') or 0.0)>=_OCH1226_MEGA_FULL_HOURS*3600.0)
+                    if due_full and not st.get('running'):
+                        _r80_queue_compact_full('periodic-generation')
+                    elif st.get('tail_dirty') and not st.get('running') and _split_time.time()-float(st.get('last_tail_at') or 0.0)>=_OCH1226_MEGA_DELTA_FLUSH_SEC:
+                        pool=globals().get('GENERAL_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL'); queued=False
+                        try:
+                            if pool is not None and hasattr(pool,'submit_unique'): queued=bool(pool.submit_unique('och1226-mega-tail',_r80_flush_compact_tail,'periodic'))
+                        except Exception: queued=False
+                        if not queued: _split_threading.Thread(target=_r80_flush_compact_tail,args=('periodic',),daemon=True,name='och1226-mega-tail').start()
         except Exception as exc:
             with _R80_MEGA_LOCK: _R80_MEGA_STATE['last_error']=f'scheduler {type(exc).__name__}: {str(exc)[:180]}'
         _split_time.sleep(30.0)
 
 def _r80_start_compact_scheduler():
-    if not _OCH1225_FAST_AUTO_MEGA:
-        return False
+    if not _OCH1226_MEGA_DURABILITY_ENABLED: return False
     with _R80_MEGA_LOCK:
-        if _R80_MEGA_STATE.get('thread_started'): return
+        if _R80_MEGA_STATE.get('thread_started'): return True
+        # A generation restored by start_front is already the baseline. Avoid bootstrap FULL.
+        if _OCH1226_RESTORED_GENERATION and not _R80_MEGA_STATE.get('last_full_generation'):
+            _R80_MEGA_STATE['last_full_generation']=_OCH1226_RESTORED_GENERATION
+        if _OCH1226_RESTORED_GENERATION and not _R80_MEGA_STATE.get('last_full_at'):
+            # No tail handoff (e.g. brand-new generation). Treat the restored SQLite
+            # itself as the baseline without fabricating older tail events.
+            _R80_MEGA_STATE['last_full_at']=_split_time.time()
+            try:
+                db_rev,event_rev=_r80_sqlite_freshness(SQLITE.path)
+                _R80_MEGA_STATE['full_db_revision']=db_rev; _R80_MEGA_STATE['full_event_revision']=event_rev
+                _R80_MEGA_STATE['tail_max_revision']=event_rev; _R80_MEGA_STATE['full_event_cutoff_score']=_split_time.time()
+            except Exception: pass
         _R80_MEGA_STATE['thread_started']=True
-    _split_threading.Thread(target=_r80_compact_scheduler_loop,daemon=True,name='r80-mega-compact').start()
+    _split_threading.Thread(target=_r80_compact_scheduler_loop,daemon=True,name='och1226-mega-canonical').start()
+    return True
 
 def _r70_routes_text():
     h=dict(_SPLIT_STATE.get('worker_health') or {}); st=dict(h.get('state') or {})
@@ -12145,7 +12014,7 @@ contour_callback_guard=_r80_contour_callback_guard
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r80:mega:*','Ф4072')
     _r71_load_routes(force=True); _r71_apply_runtime_side_effects(); _r80_start_compact_scheduler()
-    bot_journal('r80_failover_compact_mega_loaded',int(OWNER_ID or 0),f'routes={_r71_load_routes()}; mega_master={int(_r80_mega_master_enabled())}; compact=fixed3')
+    bot_journal('mega_canonical_generation_tail_v1226_loaded',int(OWNER_ID or 0),f'routes={_r71_load_routes()}; mega_master={int(_r80_mega_master_enabled())}; restored_generation={_OCH1226_RESTORED_GENERATION or "-"}; redis_restore=0')
 except Exception:
     pass
 
@@ -12541,7 +12410,7 @@ _OCH1210_MEGA_IDLE_SEC = max(45.0, float(_split_os.getenv('OCH1210_MEGA_IDLE_SEC
 _OCH1210_MEGA_REAPER_STARTED = False
 _OCH1210_MEGA_REAPER_LOCK = _split_threading.RLock()
 _OCH1224_MEGA_ZERO_RESIDENT = True
-# OCH12.25: MEGA is cold standby on the single FAST Render by default.  BOOT/manual
+# OCH12.26: MEGA is cold standby on the single FAST Render by default.  BOOT/manual
 # recovery still bypass the runtime master through control_plane=True / start_front.
 # _OCH1225_FAST_AUTO_MEGA is defined before R80 applies runtime side effects.
 _OCH1224_MEGA_ZERO_DELAY = max(15.0, float(_split_os.getenv('MEGA_ZERO_RESIDENT_DELAY_SEC', '25') or '25'))
@@ -12693,7 +12562,7 @@ _v240_retry_pending_restore_reanchor = _och1210_retry_pending_restore_reanchor
 
 
 def _och1224_hard_release_mega_runtime() -> dict:
-    """OCH12.25 release MEGAcmd only when the transaction manager is idle."""
+    """OCH12.26 release MEGAcmd only when the transaction manager is idle."""
     global _V178_MEGA_SESSION_OK_UNTIL
     out = {'quit': False, 'term': 0, 'kill': 0, 'survivors': 0}
     try:
@@ -12905,26 +12774,25 @@ def _r70_routes_text():
     master = _r80_mega_master_enabled()
     with _R80_MEGA_LOCK:
         ms = dict(_R80_MEGA_STATE)
+    generation=str(ms.get('last_full_generation') or '—')
     lines = [
-        f'🧭 <b>{BOT_DISPLAY_NAME} · R1/R2 ПРОЦЕССЫ</b>', '',
-        ('✅ <b>ШТАТНЫЙ РЕЖИМ: R2 ВЫКЛЮЧЕН · ВСЁ НА R1</b>' if all_fast else '🛰 <b>R2 ВКЛЮЧЁН ДЛЯ ВЫБРАННЫХ КОНТУРОВ</b>'), '',
-        'Всегда на R1 FAST:',
-        '🔒 Telegram webhook / ACK / окна / кнопки',
-        '🔒 Business mutation / SQLite commit / реальные пересылки', '',
-        f'📊 Google — {_r71_owner_html("google")}',
-        f'📦 Файлы / Excel / CSV / JSON / SQLite — {_r71_owner_html("files")}',
-        f'🧪 Диагностика / журналы / архивы — {_r71_owner_html("diagnostics")}',
-        f'🗄 MEGA browser / recovery — {_r71_owner_html("mega")}',
-        f'🧱 State / capsule / witness — {_r71_owner_html("durability")}',
-        f'📸 FULL / compact tail — {_r71_owner_html("checkpoints")}', '',
-        f'R2 HTTP/ping: {"⛔ штатно отключён" if all_fast else "✅ разрешён"}',
-        f'MEGA Render permission: {"✅ credentials allowed" if master else "⛔ disabled"}', f'MEGA FAST auto: {"✅ ON" if _OCH1225_FAST_AUTO_MEGA else "🧊 COLD STANDBY"}',
-        f'R1 compact FULL: {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")} · tail={int(ms.get("last_tail_count") or 0)}', '',
-        'В штатном R1-only режиме нет фоновых /events, /upload, /capsule и health-ping запросов к Render #2.',
-        'Тяжёлые R1 операции остаются background-only; Telegram/UI не ждёт MEGA/Google/экспорт.',
+        f'🧭 <b>{BOT_DISPLAY_NAME} · R1 ПРОЦЕССЫ</b>', '',
+        '✅ <b>Render #2 отключён · рабочий runtime только R1</b>', '',
+        'Хранилище 12.26:',
+        '☁️ MEGA — единственный источник восстановления',
+        '⚡ Redis — только cache / locks / ускорение; restore из Redis запрещён',
+        '💾 SQLite — рабочая локальная база', '',
+        f'MEGA permission: {"✅ credentials" if master else "⛔ disabled"}',
+        f'Canonical durability: {"✅ ON" if _OCH1226_MEGA_DURABILITY_ENABLED else "⛔ OFF"}',
+        f'Generation: <code>{generation[:72]}</code>',
+        f'Последний FULL: {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")}',
+        f'Current tail: {int(ms.get("last_tail_count") or 0)} events · maxrev {int(ms.get("tail_max_revision") or 0)}',
+        f'Ошибка MEGA: {str(ms.get("last_error") or "нет")[:180]}', '',
+        'Путь restore: database/current_manifest.json → immutable generation → database/deltas/current_tail.json.gz',
+        'Старые current_manifest/tail не удаляются: они перемещаются в history/.',
+        'compact_v80 больше не является каноническим restore.',
     ]
     return window_mark('\n'.join(lines), 'Ф4072')
-
 
 def _r70_routes_keyboard():
     kb=types.InlineKeyboardMarkup(row_width=2)
