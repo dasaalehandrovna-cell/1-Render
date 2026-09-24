@@ -1404,6 +1404,9 @@ FORWARD_TASK_POOL = KeyedTaskPool('forward', _env_int('FORWARD_WORKERS', 1, 1, 6
 BACKUP_TASK_POOL = KeyedTaskPool('backup', _env_int('BACKUP_WORKERS', 1, 1, 2), _env_int('BACKUP_MAX_PENDING', 120, 20, 500))
 DELTA_TASK_POOL = KeyedTaskPool('delta', _env_int('DELTA_WORKERS', 1, 1, 2), _env_int('DELTA_MAX_PENDING', 300, 30, 1200))
 EXPORT_TASK_POOL = KeyedTaskPool('export', _env_int('EXPORT_WORKERS', 1, 1, 2), _env_int('EXPORT_MAX_PENDING', 40, 5, 200))
+# OCH12.31: small diagnostics/journal/runtime files must never wait behind a
+# multi-minute full-state/Excel export.  Keep a separate bounded lane.
+FAST_EXPORT_TASK_POOL = KeyedTaskPool('export-fast', _env_int('FAST_EXPORT_WORKERS', 2, 1, 3), _env_int('FAST_EXPORT_MAX_PENDING', 30, 5, 120))
 # OCH12.14: general/background work must never be allowed to consume nearly the
 # whole 512 MB container simply by queueing Python call arguments.  Journal file IO
 # has its own tiny lane and is batch-drained below; forward-index persistence uses a
@@ -2173,7 +2176,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 262
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.30'
+BOT_DISPLAY_NAME = 'очнись_12.31'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -4697,7 +4700,7 @@ def build_all_processes_toast(chat_id=None) -> str:
         pass
     active_total = 0
     pending_total = 0
-    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, BACKUP_TASK_POOL, DELTA_TASK_POOL, EXPORT_TASK_POOL, FAST_EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
     for pool in pools:
         try:
             st = pool.stats() or {}
@@ -14556,7 +14559,7 @@ def _runtime_disk_stats() -> dict:
         return {'total_mb': None, 'used_mb': None, 'free_mb': None}
 
 def _runtime_pool_stats() -> dict:
-    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL, BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, PERSIST_LATEST_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
+    pools = (WEBHOOK_TASK_POOL, FAST_UI_TASK_POOL, WINDOW_RENDER_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL, BACKUP_TASK_POOL, EXPORT_TASK_POOL, FAST_EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL, PERSIST_LATEST_TASK_POOL, DELAYED_TASK_POOL, DOZVON_TASK_POOL)
     return {p.name: p.stats() for p in pools}
 
 def runtime_snapshot(extra: dict | None=None) -> dict:

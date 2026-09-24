@@ -1805,7 +1805,7 @@ def _och1230_manual_restore_mega_reanchor(reason='manual-restore', retry=0):
             root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').rstrip('/')
             generation=str(_R80_MEGA_STATE.get('last_full_generation') or '—')
             bot.send_message(int(OWNER_ID or 0),
-                f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.30"}: ручное восстановление закреплено в MEGA.\n'
+                f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.31"}: ручное восстановление закреплено в MEGA.\n'
                 f'Generation: {generation}\nManifest: {root}/database/current_manifest.json\nTail: создан заново.')
         except Exception:
             pass
@@ -1855,7 +1855,7 @@ def r64_publish_restore_snapshot_v271(reason='restore'):
             results.append(('redis',False,f'{type(exc).__name__}: {str(exc)[:200]}'))
     mega_scheduled=False
     try:
-        # OCH12.30: every accepted manual restore becomes the new MEGA canonical
+        # OCH12.31: every accepted manual restore becomes the new MEGA canonical
         # lineage automatically.  Do not leave it LOCAL-PENDING for 150+ seconds.
         _split_os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
         _split_os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='0'
@@ -5056,7 +5056,7 @@ def _r49_redis_button():
 def _r60_redis_menu_text(extra=''):
     st=_r49_redis_runtime_state(); enabled=bool(st.get('enabled'))
     lines=[
-        '⚡ REDIS · CACHE ONLY · 12.30','',
+        '⚡ REDIS · CACHE ONLY · 12.31','',
         f'Render REDIS_ENABLED={1 if st.get("master_enabled") else 0}',
         f'URL={"настроен" if st.get("configured") else "не настроен"}',
         f'FAST runtime={"ON" if enabled else "OFF"}',
@@ -6560,7 +6560,7 @@ def _r34_post_events(events,wire,large=False):
     """12.27 durability: canonical MEGA normally required; uncertain empty boot is local-safe mode."""
     if not _r71_route_is_fast('durability'):
         return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
-    # OCH12.30: there is no permanent empty-boot MEGA write fence.  Redis remains
+    # OCH12.31: there is no permanent empty-boot MEGA write fence.  Redis remains
     # a cache, while canonical MEGA durability resumes as soon as MEGA is reachable.
     redis_ok=False; redis_detail='cache disabled'
     try: redis_ok,redis_detail=_r43_store_events_redis(events)
@@ -9123,7 +9123,7 @@ def _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs):
     with _FILE_JOB_LOCK:
         if isinstance(_FILE_JOB_STATE.get(key), dict):
             return (False, 'Такая задача уже выполняется')
-        meta = {'key':key,'chat_id':cid,'kind':kind_s,'label':label_s,'queued_monotonic':now_m,'started_monotonic':0.0,'phase':'R1 FAST · в фоне','status_msg_id':None,'last_ui_monotonic':0.0}
+        meta = {'key':key,'chat_id':cid,'kind':kind_s,'label':label_s,'queued_monotonic':now_m,'started_monotonic':0.0,'phase':'R1 FAST · в фоне','status_msg_id':None,'last_ui_monotonic':0.0,'storage_epoch':int(globals().get('_V241_STORAGE_EPOCH',0) or 0)}
         _FILE_JOB_STATE[key] = meta
     try:
         text = _v159_file_status_text(label_s, '0:00', 'R1 FAST · в фоне') if callable(globals().get('_v159_file_status_text')) else f'⏳ {label_s}\nЭтап: R1 FAST · в фоне'
@@ -9136,8 +9136,14 @@ def _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs):
     except Exception:
         pass
     local_func = _r71_local_file_func(kind_s, func)
+    # OCH12.31: quick diagnostics/downloads have an independent lane.  A long
+    # full-state/Excel build must not block journals, Runtime ZIP or raw SQLite.
+    quick_kinds = {'journal','journal_current','runtime','bot_source','sqlite','json'}
+    pool = globals().get('FAST_EXPORT_TASK_POOL') if kind_s in quick_kinds or kind_s.startswith('window_') else globals().get('EXPORT_TASK_POOL')
+    if pool is None:
+        pool = globals().get('EXPORT_TASK_POOL')
     try:
-        ok = bool(EXPORT_TASK_POOL.submit_unique(key, _r21_interactive_file_dispatch_runner, dict(meta), local_func, args, kwargs))
+        ok = bool(pool and pool.submit_unique(key, _r21_interactive_file_dispatch_runner, dict(meta), local_func, args, kwargs))
     except Exception:
         ok = False
     if not ok:
@@ -9502,10 +9508,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -10374,7 +10380,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10413,7 +10419,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10463,7 +10469,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10486,13 +10492,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10548,7 +10554,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}; live_source_index=on")
 except Exception:
     pass
 
@@ -11171,7 +11177,7 @@ def _r79_remote_full_meta(client=None):
 
 def _r79_daily_snapshot_now(reason='scheduled') -> tuple[bool,str]:
     """12.26: Redis is cache-only; full SQLite snapshots are intentionally retired."""
-    return False,'OCH12.30: Redis FULL отключён — источник восстановления только MEGA'
+    return False,'OCH12.31: Redis FULL отключён — источник восстановления только MEGA'
 
 def _r79_daily_scheduler_loop():
     """12.26 compatibility stub: no Redis FULL scheduler is allowed."""
@@ -11181,7 +11187,7 @@ def _r79_start_daily_scheduler():
     """12.26: do not allocate a Redis FULL backup thread."""
     with _R79_REDIS_DAILY_LOCK:
         _R79_REDIS_DAILY_STATE['thread_started']=False
-        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.30'
+        _R79_REDIS_DAILY_STATE['last_error']='disabled: Redis cache-only in OCH12.31'
     return False
 
 def _r79_redis_schedule_button():
@@ -11392,7 +11398,7 @@ def _r80_compact_paths():
     } if root and base else {}
 
 def _r80_mega_runtime_ready():
-    # OCH12.30: EMPTY_INIT is still a normal writable runtime.  A previous failed
+    # OCH12.31: EMPTY_INIT is still a normal writable runtime.  A previous failed
     # restore must not leave MEGA durability permanently disabled.
     return bool(_OCH1226_MEGA_DURABILITY_ENABLED and _r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
 
@@ -11438,7 +11444,7 @@ def _r80_mega_put_fixed(local_path,remote_path):
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.30'),
+        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'),
         'updated_at':_split_time.time(),
         'base_generation':str(st.get('last_full_generation') or ''),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
@@ -11545,7 +11551,7 @@ def _r80_snapshot_full_compact(reason='scheduled-generation'):
         with _R80_MEGA_LOCK:
             _R80_MEGA_STATE['last_error']=detail
             _R80_MEGA_STATE['next_retry']=_split_time.time()+max(30.0,float(_split_os.getenv('R80_MEGA_COMPACT_RETRY_SEC','60') or '60'))
-        try: log_error('OCH12.30 canonical MEGA generation: '+detail)
+        try: log_error('OCH12.31 canonical MEGA generation: '+detail)
         except Exception: pass
         return False,detail
     finally:
@@ -12165,7 +12171,7 @@ def _och1229_startup_fallback_reanchor_worker():
                 except Exception: pass
                 try:
                     bot.send_message(int(OWNER_ID or 0),
-                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.30"}: MEGA current_manifest восстановлен.\n'
+                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.31"}: MEGA current_manifest восстановлен.\n'
                         f'Источник старта: {selected or "generation fallback"}\n'
                         f'Причина fallback: {fallback_kind}\n'
                         f'{last}')
@@ -12192,7 +12198,7 @@ def _och1229_start_fallback_reanchor():
 
 
 def _och1228_empty_boot_autoseed_worker():
-    """OCH12.30: publish the current EMPTY_INIT runtime once MEGA is reachable.
+    """OCH12.31: publish the current EMPTY_INIT runtime once MEGA is reachable.
 
     The owner explicitly chose continued operation instead of a permanent write guard.
     Existing immutable generations are preserved; this creates a new generation and
@@ -12231,7 +12237,7 @@ def _och1228_empty_boot_autoseed_worker():
                     root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').rstrip('/')
                     generation=str(_R80_MEGA_STATE.get('last_full_generation') or '—')
                     bot.send_message(int(OWNER_ID or 0),
-                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.30"}: новая база MEGA создана.\n'
+                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.31"}: новая база MEGA создана.\n'
                         f'Root: {root}\n'
                         f'Manifest: {root}/database/current_manifest.json\n'
                         f'Generation: {generation}')
@@ -13009,6 +13015,13 @@ _mega_run = _och1210_mega_run
 
 
 def _och1210_mega_busy() -> bool:
+    # OCH12.31: the zero-resident cleanup must never kill MEGAcmd while a restore,
+    # canonical publish/re-anchor or other recovery authority owns MEGA.
+    try:
+        if bool(globals().get('_V241_RESTORE_ACTIVE', False)) or bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)):
+            return True
+    except Exception:
+        return True
     try:
         with _OCH1225_MEGA_CMD_LOCK:
             if int(_OCH1225_MEGA_CMD_ACTIVE or 0) > 0:
@@ -13092,7 +13105,7 @@ def _r70_routes_text():
     lines = [
         f'🧭 <b>{BOT_DISPLAY_NAME} · R1 ПРОЦЕССЫ</b>', '',
         '✅ <b>Render #2 отключён · рабочий runtime только R1</b>', '',
-        'Хранилище 12.30:',
+        'Хранилище 12.31:',
         '☁️ MEGA — единственный источник восстановления',
         '⚡ Redis — только cache / locks / ускорение; restore из Redis запрещён',
         '💾 SQLite — рабочая локальная база', '',

@@ -6340,7 +6340,28 @@ def _final_send_document(chat_id, document, *args, **kwargs):
     work_doc = document
     hook_cleanup = None
     sanitized_cleanup = None
+
+    def _file_epoch_stale_v1231():
+        try:
+            ctx = getattr(_FILE_JOB_CONTEXT, 'value', None)
+            if not isinstance(ctx, dict) or 'storage_epoch' not in ctx:
+                return False
+            captured = int(ctx.get('storage_epoch') or 0)
+            current = int(globals().get('_V241_STORAGE_EPOCH', 0) or 0)
+            active = bool(globals().get('_V241_RESTORE_ACTIVE', False))
+            if active or captured != current:
+                ctx['stale_after_restore'] = True
+                ctx['stale_epoch'] = current
+                return True
+        except Exception:
+            return False
+        return False
+
     try:
+        # OCH12.31: never deliver a file built from a storage epoch that was
+        # superseded by manual restore.  The runner will rebuild it automatically.
+        if _file_epoch_stale_v1231():
+            raise RuntimeError('FILE_JOB_STALE_AFTER_RESTORE')
         hook = getattr(_SEND_DOCUMENT_TRANSFORM_LOCAL, 'hook', None)
         if callable(hook):
             try:
@@ -6382,6 +6403,16 @@ def _final_send_document(chat_id, document, *args, **kwargs):
         for attempt in range(1, 4):
             try:
                 result = _native_telegram(_FINAL_NATIVE_SEND_DOCUMENT, cid, work_doc, *args, **kwargs)
+                # Close the tiny race where restore starts while Telegram is receiving
+                # the document.  Delete the stale delivery best-effort and rebuild.
+                if _file_epoch_stale_v1231():
+                    try:
+                        stale_mid = int(getattr(result, 'message_id', 0) or 0)
+                        if stale_mid:
+                            _native_telegram(_FINAL_NATIVE_DELETE, cid, stale_mid)
+                    except Exception:
+                        pass
+                    raise RuntimeError('FILE_JOB_STALE_AFTER_RESTORE')
                 try:
                     ctx = getattr(_FILE_JOB_CONTEXT, 'value', None)
                     if isinstance(ctx, dict):
@@ -6395,6 +6426,8 @@ def _final_send_document(chat_id, document, *args, **kwargs):
                 return result
             except Exception as exc:
                 last_exc = exc
+                if 'FILE_JOB_STALE_AFTER_RESTORE' in str(exc):
+                    raise
                 if attempt >= 3 or not _v163_transient_send_error(exc):
                     raise
                 _v163_time.sleep(0.35 if attempt == 1 else 1.0)

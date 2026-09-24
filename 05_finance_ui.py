@@ -830,37 +830,69 @@ def usd_transactions_toggle_label(chat_id: int) -> str:
 
 
 def ensure_usd_migration_for_chat(chat_id: int) -> int:
-    """R48 migration: RAM mutation under chat lock, persistence after unlock."""
-    cid=int(chat_id); changed=0
+    """OCH12.31 safe legacy USD enrichment.
+
+    Historical ARS rows are immutable business facts.  The old v93 heuristic could
+    reconstruct a synthetic string from ``record.amount`` merely because the note
+    contained ``usd`` and then overwrite amount/note, recalculate the balance and
+    renumber R-ids.  That turned legitimate ARS income into USD-only rows.
+
+    12.31 only enriches USD metadata when the *original* source_finance_text already
+    contains an explicit numeric USD token and parsing it preserves the stored ARS
+    amount.  Existing amount, note, id/short-id and balance are never modified here.
+    """
+    cid = int(chat_id)
+    changed = 0
+    skipped_unsafe = 0
     with locked_chat(cid):
-        store=get_chat_store(cid); settings=store.setdefault('settings',{})
-        if settings.get('usd_transactions_migrated_v93'): return 0
-        for rec in store.get('records',[]) or []:
-            if rec.get('usd_amount') is not None: continue
-            note=str(rec.get('note') or '').strip(); low=note.casefold()
-            likely=bool(re.search('usd|усд|\\$',low) or (('к' in low or re.search('\\bk\\b',low)) and (USD_EXCHANGE_RE.search(low) or re.search('\\bот\\b',low) or '+к' in low or '+k' in low)))
-            if not likely: continue
-            try: old_amount=float(rec.get('amount',0) or 0)
-            except Exception: old_amount=0.0
-            if re.search('(?i)(?:^|\\s)и\\s*\\+[kк]\\b',low):
-                rec['usd_amount']=abs(old_amount)*1000.0; rec['usd_note']=''; rec['usd_only']=True; rec['source_finance_text']=f'И {fmt_num_compact(abs(old_amount))}+к'; rec['amount']=0.0; changed+=1; continue
-            sign='+' if old_amount>0 else ''; amount_text=fmt_num_compact(abs(old_amount)); explicit=extract_usd_transaction(note)
-            if explicit is None and re.search('(?i)(?:usd|усд|\\$)',note):
-                if USD_EXCHANGE_RE.search(low): sign=''
-                insert_value=sign+amount_text; mcur=re.search('(?i)(?P<mult>[kк]\\s*)?(?P<cur>usd|усд|\\$)',note)
-                reconstructed=(note[:mcur.start()]+insert_value+(mcur.group('mult') or '')+mcur.group('cur')+note[mcur.end():]).strip() if mcur else f'{insert_value} {note}'.strip()
-            else: reconstructed=f'{sign}{amount_text} {note}'.strip()
-            try: comp=parse_financial_components(reconstructed)
-            except Exception: continue
-            if comp.get('usd_amount') is None: continue
-            rec['usd_amount']=float(comp.get('usd_amount') or 0); rec['usd_note']=str(comp.get('usd_note') or ''); rec['usd_only']=bool(comp.get('usd_only',False)); rec['source_finance_text']=reconstructed; rec['amount']=float(comp.get('amount',0) or 0); rec['note']=str(comp.get('note') or rec.get('note') or ''); changed+=1
-        settings['usd_transactions_migrated_v93']=True
-        if changed:
-            normalize_chat_records(cid); recalc_balance(cid); rebuild_month_short_ids(cid); rebuild_global_records()
-    save_data(data,chat_ids=[cid])
-    if changed:
-        try: bot_journal('usd_v93_migration',cid,f'records={changed}')
-        except Exception: pass
+        store = get_chat_store(cid)
+        settings = store.setdefault('settings', {})
+        if settings.get('usd_transactions_migrated_v1231'):
+            return 0
+        for rec in store.get('records', []) or []:
+            if not isinstance(rec, dict) or rec.get('usd_amount') is not None:
+                continue
+            source = str(rec.get('source_finance_text') or '').strip()
+            if not source:
+                continue
+            # Never infer USD from a free-form note such as "приход от обмена usd".
+            # A number must be physically attached to USD/УСД/$ in the preserved
+            # original source text.  This deliberately prefers missing old USD
+            # metadata over corrupting an already-accounted ARS transaction.
+            if not (USD_EXPLICIT_AFTER_RE.search(source) or USD_EXPLICIT_PREFIX_RE.search(source)):
+                continue
+            try:
+                comp = parse_financial_components(source) or {}
+                parsed_usd = comp.get('usd_amount')
+                if parsed_usd is None:
+                    continue
+                old_amount = float(rec.get('amount', 0) or 0)
+                parsed_ars = float(comp.get('amount', 0) or 0)
+                parsed_usd_only = bool(comp.get('usd_only', False))
+            except Exception:
+                continue
+            # Safe cases only: either the parser reproduces the exact ARS amount, or
+            # the stored row is already zero-ARS and the source is genuinely USD-only.
+            same_ars = abs(parsed_ars - old_amount) <= 0.01
+            safe_usd_only = parsed_usd_only and abs(old_amount) <= 0.01
+            if not (same_ars or safe_usd_only):
+                skipped_unsafe += 1
+                continue
+            rec['usd_amount'] = float(parsed_usd or 0)
+            rec['usd_note'] = str(comp.get('usd_note') or '')
+            rec['usd_only'] = bool(parsed_usd_only and abs(old_amount) <= 0.01)
+            changed += 1
+        # Preserve the old flag for compatibility, but use a new marker so databases
+        # restored from pre-v93 snapshots execute this safe migration exactly once.
+        settings['usd_transactions_migrated_v93'] = True
+        settings['usd_transactions_migrated_v1231'] = True
+    # Persistence is intentionally outside the chat lock.  No balance/ID rebuild is
+    # needed because ARS business fields are untouched.
+    save_data(data, chat_ids=[cid])
+    try:
+        bot_journal('usd_v1231_safe_migration', cid, f'enriched={changed}; skipped_unsafe={skipped_unsafe}; ars_immutable=1')
+    except Exception:
+        pass
     return changed
 
 

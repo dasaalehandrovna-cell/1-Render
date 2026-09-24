@@ -5794,7 +5794,6 @@ def file_job_mark_external_delivery(kind: str, reference: str='') -> bool:
 def _canon_interactive_file_job_runner__001(job_meta: dict, func, args, kwargs):
     key = str(job_meta.get('key') or _INTERACTIVE_FILE_JOB_KEY)
     previous = getattr(_FILE_JOB_CONTEXT, 'value', None)
-    _FILE_JOB_CONTEXT.value = {'key': key}
     ok = False
     error_text = ''
     try:
@@ -5807,19 +5806,78 @@ def _canon_interactive_file_job_runner__001(job_meta: dict, func, args, kwargs):
                 st['external_deliveries_sent'] = 0
                 st['external_delivery_kind'] = ''
         _file_job_progress('запуск', force=True)
-        mem_ctx = globals().get('memory_operation')
-        if callable(mem_ctx):
-            with mem_ctx(f"file:{job_meta.get('kind') or 'export'}", {'chat_id': job_meta.get('chat_id'), 'label': job_meta.get('label')}, heavy=True):
-                result = func(*args, **kwargs)
-        else:
-            result = func(*args, **kwargs)
-        with _FILE_JOB_LOCK:
-            st = _FILE_JOB_STATE.get(key)
-            sent = int((st or {}).get('telegram_documents_sent') or 0) if isinstance(st, dict) else 0
-            external = int((st or {}).get('external_deliveries_sent') or 0) if isinstance(st, dict) else 0
-        ok = result is not False and (sent > 0 or external > 0)
-        if not ok:
-            error_text = 'экспорт завершился без подтверждённой доставки в Telegram/Google'
+
+        # OCH12.31: a file built from pre-restore SQLite is never allowed to arrive
+        # after a successful restore.  The final Telegram transport marks the current
+        # file context stale if the storage epoch changed.  Rebuild against the new
+        # SQLite instead of delivering the old snapshot.
+        stale_retries = 0
+        result = False
+        while True:
+            wait_deadline = _v163_time.monotonic() + 240.0
+            while bool(globals().get('_V241_RESTORE_ACTIVE', False)) and _v163_time.monotonic() < wait_deadline:
+                try:
+                    _file_job_progress('жду завершения восстановления базы', force=True)
+                except Exception:
+                    pass
+                _v163_time.sleep(0.20)
+            if bool(globals().get('_V241_RESTORE_ACTIVE', False)):
+                raise RuntimeError('FILE_JOB_RESTORE_BARRIER_TIMEOUT')
+
+            current_epoch = int(globals().get('_V241_STORAGE_EPOCH', 0) or 0)
+            ctx = {
+                'key': key,
+                'storage_epoch': current_epoch,
+                'stale_after_restore': False,
+                'stale_epoch': current_epoch,
+            }
+            _FILE_JOB_CONTEXT.value = ctx
+            if isinstance(job_meta, dict):
+                job_meta['storage_epoch'] = current_epoch
+            with _FILE_JOB_LOCK:
+                st = _FILE_JOB_STATE.get(key)
+                if isinstance(st, dict):
+                    st['storage_epoch'] = current_epoch
+                    st['telegram_documents_sent'] = 0
+                    st['external_deliveries_sent'] = 0
+                    st['external_delivery_kind'] = ''
+                    if stale_retries:
+                        st['phase'] = 'пересобираю после восстановления'
+            if stale_retries:
+                try:
+                    _file_job_progress('пересобираю по новой базе после восстановления', force=True)
+                except Exception:
+                    pass
+
+            call_exc = None
+            try:
+                mem_ctx = globals().get('memory_operation')
+                if callable(mem_ctx):
+                    with mem_ctx(f"file:{job_meta.get('kind') or 'export'}", {'chat_id': job_meta.get('chat_id'), 'label': job_meta.get('label')}, heavy=True):
+                        result = func(*args, **kwargs)
+                else:
+                    result = func(*args, **kwargs)
+            except Exception as exc:
+                call_exc = exc
+
+            with _FILE_JOB_LOCK:
+                st = _FILE_JOB_STATE.get(key)
+                sent = int((st or {}).get('telegram_documents_sent') or 0) if isinstance(st, dict) else 0
+                external = int((st or {}).get('external_deliveries_sent') or 0) if isinstance(st, dict) else 0
+            stale = bool(ctx.get('stale_after_restore')) or int(ctx.get('storage_epoch') or 0) != int(globals().get('_V241_STORAGE_EPOCH', 0) or 0)
+            if stale and sent <= 0 and external <= 0 and stale_retries < 2:
+                stale_retries += 1
+                try:
+                    bot_journal('file_job_rebuild_after_restore_v1231', int(job_meta.get('chat_id') or 0), f"kind={job_meta.get('kind')}; retry={stale_retries}; from_epoch={ctx.get('storage_epoch')}; to_epoch={globals().get('_V241_STORAGE_EPOCH',0)}", 'WARN')
+                except Exception:
+                    pass
+                continue
+            if call_exc is not None:
+                raise call_exc
+            ok = result is not False and (sent > 0 or external > 0)
+            if not ok:
+                error_text = 'экспорт завершился без подтверждённой доставки в Telegram/Google'
+            break
     except Exception as exc:
         error_text = str(exc)[:300]
         try:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.30-mega-resilient-reanchor"
+CONFIG_VERSION = "vys-262-och12.31-safe-restore-file-lanes"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -116,6 +116,11 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "R25_TRACE_SLOW_LOCK_SEC": "0.020",
     "DELTA_WORKERS": "1",
     "BACKGROUND_WORKERS": "1",
+    # OCH12.31: quick diagnostic/download lane is isolated from heavy exports.
+    "FAST_EXPORT_WORKERS": "2",
+    "FAST_EXPORT_MAX_PENDING": "30",
+    "EXPORT_WORKERS": "1",
+    "EXPORT_MAX_PENDING": "24",
 
     # Small user-facing runtime constants
     "QUICK_EXPENSE_REMINDER_MINUTES": "60",

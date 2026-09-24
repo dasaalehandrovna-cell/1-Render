@@ -5493,6 +5493,11 @@ def _v211_boot_bind_failsafe():
 _V211_POST_READY_STARTED = False
 _V211_POST_READY_LOCK = threading.RLock()
 STARTUP_RELEASE_SUMMARY = (
+    '• 12.31: legacy USD-миграция больше не меняет ARS amount/note/R-ID/баланс; допускается только безопасное обогащение USD-полей из явного исходного USD-токена.\n'
+    '• 12.31: файл, начатый до ручного restore, не отправляется после смены SQLite epoch — он автоматически пересобирается по восстановленной базе.\n'
+    '• 12.31: журналы/Runtime/raw SQLite вынесены в отдельную быструю файловую очередь; тяжёлый full-state/Excel больше не блокирует их.\n'
+    '• 12.31: локальный full-state экспорт не обращается к MEGA; /mega_restore_now использует точную generation из current_manifest или открывает безопасный browser-выбор без current_tail.\n'
+    '• 12.31: MEGAcmd idle-release запрещён, пока restore/recovery authority владеет MEGA.\n'
     '• 12.30: timeout mega-get больше не считается отсутствием generation: MEGAcmd перезапускается, login обновляется и generation скачивается повторно с увеличенным бюджетом.\n'
     '• 12.30: fallback-generation восстанавливается строго как immutable SQLite без current_tail, чтобы автоматический restore совпадал с ручным.\n'
     '• 12.30: EMPTY_INIT больше не блокирует MEGA-запись; после READY создаётся новая canonical generation. Ручное восстановление автоматически перепубликует SQLite в MEGA.\n'
@@ -9646,25 +9651,38 @@ def _v153_filter_root_for_tenant(root: dict, tenant_id: str, chat_ids: set[int])
     return out
 
 def _v153_collect_failed_tasks(tenant_id: str | None, chat_ids: set[int]) -> list[dict]:
+    """OCH12.31 local-only failed-task metadata for full-state export.
+
+    Exporting the local SQLite must never depend on MEGA.  Older code refreshed the
+    MEGA task registry and downloaded every failed remote task before it could send
+    ``latest_bot_state.sqlite3.gz``; one MEGA stall therefore blocked the sole file
+    worker for tens of minutes.  Keep only already-resident diagnostic metadata.
+    ``load_error`` intentionally marks these summaries non-replayable on restore.
+    """
     rows = []
     try:
-        mega_task_refresh_registry()
         with _MEGA_TASK_LOCK:
-            failed = [(str(k), str((v or {}).get('path') or '')) for k, v in _mega_task_registry.items() if str((v or {}).get('state') or '') == 'failed']
-        for key, remote in failed[:500]:
-            local = _mega_download_remote_path(remote)
-            if not local:
-                continue
+            failed = [(str(k), dict(v or {})) for k, v in _mega_task_registry.items() if str((v or {}).get('state') or '') == 'failed'][:500]
+        for key, row in failed:
+            cid = 0
             try:
-                task = _v153_json.loads(_V153Path(local).read_text(encoding='utf-8'))
-                cid = int(task.get('chat_id') or 0)
-                if tenant_id is None or cid in chat_ids:
-                    rows.append(v153_sanitize(task))
-            finally:
-                _v153_shutil.rmtree(_v153_os.path.dirname(local), ignore_errors=True)
+                cid = int(row.get('chat_id') or 0)
+            except Exception:
+                cid = 0
+            if tenant_id is not None and cid and cid not in chat_ids:
+                continue
+            rows.append({
+                'task_id': key,
+                'chat_id': cid,
+                'remote_path': str(row.get('path') or ''),
+                'state': 'failed',
+                'loaded_at': str(row.get('loaded_at') or ''),
+                'load_error': 'OCH12.31 local export: remote failed-task payload intentionally not fetched',
+            })
     except Exception as exc:
         rows.append({'load_error': v153_redact_text(exc)})
     return rows
+
 
 def _v153_build_export(scope: str, tenant_id: str | None=None) -> str:
     _lowram_flush_all_hot(evict=False)
@@ -11542,8 +11560,14 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
                     fn(data)
             except Exception:
                 pass
-            save_data(data, full=True)
-            # OCH12.30: the owner-selected generation is now the live authority.
+            # OCH12.31 low-RAM restore seal: persist only root settings and chat
+            # stores that are already resident after rehydrate.  Never materialize
+            # every cold ledger just to seal a manually restored SQLite.
+            save_data(data, root_only=True)
+            flush_loaded = globals().get('_och1226_flush_loaded_chat_stores_only')
+            if callable(flush_loaded):
+                flush_loaded()
+            # OCH12.31: the owner-selected generation is now the live authority.
             # Update in-session restore diagnostics immediately; the background
             # canonical reanchor will make the next deploy use this state too.
             try:
@@ -11599,7 +11623,7 @@ def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
                 end(epoch, success)
             except Exception:
                 pass
-        # OCH12.30: once a user-confirmed MEGA restore succeeded, the restored
+        # OCH12.31: once a user-confirmed MEGA restore succeeded, the restored
         # SQLite becomes the new canonical MEGA lineage automatically.  This also
         # clears any EMPTY_INIT write fence left by the preceding deploy.
         if success:

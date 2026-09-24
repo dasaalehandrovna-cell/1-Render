@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """Render #1 launcher: canonical MEGA generation restore; Redis is cache only.
 
-OCH12.30 recovery policy:
+OCH12.31 recovery policy:
 - a valid local SQLite is reused only as the already-running working database;
 - when local SQLite is missing/invalid, the ONLY durable restore source is MEGA;
 - MEGA restore reads database/current_manifest.json and its exact immutable generation;
@@ -1159,11 +1159,11 @@ def _och1229_list_generation_remotes(root: str, timeout_sec: int=45, limit: int=
 
 
 def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
-    """OCH12.30 canonical MEGA restore with resilient generation fallback.
+    """OCH12.31 canonical MEGA restore with resilient generation fallback.
 
     Normal order remains current_manifest -> exact immutable generation -> matching
     current_tail.  If current_manifest is missing, malformed, noncanonical, or points
-    to an unavailable generation, 12.30 first repairs the path from the manifest's
+    to an unavailable generation, 12.31 first repairs the path from the manifest's
     safe generation filename, then scans only database/generations for the newest
     valid generation.  Every fallback candidate must gunzip and pass SQLite
     PRAGMA quick_check before it can become the working DB.
@@ -1296,7 +1296,7 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
             diag['paths_checked'].append(norm)
             diag['generation_candidates'].append({'generation':generation_name,'remote':norm,'source':kind})
             dest=work / ('generation_' + str(len(attempted)))
-            # OCH12.30: a mega-get timeout is not evidence that the generation is
+            # OCH12.31: a mega-get timeout is not evidence that the generation is
             # absent.  This exact production failure was reproduced while the same
             # file remained browsable/restorable from the owner menu.  Retry once
             # after a hard MEGAcmd reset + fresh login, using the same >=240s
@@ -1380,7 +1380,7 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
             for remote_generation in rows:
                 # Never retry a failed manifest generation without its hash checks.
                 # Other immutable generations have no pointer hash, so gzip + SQLite
-                # quick_check is the safe bounded fallback retained from 12.29; 12.30 adds resilient download.
+                # quick_check is the safe bounded fallback retained from 12.29; 12.31 adds resilient download.
                 if remote_generation in attempted:
                     continue
                 if _try_generation(remote_generation,'generation_scan_fallback',None,False):
@@ -1403,7 +1403,7 @@ def _och1226_restore_from_mega_generation(target: Path) -> tuple[bool, str]:
             _och1227_set_mega_diag(diag)
             return False, ('no valid canonical MEGA generation; ' + '; '.join(candidate_errors[-4:]))[:900]
 
-        # OCH12.30: a fallback generation is a point-in-time recovery authority.
+        # OCH12.31: a fallback generation is a point-in-time recovery authority.
         # Never replay current_tail on top of it.  The exact production incident
         # restored the correct R230/+1.152.059 generation manually, while automatic
         # fallback + tail produced a different finance state.  Tail replay remains
@@ -1770,7 +1770,7 @@ def main():
     local_revision_before = _db_revision(target, validated=True) if local_valid_before else 0.0
     trace = {
         'schema': 5,
-        'policy': 'OCH12.30_MEGA_RESILIENT_CANONICAL',
+        'policy': 'OCH12.31_MEGA_RESILIENT_CANONICAL',
         'started_at': started,
         'internal_config': INTERNAL_CONFIG_VERSION,
         'local_found': local_found,
@@ -1790,7 +1790,7 @@ def main():
         # OCH12.26: local SQLite is not a restore source; it is merely the already
         # active working file if this container/process retained it.  If it is absent
         # or invalid, the only durable source of truth is canonical MEGA generation.
-        trace['policy'] = 'OCH12.30_MEGA_RESILIENT_CANONICAL'
+        trace['policy'] = 'OCH12.31_MEGA_RESILIENT_CANONICAL'
         trace['local_cache_contacted'] = False
         trace['redis_contacted'] = False
         trace['redis_restore_disabled_v1226'] = True
@@ -1809,7 +1809,7 @@ def main():
         if not current_valid:
             if mega_root and mega_creds:
                 trace['mega_contacted'] = True
-                print('[SPLIT FRONT] OCH12.30 canonical MEGA generation restore start', flush=True)
+                print('[SPLIT FRONT] OCH12.31 canonical MEGA generation restore start', flush=True)
                 try:
                     ok, detail = _och1226_restore_from_mega_generation(target)
                 except Exception as exc:
@@ -1823,7 +1823,7 @@ def main():
                 trace['mega_ok'] = bool(ok)
                 trace['mega_detail'] = str(detail)[:1200]
                 trace['mega_action'] = 'RESTORE' if ok else 'EMPTY_INIT'
-                print(f'[SPLIT FRONT] OCH12.30 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
+                print(f'[SPLIT FRONT] OCH12.31 MEGA generation ok={int(bool(ok))} detail={str(detail)[:800]}', flush=True)
                 if ok and _db_valid(target):
                     current_valid = True
                     trace['base_source'] = 'MEGA_GENERATION_V126'
@@ -1849,7 +1849,7 @@ def main():
                 trace['empty_init_ok'] = bool(empty_ok)
                 trace['empty_init_detail'] = str(empty_detail)[:500]
                 if not empty_ok:
-                    raise RuntimeError('OCH12.30 empty SQLite initialization failed: '+str(empty_detail)[:700])
+                    raise RuntimeError('OCH12.31 empty SQLite initialization failed: '+str(empty_detail)[:700])
                 current_valid=True
                 trace['base_source']='EMPTY_INIT_MEGA_MISSING'
                 trace['empty_init_reason']=empty_reason
@@ -1860,7 +1860,7 @@ def main():
                 confirmed_absent=failure_kind in {'root_missing','database_missing','manifest_missing_no_generations'}
                 os.environ['OCH1228_EMPTY_BOOT_CONFIRMED_ABSENT']='1' if confirmed_absent else '0'
                 trace['empty_boot_confirmed_absent']=bool(confirmed_absent)
-                # OCH12.30: owner policy is explicit — EMPTY_INIT must remain a fully
+                # OCH12.31: owner policy is explicit — EMPTY_INIT must remain a fully
                 # working bot.  Never permanently fence MEGA writes.  Existing immutable
                 # generations are not deleted; once MEGA becomes reachable the current
                 # SQLite is published as a fresh generation and current_manifest moves to it.
@@ -1868,7 +1868,7 @@ def main():
                 os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='1'
                 trace['empty_boot_mega_write_guard']=False
                 trace['empty_boot_auto_seed_required']=True
-                print(f'[SPLIT FRONT] OCH12.30 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard=0 auto_seed=1',flush=True)
+                print(f'[SPLIT FRONT] OCH12.31 EMPTY INIT ok=1 reason={empty_reason[:500]} mega_write_guard=0 auto_seed=1',flush=True)
         else:
             trace['mega_contacted'] = False
             trace['mega_ok'] = None
@@ -1934,7 +1934,7 @@ def main():
         os.environ['R49_RESTORE_TRACE_JSON'] = trace_json
         print('[RESTORE TRACE R68]', trace_json, flush=True)
         boot_mem_release = _och1220_release_boot_memory()
-        print(f'[SPLIT FRONT] OCH12.30 boot memory release {boot_mem_release}', flush=True)
+        print(f'[SPLIT FRONT] OCH12.31 boot memory release {boot_mem_release}', flush=True)
 
         # R55 rolling-deploy handoff: keep the preboot gateway accepting/spooling
         # Telegram updates while the large modular runtime is imported.  Only after

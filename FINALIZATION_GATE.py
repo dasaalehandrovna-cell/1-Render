@@ -357,7 +357,7 @@ if ROLE=='fast':
     compact_src=_fn_sources(start_src,{'_r80_compact_mega_compare_restore'}).get('_r80_compact_mega_compare_restore','')
     start_main_src=_fn_sources(start_src,{'main'}).get('main','')
     ok('och1220_one_pass_recovery_ignores_switches',
-       'OCH12.30_MEGA_RESILIENT_CANONICAL' in start_main_src and
+       'OCH12.31_MEGA_RESILIENT_CANONICAL' in start_main_src and
        '_och1226_restore_from_mega_generation(target)' in start_main_src and
        '_restore_from_redis_startup(target)' not in start_main_src and
        '_restore_from_local_runtime_cache(target)' not in start_main_src and
@@ -524,6 +524,41 @@ if ROLE=='fast':
        'OCH1230_EMPTY_BOOT_NEEDS_SEED' in start_main_src and
        "if str(_split_os.getenv('OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD'" not in _fn_sources(split_src,{'_r80_mega_runtime_ready'}).get('_r80_mega_runtime_ready',''),
        '12.30 login/network failure may start empty but must not permanently disable later MEGA durability')
+    # OCH12.31: regression gates for the data-corruption/file-delivery fixes.
+    usd_mig_src=_fn_sources(all_py.get('05_finance_ui.py',''),{'ensure_usd_migration_for_chat'}).get('ensure_usd_migration_for_chat','')
+    ok('och1231_usd_migration_ars_immutable',
+       'usd_transactions_migrated_v1231' in usd_mig_src and 'source_finance_text' in usd_mig_src and
+       'USD_EXPLICIT_AFTER_RE' in usd_mig_src and 'USD_EXPLICIT_PREFIX_RE' in usd_mig_src and
+       "rec['amount'] =" not in usd_mig_src and 'rec["amount"] =' not in usd_mig_src and
+       "rec['note'] =" not in usd_mig_src and 'rec["note"] =' not in usd_mig_src and
+       'recalc_balance(' not in usd_mig_src and 'rebuild_month_short_ids(' not in usd_mig_src and 'rebuild_global_records(' not in usd_mig_src,
+       '12.31 legacy USD migration must never rewrite historical ARS amount/note/R-ID/balance')
+    local_file_src=_fn_sources(split_src,{'_r71_submit_local_file_job'}).get('_r71_submit_local_file_job','')
+    ok('och1231_separate_fast_file_lane',
+       "FAST_EXPORT_TASK_POOL = KeyedTaskPool('export-fast'" in core_src and
+       "quick_kinds = {'journal','journal_current','runtime','bot_source','sqlite','json'}" in local_file_src and
+       "globals().get('FAST_EXPORT_TASK_POOL')" in local_file_src and "globals().get('EXPORT_TASK_POOL')" in local_file_src,
+       '12.31 quick journals/runtime/sqlite must have a separate bounded file lane from heavy full-state/Excel exports')
+    file_runner_src=_fn_sources(rel_src,{'_canon_interactive_file_job_runner__001'}).get('_canon_interactive_file_job_runner__001','')
+    final_doc_src=_fn_sources(final_transport,{'_final_send_document'}).get('_final_send_document','')
+    ok('och1231_restore_epoch_blocks_stale_files',
+       'storage_epoch' in file_runner_src and 'file_job_rebuild_after_restore_v1231' in file_runner_src and
+       'FILE_JOB_STALE_AFTER_RESTORE' in final_doc_src and '_V241_STORAGE_EPOCH' in final_doc_src and '_V241_RESTORE_ACTIVE' in final_doc_src,
+       '12.31 a file built before a restore must be blocked/rebuilt instead of arriving after the database epoch changed')
+    failed_collect_src=_fn_sources(web_src,{'_v153_collect_failed_tasks'}).get('_v153_collect_failed_tasks','')
+    ok('och1231_full_export_local_only',
+       'mega_task_refresh_registry' not in failed_collect_src and '_mega_download_remote_path' not in failed_collect_src and
+       'local export: remote failed-task payload intentionally not fetched' in failed_collect_src,
+       '12.31 local full-state export must never wait on MEGA failed-task downloads')
+    mega_busy_src=_fn_sources(split_src,{'_och1210_mega_busy'}).get('_och1210_mega_busy','')
+    ok('och1231_mega_idle_restore_guard',
+       '_V241_RESTORE_ACTIVE' in mega_busy_src and '_V240_RECOVERY_AUTHORITY_ACTIVE' in mega_busy_src,
+       '12.31 MEGAcmd idle cleanup must stay disabled while restore/recovery authority owns MEGA')
+    ok('och1231_release_summary',
+       '• 12.31: legacy USD-миграция' in web_src and '• 12.31: файл, начатый до ручного restore' in web_src and
+       '• 12.31: журналы/Runtime/raw SQLite' in web_src,
+       '12.31 owner startup details must describe the data-integrity and file-lane fixes')
+
     ok('r82_manual_restore_failed_tasks_nonfatal',
        'def _v153_failed_tasks_pending_store' in web_src and
        'def _v153_retry_pending_failed_tasks' in web_src and
@@ -771,12 +806,15 @@ if ROLE=='fast':
     ok('r81_restore_prebackup_multi_backend',
        '_split_cache_snapshot_to_redis_v266' in pre_restore_src and '_r80_store_pre_restore_gz' in pre_restore_src and "timeout=(2.5, 20.0)" in pre_restore_src and 'timeout=240' not in pre_restore_src,
        'pre_restore must survive dead R2 via Redis/R1 MEGA and bound any R2 wait')
-    ok('r81_manual_mega_restore_compact_only',
-       'r81_manual_compact_mega_restore' in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src and 'mega_restore_full_from_cloud' not in manual_mega_src and "_mega_run('mega-find'" not in compact_restore_src and '"mega-find"' not in compact_restore_src,
-       'manual MEGA restore must use exact compact head/latest/tail with zero tree/history scan')
+    ok('och1231_manual_mega_restore_exact_generation',
+       '_v242_restore_selected_mega_database' in manual_mega_src and '_r80_compact_paths' in manual_mega_src and
+       'current_manifest' in manual_mega_src and 'remote_generation' in manual_mega_src and
+       '_v265_refresh_mega_browser' in manual_mega_src and 'current_tail' in manual_mega_src and
+       'r81_manual_compact_mega_restore' not in manual_mega_src and 'mega_restore_sqlite_snapshot_from_cloud' not in manual_mega_src,
+       '12.31 manual MEGA restore must use the exact immutable generation from current_manifest, never replay current_tail, and fall back to owner browser selection instead of guessing')
     ok('och12_display_name',
-       "BOT_DISPLAY_NAME = 'очнись_12.30'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src and 'запущен ПУСТЫМ' in web_src,
-       'user-visible bot and READY/empty-boot messages must identify as очнись_12.30')
+       "BOT_DISPLAY_NAME = 'очнись_12.31'" in core_src and '✅ {BOT_DISPLAY_NAME} запущен' in web_src and 'запущен ПУСТЫМ' in web_src,
+       'user-visible bot and READY/empty-boot messages must identify as очнись_12.31')
     startup_details_src=_fn_sources(web_src,{'_r57_startup_details_text'}).get('_r57_startup_details_text','')
     ok('och1211_startup_redis_authoritative_state',
        'import runtime_config as _r57_runtime_config' in startup_details_src and
@@ -822,7 +860,7 @@ if ROLE=='fast':
        "f'v263-fwd-index:{src[0]}:{src[1]}'" not in split_src,
        'forward-index self-heal persistence must be one latest root save, not hundreds of per-message tasks')
     ok('och1227_empty_after_one_pass',
-       'OCH12.30_MEGA_RESILIENT_CANONICAL' in start_main_src and "trace['empty_init_attempted'] = True" in start_main_src and
+       'OCH12.31_MEGA_RESILIENT_CANONICAL' in start_main_src and "trace['empty_init_attempted'] = True" in start_main_src and
        '_ensure_empty_db(target)' in start_main_src and 'mega_paths_checked' in start_main_src,
        '12.29 must start empty only after canonical MEGA + bounded generations fallback and retain path diagnostics')
     ok('och1217_startup_compact_only_no_legacy_tree_scan',
@@ -1346,11 +1384,12 @@ if ROLE=='fast':
        'Redis используется только как cache/locks/ускоритель' in manualmega126.get('run_manual_redis_restore','') and
        '_r221_manual_redis_restore_sqlite' not in manualmega126.get('run_manual_redis_restore',''),
        'manual Redis restore must be disabled by policy')
+    browser_restore126=_fn_sources(web_src,{'_v242_restore_selected_mega_database'}).get('_v242_restore_selected_mega_database','')
     ok('och1226_manual_mega_lowram_rehydrate',
-       'save_data(data, root_only=True)' in manualmega126.get('run_manual_mega_restore','') and
-       'save_data(data, full=True)' not in manualmega126.get('run_manual_mega_restore','') and
-       '_och1226_flush_loaded_chat_stores_only' in manualmega126.get('run_manual_mega_restore',''),
-       'manual MEGA restore must not reserialize every chat/cold ledger into RAM')
+       'save_data(data, root_only=True)' in browser_restore126 and
+       'save_data(data, full=True)' not in browser_restore126 and
+       '_och1226_flush_loaded_chat_stores_only' in browser_restore126,
+       'manual/browser MEGA restore must not reserialize every chat/cold ledger into RAM')
     ok('och1226_generation_flushes_root_settings',
        'save_data(data, root_only=True)' in pub126.get('mega_publish_current_sqlite_v1226','') and
        '_och1226_flush_loaded_chat_stores_only' in pub126.get('mega_publish_current_sqlite_v1226','') and

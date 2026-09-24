@@ -5904,98 +5904,65 @@ def cmd_mega_status(msg):
     send_and_auto_delete(chat_id, mega_status_text(), 90)
 
 def run_manual_mega_restore(chat_id: int):
-    """Owner recovery using the same canonical SQLite+delta engine as deploy.
+    """OCH12.31 manual MEGA restore shares the browser's exact-file restore path.
 
-    v241: legacy full-global JSON is compatibility fallback only.  A successful
-    recovery is immediately re-anchored as a new exact durable generation so the
-    next deploy reproduces the same state instead of depending on an old JSON.
+    If the canonical current_manifest names a generation, restore that immutable file
+    without current_tail.  If the manifest is missing/invalid, do not guess which of
+    several generations is authoritative: open the same MEGA browser the owner already
+    uses successfully and let the owner choose the exact point-in-time file.
     """
-    global data
     chat_id = int(chat_id)
-    backup_dir = ''
-    restore_epoch = 0
-    success = False
+    work = ''
     try:
-        send_and_auto_delete(chat_id, '☁️ 12.29: читаю MEGA current_manifest → generation; при проблеме проверяю generations → current_tail…', 30)
-        begin = globals().get('_v241_restore_storage_barrier_begin')
-        if callable(begin):
-            restore_epoch = int(begin() or 0)
-        backup_fn = globals().get('_v153_backup_before_restore')
-        if callable(backup_fn):
-            backup_dir = str(backup_fn() or '')
-        else:
-            raise RuntimeError('pre_restore backup helper недоступен')
-        # OCH12.26: manual recovery uses the same canonical generation+tail contract as startup.
-        # No Redis repair and no compact_v80 fallback.
-        compact_fn = globals().get('r81_manual_compact_mega_restore')
-        if not callable(compact_fn):
-            raise RuntimeError('canonical MEGA generation restore helper недоступен')
-        ok, detail, applied_deltas = compact_fn()
-        if not ok:
-            raise RuntimeError(detail)
-        source = 'MEGA canonical current_manifest + generation + current_tail'
-        restored = load_data()
-        data.clear()
-        data.update(restored)
-        try:
-            tenant_v148_bootstrap()
-        except Exception:
-            pass
-        try:
-            tenant_v148_enforce_forward_isolation()
-        except Exception:
-            pass
-        try:
-            fn = globals().get('_v184_post_restore_rehydrate')
-            if callable(fn):
-                fn(data)
-        except Exception as exc:
-            log_error(f'manual MEGA rehydrate v241: {exc}')
-        try:
-            trim = globals().get('_v221_post_restore_trim')
-            if callable(trim): trim()
-        except Exception:
-            pass
-        try:
-            bind = globals().get('config_guard_bind_recovered_state_v242')
-            if callable(bind):
-                bind()
-        except Exception as exc:
-            raise RuntimeError('config binding after MEGA restore failed: ' + str(exc)[:300])
-        verify = globals().get('constitution_boot_verify_after_restore')
-        if callable(verify):
-            rep = verify() or {}
-            if not bool(rep.get('ok')):
-                raise RuntimeError('semantic verify after MEGA restore failed: ' + str(rep.get('reason') or 'unknown')[:350])
-        # Low-RAM post-restore persistence: root settings + already-resident chat stores only.
-        save_data(data, root_only=True)
-        _flush_loaded = globals().get('_och1226_flush_loaded_chat_stores_only')
-        if callable(_flush_loaded): _flush_loaded()
-        reanchor = globals().get('_v240_restore_reanchor_guaranteed')
-        if not callable(reanchor):
-            raise RuntimeError('Guaranteed restore reanchor helper недоступен')
-        constitution_result = reanchor('mega_restore_now_v242') or {}
-        active = constitution_result.get('active') or {}
-        generation = active.get('generation') or '—'
-        cfg_report = constitution_result.get('config_checkpoint') or {}
-        lineage = str(constitution_result.get('lineage') or active.get('storage_lineage_v239') or '')
-        remote_confirmed = bool(constitution_result.get('remote_confirmed_v240', False))
-        warning = str(constitution_result.get('warning') or '')
-        initialize_delta_baseline(data)
-        try:
-            heal = globals().get('_v243_mark_runtime_restore_healthy')
-            if callable(heal):
-                heal('mega_restore_now_v243', remote_confirmed=remote_confirmed, generation=str(generation))
-        except Exception:
-            pass
-        _clear_restore_guard()
-        success = True
-        try:
-            reconcile = globals().get('_reminder_boot_reconcile_v241')
-            if callable(reconcile):
-                reconcile()
-        except Exception as exc:
-            log_error(f'manual MEGA reminder reconcile v241: {exc}')
+        send_and_auto_delete(chat_id, '☁️ 12.31: читаю canonical current_manifest и восстанавливаю точную generation без current_tail…', 30)
+        token_fn = globals().get('_v265_mdb_token')
+        restore_fn = globals().get('_v242_restore_selected_mega_database')
+        paths_fn = globals().get('_r80_compact_paths')
+        get_exact = globals().get('_r81_mega_get_exact')
+        if not callable(token_fn) or not callable(restore_fn) or not callable(paths_fn) or not callable(get_exact):
+            raise RuntimeError('единый MEGA browser/restore pipeline недоступен')
+        paths = paths_fn() or {}
+        manifest_remote = str(paths.get('latest') or '')
+        remote = ''
+        manifest_detail = ''
+        work = tempfile.mkdtemp(prefix='och1231_manual_manifest_')
+        if manifest_remote:
+            local_manifest, manifest_detail = get_exact(manifest_remote, work, max(120, int(float(globals().get('MEGA_TIMEOUT') or 120))))
+            if local_manifest and os.path.isfile(local_manifest):
+                try:
+                    with open(local_manifest, 'r', encoding='utf-8') as fh:
+                        manifest = json.load(fh) or {}
+                    remote = str(manifest.get('remote_generation') or '').strip()
+                    if not remote:
+                        generation = str(manifest.get('generation') or manifest.get('base_generation') or '').strip()
+                        root = str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
+                        if generation and root:
+                            remote = root + '/database/generations/' + os.path.basename(generation)
+                except Exception as exc:
+                    manifest_detail = f'manifest decode {type(exc).__name__}: {str(exc)[:180]}'
+                    remote = ''
+        if not remote:
+            # Missing/broken manifest is exactly the case where "newest" can be unsafe
+            # (for example an EMPTY_INIT generation may be newer than the wanted DB).
+            # Open the canonical browser rather than silently choosing the wrong file.
+            refresh = globals().get('_v265_refresh_mega_browser')
+            text_fn = globals().get('mega_database_browser_text_v242')
+            kb_fn = globals().get('mega_database_browser_keyboard_v242')
+            generations_dir_fn = globals().get('constitution_generations_dir')
+            if callable(refresh) and callable(text_fn) and callable(kb_fn) and callable(generations_dir_fn):
+                refresh(str(generations_dir_fn()), 0)
+                bot.send_message(chat_id, window_mark(text_fn(0), 'Ф233'), reply_markup=kb_fn(0))
+                send_and_auto_delete(chat_id, '⚠️ current_manifest не дал точную generation. Я не выбираю файл наугад: открыт список database/generations для ручного выбора.', 60)
+                try:
+                    bot_journal('mega_manual_restore_v1231_browser_fallback', chat_id, f'manifest={manifest_remote}; detail={manifest_detail[:240]}', 'WARN')
+                except Exception:
+                    pass
+                return False
+            raise RuntimeError('current_manifest не дал точную generation: ' + str(manifest_detail)[:300])
+        token = str(token_fn(remote, 'file'))
+        rep = restore_fn(token, chat_id) or {}
+        if not bool(rep.get('ok')):
+            raise RuntimeError('единый MEGA restore не подтвердил успех')
         try:
             refresh_registered_financial_windows(chat_id)
         except Exception:
@@ -6004,30 +5971,29 @@ def run_manual_mega_restore(chat_id: int):
             schedule_startup_main_windows(delay=0.5)
         except Exception:
             pass
-        if remote_confirmed:
-            restore_note = 'Состояние закреплено новым canonical checkpoint для следующего deploy.'
-        else:
-            restore_note = 'Состояние уже принято локально; remote canonical re-anchor поставлен на автоматический повтор.'
-        send_and_auto_delete(chat_id, f"✅ MEGA → бот восстановлен. Источник: {source}; delta={applied_deltas}; generation={generation}; config={cfg_report.get('generation', '—')}; lineage={lineage or '—'}. " + restore_note + (f' Причина pending: {warning[:180]}' if warning else ''), 180)
+        checkpoint_note = '✅' if rep.get('checkpoint_ok') else ('—' if rep.get('checkpoint_required') is False else '⛔')
+        name = os.path.basename(remote)
+        send_and_auto_delete(
+            chat_id,
+            f"✅ MEGA → бот восстановлен из {name}. Без current_tail. records={rep.get('source_records')} · новая canonical generation={rep.get('generation') or 'LOCAL-PENDING'} · checkpoint={checkpoint_note}",
+            180,
+        )
         try:
-            bot_journal('mega_manual_restore_guaranteed_v242', chat_id, f"source={source}; delta={applied_deltas}; generation={generation}; config={cfg_report.get('generation', '')}; lineage={lineage}; remote_confirmed={int(remote_confirmed)}; epoch={restore_epoch}")
+            bot_journal('mega_manual_restore_v1231', chat_id, f"source={remote}; exact_generation=1; tail=0; checkpoint_ok={int(bool(rep.get('checkpoint_ok')))}")
         except Exception:
             pass
-    except Exception as e:
-        log_error(f'run_manual_mega_restore: {e}')
-        send_and_auto_delete(chat_id, '❌ Ошибка ручного восстановления из MEGA: ' + str(e)[:500], 180)
+        return True
+    except Exception as exc:
+        log_error(f'run_manual_mega_restore: {exc}')
+        send_and_auto_delete(chat_id, '❌ Ошибка ручного восстановления из MEGA: ' + str(exc)[:500], 180)
+        return False
     finally:
-        if backup_dir:
+        if work:
             try:
-                shutil.rmtree(backup_dir, ignore_errors=True)
+                shutil.rmtree(work, ignore_errors=True)
             except Exception:
                 pass
-        end = globals().get('_v241_restore_storage_barrier_end')
-        if restore_epoch and callable(end):
-            try:
-                end(restore_epoch, success)
-            except Exception:
-                pass
+
 
 def run_manual_redis_restore(chat_id: int):
     """12.26 policy: Redis is cache-only and is never a recovery source."""
