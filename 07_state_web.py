@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 72_multitenant_runtime.py ---
@@ -9605,4 +9605,4 @@ _owner_install('mega', 'mega:0135')
 
 # [OCH12.35 OWNER] _v242_restore_selected_mega_database -> 17_integration_mega.py
 _owner_install('mega', 'mega:0136')
-# v266
+# v267

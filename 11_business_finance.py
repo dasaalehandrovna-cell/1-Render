@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · physical owner: finance.
 
 Этот файл — единственное физическое место тел функций домена.
@@ -4636,4 +4636,4 @@ def handle_finance_message(msg):
         return _OCH129_PARENT_HANDLE_FINANCE_MESSAGE(msg)
     return False
 
-# v266
+# v267

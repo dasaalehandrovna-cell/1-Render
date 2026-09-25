@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 74_ui_reliability_runtime.py ---
@@ -15379,4 +15379,4 @@ try:
     _R17_TERMINAL_BOOT_REPORT = r17_reconcile_terminal_chats_on_boot()
 except Exception as _r17_boot_exc:
     _R17_TERMINAL_BOOT_REPORT = {'error': f'{type(_r17_boot_exc).__name__}: {str(_r17_boot_exc)[:180]}'}
-# v266
+# v267

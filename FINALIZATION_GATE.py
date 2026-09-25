@@ -4,7 +4,10 @@ import ast, hashlib, json, os, py_compile, re, subprocess, sys, tempfile
 ROOT=Path(__file__).resolve().parent
 SOURCE_PARTS=['01_core_data.py','02_transport_safety.py','03_diagnostics_memory.py','04_messages_features.py','05_finance_ui.py','06_commands_callbacks.py','07_state_web.py','08_reliability_tasks.py','09_final_transport.py','10_split_policy_offload.py']
 OWNER_PARTS=['11_business_finance.py','12_business_finance_forward.py','13_business_tasks.py','14_business_reminders.py','15_integration_google.py','16_integration_excel.py','17_integration_mega.py','18_business_secret.py','19_compat_legacy.py']
-RUNTIME_FILES={'Dockerfile','.dockerignore','requirements.txt','bot.py','start_front.py','runtime_config.py','modules_manifest.json','owners_manifest.json','FINALIZATION_GATE.py',*SOURCE_PARTS,*OWNER_PARTS}
+RUNTIME_BUILD=str(os.getenv('FINALIZATION_RUNTIME_BUILD','0')).strip().lower() in {'1','true','yes','on'}
+APP_RUNTIME_FILES={'requirements.txt','bot.py','start_front.py','runtime_config.py','modules_manifest.json','owners_manifest.json','FINALIZATION_GATE.py',*SOURCE_PARTS,*OWNER_PARTS}
+SOURCE_CONTROL_FILES={'Dockerfile','.dockerignore'}
+RUNTIME_FILES=APP_RUNTIME_FILES if RUNTIME_BUILD else (APP_RUNTIME_FILES|SOURCE_CONTROL_FILES)
 checks=[]
 def ok(name,cond,detail=''):
     checks.append((name,bool(cond),detail));
@@ -20,16 +23,16 @@ for rel in ['bot.py','start_front.py','runtime_config.py',*SOURCE_PARTS,*OWNER_P
 
 manifest=json.loads(text('owners_manifest.json') or '{}')
 mods=json.loads(text('modules_manifest.json') or '{}')
-ok('release',manifest.get('release')=='очнись_12.35')
+ok('release',manifest.get('release')=='очнись_12.36')
 ok('architecture',manifest.get('architecture')=='physical_domain_owner_v2')
 ok('primary_owners',list((manifest.get('owners') or {}).keys())[:8]==['finance','finance_forward','tasks','reminders','google','excel','mega','secret'] and 'compat_legacy' in (manifest.get('owners') or {}))
-ok('module_version',mods.get('version')=='vys_266')
+ok('module_version',mods.get('version')=='vys_267')
 # Hash/marker package integrity.
 problems=[]
 for rel in SOURCE_PARTS+OWNER_PARTS:
     p=ROOT/rel; raw=p.read_bytes() if p.exists() else b''
     if hashlib.sha256(raw).hexdigest()!=str((mods.get('files') or {}).get(rel) or ''): problems.append('hash:'+rel)
-    rows=raw.decode('utf8',errors='replace').splitlines(); exp='# '+str((mods.get('file_markers') or {}).get(rel) or 'v266')
+    rows=raw.decode('utf8',errors='replace').splitlines(); exp='# '+str((mods.get('file_markers') or {}).get(rel) or 'v267')
     if not rows or rows[0].strip()!=exp or rows[-1].strip()!=exp: problems.append('marker:'+rel)
 ok('package_hashes_markers',not problems,','.join(problems[:8]))
 # Every stage appears once in infrastructure and every owner body only once physically.
@@ -90,10 +93,16 @@ ok('lean_owner_loader','_owner_install' in bot and 'importlib.util' not in bot a
 ok('loader_owner_files',all(x in bot for x in OWNER_PARTS))
 # Docker deploy allowlist must include exactly current owner manifest/files and no old owner manifest.
 docker=text('Dockerfile'); di=text('.dockerignore')
-ok('docker_current_owners','owners_manifest.json' in docker and all(x in docker for x in OWNER_PARTS) and 'business_manifest.json' not in docker)
-ok('dockerignore_current_owners','!owners_manifest.json' in di and all(('!'+x) in di for x in OWNER_PARTS) and '!business_manifest.json' not in di)
+if RUNTIME_BUILD:
+    # Dockerfile/.dockerignore are build-context controls and are intentionally not copied into /app.
+    # Their source-mode validation already ran before packaging; do not create false runtime failures.
+    ok('docker_current_owners',True,'source-only check skipped inside runtime image')
+    ok('dockerignore_current_owners',True,'source-only check skipped inside runtime image')
+else:
+    ok('docker_current_owners','owners_manifest.json' in docker and all(x in docker for x in OWNER_PARTS) and 'business_manifest.json' not in docker)
+    ok('dockerignore_current_owners','!owners_manifest.json' in di and all(('!'+x) in di for x in OWNER_PARTS) and '!business_manifest.json' not in di)
 # Identity and R1/R2 authority invariants.
-ok('display_name',"BOT_DISPLAY_NAME = 'очнись_12.35'" in text('01_core_data.py'))
+ok('display_name',"BOT_DISPLAY_NAME = 'очнись_12.36'" in text('01_core_data.py'))
 split=text('10_split_policy_offload.py')
 ok('r1_authority',"_R1234_CRITICAL_FAST_KEYS = ('mega', 'durability', 'checkpoints')" in split and '_r1234_probe_peer' in split and '_r1234_note_fallback' in split)
 # Optional startup smoke inside Docker/runtime environment.
@@ -103,7 +112,7 @@ if str(os.getenv('FINALIZATION_STARTUP_SMOKE','0')).strip().lower() in {'1','tru
     ok('startup_import',cp.returncode==0 and 'STARTUP_IMPORT_OK' in cp.stdout,(cp.stdout+'\n'+cp.stderr)[-1200:])
 
 passed=sum(1 for _,v,_ in checks if v); total=len(checks)
-print(f'FINALIZATION 12.35: {passed}/{total} PASS' if passed==total else f'FINALIZATION 12.35: {passed}/{total} ({total-passed} FAIL)')
+print(f'FINALIZATION 12.36: {passed}/{total} PASS' if passed==total else f'FINALIZATION 12.36: {passed}/{total} ({total-passed} FAIL)')
 if passed!=total:
     for n,v,d in checks:
         if not v: print(' -',n,d)

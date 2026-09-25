@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · physical owner: finance_forward.
 
 Этот файл — единственное физическое место тел функций домена.
@@ -4354,4 +4354,4 @@ def _och129_boot_rebuild_forward_identity():
         except Exception: pass
     return repaired
 
-# v266
+# v267

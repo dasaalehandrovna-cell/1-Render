@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · physical owner: excel.
 
 Этот файл — единственное физическое место тел функций домена.
@@ -1693,4 +1693,4 @@ def _r71_local_tabl_lsx(recipient_chat_id, target_chat_id):
             try: _split_os.remove(path)
             except Exception: pass
 
-# v266
+# v267

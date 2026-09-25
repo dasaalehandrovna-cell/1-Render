@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 60_finance_currency.py ---
@@ -4988,4 +4988,4 @@ def build_integrity_keyboard(chat_id: int):
     day = get_chat_store(chat_id).get('current_view_day') or today_key()
     kb.row(IB('🔙 Назад в Инфо', callback_data=f'd:{day}:info'))
     return kb
-# v266
+# v267

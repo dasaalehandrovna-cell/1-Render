@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · physical owner: secret.
 
 Этот файл — единственное физическое место тел функций домена.
@@ -2270,4 +2270,4 @@ def secret_storage_keyboard_v234():
 def _split_secret():
     return str(_split_os.getenv("PEER_SHARED_SECRET", "") or "").strip()
 
-# v266
+# v267

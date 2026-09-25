@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 92_v262_linked_finance_speed.py ---
@@ -11428,4 +11428,4 @@ try:
 except Exception as _r1234_exc:
     try: log_error(f'OCH12.34 init: {_r1234_exc}')
     except Exception: pass
-# v266
+# v267

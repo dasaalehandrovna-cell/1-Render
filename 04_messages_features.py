@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 30_secret.py ---
@@ -2596,4 +2596,4 @@ _owner_install('finance_forward', 'finance_forward:0116')
 
 # [OCH12.35 OWNER] _canon_forward_any_message__001 -> 12_business_finance_forward.py
 _owner_install('finance_forward', 'finance_forward:0117')
-# v266
+# v267

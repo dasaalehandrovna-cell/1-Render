@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · physical owner: google.
 
 Этот файл — единственное физическое место тел функций домена.
@@ -3687,4 +3687,4 @@ def _r7_google_worker_info(fetch=True):
     except Exception as exc:
         return {'ok':False, 'error':str(exc)[:500], 'owner':'R1 FAST'}
 
-# v266
+# v267

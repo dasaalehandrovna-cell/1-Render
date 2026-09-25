@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 12_telegram_durable.py ---
@@ -3133,4 +3133,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-# v266
+# v267

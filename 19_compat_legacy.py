@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · legacy compatibility stage catalog.
 
 Ранние версии переопределяемых инфраструктурных функций вынесены сюда, чтобы в 01–10
@@ -1602,4 +1602,4 @@ def _legacy_compat_s0061_r70_routes_keyboard():
         kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
 
-# v266
+# v267

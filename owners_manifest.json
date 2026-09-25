@@ -1,6 +1,6 @@
 {
-  "release": "очнись_12.35",
-  "version": "v266",
+  "release": "очнись_12.36",
+  "version": "v267",
   "architecture": "physical_domain_owner_v2",
   "rule": "Domain bodies live only in 11-18. Decorated Telegram/Flask entrypoints remain adapters in 01-10. Historical stage points use _owner_install so alias/PREV semantics stay exact.",
   "owners": {
@@ -8669,7 +8669,7 @@
   "total_public_symbols": 1156,
   "total_stage_occurrences": 1239,
   "normalized_logic_fingerprint": {
-    "basis": "OCH12.34 reconstructed with release name normalized to OCH12.35",
+    "basis": "OCH12.34 reconstructed with release name normalized through OCH12.36; 12.36 only fixes runtime/finalization gates",
     "sha256": "6da85cdeff5aba286699ed5a30a515fedb98097d50b76f2009f2fef4d7d0fca5",
     "bytes": 5232612,
     "parts_exact": 10

@@ -1,4 +1,4 @@
-# v266
+# v267
 """ОЧНИСЬ 12.35 · physical owner: tasks.
 
 Этот файл — единственное физическое место тел функций домена.
@@ -1045,4 +1045,4 @@ def _v229_command_tasks(msg):
         pass
     return _V229_PREV_COMMAND_TASKS(msg)
 
-# v266
+# v267

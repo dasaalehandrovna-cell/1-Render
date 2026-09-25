@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 00_core.py ---
@@ -1996,7 +1996,7 @@ RELEASE_SERIES = 'выс'
 RELEASE_NUMBER = 264
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.35'
+BOT_DISPLAY_NAME = 'очнись_12.36'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -17204,4 +17204,4 @@ def config_guard_bind_recovered_state_v242() -> dict:
     except Exception:
         pass
     return cp
-# v266
+# v267

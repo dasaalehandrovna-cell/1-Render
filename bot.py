@@ -1,10 +1,10 @@
-# v266
+# v267
 from pathlib import Path
 import ast, hashlib, inspect, json, os, re
 from runtime_config import install_internal_runtime_config
 install_internal_runtime_config("front")
-MODULAR_VERSION = "vys_266"
-MODULE_FILE_VERSION = "v266"
+MODULAR_VERSION = "vys_267"
+MODULE_FILE_VERSION = "v267"
 MODULAR_SOURCE_PARTS = ['01_core_data.py', '02_transport_safety.py', '03_diagnostics_memory.py', '04_messages_features.py', '05_finance_ui.py', '06_commands_callbacks.py', '07_state_web.py', '08_reliability_tasks.py', '09_final_transport.py', '10_split_policy_offload.py']
 OWNER_PARTS = ['11_business_finance.py', '12_business_finance_forward.py', '13_business_tasks.py', '14_business_reminders.py', '15_integration_google.py', '16_integration_excel.py', '17_integration_mega.py', '18_business_secret.py', '19_compat_legacy.py']
 MODULAR_PACKAGE_PARTS = MODULAR_SOURCE_PARTS + OWNER_PARTS
@@ -35,7 +35,7 @@ def _validate_modular_package() -> None:
 
 def _load_owner_index() -> None:
     manifest=json.loads(_OWNER_MANIFEST_PATH.read_text(encoding='utf-8'))
-    if str(manifest.get('release') or '') != 'очнись_12.35': raise RuntimeError('owner manifest release mismatch')
+    if str(manifest.get('release') or '') != 'очнись_12.36': raise RuntimeError('owner manifest release mismatch')
     for owner,row in (manifest.get('owners') or {}).items():
         rel=str((row or {}).get('file') or '')
         if rel not in OWNER_PARTS: raise RuntimeError(f'bad owner file {owner}:{rel}')
@@ -81,7 +81,7 @@ def _exec_source_part(relative_path: str) -> None:
     path=_MODULAR_ROOT/relative_path
     exec(compile(path.read_text(encoding='utf-8'),str(path),'exec'),globals(),globals())
 
-def _owner_stage_gate_v266() -> None:
+def _owner_stage_gate_v267() -> None:
     manifest=json.loads(_OWNER_MANIFEST_PATH.read_text(encoding='utf-8')); problems=[]; owned=set()
     for owner,row in (manifest.get('owners') or {}).items():
         expected=int((row or {}).get('stage_occurrences') or 0); actual=int(_OWNER_RUNTIME_INSTALLS.get(owner,0) or 0)
@@ -93,7 +93,7 @@ def _owner_stage_gate_v266() -> None:
         if bad: problems.append(f'{rel} duplicate owner bodies={bad[:8]}')
     if problems: raise RuntimeError('OCH12.35 OWNER GATE FAILED: '+'; '.join(problems[:16]))
 
-def _runtime_contract_gate_v266() -> None:
+def _runtime_contract_gate_v267() -> None:
     contracts={
       'probe_bot_in_chat':({'chat_id','deep','persist','schedule_backup','_migration_retry'},'01_core_data.py'),
       'update_chat_info_from_chat_object':({'chat_obj','persist','schedule_backup'},'07_state_web.py'),
@@ -117,9 +117,9 @@ def _runtime_contract_gate_v266() -> None:
         except Exception as exc: problems.append(f'signature {name}: {exc}')
         filename=str(getattr(getattr(fn,'__code__',None),'co_filename','') or '')
         if owner_file and not filename.endswith(owner_file): problems.append(f'owner {name}={filename or "?"} expected={owner_file}')
-    if problems: raise RuntimeError('RUNTIME CONTRACT GATE v266 FAILED: '+'; '.join(problems[:16]))
+    if problems: raise RuntimeError('RUNTIME CONTRACT GATE v267 FAILED: '+'; '.join(problems[:16]))
 
-def _domain_owner_gate_v266() -> None:
+def _domain_owner_gate_v267() -> None:
     owners={
       'handle_finance_message':'11_business_finance.py',
       'handle_finance_edit':'11_business_finance.py',
@@ -131,7 +131,7 @@ def _domain_owner_gate_v266() -> None:
       'build_reminder_menu_text':'14_business_reminders.py',
       'tenant_google_config':'15_integration_google.py',
       '_google_request_guarded':'15_integration_google.py',
-      'write_simple_xlsx':'16_integration_excel.py',
+      '_write_simple_xlsx':'16_integration_excel.py',
       '_mega_run':'17_integration_mega.py',
       'handle_secret_note_message':'18_business_secret.py',
       'begin_secret_full_edit':'18_business_secret.py',
@@ -142,7 +142,7 @@ def _domain_owner_gate_v266() -> None:
         if not callable(fn): problems.append(f'missing {name}'); continue
         filename=str(getattr(getattr(fn,'__code__',None),'co_filename','') or '')
         if not filename.endswith(owner): problems.append(f'owner {name}={filename or "?"} expected={owner}')
-    if problems: raise RuntimeError('OCH12.35 DOMAIN OWNER GATE FAILED: '+'; '.join(problems[:16]))
+    if problems: raise RuntimeError('OCH12.36 DOMAIN OWNER GATE FAILED: '+'; '.join(problems[:16]))
 
 def _strip_part_version(text: str) -> str:
     rows=text.splitlines()
@@ -171,10 +171,10 @@ def _modular_merged_source_path() -> str:
 _validate_modular_package()
 _load_owner_index()
 for _part in MODULAR_SOURCE_PARTS: _exec_source_part(_part)
-_owner_stage_gate_v266()
-_runtime_contract_gate_v266()
-_domain_owner_gate_v266()
+_owner_stage_gate_v267()
+_runtime_contract_gate_v267()
+_domain_owner_gate_v267()
 # Source cache is useful only for merged-source download after startup; keep it lazy and empty now.
 _OWNER_SOURCE_CACHE.clear()
 if __name__ == '__main__' and str(os.getenv('BOT_DEFER_MAIN_R54','0') or '0').strip().casefold() not in {'1','true','yes','on'}: main()
-# v266
+# v267

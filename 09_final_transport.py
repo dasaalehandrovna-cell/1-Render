@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 85_runtime_control.py ---
@@ -6494,4 +6494,4 @@ v220_contour_access_callback_final = _v221_contour_access_callback_final
 wait_durable_subtasks = _canon_wait_durable_subtasks__001
 window_diag_fast_ui_apply = _canon_window_diag_fast_ui_apply__001
 window_diag_prepare_fast_ui_payload = _canon_window_diag_prepare_fast_ui_payload__001
-# v266
+# v267

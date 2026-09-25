@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 80_callback_router.py ---
@@ -5705,4 +5705,4 @@ def start_keep_alive_thread():
                 _peer_keep_alive_thread = threading.Thread(target=peer_keep_alive_task, name='peer-keep-alive-watchdog', daemon=True)
                 _peer_keep_alive_thread.start()
         return _keep_alive_thread
-# v266
+# v267

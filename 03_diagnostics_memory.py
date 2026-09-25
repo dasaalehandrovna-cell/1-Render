@@ -1,4 +1,4 @@
-# v266
+# v267
 # OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 # --- ИСТОЧНИК: 16_window_diagnostics.py ---
 import inspect as _window_diag_inspect
@@ -1832,4 +1832,4 @@ def ram_inspector_trim_v1224() -> dict:
         except Exception:
             pass
     return {'before': before, 'after': memory_quick_snapshot(), 'evicted': evicted}
-# v266
+# v267
