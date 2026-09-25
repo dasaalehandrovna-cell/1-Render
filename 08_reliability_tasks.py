@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 74_ui_reliability_runtime.py ---
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
@@ -142,8 +143,8 @@ def v155_button_audit_recent(limit: int=100) -> list[dict]:
         return [_v155_copy.deepcopy(x) for x in list(_V155_BUTTON_AUDIT_RECENT)[-limit:]]
 _V155_ORIG_O9_SECRET_TRIPLE_CLICK = _v177_legacy_0020_handle_o9_secret_triple_click
 
-def _canon_handle_o9_secret_triple_click__001(call, data_str: str) -> bool:
-    return False
+# [OCH12.35 OWNER] _canon_handle_o9_secret_triple_click__001 -> 18_business_secret.py
+_owner_install('secret', 'secret:0127')
 
 def _v155_cancel_o9_click_state(chat_id: int, message_id: int) -> None:
     try:
@@ -708,93 +709,11 @@ def _v156_explicit_currency(rec: dict) -> str:
         return 'ars'
     return ''
 
-def _v156_clean_embedded_usd_description(rec: dict) -> str:
-    """Extract USD-side description without ever falling back to the ARS note."""
-    source = str((rec or {}).get('source_finance_text') or '').strip()
-    if source:
-        try:
-            info = extract_usd_transaction(source)
-        except Exception:
-            info = None
-        if info and info.get('span'):
-            try:
-                _start, end = info.get('span')
-                after = source[int(end):].strip(' \t:;,-–—|/')
-                if after:
-                    after = _v156_re.sub('(?i)\\b(?:ars|pesos?|peso)\\b', ' ', after)
-                    after = _v156_re.sub('\\s+', ' ', after).strip(' :;,-–—|/')
-                    if after and (not _v156_re.fullmatch("[\\d\\s.,+'\\-]+", after)):
-                        return after.lower()[:220]
-            except Exception:
-                pass
-    usd_note = str((rec or {}).get('usd_note') or '').strip().lower()
-    ars_note = str((rec or {}).get('note') or '').strip().lower()
-    clean = usd_note
-    if clean and ars_note:
-        if clean == ars_note:
-            clean = ''
-        elif ars_note in clean:
-            clean = clean.replace(ars_note, ' ', 1)
-    clean = _v156_re.sub('(?i)\\b(?:ars|pesos?|peso)\\b', ' ', clean)
-    clean = _v156_re.sub("(?<!\\w)[+\\-]?\\d[\\d\\s.,_'’]*(?!\\w)", ' ', clean)
-    clean = _v156_re.sub('\\s+', ' ', clean).strip(' :;,-–—|/')
-    return (clean or 'USD операция')[:220]
+# [OCH12.35 OWNER] _v156_clean_embedded_usd_description -> 11_business_finance.py
+_owner_install('finance', 'finance:0191')
 
-def _canon_v151_usd_records__001(chat_id: int) -> list[dict]:
-    """v156 source of truth for XLSX USD rows: USD-only data, no ARS note fallback."""
-    store, active, ars_source, usd_source = _v156_store_ledgers(int(chat_id))
-    ars_ids = {_v156_record_identity(r) for r in ars_source if isinstance(r, dict)}
-    ars_fps = {_v156_record_fingerprint(r) for r in ars_source if isinstance(r, dict)}
-    rows = []
-    seen = set()
-    filtered = 0
-    for rec in usd_source:
-        if not isinstance(rec, dict):
-            continue
-        currency = _v156_explicit_currency(rec)
-        ident = _v156_record_identity(rec)
-        fp = _v156_record_fingerprint(rec)
-        if currency == 'ars':
-            filtered += 1
-            continue
-        if currency != 'usd' and (ident in ars_ids or fp in ars_fps):
-            filtered += 1
-            continue
-        if ident in seen:
-            continue
-        item = dict(rec)
-        item['_v151_amount'] = _v151_float(rec.get('amount'))
-        item['_v151_note'] = str(rec.get('note') or rec.get('usd_note') or 'USD операция').strip()
-        item['_v151_currency'] = 'usd'
-        item['_v156_source'] = 'usd_ledger'
-        rows.append(item)
-        seen.add(ident)
-    for rec in ars_source:
-        if not isinstance(rec, dict) or rec.get('usd_amount') is None:
-            continue
-        usd_amount = _v151_float(rec.get('usd_amount'))
-        if abs(usd_amount) <= 1e-12:
-            continue
-        ident = _v156_record_identity(rec)
-        if ident in seen:
-            continue
-        item = dict(rec)
-        item['_v151_amount'] = usd_amount
-        item['_v151_note'] = _v156_clean_embedded_usd_description(rec)
-        item['_v151_currency'] = 'usd'
-        item['_v156_source'] = 'explicit_usd_component'
-        rows.append(item)
-        seen.add(ident)
-    try:
-        rows = sorted(rows, key=record_sort_key)
-    except Exception:
-        pass
-    if filtered:
-        try:
-            bot_journal('excel_usd_ars_duplicates_filtered', int(chat_id), f'count={filtered}; active={active}')
-        except Exception:
-            pass
-    return rows
+# [OCH12.35 OWNER] _canon_v151_usd_records__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0192')
 _V156_ORIG_SNAPSHOT_LEDGER = globals().get('_snapshot_active_currency_ledger')
 if callable(_V156_ORIG_SNAPSHOT_LEDGER):
 
@@ -1261,99 +1180,8 @@ try:
 except Exception:
     pass
 
-def _canon_migrate_recent_expense_shortcut_events__001(days: int=2, refresh_messages: bool=False) -> dict:
-    cfg_fn = globals().get('expense_shortcut_config')
-    if not callable(cfg_fn):
-        return {'imported': 0, 'updated': 0, 'seen': 0}
-    try:
-        shortcut = cfg_fn(False) or {}
-    except Exception:
-        shortcut = {}
-    cutoff = now_local() - timedelta(days=max(1, int(days or 2)))
-    imported = updated = seen = 0
-    duplicate = too_old = missing_message_id = refresh_failed = stale_message = 0
-    total_events = len(list(shortcut.get('events') or []))
-    changed_events = False
-    for event in list(shortcut.get('events') or []):
-        if not isinstance(event, dict) or not event.get('id'):
-            continue
-        dt = _expense_event_dt(event)
-        if dt is None or dt < cutoff:
-            too_old += 1
-            continue
-        seen += 1
-        event_id = str(event.get('id'))
-        target = int(event.get('target_chat_id') or shortcut.get('target_chat_id') or OWNER_ID or 0)
-        before = None
-        with _EXPENSE_INBOX_LOCK:
-            for existing in (_expense_inbox_root().get('items') or {}).values():
-                if str((existing or {}).get('source_event_id') or '') == event_id:
-                    before = existing
-                    break
-        draft = expense_draft_for_event(event_id, target, dt.isoformat(timespec='seconds'))
-        if before is None:
-            imported += 1
-        else:
-            duplicate += 1
-        mid = int(event.get('telegram_message_id') or 0)
-        if not mid:
-            missing_message_id += 1
-        if mid and int((draft or {}).get('telegram_message_id') or 0) != mid:
-            with _EXPENSE_INBOX_LOCK:
-                draft['telegram_message_id'] = mid
-        if refresh_messages and mid and target:
-            try:
-                text_fn = globals().get('expense_compact_message_text')
-                text = text_fn(dt.isoformat(timespec='seconds')) if callable(text_fn) else f"💸 iPhone · {dt.strftime('%H:%M')}"
-                markup = expense_draft_message_keyboard(int(draft.get('id') or 0), target)
-                bot.edit_message_text(text, chat_id=target, message_id=mid, reply_markup=markup)
-                updated += 1
-            except Exception as exc:
-                low = str(exc).casefold()
-                if 'message is not modified' in low:
-                    continue
-                if _v157_process_message_missing(exc):
-                    stale_message += 1
-                    event['telegram_message_id'] = 0
-                    changed_events = True
-                    try:
-                        with _EXPENSE_INBOX_LOCK:
-                            draft['telegram_message_id'] = 0
-                    except Exception:
-                        pass
-                    try:
-                        unregister_open_window(target, mid)
-                    except Exception:
-                        pass
-                    continue
-                try:
-                    fast_ui_edit_reply_markup(target, mid, expense_draft_message_keyboard(int(draft.get('id') or 0), target), purpose='expense_draft_markup')
-                    updated += 1
-                except Exception as exc2:
-                    if _v157_process_message_missing(exc2):
-                        stale_message += 1
-                        event['telegram_message_id'] = 0
-                        changed_events = True
-                        try:
-                            with _EXPENSE_INBOX_LOCK:
-                                draft['telegram_message_id'] = 0
-                        except Exception:
-                            pass
-                    else:
-                        refresh_failed += 1
-    root = _expense_inbox_root()
-    root['recent_event_migration_v157_at'] = now_local().isoformat(timespec='seconds')
-    _root_save('expense_recent_event_migration_v157')
-    if changed_events:
-        try:
-            save_data(data, root_only=True)
-        except Exception:
-            pass
-    try:
-        bot_journal('expense_recent_events_migrated_v157', int(OWNER_ID or 0), f'total={total_events} seen_48h={seen} imported={imported} existing={duplicate} updated={updated} too_old_or_bad_date={too_old} missing_message_id={missing_message_id} stale_message={stale_message} refresh_failed={refresh_failed}')
-    except Exception:
-        pass
-    return {'imported': imported, 'updated': updated, 'seen': seen, 'existing': duplicate, 'too_old': too_old, 'missing_message_id': missing_message_id, 'stale_message': stale_message, 'refresh_failed': refresh_failed}
+# [OCH12.35 OWNER] _canon_migrate_recent_expense_shortcut_events__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0193')
 
 def _v157_primary_actor(call) -> bool:
     try:
@@ -1556,57 +1384,17 @@ def _v158_real_operation_description(value) -> str:
         return ''
     return note
 
-def _v158_add_income_annotations_from_description(rows: list[list], comments: dict) -> dict:
-    out = dict(comments or {})
-    header_seen = False
-    for r_idx, raw in enumerate(rows or [], start=1):
-        row = list(raw or [])
-        first = str(row[0] if row else '').strip().casefold()
-        second = str(row[1] if len(row) > 1 else '').strip()
-        second_cf = second.casefold()
-        is_header = first in {'дата', 'date'} and second_cf in {'описание', 'description', 'приход/выдача', 'amount'}
-        if is_header:
-            header_seen = True
-            continue
-        if first in {'ars', 'usd'} and (not second):
-            header_seen = False
-            continue
-        if not header_seen:
-            continue
-        note = _v158_real_operation_description(second)
-        if not note:
-            continue
-        income = row[2] if len(row) > 2 else ''
-        if _excel_nonempty(income):
-            out[r_idx, 3] = note
-    return out
+# [OCH12.35 OWNER] _v158_add_income_annotations_from_description -> 11_business_finance.py
+_owner_install('finance', 'finance:0194')
 
-def _canon_modern_simple_excel_styles_comments__001(rows: list[list]):
-    if callable(_V158_PREV_MODERN_SIMPLE):
-        styles, comments, header_row, widths = _V158_PREV_MODERN_SIMPLE(rows)
-    else:
-        max_cols = max((len(r) for r in rows or []), default=4)
-        styles, comments, header_row, widths = ([[0] * max_cols for _ in rows or []], {}, 1, [13, 38, 15, 15])
-    comments = _v158_add_income_annotations_from_description(rows, comments)
-    return (styles, comments, header_row, widths)
+# [OCH12.35 OWNER] _canon_modern_simple_excel_styles_comments__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0078')
 
-def _canon_modern_category_excel_styles_comments__001(rows: list[list]):
-    if callable(_V158_PREV_MODERN_CATEGORY):
-        styles, comments, header_row, widths = _V158_PREV_MODERN_CATEGORY(rows)
-    else:
-        max_cols = max((len(r) for r in rows or []), default=4)
-        styles, comments, header_row, widths = ([[0] * max_cols for _ in rows or []], {}, 1, [13, 36, 15, 18])
-    comments = _v158_add_income_annotations_from_description(rows, comments)
-    return (styles, comments, header_row, widths)
+# [OCH12.35 OWNER] _canon_modern_category_excel_styles_comments__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0079')
 
-def _canon_category_excel_expected_annotations__001(rows: list[list]) -> dict[tuple[int, int], str]:
-    expected = {}
-    if callable(_V158_PREV_CATEGORY_EXPECTED):
-        try:
-            expected.update(_V158_PREV_CATEGORY_EXPECTED(rows) or {})
-        except Exception:
-            pass
-    return _v158_add_income_annotations_from_description(rows, expected)
+# [OCH12.35 OWNER] _canon_category_excel_expected_annotations__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0080')
 
 def _canon_category_rows_without_description__001(rows: list[list]) -> tuple[list[list], dict[tuple[int, int], str]]:
     if callable(_V158_PREV_CATEGORY_COMPACT_ROWS):
@@ -1634,34 +1422,8 @@ def _canon_category_rows_without_description__001(rows: list[list]) -> tuple[lis
         annotations[r_idx, 3 if in_usd else 2] = note
     return (out_rows, annotations)
 
-def _canon_compact_simple_excel_rows_and_annotations__001(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None=None):
-    if callable(_V158_PREV_COMPACT_ROWS):
-        rows, annotations = _V158_PREV_COMPACT_ROWS(raw_rows, opening_balance, target_chat_id)
-    else:
-        rows, annotations = ([], {})
-    annotations = dict(annotations or {})
-    in_usd = False
-    header_seen = False
-    for r_idx, raw in enumerate(rows or [], start=1):
-        row = list(raw or [])
-        first_raw = str(row[0] if row else '').strip()
-        if first_raw.upper() == 'USD':
-            in_usd = True
-            header_seen = False
-            continue
-        if not in_usd:
-            continue
-        first = first_raw.casefold()
-        desc = str(row[1] if len(row) > 1 else '').strip()
-        if first in {'дата', 'date'} and desc.casefold() in {'описание', 'description'}:
-            header_seen = True
-            continue
-        if not header_seen or len(row) < 3:
-            continue
-        note = _v158_real_operation_description(desc)
-        if note and _excel_nonempty(row[2]):
-            annotations[r_idx, 3] = note
-    return (rows, annotations)
+# [OCH12.35 OWNER] _canon_compact_simple_excel_rows_and_annotations__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0081')
 _V158_PREV_RESTORE_VALIDATE = _v177_legacy_0282_v153_validate_restore_gz
 try:
     import gzip as _v158_gzip
@@ -2904,69 +2666,8 @@ def send_plain_and_auto_delete(chat_id: int, text: str, delay: int=8):
 def _canon_send_html_and_auto_delete__001(chat_id: int, html_text: str, delay: int=25):
     return _v199_send_html_and_auto_delete_service(chat_id, html_text, delay)
 
-def _canon_delete_auto_finance_windows_for_chat__001(chat_id: int, *, persist_now: bool=False) -> int:
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    ids = set()
-    try:
-        ids.update((int(v) for v in (get_or_create_active_windows(chat_id) or {}).values() if v))
-    except Exception:
-        pass
-    try:
-        if store.get('balance_panel_id'):
-            ids.add(int(store.get('balance_panel_id')))
-    except Exception:
-        pass
-    data.setdefault('active_messages', {})[str(chat_id)] = {}
-    store['balance_panel_id'] = None
-    store['balance_panel_mode'] = 'mini'
-    store['main_window_msg_count'] = 0
-    store['balance_panel_msg_count'] = 0
-    state = _finance_window_state(chat_id)
-    state['main_windows'] = {}
-    state['balance_panel_id'] = None
-    state['balance_panel_mode'] = 'mini'
-    state['auto_reopen_on_boot'] = False if finance_window_mode(chat_id) == 'off' else state.get('auto_reopen_on_boot', True)
-    state['updated_at'] = now_local().isoformat(timespec='seconds')
-    for mid in sorted(ids):
-        try:
-            unregister_open_window(chat_id, mid)
-        except Exception:
-            pass
-    try:
-        save_data(data, chat_ids=[chat_id])
-    except Exception:
-        pass
-    if persist_now:
-        try:
-            _persist_finance_window_mode_critical(chat_id)
-        except Exception:
-            pass
-    else:
-        try:
-            schedule_quick_backup(chat_id, 0.2)
-        except Exception:
-            pass
-
-    def _delete_batch():
-        removed = 0
-        for mid in sorted(ids):
-            try:
-                bot.delete_message(chat_id, int(mid))
-                removed += 1
-            except Exception:
-                pass
-        try:
-            bot_journal('finance_windows_deleted_async', chat_id, f'requested={len(ids)} deleted={removed}')
-        except Exception:
-            pass
-    if ids:
-        try:
-            if not MAINTENANCE_TASK_POOL.submit(f'v160-fin-window-delete:{chat_id}', _delete_batch):
-                _v160_schedule(f'v160-fin-delete-fallback:{chat_id}', 0.05, _delete_batch)
-        except Exception:
-            _v160_schedule(f'v160-fin-delete-fallback:{chat_id}', 0.05, _delete_batch)
-    return len(ids)
+# [OCH12.35 OWNER] _canon_delete_auto_finance_windows_for_chat__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0195')
 _V160_FAST_EDIT_LOCKS = defaultdict(_v160_threading.RLock)
 _V160_FAST_EDIT_LAST = {}
 _V160_FAST_EDIT_MIN_GAP = max(0.03, min(0.2, float(_v160_os.getenv('V160_UI_MIN_GAP_SECONDS', '0.08') or '0.08')))
@@ -5697,72 +5398,11 @@ def _v163_exact_today_filter(call) -> bool:
         pass
     return raw.startswith('v163_exp_end_today:')
 
-def _v163_forward_scope_ids() -> list[int]:
-    ids = set()
-    try:
-        tid = str(tenant_current_id())
-    except Exception:
-        tid = 'platform'
-    try:
-        for cid in tenant_chat_ids(tid) or []:
-            ids.add(int(cid))
-    except Exception:
-        pass
-    try:
-        for cid in (data.get('chats', {}) or {}).keys():
-            ic = int(cid)
-            if str(tenant_id_for_chat(ic, create=False)) == tid:
-                ids.add(ic)
-    except Exception:
-        pass
-    try:
-        scope = owner_scope_id(current_state_chat_id())
-        known = get_chat_store(int(scope)).get('known_chats') or {}
-        for cid in known.keys():
-            ic = int(cid)
-            if str(tenant_id_for_chat(ic, create=False)) == tid:
-                ids.add(ic)
-    except Exception:
-        pass
-    try:
-        for src, dsts in (data.get('forward_rules', {}) or {}).items():
-            for cid in [src] + list((dsts or {}).keys()):
-                ic = int(cid)
-                if str(tenant_id_for_chat(ic, create=False)) == tid:
-                    ids.add(ic)
-    except Exception:
-        pass
-    try:
-        root = int(owner_scope_id(current_state_chat_id()))
-        if root:
-            ids.add(root)
-    except Exception:
-        pass
-    return sorted(ids, key=lambda cid: get_chat_display_name(cid).casefold())
+# [OCH12.35 OWNER] _v163_forward_scope_ids -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0154')
 
-def _v177_legacy_0181_collect_forward_picker_items(include_owner: bool=True, include_removed: bool=False):
-    items = []
-    owner_item = None
-    try:
-        root_id = int(owner_scope_id(current_state_chat_id()))
-    except Exception:
-        root_id = int(OWNER_ID or 0)
-    for cid in _v163_forward_scope_ids():
-        try:
-            if not include_removed and is_chat_bot_removed(int(cid)):
-                continue
-        except Exception:
-            pass
-        title = get_chat_display_name(int(cid)) or f'Чат {cid}'
-        if root_id and int(cid) == root_id:
-            owner_item = (int(cid), title)
-        else:
-            items.append((int(cid), title))
-    if include_owner and root_id and (owner_item is None):
-        owner_item = (root_id, get_chat_display_name(root_id) or f'Чат {root_id}')
-    if not include_owner:
-        owner_item = None
-    return (items, owner_item)
+# [OCH12.35 OWNER] _v177_legacy_0181_collect_forward_picker_items -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0155')
 try:
     _v177_legacy_0181_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
 except Exception:
@@ -6443,28 +6083,8 @@ def _canon_tenant_same_space__001(chat_a: int, chat_b: int) -> bool:
     ta, tb = (str(_v164_mapping().get(str(a)) or ''), str(_v164_mapping().get(str(b)) or ''))
     return bool(ta and ta == tb)
 
-def _v177_legacy_0143_add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
-    src, dst = (int(src_chat_id), int(dst_chat_id))
-    actor = 0
-    try:
-        actor = int(tenant_current_actor_user_id() or 0)
-    except Exception:
-        pass
-    if not tenant_same_space(src, dst):
-        if not tenant_is_platform_owner_user(actor):
-            raise PermissionError('Можно связывать только свой 1-й круг и его 2-й круг')
-        key = f'{min(src, dst)}:{max(src, dst)}'
-        _v164_root().setdefault('global_forward_pairs', {})[key] = {'src': src, 'dst': dst, 'created_by': actor, 'created_at': _v164_now()}
-        try:
-            save_data(data, root_only=True)
-        except Exception:
-            pass
-    base = globals().get('_V148_ORIG_ADD_FORWARD_LINK')
-    if callable(base):
-        return base(src, dst, mode)
-    if callable(_V164_PREV_ADD_FORWARD_LINK):
-        return _V164_PREV_ADD_FORWARD_LINK(src, dst, mode)
-    raise RuntimeError('add_forward_link is unavailable')
+# [OCH12.35 OWNER] _v177_legacy_0143_add_forward_link -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0156')
 try:
     _v177_legacy_0143_add_forward_link.__name__ = 'add_forward_link'
 except Exception:
@@ -6760,34 +6380,15 @@ def _v164_scoped_picker_ids(kind: str, level: int | None=None) -> list[int]:
         level = _v164_current_window_circle(kind, 1)
     return _v164_scope_ids(int(level), current_state_chat_id())
 
-def _v177_legacy_0182_collect_forward_picker_items(include_owner: bool=True, include_removed: bool=False):
-    level = _v164_current_window_circle('forward', 1)
-    items = []
-    for cid in _v164_scoped_picker_ids('forward', level):
-        try:
-            if not include_removed and is_chat_bot_removed(int(cid)):
-                continue
-        except Exception:
-            pass
-        items.append((int(cid), get_chat_display_name(int(cid)) or f'Чат {cid}'))
-    return (items, None)
+# [OCH12.35 OWNER] _v177_legacy_0182_collect_forward_picker_items -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0157')
 try:
     _v177_legacy_0182_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
 except Exception:
     pass
 
-def _v177_legacy_0191_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
-    rows = _V164_PREV_COLLECT_FORWARD_PAIRS() if callable(_V164_PREV_COLLECT_FORWARD_PAIRS) else []
-    allowed = set(_v164_scoped_picker_ids('forward'))
-    out = []
-    for pair in rows or []:
-        try:
-            a, b = (int(pair[0]), int(pair[1]))
-        except Exception:
-            continue
-        if a in allowed:
-            out.append((a, b))
-    return out
+# [OCH12.35 OWNER] _v177_legacy_0191_collect_forward_pairs_for_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0158')
 try:
     _v177_legacy_0191_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
 except Exception:
@@ -6804,89 +6405,33 @@ def _v164_insert_before_nav(kb, button) -> None:
         except Exception:
             pass
 
-def _canon_build_forward_new_menu__001(day_key: str | None=None, A: int | None=None, B: int | None=None):
-    level = _v164_current_window_circle('forward', circle_level_for_chat(A) if A else 1)
-    kb = _V164_PREV_BUILD_FORWARD_NEW_MENU(day_key, A, B)
-    if not B:
-        _v164_insert_before_nav(kb, _v164_circle_switch_button('forward', level, int(A or 0)))
-    return kb
+# [OCH12.35 OWNER] _canon_build_forward_new_menu__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0159')
 
-def _canon_build_forward_source_menu__001(day_key: str | None=None):
-    if forward_menu_new_style_enabled():
-        return build_forward_new_menu(day_key)
-    level = _v164_current_window_circle('forward', 1)
-    kb = _V164_PREV_BUILD_FORWARD_SOURCE_MENU(day_key)
-    _v164_insert_before_nav(kb, _v164_circle_switch_button('forward', level))
-    return kb
+# [OCH12.35 OWNER] _canon_build_forward_source_menu__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0160')
 
-def _canon_build_forward_target_menu__001(src_id: int):
-    src = int(src_id)
-    if circle_level_for_chat(src) in {1, 2}:
-        key = _v164_window_key('forward')
-        with _V164_WINDOW_VIEW_LOCK:
-            if key not in _V164_WINDOW_VIEW:
-                _V164_WINDOW_VIEW[key] = {'circle': circle_level_for_chat(src), 'at': _v164_time.time()}
-    level = _v164_current_window_circle('forward', circle_level_for_chat(src))
-    kb = _V164_PREV_BUILD_FORWARD_TARGET_MENU(src)
-    _v164_insert_before_nav(kb, _v164_circle_switch_button('forward', level, src))
-    return kb
+# [OCH12.35 OWNER] _canon_build_forward_target_menu__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0161')
 
-def _canon_build_forward_menu_text_for_current_mode__001(title: str | None=None, A: int | None=None, B: int | None=None) -> str:
-    level = _v164_current_window_circle('forward', circle_level_for_chat(A) if A else 1)
-    prefix = '1️⃣ 1-й круг' if level == 1 else '2️⃣ 2-й круг'
-    if forward_menu_new_style_enabled():
-        body = build_forward_new_text(A, B)
-    else:
-        body = build_forward_status_text(title or 'Пересылка:\nВыберите чат A:')
-    return f'{prefix}\n{body}'
+# [OCH12.35 OWNER] _canon_build_forward_menu_text_for_current_mode__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0162')
 
-def _canon_build_forward_menu_keyboard_for_current_mode__001(day_key: str | None=None, A: int | None=None, B: int | None=None):
-    if forward_menu_new_style_enabled():
-        return build_forward_new_menu(day_key, A, B)
-    if A and B:
-        return build_forward_mode_menu(A, B)
-    if A:
-        return build_forward_target_menu(A)
-    return build_forward_source_menu(day_key)
+# [OCH12.35 OWNER] _canon_build_forward_menu_keyboard_for_current_mode__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0163')
 
-def _v177_legacy_0197_build_finance_toggle_chat_menu(day_key: str):
-    level = _v164_current_window_circle('finmode', 1)
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    buttons = []
-    for cid in _v164_scope_ids(level, current_state_chat_id()):
-        try:
-            if is_chat_bot_removed(cid):
-                continue
-        except Exception:
-            pass
-        icon = finance_mode_compact_icon(cid)
-        buttons.append(IB(f'{icon} {chat_button_title(cid, get_chat_display_name(cid))}', callback_data=f'd:{day_key}:fw_finmode_pick_{cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    if not buttons:
-        kb.row(IB('Нет чатов этого круга', callback_data='none'))
-    kb.row(_v164_circle_switch_button('finmode', level))
-    kb.row(IB('ℹ️ Описание чатов', callback_data='chat_desc_menu:finmode'))
-    kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0197_build_finance_toggle_chat_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0196')
 try:
     _v177_legacy_0197_build_finance_toggle_chat_menu.__name__ = 'build_finance_toggle_chat_menu'
 except Exception:
     pass
 
-def _canon_build_quick_balance_mode_menu__001(day_key: str, target_chat_id: int):
-    kb = _V164_PREV_BUILD_QUICK_BALANCE_MODE_MENU(day_key, target_chat_id)
-    level = _v164_current_window_circle('finmode', circle_level_for_chat(int(target_chat_id)))
-    try:
-        if kb.keyboard:
-            last = kb.keyboard[-1]
-            if last and 'Назад' in str(getattr(last[0], 'text', '')):
-                kb.keyboard[-1] = [IB('🔙 Назад к чатам', callback_data=f'v164:finback:{level}:{day_key}')]
-    except Exception:
-        pass
-    return kb
+# [OCH12.35 OWNER] _canon_build_quick_balance_mode_menu__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0197')
 
-def _canon_build_finance_mode_config_menu__001(day_key: str, target_chat_id: int):
-    return build_quick_balance_mode_menu(day_key, target_chat_id)
+# [OCH12.35 OWNER] _canon_build_finance_mode_config_menu__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0198')
 
 def _v177_legacy_0184_build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
     if str(origin) not in {'forward', 'finmode'}:
@@ -7051,88 +6596,18 @@ def _v165_owner_item(include_removed: bool=False):
             pass
     return (oid, get_chat_display_name(oid) or f'Чат {oid}')
 
-def _canon_collect_forward_picker_items__001(include_owner: bool=True, include_removed: bool=False):
-    """v165: v163-compatible owner row + v164 circle-scoped ordinary chats."""
-    level = _v164_current_window_circle('forward', 1)
-    items = []
-    owner_item = None
-    for cid in _v164_scope_ids(level, current_state_chat_id()):
-        try:
-            icid = int(cid)
-        except Exception:
-            continue
-        try:
-            if not include_removed and is_chat_bot_removed(icid):
-                continue
-        except Exception:
-            pass
-        items.append((icid, get_chat_display_name(icid) or f'Чат {icid}'))
-    if include_owner and int(level) == 1 and _v165_is_platform_owner_context():
-        owner_item = _v165_owner_item(include_removed=include_removed)
-    if owner_item:
-        items = [(cid, title) for cid, title in items if int(cid) != int(owner_item[0])]
-    items.sort(key=lambda row: (str(row[1]).casefold(), int(row[0])))
-    return (items, owner_item)
+# [OCH12.35 OWNER] _canon_collect_forward_picker_items__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0164')
 
-def _v177_legacy_0192_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
-    """Show historical owner pairs again on the 1st-circle page without mixing tenant storage."""
-    try:
-        rows = _V164_PREV_COLLECT_FORWARD_PAIRS() if callable(_V164_PREV_COLLECT_FORWARD_PAIRS) else []
-    except Exception:
-        rows = []
-    level = _v164_current_window_circle('forward', 1)
-    allowed = set((int(x) for x in _v164_scope_ids(level, current_state_chat_id()) or []))
-    if int(level) == 1 and _v165_is_platform_owner_context():
-        try:
-            allowed.add(int(OWNER_ID))
-        except Exception:
-            pass
-    out = []
-    for pair in rows or []:
-        try:
-            a, b = (int(pair[0]), int(pair[1]))
-        except Exception:
-            continue
-        if a in allowed:
-            out.append((a, b))
-    return out
+# [OCH12.35 OWNER] _v177_legacy_0192_collect_forward_pairs_for_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0165')
 try:
     _v177_legacy_0192_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
 except Exception:
     pass
 
-def _canon_build_finance_toggle_chat_menu__001(day_key: str):
-    """Finance-mode picker: owner + ordinary first circle, or second circle only."""
-    level = _v164_current_window_circle('finmode', 1)
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    buttons = []
-    if int(level) == 1 and _v165_is_platform_owner_context():
-        owner_item = _v165_owner_item(include_removed=True)
-        if owner_item:
-            oid, title = owner_item
-            icon = finance_mode_compact_icon(oid)
-            kb.row(IB(f'{icon} {chat_button_title(oid, title)}', callback_data=f'd:{day_key}:fw_finmode_pick_{oid}'))
-    for cid in _v164_scope_ids(level, current_state_chat_id()):
-        try:
-            cid = int(cid)
-        except Exception:
-            continue
-        if OWNER_ID and str(cid) == str(OWNER_ID):
-            continue
-        try:
-            if is_chat_bot_removed(cid):
-                continue
-        except Exception:
-            pass
-        icon = finance_mode_compact_icon(cid)
-        buttons.append(IB(f'{icon} {chat_button_title(cid, get_chat_display_name(cid))}', callback_data=f'd:{day_key}:fw_finmode_pick_{cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    if not buttons and (not (int(level) == 1 and _v165_is_platform_owner_context())):
-        kb.row(IB('Нет чатов этого круга', callback_data='none'))
-    kb.row(_v164_circle_switch_button('finmode', level))
-    kb.row(IB('ℹ️ Описание чатов', callback_data='chat_desc_menu:finmode'))
-    kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _canon_build_finance_toggle_chat_menu__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0199')
 
 def _canon_build_chat_description_menu__001(viewer_chat_id: int, origin: str, day_key: str):
     """Description picker mirrors the visible owner/first/second-circle selection."""
@@ -7201,46 +6676,11 @@ def _v166_callback_raw_parts(payload: dict):
     except Exception:
         return ('', 0, 0)
 
-def _v166_forward_pair_from_callback(raw: str):
-    raw = str(raw or '')
-    prefixes = ('fw_new_mode:', 'fw_new_fin:', 'fw_new_clear:', 'fw_mode:', 'fw_finpair:', 'fw_clear:')
-    if not raw.startswith(prefixes):
-        return None
-    nums = []
-    for part in raw.split(':')[1:]:
-        try:
-            nums.append(int(part))
-        except Exception:
-            continue
-        if len(nums) >= 2:
-            break
-    if len(nums) < 2:
-        return None
-    a, b = (nums[0], nums[1])
-    return (a, b) if a <= b else (b, a)
+# [OCH12.35 OWNER] _v166_forward_pair_from_callback -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0166')
 
-def _v166_is_finance_business_callback(raw: str) -> bool:
-    """Callbacks that can create/delete/edit money stay serialized per chat."""
-    low = str(raw or '').casefold()
-    if low.startswith(('fw_new_fin:', 'fw_new_mode:', 'fw_new_clear:', 'fw_mode:', 'fw_finpair:', 'fw_clear:')):
-        return False
-    hard_prefixes = ('fv:', 'fv_', 'edit_', 'del_', 'delete_', 'expense_', 'income_', 'rec_', 'record_', 'usd_edit', 'usd_del', 'cat_move', 'cat_delete')
-    if low.startswith(hard_prefixes):
-        return True
-    dangerous = ('delete_selected', 'apply', 'save', 'confirm', 'finance_off', 'fin_mode_', 'qb_mode_', 'qb_hidden_')
-    if any((token in low for token in dangerous)):
-        return True
-    if low.startswith('d:'):
-        try:
-            cmd = low.split(':', 2)[2]
-        except Exception:
-            cmd = low
-        safe_tokens = ('info', 'back_main', 'forward_menu', 'forward_finmode_menu', 'calendar', 'articles_toggle', 'financial_values_toggle', 'usd_tx_toggle', 'usd_display_toggle')
-        if any((token in cmd for token in safe_tokens)):
-            return False
-        if any((token in cmd for token in ('delete', 'edit', 'save', 'apply', 'fin_mode_', 'qb_mode_', 'qb_hidden_'))):
-            return True
-    return False
+# [OCH12.35 OWNER] _v166_is_finance_business_callback -> 11_business_finance.py
+_owner_install('finance', 'finance:0200')
 
 def _v166_is_safe_window_callback(raw: str) -> bool:
     low = str(raw or '').casefold()
@@ -7462,140 +6902,20 @@ def _v166_pair_key(a: int, b: int):
     a, b = (int(a), int(b))
     return (a, b) if a <= b else (b, a)
 
-def _v166_raw_forward_pairs():
-    with data_lock:
-        fr = {str(k): dict(v or {}) for k, v in (data.get('forward_rules', {}) or {}).items()}
-        ff = {str(k): dict(v or {}) for k, v in (data.get('forward_finance', {}) or {}).items()}
-        order = list(data.get('forward_pair_order', []) or [])
-    pairs = []
-    seen = set()
+# [OCH12.35 OWNER] _v166_raw_forward_pairs -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0167')
 
-    def add(a, b):
-        try:
-            a, b = (int(a), int(b))
-        except Exception:
-            return
-        if a == b:
-            return
-        key = _v166_pair_key(a, b)
-        if key in seen:
-            return
-        ab = str(b) in (fr.get(str(a), {}) or {})
-        ba = str(a) in (fr.get(str(b), {}) or {})
-        af = bool((ff.get(str(a), {}) or {}).get(str(b), False))
-        bf = bool((ff.get(str(b), {}) or {}).get(str(a), False))
-        if not (ab or ba or af or bf):
-            return
-        seen.add(key)
-        pairs.append((a, b))
-    if isinstance(order, list):
-        for raw in order:
-            try:
-                a_s, b_s = str(raw).split(':', 1)
-                add(int(a_s), int(b_s))
-            except Exception:
-                continue
-    for src, dsts in fr.items():
-        for dst in (dsts or {}).keys():
-            add(src, dst)
-    for src, dsts in ff.items():
-        for dst, enabled in (dsts or {}).items():
-            if enabled:
-                add(src, dst)
-    return pairs
+# [OCH12.35 OWNER] _v166_forward_allowed_ids -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0168')
 
-def _v166_forward_allowed_ids():
-    level = _v164_current_window_circle('forward', 1)
-    try:
-        ctx = int(current_state_chat_id() or 0)
-    except Exception:
-        ctx = 0
-    allowed = set((int(x) for x in _v164_scope_ids(level, ctx) or []))
-    if int(level) == 1 and _v165_is_platform_owner_context():
-        try:
-            allowed.add(int(OWNER_ID))
-        except Exception:
-            pass
-    return (int(level), allowed)
+# [OCH12.35 OWNER] _canon_collect_forward_pairs_for_menu__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0169')
 
-def _canon_collect_forward_pairs_for_menu__001() -> list[tuple[int, int]]:
-    level, allowed = _v166_forward_allowed_ids()
-    out = []
-    for a, b in _v166_raw_forward_pairs():
-        if a in allowed:
-            out.append((a, b))
-        elif b in allowed:
-            out.append((b, a))
-    try:
-        bot_journal('v166_forward_pairs_menu', current_state_chat_id(), f'circle={level} raw={len(_v166_raw_forward_pairs())} shown={len(out)}')
-    except Exception:
-        pass
-    return out
+# [OCH12.35 OWNER] _canon_build_forward_status_lines__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0170')
 
-def _canon_build_forward_status_lines__001() -> list[str]:
-    lines = []
-    for a, b in collect_forward_pairs_for_menu():
-        try:
-            arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(a, b)
-            if ab_on or ba_on or ab_fin or ba_fin:
-                lines.append(f'• {chat_button_title(a)} -({arrow})-({fin})-{chat_button_title(b)}')
-        except Exception:
-            continue
-    return lines
-
-def _v166_schedule_forward_persist(*chat_ids):
-    with _V166_FORWARD_DIRTY_LOCK:
-        for cid in chat_ids:
-            try:
-                _V166_FORWARD_DIRTY_CHATS.add(int(cid))
-            except Exception:
-                pass
-
-    def _fire():
-
-        def _persist():
-            with _V166_FORWARD_DIRTY_LOCK:
-                ids = sorted(_V166_FORWARD_DIRTY_CHATS)
-                _V166_FORWARD_DIRTY_CHATS.clear()
-            try:
-                save_data(data, full=True)
-            except Exception as exc:
-                try:
-                    log_error(f'v166 forward local persist: {exc}')
-                except Exception:
-                    pass
-            try:
-                path = _owner_data_file()
-                if path:
-                    payload = _load_json(path, {}) or {}
-                    if not isinstance(payload, dict):
-                        payload = {}
-                    payload['forward_rules'] = data.get('forward_rules', {}) or {}
-                    payload['forward_finance'] = data.get('forward_finance', {}) or {}
-                    payload['forward_pair_order'] = data.get('forward_pair_order', []) or []
-                    _save_json(path, payload)
-            except Exception as exc:
-                try:
-                    log_error(f'v166 forward legacy persist: {exc}')
-                except Exception:
-                    pass
-            try:
-                if ids:
-                    schedule_config_backup_for_chats(*ids, delay=0.3)
-                else:
-                    schedule_config_backup_for_chats(delay=0.3)
-            except Exception:
-                pass
-        if not V166_CONFIG_IO_TASK_POOL.submit('forward-persist', _persist):
-            try:
-                log_error('V166 CONFIG IO QUEUE FULL: forward-persist')
-            except Exception:
-                pass
-    try:
-        V166_CONFIG_IO_SCHEDULER.cancel('v166-forward-persist')
-        V166_CONFIG_IO_SCHEDULER.schedule('v166-forward-persist', 0.12, _fire)
-    except Exception:
-        _fire()
+# [OCH12.35 OWNER] _v166_schedule_forward_persist -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0171')
 
 def _v166_authorize_pair(src: int, dst: int):
     src, dst = (int(src), int(dst))
@@ -7622,129 +6942,35 @@ def _v166_cleanup_global_pair(a: int, b: int):
     except Exception:
         pass
 
-def _v166_enable_hidden_finance_memory(dst_chat_id: int):
-    dst_chat_id = int(dst_chat_id)
-    with locked_chat(dst_chat_id):
-        store = get_chat_store(dst_chat_id)
-        settings = store.setdefault('settings', {})
-        was_enabled = bool(store.get('finance_mode', False))
-        store['finance_mode'] = True
-        try:
-            finance_active_chats.add(dst_chat_id)
-        except Exception:
-            pass
-        settings['hidden_finance'] = True
-        if not was_enabled:
-            settings['quick_balance_enabled'] = False
-            settings['quick_balance_behavior'] = 'normal'
-            settings['quick_balance_user_selected'] = True
-            state = store.get('finance_window_state')
-            if not isinstance(state, dict):
-                state = {}
-            state.update({'mode': 'off', 'main_windows': {}, 'balance_panel_id': None, 'balance_panel_mode': 'mini', 'current_view_day': str(store.get('current_view_day') or today_key()), 'auto_reopen_on_boot': False, 'updated_at': now_local().isoformat(timespec='seconds')})
-            store['finance_window_state'] = state
-    _v166_schedule_forward_persist(dst_chat_id)
+# [OCH12.35 OWNER] _v166_enable_hidden_finance_memory -> 11_business_finance.py
+_owner_install('finance', 'finance:0201')
 
-def _canon_ensure_hidden_finance_for_forward_dst__001(dst_chat_id: int):
-    try:
-        _v166_enable_hidden_finance_memory(int(dst_chat_id))
-        bot_journal('forward_finance_auto_hidden', int(dst_chat_id), 'v166 fast: hidden finance enabled; durable config queued')
-    except Exception as exc:
-        log_error(f'v166 ensure_hidden_finance_for_forward_dst({dst_chat_id}): {exc}')
+# [OCH12.35 OWNER] _canon_ensure_hidden_finance_for_forward_dst__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0172')
 
-def _canon_add_forward_link__001(src_chat_id: int, dst_chat_id: int, mode: str):
-    src, dst = (int(src_chat_id), int(dst_chat_id))
-    _v166_authorize_pair(src, dst)
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        data.setdefault('forward_rules', {}).setdefault(str(src), {})[str(dst)] = str(mode)
-    _v166_schedule_forward_persist(src, dst)
+# [OCH12.35 OWNER] _canon_add_forward_link__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0173')
 
-def _canon_remove_forward_link__001(src_chat_id: int, dst_chat_id: int):
-    src, dst = (int(src_chat_id), int(dst_chat_id))
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        fr = data.setdefault('forward_rules', {})
-        ff = data.setdefault('forward_finance', {})
-        (fr.get(str(src)) or {}).pop(str(dst), None)
-        if str(src) in fr and (not fr.get(str(src))):
-            fr.pop(str(src), None)
-        (ff.get(str(src)) or {}).pop(str(dst), None)
-        if str(src) in ff and (not ff.get(str(src))):
-            ff.pop(str(src), None)
-    _v166_cleanup_global_pair(src, dst)
-    _v166_schedule_forward_persist(src, dst)
+# [OCH12.35 OWNER] _canon_remove_forward_link__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0174')
 
-def _canon_set_forward_finance__001(src_chat_id: int, dst_chat_id: int, enabled: bool):
-    src, dst = (int(src_chat_id), int(dst_chat_id))
-    _v166_authorize_pair(src, dst)
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        data.setdefault('forward_finance', {}).setdefault(str(src), {})[str(dst)] = bool(enabled)
-    if enabled:
-        ensure_hidden_finance_for_forward_dst(dst)
-    _v166_schedule_forward_persist(src, dst)
+# [OCH12.35 OWNER] _canon_set_forward_finance__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0175')
 
-def _canon_remove_forward_finance__001(src_chat_id: int, dst_chat_id: int):
-    src, dst = (int(src_chat_id), int(dst_chat_id))
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        ff = data.setdefault('forward_finance', {})
-        (ff.get(str(src)) or {}).pop(str(dst), None)
-        if str(src) in ff and (not ff.get(str(src))):
-            ff.pop(str(src), None)
-    _v166_cleanup_global_pair(src, dst)
-    _v166_schedule_forward_persist(src, dst)
+# [OCH12.35 OWNER] _canon_remove_forward_finance__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0176')
 
-def _canon_remember_forward_pair__001(A: int, B: int):
-    A, B = (int(A), int(B))
-    if A == B:
-        return
-    key, rev = (f'{A}:{B}', f'{B}:{A}')
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        order = data.setdefault('forward_pair_order', [])
-        if not isinstance(order, list):
-            order = []
-            data['forward_pair_order'] = order
-        if key not in order and rev not in order:
-            order.append(key)
-    _v166_schedule_forward_persist(A, B)
+# [OCH12.35 OWNER] _canon_remember_forward_pair__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0177')
 
-def _canon_forget_forward_pair_if_empty__001(A: int, B: int):
-    A, B = (int(A), int(B))
-    try:
-        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
-        if ab_on or ba_on or ab_fin or ba_fin:
-            return
-    except Exception:
-        return
-    key, rev = (f'{A}:{B}', f'{B}:{A}')
-    with data_lock, _V166_FORWARD_STATE_LOCK:
-        order = data.setdefault('forward_pair_order', [])
-        if isinstance(order, list):
-            data['forward_pair_order'] = [x for x in order if x not in {key, rev}]
-    _v166_cleanup_global_pair(A, B)
-    _v166_schedule_forward_persist(A, B)
+# [OCH12.35 OWNER] _canon_forget_forward_pair_if_empty__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0178')
 
-def _canon_set_forward_menu_new_style_enabled__001(enabled: bool, chat_id: int | None=None):
-    cid = int(chat_id) if chat_id is not None else current_state_chat_id()
-    if cid is not None:
-        owner_scoped_settings(int(cid))['forward_menu_new_style'] = bool(enabled)
+# [OCH12.35 OWNER] _canon_set_forward_menu_new_style_enabled__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0179')
 
-        def _persist():
-            try:
-                save_data(data, chat_ids=[int(cid)])
-                schedule_config_backup_for_chats(int(cid), delay=0.3)
-            except Exception as exc:
-                try:
-                    log_error(f'v166 forward style persist: {exc}')
-                except Exception:
-                    pass
-        V166_CONFIG_IO_TASK_POOL.submit(f'style:{int(cid)}', _persist)
-    else:
-        data.setdefault('_global_settings', {})['forward_menu_new_style'] = bool(enabled)
-        V166_CONFIG_IO_TASK_POOL.submit('style:global', save_data, data)
-
-def _canon_toggle_forward_menu_new_style__001(chat_id: int | None=None) -> bool:
-    new_value = not forward_menu_new_style_enabled(chat_id)
-    set_forward_menu_new_style_enabled(new_value, chat_id)
-    return new_value
+# [OCH12.35 OWNER] _canon_toggle_forward_menu_new_style__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0180')
 
 def _v166_fin_submit(key, fn, *args):
     if not V166_FINANCE_UI_TASK_POOL.submit(str(key), fn, *args):
@@ -7755,9 +6981,8 @@ def _v166_fin_submit(key, fn, *args):
         return False
     return True
 
-def _canon_refresh_balance_panel_now__001(chat_id: int):
-    if callable(_V166_PREV_REFRESH_BALANCE):
-        _v166_fin_submit(f'balance:{int(chat_id)}', _V166_PREV_REFRESH_BALANCE, int(chat_id))
+# [OCH12.35 OWNER] _canon_refresh_balance_panel_now__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0202')
 
 def _canon_refresh_total_message_if_any__001(chat_id: int):
     if callable(_V166_PREV_REFRESH_TOTAL):
@@ -7889,69 +7114,17 @@ def _canon_refresh_registered_financial_windows__001(chat_id: int):
             continue
     return True
 
-def _finance_root_persist_job_v243(chat_id: int) -> None:
-    """Persist derived finance root state without nesting data_lock -> SQLite.lock (R36)."""
-    try:
-        import copy as _r36_copy
-        with data_lock:
-            data.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
-            data['_state_meta']['bot_version'] = VERSION
-            root_snapshot = _r36_copy.deepcopy(_sqlite_pack_root(data))
-        SQLITE.save_root(root_snapshot)
-        try:
-            bot_journal('finance_root_persist_v243', int(chat_id), 'background root persisted')
-        except Exception:
-            pass
-    except Exception as exc:
-        try:
-            log_error(f'finance root persist v243 {chat_id}: {exc}')
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _finance_root_persist_job_v243 -> 11_business_finance.py
+_owner_install('finance', 'finance:0203')
 
-def schedule_finance_root_persist_v243(chat_id: int, delay: float=0.45) -> None:
-    cid = int(chat_id)
+# [OCH12.35 OWNER] schedule_finance_root_persist_v243 -> 11_business_finance.py
+_owner_install('finance', 'finance:0204')
 
-    def _fire():
-        pool = globals().get('BACKGROUND_TASK_POOL')
-        if pool is None or not pool.submit(f'finance-root:{cid}', _finance_root_persist_job_v243, cid):
-            _finance_root_persist_job_v243(cid)
-    try:
-        DELAYED_SCHEDULER.cancel(f'finance-root-persist:{cid}')
-        DELAYED_SCHEDULER.schedule(f'finance-root-persist:{cid}', max(0.05, float(delay)), _fire)
-    except Exception:
-        _fire()
+# [OCH12.35 OWNER] _finance_postcommit_background_v243 -> 11_business_finance.py
+_owner_install('finance', 'finance:0205')
 
-def _finance_postcommit_background_v243(chat_id: int, reason: str='change') -> None:
-    cid = int(chat_id)
-    try:
-        rebuild_global_records()
-    except Exception as exc:
-        try:
-            log_error(f'rebuild_global_records background v243 {cid}: {exc}')
-        except Exception:
-            pass
-    _finance_root_persist_job_v243(cid)
-    try:
-        schedule_full_backup_only(cid, BACKUP_MIN_DELAY_SECONDS)
-    except Exception:
-        pass
-    try:
-        bot_journal('finance_postcommit_background_v243', cid, f'reason={reason}')
-    except Exception:
-        pass
-
-def schedule_finance_postcommit_background_v243(chat_id: int, reason: str='change', delay: float=0.25) -> None:
-    cid = int(chat_id)
-
-    def _fire():
-        pool = globals().get('BACKGROUND_TASK_POOL')
-        if pool is None or not pool.submit(f'finance-post:{cid}', _finance_postcommit_background_v243, cid, str(reason)):
-            _finance_postcommit_background_v243(cid, str(reason))
-    try:
-        DELAYED_SCHEDULER.cancel(f'finance-postcommit:{cid}')
-        DELAYED_SCHEDULER.schedule(f'finance-postcommit:{cid}', max(0.05, float(delay)), _fire)
-    except Exception:
-        _fire()
+# [OCH12.35 OWNER] schedule_finance_postcommit_background_v243 -> 11_business_finance.py
+_owner_install('finance', 'finance:0206')
 
 def schedule_financial_window_refresh(chat_id: int, day_key: str | None=None, reason: str='finance_changed', delay: float=0.0):
     """Single final finance repaint path. Only the authoritative main window may repaint."""
@@ -8005,35 +7178,8 @@ def schedule_financial_window_refresh(chat_id: int, day_key: str | None=None, re
         pass
     return scheduled
 
-def finance_changed(chat_id: int, day_key: str | None=None, reason: str='change', delay: float=0.05):
-    chat_id = int(chat_id)
-    day_key = day_key or get_chat_store(chat_id).get('current_view_day') or today_key()
-    try:
-        requested = max(0.0, float(delay))
-    except Exception:
-        requested = 0.05
-    effective = min(requested, 0.1)
-    bot_journal('finance_changed_scheduled', chat_id, f'day={day_key} reason={reason} delay={effective} v189=single_refresh')
-
-    def _job():
-        if not FINANCE_TASK_POOL.submit(chat_id, _finance_changed_now, chat_id, day_key, reason):
-            try:
-                log_error(f'FINANCE QUEUE FULL, RETRY: {chat_id}')
-            except Exception:
-                pass
-            V166_FINANCE_DEBOUNCE_SCHEDULER.schedule(f'finance-finalize:{chat_id}', 0.25, _fire)
-
-    def _fire():
-        with timer_lock:
-            _finalize_timers.pop(chat_id, None)
-        _job()
-    with timer_lock:
-        _finalize_timers[chat_id] = _v166_time.time() + effective
-    try:
-        V166_FINANCE_DEBOUNCE_SCHEDULER.cancel(f'finance-finalize:{chat_id}')
-    except Exception:
-        pass
-    V166_FINANCE_DEBOUNCE_SCHEDULER.schedule(f'finance-finalize:{chat_id}', effective, _fire)
+# [OCH12.35 OWNER] finance_changed -> 11_business_finance.py
+_owner_install('finance', 'finance:0207')
 
 def schedule_finalize(chat_id: int, day_key: str, delay: float=0.05):
     return finance_changed(int(chat_id), str(day_key), reason='schedule_finalize', delay=min(float(delay or 0.05), 0.1))
@@ -8079,23 +7225,8 @@ def _v167_cached(value):
     except Exception:
         return 0.0
 
-def _v251_google_formula_canonical(formula) -> str:
-    """Canonicalize only transformations Google itself performs harmlessly.
-
-    Google Sheets rewrites a one-cell SUM range such as SUM(C38:C38) to
-    SUM(C38). Those formulas are semantically identical, so generation and
-    verification must agree on one representation. We intentionally keep this
-    normalization narrow instead of trying to parse arbitrary Sheets formulas.
-    """
-    text = str(formula or '').strip().lstrip('=').strip()
-    if not text:
-        return text
-    try:
-        pattern = r'(?i)\bSUM\(\s*(\$?[A-Z]{1,3}\$?\d+)\s*:\s*\1\s*\)'
-        text = re.sub(pattern, lambda m: f'SUM({m.group(1)})', text)
-    except Exception:
-        pass
-    return text
+# [OCH12.35 OWNER] _v251_google_formula_canonical -> 15_integration_google.py
+_owner_install('google', 'google:0032')
 
 
 def _v167_formula(formula: str, cached):
@@ -8372,77 +7503,8 @@ def _canon_v151_category_table__001(chat_id: int, currency: str):
     rows = _V167_BASE_V151_CATEGORY_TABLE(chat_id, currency)
     return _v167_formulaize_category(rows, int(chat_id), str(currency))
 
-def _v167_patch_xlsx_package(path: str) -> None:
-    if not path or not _v167_os.path.exists(path):
-        return
-    tmp = path + '.v167.tmp'
-    ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
-    _v167_ET.register_namespace('', ns)
-    with _v167_zipfile.ZipFile(path, 'r') as zin, _v167_zipfile.ZipFile(tmp, 'w', _v167_zipfile.ZIP_DEFLATED) as zout:
-        for item in zin.infolist():
-            raw = zin.read(item.filename)
-            if item.filename == 'xl/styles.xml':
-                try:
-                    root = _v167_ET.fromstring(raw)
-                    numfmts = root.find(f'{{{ns}}}numFmts')
-                    if numfmts is None:
-                        numfmts = _v167_ET.Element(f'{{{ns}}}numFmts', {'count': '1'})
-                        insert_at = 0
-                        root.insert(insert_at, numfmts)
-                    existing = None
-                    for nf in list(numfmts):
-                        if nf.attrib.get('formatCode') in {'#,##0', '#,###'}:
-                            existing = nf
-                            break
-                    if existing is None:
-                        used = {int(x.attrib.get('numFmtId', '0') or 0) for x in list(numfmts)}
-                        fmt_id = next((n for n in range(164, 300) if n not in used), 164)
-                        _v167_ET.SubElement(numfmts, f'{{{ns}}}numFmt', {'numFmtId': str(fmt_id), 'formatCode': '#,##0'})
-                    else:
-                        fmt_id = int(existing.attrib.get('numFmtId', '164') or 164)
-                    numfmts.set('count', str(len(list(numfmts))))
-                    borders = root.find(f'{{{ns}}}borders')
-                    thin_id = 0
-                    if borders is not None:
-                        thin_id = len(list(borders))
-                        border = _v167_ET.SubElement(borders, f'{{{ns}}}border')
-                        for side in ('left', 'right', 'top', 'bottom'):
-                            _v167_ET.SubElement(border, f'{{{ns}}}{side}', {'style': 'thin'})
-                        _v167_ET.SubElement(border, f'{{{ns}}}diagonal')
-                        borders.set('count', str(len(list(borders))))
-                    cell_xfs = root.find(f'{{{ns}}}cellXfs')
-                    if cell_xfs is not None:
-                        for xf in list(cell_xfs):
-                            xf.set('numFmtId', str(fmt_id))
-                            xf.set('applyNumberFormat', '1')
-                            if borders is not None:
-                                xf.set('borderId', str(thin_id))
-                                xf.set('applyBorder', '1')
-                            align = xf.find(f'{{{ns}}}alignment')
-                            if align is None:
-                                align = _v167_ET.SubElement(xf, f'{{{ns}}}alignment')
-                            align.set('wrapText', '1')
-                            align.set('vertical', 'top')
-                            xf.set('applyAlignment', '1')
-                    raw = _v167_ET.tostring(root, encoding='utf-8', xml_declaration=True)
-                except Exception:
-                    pass
-            elif item.filename == 'xl/worksheets/sheet1.xml':
-                try:
-                    root = _v167_ET.fromstring(raw)
-                    cols = root.find(f'{{{ns}}}cols')
-                    if cols is not None:
-                        for col in list(cols):
-                            lo = int(col.attrib.get('min', '0') or 0)
-                            hi = int(col.attrib.get('max', '0') or 0)
-                            if lo <= 2 <= hi:
-                                col.set('width', '42')
-                                col.set('customWidth', '1')
-                    raw = _v167_ET.tostring(root, encoding='utf-8', xml_declaration=True)
-                except Exception:
-                    pass
-            zout.writestr(item, raw)
-    _v167_os.replace(tmp, path)
+# [OCH12.35 OWNER] _v167_patch_xlsx_package -> 16_integration_excel.py
+_owner_install('excel', 'excel:0082')
 
 def _v167_formulaize_four_week_rows(rows: list[list]) -> list[list]:
     """Restore formulas in the legacy 4-week Thursday-Wednesday workbook too."""
@@ -8520,70 +7582,14 @@ def _v167_formulaize_four_week_rows(rows: list[list]) -> list[list]:
         i = next_week if next_week > i else i + 1
     return out
 
-def _canon_write_simple_xlsx__001(path: str, rows: list[list], sheet_name: str='Данные') -> None:
-    # R10: even the emergency/local simple XLSX path uses the original vys-262
-    # colored financial palette. Normal exports run on Worker, but fallback files
-    # must look the same instead of reverting to a black/white workbook.
-    if callable(_V167_BASE_WRITE_TABL):
-        try:
-            styles, comments, freeze_rows, widths = _canon_modern_simple_excel_styles_comments__001(rows)
-            _V167_BASE_WRITE_TABL(path, rows, styles, sheet_name=sheet_name, comments=comments, freeze_rows=freeze_rows, widths=widths, annotation_mode='notes')
-            _v167_patch_xlsx_package(path)
-            return
-        except Exception:
-            pass
-    if not callable(_V167_BASE_WRITE_SIMPLE):
-        raise RuntimeError('XLSX writer is unavailable')
-    _V167_BASE_WRITE_SIMPLE(path, rows, sheet_name=sheet_name)
-    _v167_patch_xlsx_package(path)
+# [OCH12.35 OWNER] _canon_write_simple_xlsx__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0083')
 
-def _canon_write_tabl_lsx_xlsx__001(path: str, rows: list[list], styles: list[list], sheet_name: str='4 недели', comments: dict | None=None, freeze_rows: int=3, widths: list[float] | None=None, annotation_mode: str | None='notes') -> None:
-    if not callable(_V167_BASE_WRITE_TABL):
-        raise RuntimeError('Styled XLSX writer is unavailable')
-    widths2 = list(widths or [])
-    if len(widths2) >= 2:
-        widths2[1] = max(42, float(widths2[1] or 0))
-    rows2 = _v167_formulaize_four_week_rows(rows) if str(sheet_name or '').strip().casefold() == '4 недели' else rows
-    _V167_BASE_WRITE_TABL(path, rows2, styles, sheet_name=sheet_name, comments=comments, freeze_rows=freeze_rows, widths=widths2 or widths, annotation_mode=annotation_mode)
-    _v167_patch_xlsx_package(path)
+# [OCH12.35 OWNER] _canon_write_tabl_lsx_xlsx__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0084')
 
-def _v167_google_schedule_cfg(target_chat_id: int, create: bool=True) -> dict:
-    store = get_chat_store(int(target_chat_id))
-    cfg = store.get('google_thuwed_v167')
-    if not isinstance(cfg, dict):
-        if not create:
-            return {}
-        cfg = {}
-        store['google_thuwed_v167'] = cfg
-    cfg.setdefault('enabled', True)
-    cfg.setdefault('time', '05:01')
-    if str(cfg.get('mode') or '') not in {'manual', 'change', 'm15', 'h1', 'd0001', 'd0501'}:
-        if not bool(cfg.get('enabled', True)):
-            cfg['mode'] = 'manual'
-        else:
-            cfg['mode'] = 'd0001' if str(cfg.get('time') or '05:01') == '00:01' else 'd0501'
-    cfg['enabled'] = str(cfg.get('mode')) != 'manual'
-    if str(cfg.get('mode')) == 'd0001':
-        cfg['time'] = '00:01'
-    if str(cfg.get('mode')) == 'd0501':
-        cfg['time'] = '05:01'
-    legacy_schema = int(cfg.get('schema', 1) or 1)
-    cfg.setdefault('last_run_key', '')
-    if 'last_success_key' not in cfg:
-        cfg['last_success_key'] = '' if legacy_schema < 3 else str(cfg.get('last_run_key') or '')
-    cfg.setdefault('last_attempt_key', '')
-    cfg.setdefault('last_attempt_at', '')
-    cfg.setdefault('pending_run_key', '')
-    cfg.setdefault('pending_since_ts', 0.0)
-    cfg.setdefault('retry_count', 0)
-    cfg.setdefault('next_retry_ts', 0.0)
-    cfg.setdefault('last_target_day', '')
-    cfg.setdefault('last_target_period', '')
-    cfg.setdefault('last_ok_at', '')
-    cfg.setdefault('last_error', '')
-    cfg.setdefault('last_period', '')
-    cfg['schema'] = max(3, int(cfg.get('schema', 1) or 1))
-    return cfg
+# [OCH12.35 OWNER] _v167_google_schedule_cfg -> 15_integration_google.py
+_owner_install('google', 'google:0033')
 
 def _v167_persist_schedule(target_chat_id: int):
     """Persist only the changed settings on the callback thread.
@@ -8646,1745 +7652,77 @@ def _canon_add_export_period_rows__001(kb, day_key: str, prefix: str, owner_day_
         kb.row(IB(('✅ ' if enabled else '⬜ ') + 'Google Чт–Ср авто', callback_data=f'v167:gtoggle:{target}'), IB(('✅ ' if selected == '00:01' else '') + '00:01', callback_data=f'v167:gtime:{target}:0001'), IB(('✅ ' if selected == '05:01' else '') + '05:01', callback_data=f'v167:gtime:{target}:0501'))
         kb.row(IB('☁️ Обновить лист Чт–Ср сейчас', callback_data=f'v167:gnow:{target}'))
 
-def _v167_google_color_format(row, r_idx: int, c_idx: int, max_cols: int, layout: str, annotations: dict):
-    value = row[c_idx - 1] if c_idx - 1 < len(row) else ''
-    row_is_blank = not any((_excel_nonempty(v) for v in row))
-    first = str(row[0] if row else '').strip().casefold()
-    second = str(row[1] if len(row) > 1 else '').strip().casefold()
-    fmt = {'verticalAlignment': 'TOP', 'wrapStrategy': 'CLIP' if c_idx == 2 else 'WRAP', 'borders': {side: {'style': 'SOLID', 'color': {'red': 0.65, 'green': 0.65, 'blue': 0.65}} for side in ('top', 'bottom', 'left', 'right')}}
-    if isinstance(value, (int, float)) or (isinstance(value, dict) and value.get('formula')):
-        fmt['numberFormat'] = {'type': 'NUMBER', 'pattern': '#,##0'}
-    if first == 'ars':
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.78, 'green': 0.94, 'blue': 0.81}})
-    elif first == 'usd':
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.72, 'green': 0.86, 'blue': 1.0}})
-    elif first in {'дата', 'date'}:
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': _google_category_fill(c_idx - 1)})
-    elif row_is_blank:
-        fmt['backgroundColor'] = {'red': 1.0, 'green': 0.6, 'blue': 0.0}
-    elif first in {'расход', 'сумма по статьям'} or second in {'расход', 'сумма по статьям'}:
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': {'red': 1.0, 'green': 0.55, 'blue': 0.55}})
-    elif first in {'приход', 'приход за период'} or second in {'приход', 'приход за период'}:
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.55, 'green': 0.78, 'blue': 1.0}})
-    elif first in {'остаток с прошлого раза', 'остаток на руках', 'гомонковые', 'остаток в обороте'} or second in {'остаток с прошлого раза', 'остаток на руках', 'гомонковые', 'остаток в обороте'}:
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.55, 'green': 0.85, 'blue': 0.55}})
-    elif first == 'расход еды на человека в сутки' or second == 'расход еды на человека в сутки':
-        fmt.update({'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.74, 'green': 0.82, 'blue': 1.0}})
-    elif layout == 'category' and c_idx >= 4 and _excel_nonempty(value):
-        fmt['backgroundColor'] = _google_category_fill(c_idx - 1)
-    return fmt
+# [OCH12.35 OWNER] _v167_google_color_format -> 15_integration_google.py
+_owner_install('google', 'google:0034')
 
-def _v244_google_try_reconcile_stale_restore_gate() -> bool:
-    """Repair only the known stale CONFIG-binding gate after a verified MEGA restore.
+# [OCH12.35 OWNER] _v244_google_try_reconcile_stale_restore_gate -> 15_integration_google.py
+_owner_install('google', 'google:0035')
 
-    This deliberately does NOT waive a failed/missing database restore.  It is limited
-    to the case where Data Constitution verifies the recovered data but the old config
-    generation/hash binding is stale.
-    """
-    try:
-        state = globals().get('_RUNTIME_STATE') or {}
-        if not isinstance(state, dict) or not bool(state.get('restore_attempted')) or state.get('restore_ok') is not False:
-            return False
-        detail = str(state.get('restore_detail') or '').casefold()
-        if 'config guard' not in detail and 'config binding' not in detail and ('binding mismatch' not in detail):
-            return False
-        if bool(globals().get('RESTORE_GUARD_ACTIVE', False)):
-            return False
-        q = globals().get('constitution_quarantine_active')
-        if callable(q) and bool(q()):
-            return False
-        verify = globals().get('constitution_boot_verify_after_restore')
-        if callable(verify):
-            rep = verify() or {}
-            if not bool(rep.get('ok')):
-                return False
-        bind = globals().get('config_guard_bind_recovered_state_v242')
-        if not callable(bind):
-            return False
-        bind()
-        boot_verify = globals().get('config_guard_boot_verify_v234')
-        if callable(boot_verify):
-            rep2 = boot_verify() or {}
-            if not bool(rep2.get('ok')):
-                return False
-        heal = globals().get('_v243_mark_runtime_restore_healthy')
-        if callable(heal):
-            heal('google_config_binding_reconciled_v244', remote_confirmed=False, generation='RECOVERED')
-        try:
-            bot_journal('google_restore_gate_reconciled_v244', int(OWNER_ID or 0) or None, 'verified data + config binding accepted')
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        try:
-            bot_journal('google_restore_gate_reconcile_failed_v244', int(OWNER_ID or 0) or None, str(exc)[:300], 'WARN')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _v244_google_values_equivalent -> 15_integration_google.py
+_owner_install('google', 'google:0036')
 
-def _v244_google_values_equivalent(want, got) -> bool:
-    """Compare Google user-entered values semantically, not by fragile JSON type."""
-    if want == got:
-        return True
-    try:
-        wt, wv = want
-        gt, gv = got
-    except Exception:
-        return False
-    if wt == gt == 'formula':
-        # v251: Google canonicalizes SUM(C38:C38) -> SUM(C38). Treat that
-        # server-side rewrite as equivalent instead of failing the whole sync.
-        try:
-            return _v251_google_formula_canonical(wv).replace('\r\n', '\n') == _v251_google_formula_canonical(gv).replace('\r\n', '\n')
-        except Exception:
-            return str(wv).strip().replace('\r\n', '\n') == str(gv).strip().replace('\r\n', '\n')
-    if wt == gt == 'bool':
-        return bool(wv) == bool(gv)
-    if wt == 'string' and gt == 'string':
-        return str(wv).replace('\r\n', '\n').strip() == str(gv).replace('\r\n', '\n').strip()
-    if {wt, gt}.issubset({'number', 'string'}):
+# [OCH12.35 OWNER] _v244_google_resolve_or_create_spreadsheet -> 15_integration_google.py
+_owner_install('google', 'google:0037')
 
-        def _num(v):
-            s = str(v).replace('\xa0', '').replace(' ', '').replace(',', '.').strip()
-            if s == '':
-                return 0.0
-            return float(s)
-        try:
-            return abs(_num(wv) - _num(gv)) <= 1e-09
-        except Exception:
-            pass
-    if str(wv or '').strip() == '' and str(gv or '').strip() == '':
-        return True
-    return False
+# [OCH12.35 OWNER] _v239_google_recovery_write_gate -> 15_integration_google.py
+_owner_install('google', 'google:0038')
 
-def _v244_google_resolve_or_create_spreadsheet(tid: str) -> str:
-    try:
-        return _google_spreadsheet_id(tenant_id=tid)
-    except Exception:
-        creator = globals().get('tenant_google_create_spreadsheet')
-        if not callable(creator):
-            raise
-        row = tenant_get(tid) if callable(globals().get('tenant_get')) else {}
-        creator(tid, f"Финансы · {(row or {}).get('name') or tid}")
-        return _google_spreadsheet_id(tenant_id=tid)
+# [OCH12.35 OWNER] _v239_google_plain_user_value -> 15_integration_google.py
+_owner_install('google', 'google:0039')
 
-def _v239_google_recovery_write_gate() -> tuple[bool, str]:
-    """Never let an unhealthy boot/restore overwrite a previously good Google sheet."""
-    _v244_google_try_reconcile_stale_restore_gate()
-    try:
-        gate = globals().get('v239_external_durable_write_allowed')
-        if callable(gate):
-            ok, why = gate()
-            if not ok:
-                return (False, str(why or 'durable recovery gate'))
-    except Exception:
-        pass
-    try:
-        state = globals().get('_RUNTIME_STATE') or {}
-        if isinstance(state, dict) and bool(state.get('restore_attempted')) and (state.get('restore_ok') is False):
-            return (False, 'восстановление после deploy не прошло проверку')
-    except Exception:
-        pass
-    try:
-        q = globals().get('constitution_quarantine_active')
-        if callable(q) and bool(q()):
-            return (False, 'DATA CONSTITUTION/restore guard активен')
-    except Exception:
-        pass
-    return (True, 'ok')
+# [OCH12.35 OWNER] _v239_google_target_plain -> 15_integration_google.py
+_owner_install('google', 'google:0040')
 
-def _v239_google_plain_user_value(cell: dict):
-    uv = (cell or {}).get('userEnteredValue') or {}
-    if not isinstance(uv, dict):
-        return ''
-    if 'formulaValue' in uv:
-        return ('formula', str(uv.get('formulaValue') or ''))
-    if 'numberValue' in uv:
-        try:
-            return ('number', round(float(uv.get('numberValue') or 0.0), 10))
-        except Exception:
-            return ('number', str(uv.get('numberValue') or ''))
-    if 'boolValue' in uv:
-        return ('bool', bool(uv.get('boolValue')))
-    return ('string', str(uv.get('stringValue') or ''))
+# [OCH12.35 OWNER] _v239_google_sync_meta_key -> 15_integration_google.py
+_owner_install('google', 'google:0041')
 
-def _v239_google_target_plain(value):
-    uv = _google_cell_value(value)
-    return _v239_google_plain_user_value({'userEnteredValue': uv})
+# [OCH12.35 OWNER] _v261_google_upsert_previous -> 15_integration_google.py
+_owner_install('google', 'google:0042')
 
-def _v239_google_sync_meta_key(tid: str, target_chat_id: int, tab_title: str) -> str:
-    raw = f'{tid}:{int(target_chat_id)}:{tab_title}'
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
+# [OCH12.35 OWNER] _v261_google_upsert_fixed -> 15_integration_google.py
+_owner_install('google', 'google:0043')
 
-def _v261_google_upsert_previous(tab_title: str, rows: list[list], target_chat_id: int, layout: str = "category", annotations_override: dict | None = None) -> str:
-    """v239 incremental upsert for the stable Thu-Wed tab.
-
-    The old implementation cleared the entire sheet before every rewrite. v239 reads the
-    bot-managed range, updates only changed rows/cells, appends newly appearing rows, and
-    clears only a previously managed stale tail *after* the new content was verified.
-    """
-    gate_ok, gate_reason = _v239_google_recovery_write_gate()
-    if not gate_ok:
-        raise RuntimeError("Google sync blocked v239: " + gate_reason)
-    target_chat_id = int(target_chat_id)
-    tid = _v149_tenant_id(None, target_chat_id) if callable(globals().get("_v149_tenant_id")) else tenant_id_for_chat(target_chat_id, create=False)
-    if callable(globals().get("_v149_chat_belongs_to_tenant")) and not _v149_chat_belongs_to_tenant(target_chat_id, tid):
-        raise RuntimeError("Google export blocked: target chat is not connected to this space")
-    cfg = tenant_google_config(tid)
-    if not bool((cfg.get("export_settings") or {}).get("sheet_enabled", True)):
-        raise RuntimeError("Выгрузка в Google Sheets выключена для этого пространства")
-    with tenant_google_context(tid):
-        token = _google_access_token(); info = _google_service_account_info(); spreadsheet_id = _v244_google_resolve_or_create_spreadsheet(str(tid))
-        service_email = str(info.get("client_email") or "")
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        meta = _google_request_guarded("v239_metadata", requests.get, f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}", headers=headers, params={"fields": "spreadsheetId,properties.title,sheets.properties(sheetId,title,gridProperties)"}, timeout=45, attempts=2)
-        if meta.status_code >= 300:
-            if meta.status_code in (401,403):
-                raise RuntimeError(f"Google Sheets access denied. Добавьте {service_email} как Редактор.")
-            raise RuntimeError(f"Google Sheets metadata {meta.status_code}: {meta.text[:500]}")
-        payload = meta.json(); sheet_id = None; grid_rows=0; grid_cols=0
-        for sh in payload.get("sheets") or []:
-            props = sh.get("properties") or {}
-            if str(props.get("title") or "") == tab_title:
-                sheet_id = int(props.get("sheetId")); gp=props.get("gridProperties") or {}; grid_rows=int(gp.get("rowCount") or 0); grid_cols=int(gp.get("columnCount") or 0); break
-        max_cols = max((len(r or []) for r in rows), default=1); row_count = max(100, len(rows)+20); col_count=max(26,max_cols+3)
-        created_new = False
-        if sheet_id is None:
-            add = _google_request_guarded("v239_add_sheet", requests.post, f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate", headers=headers, json={"requests":[{"addSheet":{"properties":{"title":tab_title,"gridProperties":{"rowCount":row_count,"columnCount":col_count,"frozenRowCount":2}}}}]}, timeout=60, attempts=1)
-            if add.status_code >= 300:
-                raise RuntimeError(f"Google Sheets add tab {add.status_code}: {add.text[:500]}")
-            sheet_id = int(add.json()["replies"][0]["addSheet"]["properties"]["sheetId"]); grid_rows=row_count; grid_cols=col_count; created_new=True
-        annotations = dict(annotations_override or {})
-        if not annotations and layout == "category":
-            try:
-                _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-            except Exception:
-                annotations = {}
-        cell_rows=[]
-        for r_idx,row0 in enumerate(rows,start=1):
-            row=list(row0 or []); vals=[]
-            for c_idx in range(1,max_cols+1):
-                value=row[c_idx-1] if c_idx-1<len(row) else ""
-                cell={"userEnteredValue":_google_cell_value(value),"userEnteredFormat":_v167_google_color_format(row,r_idx,c_idx,max_cols,layout,annotations)}
-                note=str(annotations.get((r_idx,c_idx)) or "").strip()
-                if note: cell["note"]=note
-                vals.append(cell)
-            cell_rows.append({"values":vals})
-
-        # Read only the currently managed-sized area. This lets us diff values/notes and
-        # avoids a destructive clear-first cycle.
-        sync_key = _v239_google_sync_meta_key(str(tid), target_chat_id, tab_title)
-        sync_meta = {}
-        try: sync_meta = SQLITE.get_meta("google_sync_v239", sync_key, {}) or {}
-        except Exception: sync_meta = {}
-        prev_managed_rows = int((sync_meta or {}).get("managed_rows") or 0)
-        prev_managed_cols = int((sync_meta or {}).get("managed_cols") or 0)
-        read_rows = max(len(rows), prev_managed_rows, 1)
-        read_cols = max(max_cols, prev_managed_cols, 1)
-        existing_rows=[]
-        try:
-            escaped = str(tab_title).replace("'", "''")
-            read = _google_request_guarded("v239_read_managed", requests.get, f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}", headers=headers, params={
-                "includeGridData":"true", "ranges":f"'{escaped}'!A1:{_xlsx_col_name(read_cols)}{read_rows}",
-                "fields":"sheets(data(rowData(values(userEnteredValue,note))))",
-            }, timeout=60, attempts=2)
-            if read.status_code < 300:
-                existing_rows = (((read.json().get("sheets") or [{}])[0].get("data") or [{}])[0].get("rowData") or [])
-        except Exception as exc:
-            try: bot_journal("google_incremental_read_warn_v239", target_chat_id, str(exc)[:300], "WARN")
-            except Exception: pass
-            existing_rows=[]
-
-        changed_indices=[]; added=0; updated=0; unchanged=0
-        for idx, row0 in enumerate(rows):
-            target=list(row0 or [])
-            old_vals=((existing_rows[idx] or {}).get("values") or []) if idx < len(existing_rows) else []
-            value_changed=False; note_changed=False
-            for c in range(max_cols):
-                want=_v239_google_target_plain(target[c] if c < len(target) else "")
-                got=_v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                if not _v244_google_values_equivalent(want, got): value_changed=True; break
-            if not value_changed:
-                for c in range(max_cols):
-                    want_note=str(annotations.get((idx+1,c+1)) or "").strip()
-                    got_note=str((old_vals[c] if c < len(old_vals) else {}).get("note") or "").strip()
-                    if want_note != got_note: note_changed=True; break
-            if value_changed or note_changed or created_new:
-                changed_indices.append(idx)
-                if idx >= len(existing_rows) or not any(_v239_google_plain_user_value(x) != ("string", "") for x in old_vals): added += 1
-                else: updated += 1
-            else:
-                unchanged += 1
-
-        req=[]
-        if grid_rows < row_count or grid_cols < col_count:
-            req.append({"updateSheetProperties":{"properties":{"sheetId":sheet_id,"gridProperties":{"rowCount":max(grid_rows,row_count),"columnCount":max(grid_cols,col_count),"frozenRowCount":2}},"fields":"gridProperties(rowCount,columnCount,frozenRowCount)"}})
-        for idx in changed_indices:
-            req.append({"updateCells":{"range":{"sheetId":sheet_id,"startRowIndex":idx,"endRowIndex":idx+1,"startColumnIndex":0,"endColumnIndex":max_cols},"rows":[cell_rows[idx]],"fields":"userEnteredValue,note,userEnteredFormat"}})
-        # Dimensions are cheap and non-destructive; keep the old visual layout.
-        req.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":0,"endIndex":1},"properties":{"pixelSize":95},"fields":"pixelSize"}})
-        if max_cols >= 2: req.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":1,"endIndex":2},"properties":{"pixelSize":320},"fields":"pixelSize"}})
-        if max_cols >= 3: req.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":2,"endIndex":max_cols},"properties":{"pixelSize":115},"fields":"pixelSize"}})
-        if req:
-            upd=_google_request_guarded("v239_incremental_upsert", requests.post, f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate", headers=headers, json={"requests":req}, timeout=90, attempts=1)
-            if upd.status_code >= 300:
-                raise RuntimeError(f"Google Sheets incremental update {upd.status_code}: {upd.text[:500]}")
-
-        # Verify the complete new managed range BEFORE clearing stale rows.
-        escaped = str(tab_title).replace("'", "''")
-        verify = _google_request_guarded("v239_verify_incremental", requests.get, f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}", headers=headers, params={
-            "includeGridData":"true", "ranges":f"'{escaped}'!A1:{_xlsx_col_name(max_cols)}{max(1,len(rows))}",
-            "fields":"sheets(data(rowData(values(userEnteredValue,note))))",
-        }, timeout=60, attempts=2)
-        if verify.status_code >= 300:
-            raise RuntimeError(f"Google Sheets incremental verify {verify.status_code}: {verify.text[:500]}")
-        vr = (((verify.json().get("sheets") or [{}])[0].get("data") or [{}])[0].get("rowData") or [])
-        for idx,row0 in enumerate(rows):
-            old_vals=((vr[idx] or {}).get("values") or []) if idx < len(vr) else []
-            for c in range(max_cols):
-                want=_v239_google_target_plain((row0 or [])[c] if c < len(row0 or []) else "")
-                got=_v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                if not _v244_google_values_equivalent(want, got):
-                    raise RuntimeError(f"Google incremental verify mismatch row={idx+1} col={c+1}; want={want}; got={got}")
-
-        # Only after verification may we clear the stale BOT-MANAGED tail. We never clear
-        # the whole sheet and never touch rows beyond the last managed_rows marker.
-        stale_tail = max(0, prev_managed_rows - len(rows))
-        if stale_tail > 0:
-            clear_cols=max(max_cols,prev_managed_cols,1)
-            clr=_google_request_guarded("v239_clear_stale_tail", requests.post, f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate", headers=headers, json={"requests":[{"updateCells":{"range":{"sheetId":sheet_id,"startRowIndex":len(rows),"endRowIndex":prev_managed_rows,"startColumnIndex":0,"endColumnIndex":clear_cols},"fields":"userEnteredValue,note"}}]}, timeout=60, attempts=1)
-            if clr.status_code >= 300:
-                raise RuntimeError(f"Google Sheets stale-tail clear {clr.status_code}: {clr.text[:500]}")
-
-        row_hash=hashlib.sha256(json.dumps(rows,ensure_ascii=False,sort_keys=False,separators=(",",":"),default=str).encode("utf-8")).hexdigest()
-        try:
-            SQLITE.set_meta("google_sync_v239", sync_key, {"tab":tab_title,"tenant_id":str(tid),"chat_id":target_chat_id,"managed_rows":len(rows),"managed_cols":max_cols,"row_hash":row_hash,"synced_at":now_local().isoformat(timespec="microseconds")})
-        except Exception: pass
-        url=f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}"
-    try:
-        tenant_google_history(tid,"thuwed_incremental_upsert_v239",tab_title,ok=True,chat_id=target_chat_id,url=url,added=added,updated=updated,unchanged=unchanged,stale_tail=stale_tail)
-        tenant_google_persist(tid,"tenant_google_runtime_v239")
-        try: bot_journal("google_incremental_upsert_v239",target_chat_id,f"tab={tab_title}; added={added}; updated={updated}; unchanged={unchanged}; stale_tail={stale_tail}")
-        except Exception: pass
-    except Exception:
-        pass
-    return url
-
-def _v261_google_upsert_fixed(tab_title: str, rows: list[list], target_chat_id: int, layout: str='category', annotations_override: dict | None=None) -> str:
-    """v254 non-destructive upsert for the stable Thu-Wed tab.
-
-    Contract for an existing sheet:
-    - bot values may be refreshed inside the previously managed table;
-    - existing CellData.note is NEVER cleared/replaced;
-    - existing userEnteredFormat is NEVER replaced (manual colors/styles survive);
-    - when the bot table grows, real rows are inserted at the detected logical
-      insertion point (with a safe boundary fallback), and columns at the previous
-      managed boundary, so user notes/colors and content below/right are shifted,
-      not overwritten;
-    - a shrinking table never performs a blind tail clear.  From v252 onward a
-      stored value snapshot lets us clear only values that are still exactly the
-      previous bot-owned values, while notes/formatting remain untouched.
-    """
-    gate_ok, gate_reason = _v239_google_recovery_write_gate()
-    if not gate_ok:
-        raise RuntimeError('Google sync blocked v255: ' + gate_reason)
-    target_chat_id = int(target_chat_id)
-    tid = _v149_tenant_id(None, target_chat_id) if callable(globals().get('_v149_tenant_id')) else tenant_id_for_chat(target_chat_id, create=False)
-    if callable(globals().get('_v149_chat_belongs_to_tenant')) and (not _v149_chat_belongs_to_tenant(target_chat_id, tid)):
-        raise RuntimeError('Google export blocked: target chat is not connected to this space')
-    cfg = tenant_google_config(tid)
-    if not bool((cfg.get('export_settings') or {}).get('sheet_enabled', True)):
-        raise RuntimeError('Выгрузка в Google Sheets выключена для этого пространства')
-
-    def _plain_json(value):
-        p = _v239_google_target_plain(value)
-        return [p[0], p[1]]
-
-    def _plain_from_json(value):
-        try:
-            if isinstance(value, (list, tuple)) and len(value) == 2:
-                return (str(value[0]), value[1])
-        except Exception:
-            pass
-        return ('string', '')
-
-    def _is_blank_plain(value) -> bool:
-        try:
-            t, v = value
-            return t == 'string' and str(v or '').strip() == ''
-        except Exception:
-            return True
-
-    def _segments(cols):
-        cols = sorted(set(int(c) for c in cols if int(c) >= 0))
-        if not cols:
-            return []
-        out = []
-        a = b = cols[0]
-        for c in cols[1:]:
-            if c == b + 1:
-                b = c
-            else:
-                out.append((a, b + 1))
-                a = b = c
-        out.append((a, b + 1))
-        return out
-
-    def _identity_token(plain):
-        try:
-            t, v = plain
-        except Exception:
-            return ''
-        if t == 'formula':
-            return '=' + _v251_google_formula_canonical(v)
-        if t == 'number':
-            try:
-                return f'{float(v):.12g}'
-            except Exception:
-                return str(v or '').strip()
-        if t == 'bool':
-            return 'TRUE' if bool(v) else 'FALSE'
-        return str(v or '').replace('\r\n', '\n').strip()
-
-    def _row_identity(plains):
-        vals = [_identity_token(x) for x in list(plains or [])]
-        first = vals[0] if len(vals) > 0 else ''
-        second = vals[1] if len(vals) > 1 else ''
-        if first or second:
-            # In the financial sheet the first two columns are the stable row
-            # identity (date/description or a summary label). Numeric/formula
-            # totals are deliberately ignored so recalculation does not look
-            # like a row replacement.
-            return ('row', first.casefold(), second.casefold())
-        if not any(vals):
-            return ('blank',)
-        return ('other', *(x.casefold() for x in vals[:3]))
-
-    # v254: the generated period title is only a logical key. The actual Google
-    # worksheet is pinned by immutable sheetId, so a user's manual tab rename
-    # never makes the bot create a second tab or lose its ownership snapshot.
-    sync_key = _v239_google_sync_meta_key(str(tid), target_chat_id, tab_title)
-    try:
-        sync_meta = SQLITE.get_meta('google_sync_v239', sync_key, {}) or {}
-    except Exception:
-        sync_meta = {}
-    prev_managed_rows = int((sync_meta or {}).get('managed_rows') or 0)
-    prev_managed_cols = int((sync_meta or {}).get('managed_cols') or 0)
-    prev_snapshot = (sync_meta or {}).get('managed_values_v252')
-    if not isinstance(prev_snapshot, list):
-        prev_snapshot = []
-    try:
-        preferred_sheet_id_v254 = int((sync_meta or {}).get('sheet_id_v254') or 0)
-    except Exception:
-        preferred_sheet_id_v254 = 0
-
-    with tenant_google_context(tid):
-        token = _google_access_token()
-        info = _google_service_account_info()
-        spreadsheet_id = _v244_google_resolve_or_create_spreadsheet(str(tid))
-        service_email = str(info.get('client_email') or '')
-        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        meta = _google_request_guarded('v252_metadata', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'fields': 'spreadsheetId,properties.title,sheets.properties(sheetId,title,gridProperties)'}, timeout=45, attempts=2)
-        if meta.status_code >= 300:
-            if meta.status_code in (401, 403):
-                raise RuntimeError(f'Google Sheets access denied. Добавьте {service_email} как Редактор.')
-            raise RuntimeError(f'Google Sheets metadata {meta.status_code}: {meta.text[:500]}')
-        payload = meta.json()
-        sheet_id = None
-        actual_tab_title = str(tab_title)
-        grid_rows = 0
-        grid_cols = 0
-        sheets_meta = list(payload.get('sheets') or [])
-
-        # First choice: immutable sheetId saved by v254. Title is intentionally
-        # ignored here because users are allowed to rename tabs freely.
-        if preferred_sheet_id_v254:
-            for sh in sheets_meta:
-                props = sh.get('properties') or {}
-                if int(props.get('sheetId') or 0) == preferred_sheet_id_v254:
-                    sheet_id = int(props.get('sheetId'))
-                    actual_tab_title = str(props.get('title') or tab_title)
-                    gp = props.get('gridProperties') or {}
-                    grid_rows = int(gp.get('rowCount') or 0)
-                    grid_cols = int(gp.get('columnCount') or 0)
-                    break
-
-        # Compatibility with older builds / a tab that has never been renamed.
-        if sheet_id is None:
-            for sh in sheets_meta:
-                props = sh.get('properties') or {}
-                if str(props.get('title') or '') == tab_title:
-                    sheet_id = int(props.get('sheetId'))
-                    actual_tab_title = str(props.get('title') or tab_title)
-                    gp = props.get('gridProperties') or {}
-                    grid_rows = int(gp.get('rowCount') or 0)
-                    grid_cols = int(gp.get('columnCount') or 0)
-                    break
-
-        # One-time v253 -> v254 migration for a tab renamed BEFORE v254 had a
-        # chance to save sheetId. Match the previous managed snapshot against
-        # the first two identity columns of existing tabs. Only a strong unique
-        # match is accepted; otherwise we fail safe and create the logical tab.
-        if sheet_id is None and prev_snapshot and prev_managed_rows > 0:
-            try:
-                import difflib as _v254_difflib
-                old_plain_rows = []
-                for prow in prev_snapshot[:prev_managed_rows]:
-                    prow = prow if isinstance(prow, list) else []
-                    old_plain_rows.append([_plain_from_json(prow[c]) if c < len(prow) else ('string', '') for c in range(min(2, max(1, prev_managed_cols)))])
-                old_keys = [_row_identity(x) for x in old_plain_rows]
-                scored = []
-                probe_rows = max(1, min(prev_managed_rows, 120))
-                probe_cols = max(1, min(2, prev_managed_cols or 2))
-                for sh in sheets_meta:
-                    props = sh.get('properties') or {}
-                    cand_id = int(props.get('sheetId') or 0)
-                    cand_title = str(props.get('title') or '')
-                    if not cand_id or not cand_title:
-                        continue
-                    escaped_cand = cand_title.replace("'", "''")
-                    probe = _google_request_guarded('v254_probe_renamed_tab', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{escaped_cand}'!A1:{_xlsx_col_name(probe_cols)}{probe_rows}", 'fields': 'sheets(data(rowData(values(userEnteredValue))))'}, timeout=30, attempts=1)
-                    if probe.status_code >= 300:
-                        continue
-                    prowdata = ((probe.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-                    cand_keys = []
-                    for i in range(probe_rows):
-                        vals = (prowdata[i] or {}).get('values') or [] if i < len(prowdata) else []
-                        cand_keys.append(_row_identity([_v239_google_plain_user_value(vals[c] if c < len(vals) else {}) for c in range(probe_cols)]))
-                    ratio = _v254_difflib.SequenceMatcher(a=old_keys[:probe_rows], b=cand_keys, autojunk=False).ratio()
-                    scored.append((float(ratio), cand_id, cand_title, props.get('gridProperties') or {}))
-                scored.sort(reverse=True, key=lambda x: x[0])
-                best = scored[0] if scored else None
-                second = scored[1][0] if len(scored) > 1 else 0.0
-                if best and best[0] >= 0.72 and (best[0] - second >= 0.08 or best[0] >= 0.94):
-                    _ratio, sheet_id, actual_tab_title, gp = best
-                    grid_rows = int((gp or {}).get('rowCount') or 0)
-                    grid_cols = int((gp or {}).get('columnCount') or 0)
-                    try:
-                        bot_journal('google_renamed_tab_rebound_v254', target_chat_id, f'logical={tab_title}; actual={actual_tab_title}; sheetId={sheet_id}; score={_ratio:.3f}')
-                    except Exception:
-                        pass
-            except Exception as exc:
-                try:
-                    bot_journal('google_renamed_tab_probe_warn_v254', target_chat_id, str(exc)[:300], 'WARN')
-                except Exception:
-                    pass
-
-        max_cols = max((len(r or []) for r in rows), default=1)
-        row_count = max(100, len(rows) + 20)
-        col_count = max(26, max_cols + 3)
-        created_new = False
-        if sheet_id is None:
-            add = _google_request_guarded('v252_add_sheet', requests.post, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate', headers=headers, json={'requests': [{'addSheet': {'properties': {'title': tab_title, 'gridProperties': {'rowCount': row_count, 'columnCount': col_count, 'frozenRowCount': 2}}}}]}, timeout=60, attempts=1)
-            if add.status_code >= 300:
-                raise RuntimeError(f'Google Sheets add tab {add.status_code}: {add.text[:500]}')
-            sheet_id = int(add.json()['replies'][0]['addSheet']['properties']['sheetId'])
-            actual_tab_title = str(tab_title)
-            grid_rows = row_count
-            grid_cols = col_count
-            created_new = True
-
-        annotations = dict(annotations_override or {})
-        if not annotations and layout == 'category':
-            try:
-                _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-            except Exception:
-                annotations = {}
-
-        cell_rows = []
-        for r_idx, row0 in enumerate(rows, start=1):
-            row = list(row0 or [])
-            vals = []
-            for c_idx in range(1, max_cols + 1):
-                value = row[c_idx - 1] if c_idx - 1 < len(row) else ''
-                cell = {'userEnteredValue': _google_cell_value(value), 'userEnteredFormat': _v167_google_color_format(row, r_idx, c_idx, max_cols, layout, annotations)}
-                note = str(annotations.get((r_idx, c_idx)) or '').strip()
-                if note:
-                    cell['note'] = note
-                vals.append(cell)
-            cell_rows.append({'values': vals})
-
-        # HOTFIX v258: probe beyond the remembered managed boundary.
-        # Older incremental builds could leave stale bot rows below managed_rows
-        # after a failed/partial compaction. If we only read managed_rows, those
-        # rows stay invisible forever and can preserve duplicate summaries /
-        # broken USD formulas. The probe is read-only; user rows below the bot
-        # table are never modified just because they were read.
-        _probe_tail_rows_v258 = 80
-        _remembered_read_rows_v258 = max(len(rows), prev_managed_rows, 1)
-        if grid_rows > 0:
-            read_rows = min(int(grid_rows), _remembered_read_rows_v258 + _probe_tail_rows_v258)
-        else:
-            read_rows = _remembered_read_rows_v258 + _probe_tail_rows_v258
-        read_cols = max(max_cols, prev_managed_cols, 1)
-        existing_rows = []
-        try:
-            escaped = str(actual_tab_title).replace("'", "''")
-            read = _google_request_guarded('v252_read_managed', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{escaped}'!A1:{_xlsx_col_name(read_cols)}{read_rows}", 'fields': 'sheets(data(rowData(values(userEnteredValue,note))))'}, timeout=60, attempts=2)
-            if read.status_code < 300:
-                existing_rows = ((read.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-        except Exception as exc:
-            try:
-                bot_journal('google_incremental_read_warn_v252', target_chat_id, str(exc)[:300], 'WARN')
-            except Exception:
-                pass
-            existing_rows = []
-
-        # HOTFIX v258: recover the REAL bot-table boundary from the sheet.
-        # A failed older compaction could leave valid-looking bot rows below the
-        # remembered managed_rows.  The strongest terminal marker of each finance
-        # section is "Остаток в обороте"; the last occurrence is therefore the
-        # real end of the generated table.  Anything below that boundary remains
-        # user territory and is never cleared/moved by this repair.
-        actual_managed_rows_v258 = int(prev_managed_rows or 0)
-        repair_extra_rows_v258 = False
-        try:
-            for _ri, _rr in enumerate(existing_rows, start=1):
-                _vals = (_rr or {}).get('values') or []
-                _a = str((_v239_google_plain_user_value(_vals[0]) if len(_vals) > 0 else ('string',''))[1] or '').strip().casefold()
-                _b = str((_v239_google_plain_user_value(_vals[1]) if len(_vals) > 1 else ('string',''))[1] or '').strip().casefold()
-                if _a == 'остаток в обороте' or _b == 'остаток в обороте':
-                    actual_managed_rows_v258 = max(actual_managed_rows_v258, int(_ri))
-            repair_extra_rows_v258 = actual_managed_rows_v258 > int(prev_managed_rows or 0)
-            if repair_extra_rows_v258:
-                try:
-                    bot_journal('google_boundary_repair_v258', target_chat_id, f'remembered={prev_managed_rows}; actual={actual_managed_rows_v258}; target={len(rows)}', 'WARN')
-                except Exception:
-                    pass
-        except Exception:
-            actual_managed_rows_v258 = int(prev_managed_rows or 0)
-            repair_extra_rows_v258 = False
-        old_managed_rows_v258 = max(int(prev_managed_rows or 0), int(actual_managed_rows_v258 or 0))
-
-        # v258 migration from the temporary v256 grid. D was a bot-owned
-        # generic Expense column. Deleting D shifts E+ categories, their notes,
-        # colors and all user content to the right one column left intact.
-        remove_v256_expense_col = False
-        try:
-            for _rr in existing_rows[:12]:
-                _vals = (_rr or {}).get('values') or []
-                _plain = [str((_v239_google_plain_user_value(_vals[i]) if i < len(_vals) else ('string',''))[1] or '').strip().casefold() for i in range(4)]
-                if _plain[0] == 'дата' and _plain[1] == 'описание' and _plain[2] == 'приход' and _plain[3] == 'расход':
-                    remove_v256_expense_col = True
-                    break
-        except Exception:
-            remove_v256_expense_col = False
-        prev_managed_cols_raw_v257 = prev_managed_cols
-        if remove_v256_expense_col and prev_managed_cols > 3:
-            prev_managed_cols = max(3, prev_managed_cols - 1)
-
-        req = []
-        if remove_v256_expense_col:
-            # Preserve USD expense-cell formatting/notes while collapsing the old
-            # D expense column into C. Copy only rows where old C is blank and D
-            # is used; then deleting D leaves the copied C cell intact. Values are
-            # subsequently regenerated from canonical finance data.
-            in_usd_v257 = False
-            for _ri, _rr in enumerate(existing_rows):
-                _vals = (_rr or {}).get('values') or []
-                _a = str((_v239_google_plain_user_value(_vals[0]) if len(_vals) > 0 else ('string',''))[1] or '').strip().upper()
-                if _a == 'USD':
-                    in_usd_v257 = True
-                    continue
-                if not in_usd_v257:
-                    continue
-                _c = _v239_google_plain_user_value(_vals[2] if len(_vals) > 2 else {})
-                _d = _v239_google_plain_user_value(_vals[3] if len(_vals) > 3 else {})
-                _d_note = str((_vals[3] if len(_vals) > 3 else {}).get('note') or '')
-                if _is_blank_plain(_c) and ((not _is_blank_plain(_d)) or _d_note):
-                    req.append({'copyPaste': {'source': {'sheetId': sheet_id, 'startRowIndex': _ri, 'endRowIndex': _ri + 1, 'startColumnIndex': 3, 'endColumnIndex': 4}, 'destination': {'sheetId': sheet_id, 'startRowIndex': _ri, 'endRowIndex': _ri + 1, 'startColumnIndex': 2, 'endColumnIndex': 3}, 'pasteType': 'PASTE_NORMAL', 'pasteOrientation': 'NORMAL'}})
-            req.append({'deleteDimension': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 3, 'endIndex': 4}}})
-        # Grow grid only if there is no managed boundary to insert at.  Once a
-        # boundary exists, insertDimension is what protects user content below/right.
-        if created_new:
-            pass
-        elif prev_managed_rows <= 0 and (grid_rows < row_count or grid_cols < col_count):
-            req.append({'updateSheetProperties': {'properties': {'sheetId': sheet_id, 'gridProperties': {'rowCount': max(grid_rows, row_count), 'columnCount': max(grid_cols, col_count)}}, 'fields': 'gridProperties(rowCount,columnCount)'}})
-
-        row_delta_v258 = 0 if created_new or old_managed_rows_v258 <= 0 else (len(rows) - old_managed_rows_v258)
-        row_growth = max(0, row_delta_v258)
-        row_shrink_v258 = max(0, -row_delta_v258)
-        col_growth = 0 if created_new or prev_managed_cols <= 0 else max(0, max_cols - prev_managed_cols)
-        row_insert_plan = []
-        inserted_row_indices = set()
-        target_to_old_row = {i: i for i in range(min(len(rows), old_managed_rows_v258))}
-        row_copy_map_v258 = {}
-        # v258: run logical row alignment for BOTH growth and shrink.  v257 only
-        # aligned on growth, so after a duplicate disappeared the bot updated
-        # individual cells in-place and could create mixed rows (old description
-        # in A/B + a summary formula in C).  On shrink we compact logical rows by
-        # copying the whole previous row (values + note + format) to its new slot,
-        # then refresh only bot-owned values.  No physical row deletion is used,
-        # so user content below the managed table never moves or disappears.
-        if row_delta_v258:
-            try:
-                import difflib as _v258_difflib
-                old_plain_rows = []
-                if (not repair_extra_rows_v258) and len(prev_snapshot) >= old_managed_rows_v258:
-                    for i in range(old_managed_rows_v258):
-                        prow = prev_snapshot[i] if isinstance(prev_snapshot[i], list) else []
-                        old_plain_rows.append([_plain_from_json(x) for x in prow])
-                else:
-                    for i in range(old_managed_rows_v258):
-                        vals = (existing_rows[i] or {}).get('values') or [] if i < len(existing_rows) else []
-                        old_plain_rows.append([_v239_google_plain_user_value(x) for x in vals[:max(prev_managed_cols, max_cols)]])
-                new_plain_rows = [[_v239_google_target_plain((r or [])[c] if c < len(r or []) else '') for c in range(max_cols)] for r in rows]
-                old_keys = [_row_identity(x) for x in old_plain_rows]
-                new_keys = [_row_identity(x) for x in new_plain_rows]
-                matcher = _v258_difflib.SequenceMatcher(a=old_keys, b=new_keys, autojunk=False)
-                candidate_plan = []
-                candidate_inserted = set()
-                candidate_map = {}
-                deleted_old = 0
-                for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                    old_n, new_n = i2 - i1, j2 - j1
-                    if tag == 'equal':
-                        for k in range(new_n):
-                            candidate_map[j1 + k] = i1 + k
-                    elif tag == 'insert':
-                        if new_n:
-                            candidate_plan.append((j1, new_n))
-                            candidate_inserted.update(range(j1, j2))
-                    elif tag == 'replace':
-                        common = min(old_n, new_n)
-                        for k in range(common):
-                            candidate_map[j1 + k] = i1 + k
-                        if new_n > old_n:
-                            start_new = j1 + common
-                            extra = new_n - old_n
-                            candidate_plan.append((start_new, extra))
-                            candidate_inserted.update(range(start_new, start_new + extra))
-                        elif old_n > new_n:
-                            deleted_old += old_n - new_n
-                    elif tag == 'delete':
-                        deleted_old += old_n
-                planned = sum(n for _, n in candidate_plan)
-                # Pure shrink (or pure growth) can be mapped deterministically.
-                # Mixed delete+insert migrations remain on conservative fallback.
-                if (row_shrink_v258 and planned == 0 and deleted_old == row_shrink_v258) or (row_growth and deleted_old == 0 and planned == row_growth):
-                    row_insert_plan = sorted(candidate_plan)
-                    inserted_row_indices = set(candidate_inserted)
-                    target_to_old_row = candidate_map
-                    if row_shrink_v258:
-                        row_copy_map_v258 = {int(j): int(i) for j, i in candidate_map.items() if int(i) != int(j)}
-            except Exception as _v258_rowdiff_exc:
-                try: bot_journal('google_row_compact_warn_v258', target_chat_id, str(_v258_rowdiff_exc)[:300], 'WARN')
-                except Exception: pass
-                row_insert_plan = []
-                row_copy_map_v258 = {}
-            if row_growth and not row_insert_plan:
-                # Conservative fallback for ambiguous growth: still protect all
-                # user content below the previous table boundary.
-                row_insert_plan = [(old_managed_rows_v258, row_growth)]
-                inserted_row_indices = set(range(old_managed_rows_v258, old_managed_rows_v258 + row_growth))
-                target_to_old_row = {i: i for i in range(min(len(rows), old_managed_rows_v258))}
-            # For ambiguous shrink we never delete physical Google rows. Values
-            # remain protected; a later clean alignment can compact them safely.
-            for start_idx, count in row_insert_plan:
-                req.append({'insertDimension': {'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': start_idx, 'endIndex': start_idx + count}, 'inheritFromBefore': True}})
-        if col_growth:
-            req.append({'insertDimension': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': prev_managed_cols, 'endIndex': prev_managed_cols + col_growth}, 'inheritFromBefore': True}})
-
-        added = 0
-        updated = 0
-        unchanged = 0
-        manual_values_preserved = 0
-        manual_preserved_cells = set()
-
-        if created_new:
-            if cell_rows:
-                req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': 0, 'endRowIndex': len(rows), 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'rows': cell_rows, 'fields': 'userEnteredValue,note,userEnteredFormat'}})
-                added = len(rows)
-            req.append({'updateDimensionProperties': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 1}, 'properties': {'pixelSize': 95}, 'fields': 'pixelSize'}})
-            if max_cols >= 2:
-                req.append({'updateDimensionProperties': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 1, 'endIndex': 2}, 'properties': {'pixelSize': 320}, 'fields': 'pixelSize'}})
-            if max_cols >= 3:
-                req.append({'updateDimensionProperties': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 2, 'endIndex': max_cols}, 'properties': {'pixelSize': 115}, 'fields': 'pixelSize'}})
-        else:
-            for idx, row0 in enumerate(rows):
-                target = list(row0 or [])
-                # Rows added beyond the previous managed boundary are physically
-                # inserted above the user's tail, so it is safe to apply bot style
-                # and generated notes only to those brand-new rows.
-                if idx in inserted_row_indices:
-                    req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'rows': [cell_rows[idx]], 'fields': 'userEnteredValue,note,userEnteredFormat'}})
-                    added += 1
-                    continue
-
-                old_idx = int(target_to_old_row.get(idx, idx))
-                old_vals = (existing_rows[old_idx] or {}).get('values') or [] if old_idx < len(existing_rows) else []
-                if idx in row_copy_map_v258 and old_idx != idx:
-                    # Move the logical row as a whole so user note/color follows
-                    # the finance row during compaction. Only managed columns are
-                    # copied; anything to the right is untouched.
-                    req.append({'copyPaste': {'source': {'sheetId': sheet_id, 'startRowIndex': old_idx, 'endRowIndex': old_idx + 1, 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'destination': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'pasteType': 'PASTE_NORMAL', 'pasteOrientation': 'NORMAL'}})
-                changed_cols = []
-                # Existing columns: values only. Notes and formatting are owned by
-                # the user once the cell exists and are never touched again.
-                existing_col_limit = min(max_cols, prev_managed_cols if prev_managed_cols > 0 else max_cols)
-                for c in range(existing_col_limit):
-                    want = _v239_google_target_plain(target[c] if c < len(target) else '')
-                    old_c = c + 1 if remove_v256_expense_col and c >= 3 else c
-                    got = _v239_google_plain_user_value(old_vals[old_c] if old_c < len(old_vals) else {})
-                    prev = None
-                    if old_idx < len(prev_snapshot) and isinstance(prev_snapshot[old_idx], list) and old_c < len(prev_snapshot[old_idx]):
-                        prev = _plain_from_json(prev_snapshot[old_idx][old_c])
-                    google_formula_damaged_v258 = bool(isinstance(got, tuple) and len(got) == 2 and got[0] == 'formula' and '#REF!' in str(got[1] or '').upper())
-                    manual_owned = prev is not None and (not google_formula_damaged_v258) and (not _v244_google_values_equivalent(got, prev)) and (not _is_blank_plain(got))
-                    if manual_owned and (not _v244_google_values_equivalent(want, got)):
-                        manual_values_preserved += 1
-                        manual_preserved_cells.add((idx, c))
-                        continue
-
-                    # v254: Google automatically rewrites formula references when
-                    # insertDimension moves rows. Our comparison was made against
-                    # the PRE-insert grid, so a formula that looked unchanged can
-                    # become SUM(C34) while the intended bot formula is SUM(C33).
-                    # Re-assert every bot-owned formula in the same batch whenever
-                    # physical rows are inserted. User-edited formulas remain safe.
-                    force_formula_after_insert = bool(row_insert_plan and want[0] == 'formula' and (prev is None or _v244_google_values_equivalent(got, prev)))
-                    if _v244_google_values_equivalent(want, got) and not force_formula_after_insert:
-                        continue
-                    if manual_owned:
-                        manual_values_preserved += 1
-                        manual_preserved_cells.add((idx, c))
-                        continue
-                    changed_cols.append(c)
-                for a, b in _segments(changed_cols):
-                    vals = [{'userEnteredValue': _google_cell_value(target[c] if c < len(target) else '')} for c in range(a, b)]
-                    req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': vals}], 'fields': 'userEnteredValue'}})
-
-                # Newly added columns are physically inserted before anything the
-                # user may have placed to the right. They are blank/new, so bot
-                # formatting and generated notes are safe there.
-                if col_growth and max_cols > prev_managed_cols:
-                    a, b = prev_managed_cols, max_cols
-                    vals = cell_rows[idx]['values'][a:b]
-                    if vals:
-                        req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': vals}], 'fields': 'userEnteredValue,note,userEnteredFormat'}})
-
-                if changed_cols or (col_growth and max_cols > prev_managed_cols):
-                    updated += 1
-                else:
-                    unchanged += 1
-
-            # Shrink safely: never blind-clear the old tail. We only remove an
-            # old bot value if v252 has a snapshot proving the current value is
-            # still exactly what the bot wrote previously. Notes/colors survive.
-            stale_tail = max(0, old_managed_rows_v258 - len(rows))
-            if stale_tail > 0 and repair_extra_rows_v258:
-                # These rows are inside the bot's REAL terminal boundary but were
-                # invisible to the old metadata. Clear only VALUES in the stale
-                # bot tail; notes/colors remain untouched, and rows below the final
-                # bot terminal marker are not addressed at all. This removes old
-                # duplicate summaries / mixed USD rows without erasing user data.
-                for idx in range(len(rows), old_managed_rows_v258):
-                    old_vals = (existing_rows[idx] or {}).get('values') or [] if idx < len(existing_rows) else []
-                    clear_cols = []
-                    for c in range(min(max_cols, len(old_vals))):
-                        got = _v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                        if not _is_blank_plain(got):
-                            clear_cols.append(c)
-                    for a, b in _segments(clear_cols):
-                        req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': [{} for _ in range(a, b)]}], 'fields': 'userEnteredValue'}})
-            elif stale_tail > 0 and prev_snapshot:
-                for idx in range(len(rows), min(old_managed_rows_v258, len(prev_snapshot))):
-                    old_vals = (existing_rows[idx] or {}).get('values') or [] if idx < len(existing_rows) else []
-                    clear_cols = []
-                    prev_row = prev_snapshot[idx] if idx < len(prev_snapshot) and isinstance(prev_snapshot[idx], list) else []
-                    for c in range(min(prev_managed_cols, len(prev_row))):
-                        got = _v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                        prev = _plain_from_json(prev_row[c])
-                        damaged_formula_v258 = bool(isinstance(got, tuple) and len(got) == 2 and got[0] == 'formula' and '#REF!' in str(got[1] or '').upper())
-                        if (not _is_blank_plain(got)) and (_v244_google_values_equivalent(got, prev) or damaged_formula_v258):
-                            clear_cols.append(c)
-                    for a, b in _segments(clear_cols):
-                        req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': [{} for _ in range(a, b)]}], 'fields': 'userEnteredValue'}})
-
-        if req:
-            upd = _google_request_guarded('v252_non_destructive_upsert', requests.post, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate', headers=headers, json={'requests': req}, timeout=90, attempts=1)
-            if upd.status_code >= 300:
-                raise RuntimeError(f'Google Sheets non-destructive update {upd.status_code}: {upd.text[:500]}')
-
-        escaped = str(actual_tab_title).replace("'", "''")
-        verify = _google_request_guarded('v252_verify_incremental', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{escaped}'!A1:{_xlsx_col_name(max_cols)}{max(1, len(rows))}", 'fields': 'sheets(data(rowData(values(userEnteredValue,note))))'}, timeout=60, attempts=2)
-        if verify.status_code >= 300:
-            raise RuntimeError(f'Google Sheets incremental verify {verify.status_code}: {verify.text[:500]}')
-        vr = ((verify.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-        for idx, row0 in enumerate(rows):
-            old_vals = (vr[idx] or {}).get('values') or [] if idx < len(vr) else []
-            for c in range(max_cols):
-                if (idx, c) in manual_preserved_cells:
-                    continue
-                want = _v239_google_target_plain((row0 or [])[c] if c < len(row0 or []) else '')
-                got = _v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                if not _v244_google_values_equivalent(want, got):
-                    raise RuntimeError(f'Google incremental verify mismatch row={idx + 1} col={c + 1}; want={want}; got={got}')
-
-        row_hash = hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=False, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()
-        snapshot = [[_plain_json((row or [])[c] if c < len(row or []) else '') for c in range(max_cols)] for row in rows]
-        try:
-            SQLITE.set_meta('google_sync_v239', sync_key, {'tab': tab_title, 'sheet_id_v254': int(sheet_id), 'sheet_title_actual_v254': str(actual_tab_title), 'tenant_id': str(tid), 'chat_id': target_chat_id, 'managed_rows': len(rows), 'managed_cols': max_cols, 'managed_values_v252': snapshot, 'row_hash': row_hash, 'synced_at': now_local().isoformat(timespec='microseconds'), 'manual_values_preserved': manual_values_preserved})
-        except Exception:
-            pass
-        url = f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}'
-
-    try:
-        tenant_google_history(tid, 'thuwed_non_destructive_upsert_v254', actual_tab_title, ok=True, chat_id=target_chat_id, url=url, added=added, updated=updated, unchanged=unchanged, stale_tail=stale_tail if 'stale_tail' in locals() else 0, manual_values_preserved=manual_values_preserved, row_growth=row_growth, col_growth=col_growth)
-        tenant_google_persist(tid, 'tenant_google_runtime_v252')
-        try:
-            bot_journal('google_non_destructive_upsert_v254', target_chat_id, f'logical_tab={tab_title}; actual_tab={actual_tab_title}; sheetId={sheet_id}; added={added}; updated={updated}; unchanged={unchanged}; row_growth={row_growth}; row_shrink={row_shrink_v258}; row_copies={len(row_copy_map_v258)}; col_growth={col_growth}; manual_values_preserved={manual_values_preserved}; stale_tail_preserved={stale_tail if "stale_tail" in locals() else 0}')
-        except Exception:
-            pass
-    except Exception:
-        pass
-    return url
-
-def _v261_google_upsert_new(tab_title: str, rows: list[list], target_chat_id: int, layout: str='category', annotations_override: dict | None=None) -> str:
-    """v260 non-destructive upsert for the stable Thu-Wed tab.
-
-    Contract for an existing sheet:
-    - bot values may be refreshed inside the previously managed table;
-    - existing CellData.note is NEVER cleared/replaced;
-    - existing userEnteredFormat is NEVER replaced (manual colors/styles survive);
-    - when the bot table grows, real rows are inserted at the detected logical
-      insertion point (with a safe boundary fallback), and columns at the previous
-      managed boundary, so user notes/colors and content below/right are shifted,
-      not overwritten;
-    - a shrinking table never performs a blind tail clear.  From v252 onward a
-      stored value snapshot lets us clear only values that are still exactly the
-      previous bot-owned values, while notes/formatting remain untouched.
-    - v260: a Data-Constitution snapshot/ledger lag never overwrites the stable
-      worksheet. Instead a NEW recovery worksheet is created from the current
-      canonical rows in the SAME tenant spreadsheet.
-    """
-    target_chat_id = int(target_chat_id)
-    tid = _v149_tenant_id(None, target_chat_id) if callable(globals().get('_v149_tenant_id')) else tenant_id_for_chat(target_chat_id, create=False)
-    if callable(globals().get('_v149_chat_belongs_to_tenant')) and (not _v149_chat_belongs_to_tenant(target_chat_id, tid)):
-        raise RuntimeError('Google export blocked: target chat is not connected to this space')
-    cfg = tenant_google_config(tid)
-    if not bool((cfg.get('export_settings') or {}).get('sheet_enabled', True)):
-        raise RuntimeError('Выгрузка в Google Sheets выключена для этого пространства')
-
-    gate_ok, gate_reason = _v239_google_recovery_write_gate()
-    if not gate_ok:
-        _reason_v260 = str(gate_reason or '')
-        _fallback_allowed_v260 = ('ledger is behind finance integrity' in _reason_v260 or 'snapshot rejected' in _reason_v260)
-        _creator_v260 = globals().get('_google_sheets_create_category_report')
-        if _fallback_allowed_v260 and callable(_creator_v260):
-            _fallback_title_v260 = f"{str(tab_title or 'Чт–Ср')} · восстановление"
-            # The canonical v149 creator is tenant-aware. Pass the resolved tenant
-            # explicitly so a blocked child-space sync can never spill into the
-            # platform spreadsheet. Keep a compatibility fallback for old creators.
-            try:
-                _url_v260 = _creator_v260(
-                    _fallback_title_v260, rows, layout=layout,
-                    annotations_override=annotations_override, include_annotations=True,
-                    tenant_id=str(tid), target_chat_id=int(target_chat_id),
-                )
-            except TypeError:
-                _ctx_v260 = globals().get('tenant_google_context')
-                if callable(_ctx_v260):
-                    with _ctx_v260(str(tid)):
-                        _url_v260 = _creator_v260(_fallback_title_v260, rows, layout=layout, annotations_override=annotations_override, include_annotations=True)
-                else:
-                    _url_v260 = _creator_v260(_fallback_title_v260, rows, layout=layout, annotations_override=annotations_override, include_annotations=True)
-            try:
-                bot_journal('google_constitution_fallback_new_tab_v260', int(target_chat_id), f'tenant={tid}; reason={_reason_v260[:220]}; url={str(_url_v260)[:140]}', 'WARN')
-            except Exception:
-                pass
-            try:
-                log_info(f'[GOOGLE V260] stable sheet blocked; new SAME-TENANT fallback tab created chat={target_chat_id} tenant={tid}: {_reason_v260}')
-            except Exception:
-                pass
-            return _url_v260
-        raise RuntimeError('Google sync blocked v260: ' + _reason_v260)
-
-    def _plain_json(value):
-        p = _v239_google_target_plain(value)
-        return [p[0], p[1]]
-
-    def _plain_from_json(value):
-        try:
-            if isinstance(value, (list, tuple)) and len(value) == 2:
-                return (str(value[0]), value[1])
-        except Exception:
-            pass
-        return ('string', '')
-
-    def _is_blank_plain(value) -> bool:
-        try:
-            t, v = value
-            return t == 'string' and str(v or '').strip() == ''
-        except Exception:
-            return True
-
-    def _segments(cols):
-        cols = sorted(set(int(c) for c in cols if int(c) >= 0))
-        if not cols:
-            return []
-        out = []
-        a = b = cols[0]
-        for c in cols[1:]:
-            if c == b + 1:
-                b = c
-            else:
-                out.append((a, b + 1))
-                a = b = c
-        out.append((a, b + 1))
-        return out
-
-    def _identity_token(plain):
-        try:
-            t, v = plain
-        except Exception:
-            return ''
-        if t == 'formula':
-            return '=' + _v251_google_formula_canonical(v)
-        if t == 'number':
-            try:
-                return f'{float(v):.12g}'
-            except Exception:
-                return str(v or '').strip()
-        if t == 'bool':
-            return 'TRUE' if bool(v) else 'FALSE'
-        return str(v or '').replace('\r\n', '\n').strip()
-
-    def _row_identity(plains):
-        vals = [_identity_token(x) for x in list(plains or [])]
-        first = vals[0] if len(vals) > 0 else ''
-        second = vals[1] if len(vals) > 1 else ''
-        if first or second:
-            # In the financial sheet the first two columns are the stable row
-            # identity (date/description or a summary label). Numeric/formula
-            # totals are deliberately ignored so recalculation does not look
-            # like a row replacement.
-            return ('row', first.casefold(), second.casefold())
-        if not any(vals):
-            return ('blank',)
-        return ('other', *(x.casefold() for x in vals[:3]))
-
-    # v254: the generated period title is only a logical key. The actual Google
-    # worksheet is pinned by immutable sheetId, so a user's manual tab rename
-    # never makes the bot create a second tab or lose its ownership snapshot.
-    sync_key = _v239_google_sync_meta_key(str(tid), target_chat_id, tab_title)
-    try:
-        sync_meta = SQLITE.get_meta('google_sync_v239', sync_key, {}) or {}
-    except Exception:
-        sync_meta = {}
-    prev_managed_rows = int((sync_meta or {}).get('managed_rows') or 0)
-    prev_managed_cols = int((sync_meta or {}).get('managed_cols') or 0)
-    prev_snapshot = (sync_meta or {}).get('managed_values_v252')
-    if not isinstance(prev_snapshot, list):
-        prev_snapshot = []
-    try:
-        preferred_sheet_id_v254 = int((sync_meta or {}).get('sheet_id_v254') or 0)
-    except Exception:
-        preferred_sheet_id_v254 = 0
-
-    with tenant_google_context(tid):
-        token = _google_access_token()
-        info = _google_service_account_info()
-        spreadsheet_id = _v244_google_resolve_or_create_spreadsheet(str(tid))
-        service_email = str(info.get('client_email') or '')
-        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        meta = _google_request_guarded('v252_metadata', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'fields': 'spreadsheetId,properties.title,sheets.properties(sheetId,title,gridProperties)'}, timeout=45, attempts=2)
-        if meta.status_code >= 300:
-            if meta.status_code in (401, 403):
-                raise RuntimeError(f'Google Sheets access denied. Добавьте {service_email} как Редактор.')
-            raise RuntimeError(f'Google Sheets metadata {meta.status_code}: {meta.text[:500]}')
-        payload = meta.json()
-        sheet_id = None
-        actual_tab_title = str(tab_title)
-        grid_rows = 0
-        grid_cols = 0
-        sheets_meta = list(payload.get('sheets') or [])
-
-        # First choice: immutable sheetId saved by v254. Title is intentionally
-        # ignored here because users are allowed to rename tabs freely.
-        if preferred_sheet_id_v254:
-            for sh in sheets_meta:
-                props = sh.get('properties') or {}
-                if int(props.get('sheetId') or 0) == preferred_sheet_id_v254:
-                    sheet_id = int(props.get('sheetId'))
-                    actual_tab_title = str(props.get('title') or tab_title)
-                    gp = props.get('gridProperties') or {}
-                    grid_rows = int(gp.get('rowCount') or 0)
-                    grid_cols = int(gp.get('columnCount') or 0)
-                    break
-
-        # Compatibility with older builds / a tab that has never been renamed.
-        if sheet_id is None:
-            for sh in sheets_meta:
-                props = sh.get('properties') or {}
-                if str(props.get('title') or '') == tab_title:
-                    sheet_id = int(props.get('sheetId'))
-                    actual_tab_title = str(props.get('title') or tab_title)
-                    gp = props.get('gridProperties') or {}
-                    grid_rows = int(gp.get('rowCount') or 0)
-                    grid_cols = int(gp.get('columnCount') or 0)
-                    break
-
-        # One-time v253 -> v254 migration for a tab renamed BEFORE v254 had a
-        # chance to save sheetId. Match the previous managed snapshot against
-        # the first two identity columns of existing tabs. Only a strong unique
-        # match is accepted; otherwise we fail safe and create the logical tab.
-        if sheet_id is None and prev_snapshot and prev_managed_rows > 0:
-            try:
-                import difflib as _v254_difflib
-                old_plain_rows = []
-                for prow in prev_snapshot[:prev_managed_rows]:
-                    prow = prow if isinstance(prow, list) else []
-                    old_plain_rows.append([_plain_from_json(prow[c]) if c < len(prow) else ('string', '') for c in range(min(2, max(1, prev_managed_cols)))])
-                old_keys = [_row_identity(x) for x in old_plain_rows]
-                scored = []
-                probe_rows = max(1, min(prev_managed_rows, 120))
-                probe_cols = max(1, min(2, prev_managed_cols or 2))
-                for sh in sheets_meta:
-                    props = sh.get('properties') or {}
-                    cand_id = int(props.get('sheetId') or 0)
-                    cand_title = str(props.get('title') or '')
-                    if not cand_id or not cand_title:
-                        continue
-                    escaped_cand = cand_title.replace("'", "''")
-                    probe = _google_request_guarded('v254_probe_renamed_tab', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{escaped_cand}'!A1:{_xlsx_col_name(probe_cols)}{probe_rows}", 'fields': 'sheets(data(rowData(values(userEnteredValue))))'}, timeout=30, attempts=1)
-                    if probe.status_code >= 300:
-                        continue
-                    prowdata = ((probe.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-                    cand_keys = []
-                    for i in range(probe_rows):
-                        vals = (prowdata[i] or {}).get('values') or [] if i < len(prowdata) else []
-                        cand_keys.append(_row_identity([_v239_google_plain_user_value(vals[c] if c < len(vals) else {}) for c in range(probe_cols)]))
-                    ratio = _v254_difflib.SequenceMatcher(a=old_keys[:probe_rows], b=cand_keys, autojunk=False).ratio()
-                    scored.append((float(ratio), cand_id, cand_title, props.get('gridProperties') or {}))
-                scored.sort(reverse=True, key=lambda x: x[0])
-                best = scored[0] if scored else None
-                second = scored[1][0] if len(scored) > 1 else 0.0
-                if best and best[0] >= 0.72 and (best[0] - second >= 0.08 or best[0] >= 0.94):
-                    _ratio, sheet_id, actual_tab_title, gp = best
-                    grid_rows = int((gp or {}).get('rowCount') or 0)
-                    grid_cols = int((gp or {}).get('columnCount') or 0)
-                    try:
-                        bot_journal('google_renamed_tab_rebound_v254', target_chat_id, f'logical={tab_title}; actual={actual_tab_title}; sheetId={sheet_id}; score={_ratio:.3f}')
-                    except Exception:
-                        pass
-            except Exception as exc:
-                try:
-                    bot_journal('google_renamed_tab_probe_warn_v254', target_chat_id, str(exc)[:300], 'WARN')
-                except Exception:
-                    pass
-
-        max_cols = max((len(r or []) for r in rows), default=1)
-        row_count = max(100, len(rows) + 20)
-        col_count = max(26, max_cols + 3)
-        created_new = False
-        if sheet_id is None:
-            add = _google_request_guarded('v252_add_sheet', requests.post, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate', headers=headers, json={'requests': [{'addSheet': {'properties': {'title': tab_title, 'gridProperties': {'rowCount': row_count, 'columnCount': col_count, 'frozenRowCount': 2}}}}]}, timeout=60, attempts=1)
-            if add.status_code >= 300:
-                raise RuntimeError(f'Google Sheets add tab {add.status_code}: {add.text[:500]}')
-            sheet_id = int(add.json()['replies'][0]['addSheet']['properties']['sheetId'])
-            actual_tab_title = str(tab_title)
-            grid_rows = row_count
-            grid_cols = col_count
-            created_new = True
-
-        annotations = dict(annotations_override or {})
-        if not annotations and layout == 'category':
-            try:
-                _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-            except Exception:
-                annotations = {}
-
-        cell_rows = []
-        for r_idx, row0 in enumerate(rows, start=1):
-            row = list(row0 or [])
-            vals = []
-            for c_idx in range(1, max_cols + 1):
-                value = row[c_idx - 1] if c_idx - 1 < len(row) else ''
-                cell = {'userEnteredValue': _google_cell_value(value), 'userEnteredFormat': _v167_google_color_format(row, r_idx, c_idx, max_cols, layout, annotations)}
-                note = str(annotations.get((r_idx, c_idx)) or '').strip()
-                if note:
-                    cell['note'] = note
-                vals.append(cell)
-            cell_rows.append({'values': vals})
-
-        # HOTFIX v258: probe beyond the remembered managed boundary.
-        # Older incremental builds could leave stale bot rows below managed_rows
-        # after a failed/partial compaction. If we only read managed_rows, those
-        # rows stay invisible forever and can preserve duplicate summaries /
-        # broken USD formulas. The probe is read-only; user rows below the bot
-        # table are never modified just because they were read.
-        _probe_tail_rows_v258 = 80
-        _remembered_read_rows_v258 = max(len(rows), prev_managed_rows, 1)
-        if grid_rows > 0:
-            read_rows = min(int(grid_rows), _remembered_read_rows_v258 + _probe_tail_rows_v258)
-        else:
-            read_rows = _remembered_read_rows_v258 + _probe_tail_rows_v258
-        read_cols = max(max_cols, prev_managed_cols, 1)
-        existing_rows = []
-        try:
-            escaped = str(actual_tab_title).replace("'", "''")
-            read = _google_request_guarded('v252_read_managed', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{escaped}'!A1:{_xlsx_col_name(read_cols)}{read_rows}", 'fields': 'sheets(data(rowData(values(userEnteredValue,note))))'}, timeout=60, attempts=2)
-            if read.status_code < 300:
-                existing_rows = ((read.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-        except Exception as exc:
-            try:
-                bot_journal('google_incremental_read_warn_v252', target_chat_id, str(exc)[:300], 'WARN')
-            except Exception:
-                pass
-            existing_rows = []
-
-        # HOTFIX v258: recover the REAL bot-table boundary from the sheet.
-        # A failed older compaction could leave valid-looking bot rows below the
-        # remembered managed_rows.  The strongest terminal marker of each finance
-        # section is "Остаток в обороте"; the last occurrence is therefore the
-        # real end of the generated table.  Anything below that boundary remains
-        # user territory and is never cleared/moved by this repair.
-        actual_managed_rows_v258 = int(prev_managed_rows or 0)
-        repair_extra_rows_v258 = False
-        try:
-            for _ri, _rr in enumerate(existing_rows, start=1):
-                _vals = (_rr or {}).get('values') or []
-                _a = str((_v239_google_plain_user_value(_vals[0]) if len(_vals) > 0 else ('string',''))[1] or '').strip().casefold()
-                _b = str((_v239_google_plain_user_value(_vals[1]) if len(_vals) > 1 else ('string',''))[1] or '').strip().casefold()
-                if _a == 'остаток в обороте' or _b == 'остаток в обороте':
-                    actual_managed_rows_v258 = max(actual_managed_rows_v258, int(_ri))
-            repair_extra_rows_v258 = actual_managed_rows_v258 > int(prev_managed_rows or 0)
-            if repair_extra_rows_v258:
-                try:
-                    bot_journal('google_boundary_repair_v258', target_chat_id, f'remembered={prev_managed_rows}; actual={actual_managed_rows_v258}; target={len(rows)}', 'WARN')
-                except Exception:
-                    pass
-        except Exception:
-            actual_managed_rows_v258 = int(prev_managed_rows or 0)
-            repair_extra_rows_v258 = False
-        old_managed_rows_v258 = max(int(prev_managed_rows or 0), int(actual_managed_rows_v258 or 0))
-
-        # v258 migration from the temporary v256 grid. D was a bot-owned
-        # generic Expense column. Deleting D shifts E+ categories, their notes,
-        # colors and all user content to the right one column left intact.
-        remove_v256_expense_col = False
-        try:
-            for _rr in existing_rows[:12]:
-                _vals = (_rr or {}).get('values') or []
-                _plain = [str((_v239_google_plain_user_value(_vals[i]) if i < len(_vals) else ('string',''))[1] or '').strip().casefold() for i in range(4)]
-                if _plain[0] == 'дата' and _plain[1] == 'описание' and _plain[2] == 'приход' and _plain[3] == 'расход':
-                    remove_v256_expense_col = True
-                    break
-        except Exception:
-            remove_v256_expense_col = False
-        prev_managed_cols_raw_v257 = prev_managed_cols
-        if remove_v256_expense_col and prev_managed_cols > 3:
-            prev_managed_cols = max(3, prev_managed_cols - 1)
-
-        req = []
-        if remove_v256_expense_col:
-            # Preserve USD expense-cell formatting/notes while collapsing the old
-            # D expense column into C. Copy only rows where old C is blank and D
-            # is used; then deleting D leaves the copied C cell intact. Values are
-            # subsequently regenerated from canonical finance data.
-            in_usd_v257 = False
-            for _ri, _rr in enumerate(existing_rows):
-                _vals = (_rr or {}).get('values') or []
-                _a = str((_v239_google_plain_user_value(_vals[0]) if len(_vals) > 0 else ('string',''))[1] or '').strip().upper()
-                if _a == 'USD':
-                    in_usd_v257 = True
-                    continue
-                if not in_usd_v257:
-                    continue
-                _c = _v239_google_plain_user_value(_vals[2] if len(_vals) > 2 else {})
-                _d = _v239_google_plain_user_value(_vals[3] if len(_vals) > 3 else {})
-                _d_note = str((_vals[3] if len(_vals) > 3 else {}).get('note') or '')
-                if _is_blank_plain(_c) and ((not _is_blank_plain(_d)) or _d_note):
-                    req.append({'copyPaste': {'source': {'sheetId': sheet_id, 'startRowIndex': _ri, 'endRowIndex': _ri + 1, 'startColumnIndex': 3, 'endColumnIndex': 4}, 'destination': {'sheetId': sheet_id, 'startRowIndex': _ri, 'endRowIndex': _ri + 1, 'startColumnIndex': 2, 'endColumnIndex': 3}, 'pasteType': 'PASTE_NORMAL', 'pasteOrientation': 'NORMAL'}})
-            req.append({'deleteDimension': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 3, 'endIndex': 4}}})
-        # Grow grid only if there is no managed boundary to insert at.  Once a
-        # boundary exists, insertDimension is what protects user content below/right.
-        if created_new:
-            pass
-        elif prev_managed_rows <= 0 and (grid_rows < row_count or grid_cols < col_count):
-            req.append({'updateSheetProperties': {'properties': {'sheetId': sheet_id, 'gridProperties': {'rowCount': max(grid_rows, row_count), 'columnCount': max(grid_cols, col_count)}}, 'fields': 'gridProperties(rowCount,columnCount)'}})
-
-        row_delta_v258 = 0 if created_new or old_managed_rows_v258 <= 0 else (len(rows) - old_managed_rows_v258)
-        row_growth = max(0, row_delta_v258)
-        row_shrink_v258 = max(0, -row_delta_v258)
-        col_growth = 0 if created_new or prev_managed_cols <= 0 else max(0, max_cols - prev_managed_cols)
-        row_insert_plan = []
-        inserted_row_indices = set()
-        target_to_old_row = {i: i for i in range(min(len(rows), old_managed_rows_v258))}
-        row_copy_map_v258 = {}
-        # v258: run logical row alignment for BOTH growth and shrink.  v257 only
-        # aligned on growth, so after a duplicate disappeared the bot updated
-        # individual cells in-place and could create mixed rows (old description
-        # in A/B + a summary formula in C).  On shrink we compact logical rows by
-        # copying the whole previous row (values + note + format) to its new slot,
-        # then refresh only bot-owned values.  No physical row deletion is used,
-        # so user content below the managed table never moves or disappears.
-        if row_delta_v258:
-            try:
-                import difflib as _v258_difflib
-                old_plain_rows = []
-                if (not repair_extra_rows_v258) and len(prev_snapshot) >= old_managed_rows_v258:
-                    for i in range(old_managed_rows_v258):
-                        prow = prev_snapshot[i] if isinstance(prev_snapshot[i], list) else []
-                        old_plain_rows.append([_plain_from_json(x) for x in prow])
-                else:
-                    for i in range(old_managed_rows_v258):
-                        vals = (existing_rows[i] or {}).get('values') or [] if i < len(existing_rows) else []
-                        old_plain_rows.append([_v239_google_plain_user_value(x) for x in vals[:max(prev_managed_cols, max_cols)]])
-                new_plain_rows = [[_v239_google_target_plain((r or [])[c] if c < len(r or []) else '') for c in range(max_cols)] for r in rows]
-                old_keys = [_row_identity(x) for x in old_plain_rows]
-                new_keys = [_row_identity(x) for x in new_plain_rows]
-                matcher = _v258_difflib.SequenceMatcher(a=old_keys, b=new_keys, autojunk=False)
-                candidate_plan = []
-                candidate_inserted = set()
-                candidate_map = {}
-                deleted_old = 0
-                for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                    old_n, new_n = i2 - i1, j2 - j1
-                    if tag == 'equal':
-                        for k in range(new_n):
-                            candidate_map[j1 + k] = i1 + k
-                    elif tag == 'insert':
-                        if new_n:
-                            candidate_plan.append((j1, new_n))
-                            candidate_inserted.update(range(j1, j2))
-                    elif tag == 'replace':
-                        common = min(old_n, new_n)
-                        for k in range(common):
-                            candidate_map[j1 + k] = i1 + k
-                        if new_n > old_n:
-                            start_new = j1 + common
-                            extra = new_n - old_n
-                            candidate_plan.append((start_new, extra))
-                            candidate_inserted.update(range(start_new, start_new + extra))
-                        elif old_n > new_n:
-                            deleted_old += old_n - new_n
-                    elif tag == 'delete':
-                        deleted_old += old_n
-                planned = sum(n for _, n in candidate_plan)
-                # Pure shrink (or pure growth) can be mapped deterministically.
-                # Mixed delete+insert migrations remain on conservative fallback.
-                if (row_shrink_v258 and planned == 0 and deleted_old == row_shrink_v258) or (row_growth and deleted_old == 0 and planned == row_growth):
-                    row_insert_plan = sorted(candidate_plan)
-                    inserted_row_indices = set(candidate_inserted)
-                    target_to_old_row = candidate_map
-                    if row_shrink_v258:
-                        row_copy_map_v258 = {int(j): int(i) for j, i in candidate_map.items() if int(i) != int(j)}
-            except Exception as _v258_rowdiff_exc:
-                try: bot_journal('google_row_compact_warn_v258', target_chat_id, str(_v258_rowdiff_exc)[:300], 'WARN')
-                except Exception: pass
-                row_insert_plan = []
-                row_copy_map_v258 = {}
-            if row_growth and not row_insert_plan:
-                # Conservative fallback for ambiguous growth: still protect all
-                # user content below the previous table boundary.
-                row_insert_plan = [(old_managed_rows_v258, row_growth)]
-                inserted_row_indices = set(range(old_managed_rows_v258, old_managed_rows_v258 + row_growth))
-                target_to_old_row = {i: i for i in range(min(len(rows), old_managed_rows_v258))}
-            # For ambiguous shrink we never delete physical Google rows. Values
-            # remain protected; a later clean alignment can compact them safely.
-            for start_idx, count in row_insert_plan:
-                req.append({'insertDimension': {'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': start_idx, 'endIndex': start_idx + count}, 'inheritFromBefore': True}})
-        if col_growth:
-            req.append({'insertDimension': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': prev_managed_cols, 'endIndex': prev_managed_cols + col_growth}, 'inheritFromBefore': True}})
-
-        added = 0
-        updated = 0
-        unchanged = 0
-        manual_values_preserved = 0
-        manual_preserved_cells = set()
-
-        if created_new:
-            if cell_rows:
-                req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': 0, 'endRowIndex': len(rows), 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'rows': cell_rows, 'fields': 'userEnteredValue,note,userEnteredFormat'}})
-                added = len(rows)
-            req.append({'updateDimensionProperties': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 1}, 'properties': {'pixelSize': 95}, 'fields': 'pixelSize'}})
-            if max_cols >= 2:
-                req.append({'updateDimensionProperties': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 1, 'endIndex': 2}, 'properties': {'pixelSize': 320}, 'fields': 'pixelSize'}})
-            if max_cols >= 3:
-                req.append({'updateDimensionProperties': {'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 2, 'endIndex': max_cols}, 'properties': {'pixelSize': 115}, 'fields': 'pixelSize'}})
-        else:
-            for idx, row0 in enumerate(rows):
-                target = list(row0 or [])
-                # Rows added beyond the previous managed boundary are physically
-                # inserted above the user's tail, so it is safe to apply bot style
-                # and generated notes only to those brand-new rows.
-                if idx in inserted_row_indices:
-                    req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'rows': [cell_rows[idx]], 'fields': 'userEnteredValue,note,userEnteredFormat'}})
-                    added += 1
-                    continue
-
-                old_idx = int(target_to_old_row.get(idx, idx))
-                old_vals = (existing_rows[old_idx] or {}).get('values') or [] if old_idx < len(existing_rows) else []
-                if idx in row_copy_map_v258 and old_idx != idx:
-                    # Move the logical row as a whole so user note/color follows
-                    # the finance row during compaction. Only managed columns are
-                    # copied; anything to the right is untouched.
-                    req.append({'copyPaste': {'source': {'sheetId': sheet_id, 'startRowIndex': old_idx, 'endRowIndex': old_idx + 1, 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'destination': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': 0, 'endColumnIndex': max_cols}, 'pasteType': 'PASTE_NORMAL', 'pasteOrientation': 'NORMAL'}})
-                changed_cols = []
-                # Existing columns: values only. Notes and formatting are owned by
-                # the user once the cell exists and are never touched again.
-                existing_col_limit = min(max_cols, prev_managed_cols if prev_managed_cols > 0 else max_cols)
-                for c in range(existing_col_limit):
-                    want = _v239_google_target_plain(target[c] if c < len(target) else '')
-                    old_c = c + 1 if remove_v256_expense_col and c >= 3 else c
-                    got = _v239_google_plain_user_value(old_vals[old_c] if old_c < len(old_vals) else {})
-                    prev = None
-                    if old_idx < len(prev_snapshot) and isinstance(prev_snapshot[old_idx], list) and old_c < len(prev_snapshot[old_idx]):
-                        prev = _plain_from_json(prev_snapshot[old_idx][old_c])
-                    google_formula_damaged_v258 = bool(isinstance(got, tuple) and len(got) == 2 and got[0] == 'formula' and '#REF!' in str(got[1] or '').upper())
-                    manual_owned = prev is not None and (not google_formula_damaged_v258) and (not _v244_google_values_equivalent(got, prev)) and (not _is_blank_plain(got))
-                    if manual_owned and (not _v244_google_values_equivalent(want, got)):
-                        manual_values_preserved += 1
-                        manual_preserved_cells.add((idx, c))
-                        continue
-
-                    # v254: Google automatically rewrites formula references when
-                    # insertDimension moves rows. Our comparison was made against
-                    # the PRE-insert grid, so a formula that looked unchanged can
-                    # become SUM(C34) while the intended bot formula is SUM(C33).
-                    # Re-assert every bot-owned formula in the same batch whenever
-                    # physical rows are inserted. User-edited formulas remain safe.
-                    force_formula_after_insert = bool(row_insert_plan and want[0] == 'formula' and (prev is None or _v244_google_values_equivalent(got, prev)))
-                    if _v244_google_values_equivalent(want, got) and not force_formula_after_insert:
-                        continue
-                    if manual_owned:
-                        manual_values_preserved += 1
-                        manual_preserved_cells.add((idx, c))
-                        continue
-                    changed_cols.append(c)
-                for a, b in _segments(changed_cols):
-                    vals = [{'userEnteredValue': _google_cell_value(target[c] if c < len(target) else '')} for c in range(a, b)]
-                    req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': vals}], 'fields': 'userEnteredValue'}})
-
-                # Newly added columns are physically inserted before anything the
-                # user may have placed to the right. They are blank/new, so bot
-                # formatting and generated notes are safe there.
-                if col_growth and max_cols > prev_managed_cols:
-                    a, b = prev_managed_cols, max_cols
-                    vals = cell_rows[idx]['values'][a:b]
-                    if vals:
-                        req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': vals}], 'fields': 'userEnteredValue,note,userEnteredFormat'}})
-
-                if changed_cols or (col_growth and max_cols > prev_managed_cols):
-                    updated += 1
-                else:
-                    unchanged += 1
-
-            # Shrink safely: never blind-clear the old tail. We only remove an
-            # old bot value if v252 has a snapshot proving the current value is
-            # still exactly what the bot wrote previously. Notes/colors survive.
-            stale_tail = max(0, old_managed_rows_v258 - len(rows))
-            if stale_tail > 0 and repair_extra_rows_v258:
-                # These rows are inside the bot's REAL terminal boundary but were
-                # invisible to the old metadata. Clear only VALUES in the stale
-                # bot tail; notes/colors remain untouched, and rows below the final
-                # bot terminal marker are not addressed at all. This removes old
-                # duplicate summaries / mixed USD rows without erasing user data.
-                for idx in range(len(rows), old_managed_rows_v258):
-                    old_vals = (existing_rows[idx] or {}).get('values') or [] if idx < len(existing_rows) else []
-                    clear_cols = []
-                    for c in range(min(max_cols, len(old_vals))):
-                        got = _v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                        if not _is_blank_plain(got):
-                            clear_cols.append(c)
-                    for a, b in _segments(clear_cols):
-                        req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': [{} for _ in range(a, b)]}], 'fields': 'userEnteredValue'}})
-            elif stale_tail > 0 and prev_snapshot:
-                for idx in range(len(rows), min(old_managed_rows_v258, len(prev_snapshot))):
-                    old_vals = (existing_rows[idx] or {}).get('values') or [] if idx < len(existing_rows) else []
-                    clear_cols = []
-                    prev_row = prev_snapshot[idx] if idx < len(prev_snapshot) and isinstance(prev_snapshot[idx], list) else []
-                    for c in range(min(prev_managed_cols, len(prev_row))):
-                        got = _v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                        prev = _plain_from_json(prev_row[c])
-                        damaged_formula_v258 = bool(isinstance(got, tuple) and len(got) == 2 and got[0] == 'formula' and '#REF!' in str(got[1] or '').upper())
-                        if (not _is_blank_plain(got)) and (_v244_google_values_equivalent(got, prev) or damaged_formula_v258):
-                            clear_cols.append(c)
-                    for a, b in _segments(clear_cols):
-                        req.append({'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': idx, 'endRowIndex': idx + 1, 'startColumnIndex': a, 'endColumnIndex': b}, 'rows': [{'values': [{} for _ in range(a, b)]}], 'fields': 'userEnteredValue'}})
-
-        if req:
-            upd = _google_request_guarded('v252_non_destructive_upsert', requests.post, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate', headers=headers, json={'requests': req}, timeout=90, attempts=1)
-            if upd.status_code >= 300:
-                raise RuntimeError(f'Google Sheets non-destructive update {upd.status_code}: {upd.text[:500]}')
-
-        escaped = str(actual_tab_title).replace("'", "''")
-        verify = _google_request_guarded('v252_verify_incremental', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{escaped}'!A1:{_xlsx_col_name(max_cols)}{max(1, len(rows))}", 'fields': 'sheets(data(rowData(values(userEnteredValue,note))))'}, timeout=60, attempts=2)
-        if verify.status_code >= 300:
-            raise RuntimeError(f'Google Sheets incremental verify {verify.status_code}: {verify.text[:500]}')
-        vr = ((verify.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-        for idx, row0 in enumerate(rows):
-            old_vals = (vr[idx] or {}).get('values') or [] if idx < len(vr) else []
-            for c in range(max_cols):
-                if (idx, c) in manual_preserved_cells:
-                    continue
-                want = _v239_google_target_plain((row0 or [])[c] if c < len(row0 or []) else '')
-                got = _v239_google_plain_user_value(old_vals[c] if c < len(old_vals) else {})
-                if not _v244_google_values_equivalent(want, got):
-                    raise RuntimeError(f'Google incremental verify mismatch row={idx + 1} col={c + 1}; want={want}; got={got}')
-
-        row_hash = hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=False, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()
-        snapshot = [[_plain_json((row or [])[c] if c < len(row or []) else '') for c in range(max_cols)] for row in rows]
-        try:
-            SQLITE.set_meta('google_sync_v239', sync_key, {'tab': tab_title, 'sheet_id_v254': int(sheet_id), 'sheet_title_actual_v254': str(actual_tab_title), 'tenant_id': str(tid), 'chat_id': target_chat_id, 'managed_rows': len(rows), 'managed_cols': max_cols, 'managed_values_v252': snapshot, 'row_hash': row_hash, 'synced_at': now_local().isoformat(timespec='microseconds'), 'manual_values_preserved': manual_values_preserved})
-        except Exception:
-            pass
-        url = f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}'
-
-    try:
-        tenant_google_history(tid, 'thuwed_non_destructive_upsert_v254', actual_tab_title, ok=True, chat_id=target_chat_id, url=url, added=added, updated=updated, unchanged=unchanged, stale_tail=stale_tail if 'stale_tail' in locals() else 0, manual_values_preserved=manual_values_preserved, row_growth=row_growth, col_growth=col_growth)
-        tenant_google_persist(tid, 'tenant_google_runtime_v252')
-        try:
-            bot_journal('google_non_destructive_upsert_v254', target_chat_id, f'logical_tab={tab_title}; actual_tab={actual_tab_title}; sheetId={sheet_id}; added={added}; updated={updated}; unchanged={unchanged}; row_growth={row_growth}; row_shrink={row_shrink_v258}; row_copies={len(row_copy_map_v258)}; col_growth={col_growth}; manual_values_preserved={manual_values_preserved}; stale_tail_preserved={stale_tail if "stale_tail" in locals() else 0}')
-        except Exception:
-            pass
-    except Exception:
-        pass
-    return url
+# [OCH12.35 OWNER] _v261_google_upsert_new -> 15_integration_google.py
+_owner_install('google', 'google:0044')
 
 _V261_GOOGLE_SYNC_ENGINES = {'previous', 'fixed', 'new'}
 
-def _v261_google_sync_engine(target_chat_id: int) -> str:
-    """Per-space Google sync engine. v261 defaults to the historical incremental sync."""
-    cid = int(target_chat_id)
-    mode = ''
-    try:
-        tid = _v149_tenant_id(None, cid) if callable(globals().get('_v149_tenant_id')) else tenant_id_for_chat(cid, create=False)
-        cfg = tenant_google_config(str(tid))
-        mode = str(cfg.setdefault('export_settings', {}).get('sync_engine_v261') or '').strip().lower()
-    except Exception:
-        try:
-            mode = str(get_chat_store(cid).setdefault('settings', {}).get('google_sync_engine_v261') or '').strip().lower()
-        except Exception:
-            mode = ''
-    return mode if mode in _V261_GOOGLE_SYNC_ENGINES else 'previous'
+# [OCH12.35 OWNER] _v261_google_sync_engine -> 15_integration_google.py
+_owner_install('google', 'google:0045')
 
-def _v261_google_sync_engine_label(mode: str) -> str:
-    return {
-        'previous': 'ПРЕДЫДУЩАЯ',
-        'fixed': 'ИСПРАВЛЕННАЯ',
-        'new': 'НОВАЯ',
-    }.get(str(mode or '').strip().lower(), 'ПРЕДЫДУЩАЯ')
+# [OCH12.35 OWNER] _v261_google_sync_engine_label -> 15_integration_google.py
+_owner_install('google', 'google:0046')
 
-def _v261_set_google_sync_engine(target_chat_id: int, mode: str) -> str:
-    cid = int(target_chat_id)
-    mode = str(mode or '').strip().lower()
-    if mode not in _V261_GOOGLE_SYNC_ENGINES:
-        mode = 'previous'
-    tid = ''
-    persisted = False
-    try:
-        tid = _v149_tenant_id(None, cid) if callable(globals().get('_v149_tenant_id')) else tenant_id_for_chat(cid, create=False)
-        cfg = tenant_google_config(str(tid))
-        cfg.setdefault('export_settings', {})['sync_engine_v261'] = mode
-        try:
-            tenant_google_history(str(tid), 'sync_engine_v261', mode, ok=True, chat_id=cid)
-        except Exception:
-            pass
-        tenant_google_persist(str(tid), 'google_sync_engine_v261')
-        persisted = True
-    except Exception:
-        try:
-            get_chat_store(cid).setdefault('settings', {})['google_sync_engine_v261'] = mode
-            save_data(data, root_only=True)
-            persisted = True
-        except Exception:
-            pass
-    try:
-        bot_journal('google_sync_engine_v261', cid, f'mode={mode}; tenant={tid or "fallback"}; persisted={int(persisted)}')
-    except Exception:
-        pass
-    return mode
+# [OCH12.35 OWNER] _v261_set_google_sync_engine -> 15_integration_google.py
+_owner_install('google', 'google:0047')
 
-def _v167_google_upsert_named_tab(tab_title: str, rows: list[list], target_chat_id: int, layout: str='category', annotations_override: dict | None=None) -> str:
-    """v261 selectable Google sync engine.
-
-    previous — v239 incremental sync: bot data wins inside the managed table;
-    fixed    — v259 non-destructive sync preserving manual user edits where possible;
-    new      — v260 non-destructive sync plus new-sheet fallback on Constitution block.
-    """
-    mode = _v261_google_sync_engine(int(target_chat_id))
-    fn = _v261_google_upsert_previous
-    if mode == 'fixed':
-        fn = _v261_google_upsert_fixed
-    elif mode == 'new':
-        fn = _v261_google_upsert_new
-    try:
-        bot_journal('google_sync_engine_run_v261', int(target_chat_id), f'mode={mode}; tab={str(tab_title)[:120]}')
-    except Exception:
-        pass
-    return fn(tab_title, rows, int(target_chat_id), layout=layout, annotations_override=annotations_override)
+# [OCH12.35 OWNER] _v167_google_upsert_named_tab -> 15_integration_google.py
+_owner_install('google', 'google:0048')
 
 
-def _v228_google_retry_delay_seconds(retry_count: int) -> int:
-    n = max(1, int(retry_count or 1))
-    if n == 1:
-        return 60
-    if n == 2:
-        return 180
-    if n == 3:
-        return 600
-    return 900
+# [OCH12.35 OWNER] _v228_google_retry_delay_seconds -> 15_integration_google.py
+_owner_install('google', 'google:0049')
 
-def _v228_google_latest_due(now_dt, mode: str):
-    """Return (run_key, target_day, selected_hhmm) for the latest due daily run.
+# [OCH12.35 OWNER] _v228_google_latest_due -> 15_integration_google.py
+_owner_install('google', 'google:0050')
 
-    A daily backup at 05:01 finalizes the PREVIOUS calendar day.  Before today's
-    05:01, yesterday's 05:01 remains the latest due run, which makes deploy/hibernate
-    catch-up reliable instead of silently skipping a missed day.
-    """
-    mode = str(mode or '')
-    selected = '00:01' if mode == 'd0001' else '05:01'
-    hh, mm = [int(x) for x in selected.split(':', 1)]
-    due = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    if now_dt < due:
-        due = due - _v167_timedelta(days=1)
-    run_date = due.strftime('%Y-%m-%d')
-    target_day = (due - _v167_timedelta(days=1)).strftime('%Y-%m-%d')
-    return (f'{run_date}@{selected}', target_day, selected)
+# [OCH12.35 OWNER] _v228_google_next_daily -> 15_integration_google.py
+_owner_install('google', 'google:0051')
 
-def _v228_google_next_daily(now_dt, mode: str):
-    selected = '00:01' if str(mode) == 'd0001' else '05:01'
-    hh, mm = [int(x) for x in selected.split(':', 1)]
-    nxt = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    if nxt <= now_dt:
-        nxt = nxt + _v167_timedelta(days=1)
-    target_day = (nxt - _v167_timedelta(days=1)).strftime('%Y-%m-%d')
-    return (nxt, target_day)
-
-def _v19_google_target_configured(target_chat_id: int) -> bool:
-    """Local-only preflight. Missing Google target is a configuration wait state, not a retry storm."""
-    try:
-        tid = str(_v149_tenant_id(target_chat_id=int(target_chat_id)))
-        gcfg = tenant_google_config(tid, create=False) if callable(globals().get('tenant_google_config')) else {}
-        raw = str((gcfg or {}).get('spreadsheet_id') or '').strip()
-        if (not raw) and tid == str(globals().get('TENANT_PLATFORM_ID') or ''):
-            raw = str(globals().get('_V149_PLATFORM_GOOGLE_SHEET') or _v167_os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '') or '').strip()
-        return bool(raw)
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v19_google_target_configured -> 15_integration_google.py
+_owner_install('google', 'google:0052')
 
 
-def _v19_google_suspend_missing_target(target_chat_id: int, cfg: dict | None=None, reason: str='schedule') -> bool:
-    cfg = cfg if isinstance(cfg, dict) else _v167_google_schedule_cfg(int(target_chat_id))
-    first = not bool(cfg.get('paused_missing_target_r19'))
-    if not first:
-        return False
-    cfg['paused_missing_target_r19'] = True
-    cfg['paused_missing_target_at_r19'] = now_local().isoformat(timespec='seconds')
-    cfg['pending_run_key'] = ''
-    cfg['pending_since_ts'] = 0.0
-    cfg['retry_count'] = 0
-    cfg['next_retry_ts'] = 0.0
-    cfg['last_error'] = 'Google Таблица не выбрана — автообновление ожидает настройки /google.'
-    _v167_persist_schedule(int(target_chat_id))
-    if first:
-        try:
-            bot_journal('google_auto_paused_missing_target_r19', int(target_chat_id), str(reason or 'schedule')[:160], 'WARN')
-        except Exception:
-            pass
-    return False
+# [OCH12.35 OWNER] _v19_google_suspend_missing_target -> 15_integration_google.py
+_owner_install('google', 'google:0053')
 
 
-def _v19_google_resume_if_target_ready(target_chat_id: int, cfg: dict | None=None) -> bool:
-    cfg = cfg if isinstance(cfg, dict) else _v167_google_schedule_cfg(int(target_chat_id), create=False)
-    if not isinstance(cfg, dict) or not cfg:
-        return False
-    if not _v19_google_target_configured(int(target_chat_id)):
-        return False
-    if cfg.pop('paused_missing_target_r19', None) is not None:
-        cfg.pop('paused_missing_target_at_r19', None)
-        if str(cfg.get('last_error') or '').startswith('Google Таблица не выбрана'):
-            cfg['last_error'] = ''
-        cfg['last_attempt_key'] = ''
-        cfg['pending_run_key'] = ''
-        cfg['pending_since_ts'] = 0.0
-        cfg['retry_count'] = 0
-        cfg['next_retry_ts'] = 0.0
-        _v167_persist_schedule(int(target_chat_id))
-        try:
-            bot_journal('google_auto_resumed_target_ready_r19', int(target_chat_id), 'Google target configured')
-        except Exception:
-            pass
-    return True
+# [OCH12.35 OWNER] _v19_google_resume_if_target_ready -> 15_integration_google.py
+_owner_install('google', 'google:0054')
 
 
-def _v167_google_update_target(target_chat_id: int, reason: str='schedule', run_key: str='', target_day: str=''):
-    target_chat_id = int(target_chat_id)
-    run_key = str(run_key or '')
-    target_day = str(target_day or '')[:10]
-    with _V167_GOOGLE_LOCK:
-        if target_chat_id in _V167_GOOGLE_RUNNING:
-            return False
-        _V167_GOOGLE_RUNNING.add(target_chat_id)
-    cfg = _v167_google_schedule_cfg(target_chat_id)
-    try:
-        if not _v19_google_target_configured(target_chat_id):
-            return _v19_google_suspend_missing_target(target_chat_id, cfg, reason)
-        _v19_google_resume_if_target_ready(target_chat_id, cfg)
-        day = target_day or today_key()
-        start_key, end_key = _v167_thuwed_bounds(day)
-        tab = _v167_period_title(start_key, end_key)
-        if run_key:
-            cfg['last_attempt_key'] = run_key
-            cfg['last_attempt_at'] = now_local().isoformat(timespec='seconds')
-            cfg['pending_run_key'] = run_key
-            cfg['pending_since_ts'] = _v163_time.time()
-            cfg['last_target_day'] = day
-            cfg['last_target_period'] = tab
-            try:
-                bot_journal('google_schedule_started_v228', target_chat_id, f'run={run_key}; day={day}; tab={tab}; reason={reason}')
-            except Exception:
-                pass
-        _r40_q = globals().get('_r40_google_query_submit')
-        _r40_w = globals().get('_r40_google_wait')
-        if callable(_r40_q) and callable(_r40_w):
-            _r40_jid = _r40_q(tab, target_chat_id, start_key, end_key, 0, 0, layout='category', include_annotations=True, notify_result=False, recipient_chat_id=target_chat_id)
-            _r40_ok, url, _r40_err = _r40_w(_r40_jid, timeout=900)
-            if not _r40_ok:
-                raise RuntimeError(_r40_err or f'Google HEAVY job {_r40_jid} failed')
-        else:
-            rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
-            url = _v167_google_upsert_named_tab(tab, rows, target_chat_id, layout='category')
-        cfg['last_ok_at'] = now_local().isoformat(timespec='seconds')
-        cfg['last_error'] = ''
-        cfg['last_period'] = tab
-        if run_key:
-            cfg['last_success_key'] = run_key
-            cfg['last_run_key'] = run_key
-            cfg['pending_run_key'] = ''
-            cfg['pending_since_ts'] = 0.0
-            cfg['retry_count'] = 0
-            cfg['next_retry_ts'] = 0.0
-        _v167_persist_schedule(target_chat_id)
-        try:
-            bot_journal('google_thuwed_updated', target_chat_id, f"tab={tab}; day={day}; run={run_key or '-'}; reason={reason}; url={url[:120]}")
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        cfg['last_error'] = str(exc)[:500]
-        if run_key:
-            cfg['pending_run_key'] = ''
-            cfg['pending_since_ts'] = 0.0
-            cfg['retry_count'] = int(cfg.get('retry_count') or 0) + 1
-            delay = _v228_google_retry_delay_seconds(cfg['retry_count'])
-            cfg['next_retry_ts'] = _v163_time.time() + delay
-            try:
-                bot_journal('google_schedule_retry_v228', target_chat_id, f"run={run_key}; day={target_day}; retry={cfg['retry_count']}; in={delay}s; error={str(exc)[:220]}", 'WARN')
-            except Exception:
-                pass
-        _v167_persist_schedule(target_chat_id)
-        try:
-            log_error(f'v167 google Thu-Wed update chat={target_chat_id}: {exc}')
-        except Exception:
-            pass
-        return False
-    finally:
-        with _V167_GOOGLE_LOCK:
-            _V167_GOOGLE_RUNNING.discard(target_chat_id)
+# [OCH12.35 OWNER] _v167_google_update_target -> 15_integration_google.py
+_owner_install('google', 'google:0055')
 
 def _v167_known_chat_ids():
     out = set()
@@ -10403,274 +7741,44 @@ def _v167_known_chat_ids():
         pass
     return sorted(out)
 
-def _v169_google_mode(cfg: dict | None) -> str:
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mode = str(cfg.get('mode') or '').strip().lower()
-    if mode not in {'manual', 'change', 'm15', 'h1', 'd0001', 'd0501'}:
-        if not bool(cfg.get('enabled', True)):
-            mode = 'manual'
-        else:
-            mode = 'd0001' if str(cfg.get('time') or '05:01') == '00:01' else 'd0501'
-    return mode
+# [OCH12.35 OWNER] _v169_google_mode -> 15_integration_google.py
+_owner_install('google', 'google:0056')
 
-def _v169_google_mode_label(mode: str) -> str:
-    return {'manual': '✋ Только вручную', 'change': '⚡ После изменений', 'm15': '🕒 Каждые 15 минут', 'h1': '🕐 Каждый час', 'd0001': '🌙 Ежедневно 00:01', 'd0501': '🌅 Ежедневно 05:01'}.get(str(mode), '✋ Только вручную')
+# [OCH12.35 OWNER] _v169_google_mode_label -> 15_integration_google.py
+_owner_install('google', 'google:0057')
 
-def _v244_google_initial_sync_fire(target_chat_id: int, reason: str='mode-change-initial', retry: int=0) -> None:
-    cid = int(target_chat_id)
-    cfg = _v167_google_schedule_cfg(cid, create=False)
-    if not cfg or _v169_google_mode(cfg) != 'change':
-        return
-    if _v169_google_enqueue(cid, str(reason or 'mode-change-initial')):
-        try:
-            bot_journal('google_change_initial_enqueued_v244', cid, str(reason or 'mode-change-initial'))
-        except Exception:
-            pass
-        return
-    if int(retry or 0) >= 6:
-        try:
-            bot_journal('google_change_initial_queue_busy_v244', cid, f'reason={reason}; retries={retry}', 'WARN')
-        except Exception:
-            pass
-        return
-    delay = min(30.0, 1.5 * 2 ** int(retry or 0))
-    try:
-        DELAYED_SCHEDULER.schedule(f'google-change-initial:{cid}', delay, _v244_google_initial_sync_fire, cid, str(reason or 'mode-change-initial'), int(retry or 0) + 1)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v244_google_initial_sync_fire -> 15_integration_google.py
+_owner_install('google', 'google:0058')
 
-def _v244_google_resume_after_recovery(reason: str='recovery') -> None:
-    """After verified recovery, refresh every chat that is configured for change-sync."""
-    for cid in _v167_known_chat_ids():
-        try:
-            cfg = _v167_google_schedule_cfg(int(cid), create=False)
-            if cfg and _v169_google_mode(cfg) == 'change':
-                DELAYED_SCHEDULER.schedule(f'google-recovery-sync:{int(cid)}', 0.5, _v244_google_initial_sync_fire, int(cid), 'recovery-sync:' + str(reason or 'recovery'), 0)
-        except Exception:
-            continue
+# [OCH12.35 OWNER] _v244_google_resume_after_recovery -> 15_integration_google.py
+_owner_install('google', 'google:0059')
 
-def _v169_set_google_mode(target_chat_id: int, mode: str) -> dict:
-    mode = str(mode or 'manual').strip().lower()
-    if mode not in {'manual', 'change', 'm15', 'h1', 'd0001', 'd0501'}:
-        mode = 'manual'
-    cfg = _v167_google_schedule_cfg(int(target_chat_id))
-    previous_mode = _v169_google_mode(cfg)
-    cfg['mode'] = mode
-    cfg['enabled'] = mode != 'manual'
-    if mode == 'd0001':
-        cfg['time'] = '00:01'
-    elif mode == 'd0501':
-        cfg['time'] = '05:01'
-    cfg['last_run_key'] = ''
-    cfg['last_success_key'] = ''
-    cfg['last_attempt_key'] = ''
-    cfg['pending_run_key'] = ''
-    cfg['pending_since_ts'] = 0.0
-    cfg['retry_count'] = 0
-    cfg['next_retry_ts'] = 0.0
-    _v167_persist_schedule(int(target_chat_id))
-    if mode == 'change' and previous_mode != 'change':
-        try:
-            DELAYED_SCHEDULER.cancel(f'google-change-initial:{int(target_chat_id)}')
-            DELAYED_SCHEDULER.schedule(f'google-change-initial:{int(target_chat_id)}', 0.25, _v244_google_initial_sync_fire, int(target_chat_id), 'mode-change-initial', 0)
-        except Exception:
-            pass
-    return cfg
+# [OCH12.35 OWNER] _v169_set_google_mode -> 15_integration_google.py
+_owner_install('google', 'google:0060')
 
-def _v169_google_settings_text(target_chat_id: int) -> str:
-    target_chat_id = int(target_chat_id)
-    cfg = _v167_google_schedule_cfg(target_chat_id)
-    if _v19_google_target_configured(target_chat_id):
-        _v19_google_resume_if_target_ready(target_chat_id, cfg)
-    mode = _v169_google_mode(cfg)
-    start_key, end_key = _v167_thuwed_bounds(today_key())
-    tab = _v167_period_title(start_key, end_key)
-    last_ok = str(cfg.get('last_ok_at') or '—')
-    last_attempt = str(cfg.get('last_attempt_at') or '—')
-    last_error = str(cfg.get('last_error') or '').strip()
-    upcoming = '—'
-    upcoming_period = '—'
-    if mode in {'d0001', 'd0501'}:
-        nxt, target_day = _v228_google_next_daily(now_local(), mode)
-        s2, e2 = _v167_thuwed_bounds(target_day)
-        upcoming_period = _v167_period_title(s2, e2)
-        upcoming = f"{nxt.strftime('%d.%m.%y %H:%M')} → день {fmt_date_ddmmyy(target_day)}"
-    lines = ['☁️ GOOGLE ТАБЛИЦА ЧТ–СР', '', f'Чат: {get_chat_display_name(target_chat_id)}', f'Текущий лист: {tab}', f'Режим обновления: {_v169_google_mode_label(mode)}', f'Sync: {_v261_google_sync_engine_label(_v261_google_sync_engine(target_chat_id))}', f'Последняя попытка: {last_attempt}', f'Последнее успешное: {last_ok}', f'Следующий автобэкап: {upcoming}', f'Лист следующего автобэкапа: {upcoming_period}']
-    if last_error:
-        lines.append(f'Последняя ошибка: {last_error[:350]}')
-    lines += ['', 'Период листа всегда четверг → среда. При наступлении нового четверга создаётся новый лист; внутри периода обновляется тот же лист.', '', 'Выберите способ/период обновления ниже.', '', 'Ф240⏰']
-    return '\n'.join(lines)[:3900]
+# [OCH12.35 OWNER] _v169_google_settings_text -> 15_integration_google.py
+_owner_install('google', 'google:0061')
 
-def _v169_google_settings_keyboard(target_chat_id: int, day_key: str | None=None):
-    target_chat_id = int(target_chat_id)
-    day_key = str(day_key or get_chat_store(target_chat_id).get('current_view_day') or today_key())[:10]
-    mode = _v169_google_mode(_v167_google_schedule_cfg(target_chat_id))
-    kb = types.InlineKeyboardMarkup(row_width=2)
+# [OCH12.35 OWNER] _v169_google_settings_keyboard -> 15_integration_google.py
+_owner_install('google', 'google:0062')
 
-    def _b(label, value):
-        mark = '✅ ' if mode == value else ''
-        return IB(mark + label, callback_data=f'v169:gmode:{target_chat_id}:{value}')
-    kb.row(_b('✋ Вручную', 'manual'), _b('⚡ После изменений', 'change'))
-    kb.row(_b('🕒 15 минут', 'm15'), _b('🕐 1 час', 'h1'))
-    kb.row(_b('🌙 00:01', 'd0001'), _b('🌅 05:01', 'd0501'))
-    kb.row(IB('☁️ Обновить Чт–Ср сейчас', callback_data=f'v169:gnow:{target_chat_id}'))
-    kb.row(IB('🔙 Назад в Инфо', callback_data=f'd:{day_key}:info'), IB('⬅️ Осн. окно', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v169_google_enqueue -> 15_integration_google.py
+_owner_install('google', 'google:0063')
 
-def _v169_google_enqueue(target_chat_id: int, reason: str, run_key: str='', target_day: str='') -> bool:
-    target_chat_id = int(target_chat_id)
-    key = f'google-thuwed:{target_chat_id}'
-    pool = globals().get('EXPORT_TASK_POOL')
-    if pool is not None:
-        try:
-            ok = bool(pool.submit_unique(key, _v167_google_update_target, target_chat_id, str(reason), str(run_key or ''), str(target_day or '')))
-            if not ok:
-                try:
-                    bot_journal('google_thuwed_coalesced', target_chat_id, f'reason={reason}')
-                except Exception:
-                    pass
-            return ok
-        except Exception as exc:
-            try:
-                log_error(f'v169 Google queue {target_chat_id}: {exc}')
-            except Exception:
-                pass
-    return False
+# [OCH12.35 OWNER] _v169_google_change_fire -> 15_integration_google.py
+_owner_install('google', 'google:0064')
 
-def _v169_google_change_fire(target_chat_id: int):
-    cfg = _v167_google_schedule_cfg(int(target_chat_id), create=False)
-    if _v169_google_mode(cfg) != 'change':
-        return
-    if not _v19_google_target_configured(int(target_chat_id)):
-        _v19_google_suspend_missing_target(int(target_chat_id), cfg, 'finance-change')
-        return
-    _v19_google_resume_if_target_ready(int(target_chat_id), cfg)
-    if not _v169_google_enqueue(int(target_chat_id), 'finance-change'):
-        try:
-            DELAYED_SCHEDULER.schedule(f'google-change-retry:{int(target_chat_id)}', 15.0, _v169_google_change_fire, int(target_chat_id))
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _v169_schedule_google_after_change -> 15_integration_google.py
+_owner_install('google', 'google:0065')
 
-def _v169_schedule_google_after_change(target_chat_id: int, reason: str='finance_changed') -> None:
-    try:
-        gate = globals().get('external_access_allowed_v233')
-        if callable(gate) and (not gate('google')):
-            return
-        safe, _why = _v239_google_recovery_write_gate()
-        if (not safe) and _v261_google_sync_engine(int(target_chat_id)) != 'new':
-            return
-        cfg = _v167_google_schedule_cfg(int(target_chat_id), create=False)
-        if not cfg or _v169_google_mode(cfg) != 'change':
-            return
-        low = str(reason or '').casefold()
-        mutation = low.startswith('finalize:') or any((x in low for x in ('finance', 'record', 'forward', 'edit', 'delete', 'add', 'new', 'insert', 'create', 'change', 'currency', 'reset', 'restore_csv')))
-        if low and (not mutation):
-            return
-        DELAYED_SCHEDULER.schedule(f'google-change:{int(target_chat_id)}', 8.0, _v169_google_change_fire, int(target_chat_id))
-    except Exception as exc:
-        try:
-            log_error(f'v169 schedule Google after change {target_chat_id}: {exc}')
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _v167_google_scheduler_tick -> 15_integration_google.py
+_owner_install('google', 'google:0066')
 
-def _v167_google_scheduler_tick():
-    try:
-        gate = globals().get('external_access_allowed_v233')
-        if callable(gate) and (not gate('google')):
-            return
-        if callable(globals().get('runtime_is_shutting_down')) and runtime_is_shutting_down():
-            return
-        if callable(globals().get('runtime_is_ready')) and (not runtime_is_ready()):
-            return
-        safe, why = _v239_google_recovery_write_gate()
-        if not safe:
-            try:
-                last = float(globals().get('_V239_GOOGLE_RECOVERY_BLOCK_LOG', 0.0) or 0.0)
-                nowm = time.monotonic()
-                if nowm - last >= 900.0:
-                    globals()['_V239_GOOGLE_RECOVERY_BLOCK_LOG'] = nowm
-                    bot_journal('google_scheduler_blocked_recovery_v239', int(OWNER_ID or 0) or None, str(why)[:300], 'WARN')
-            except Exception:
-                pass
-        now = now_local()
-        date_key = now.strftime('%Y-%m-%d')
-        minute = int(now.strftime('%M'))
-        hour = int(now.strftime('%H'))
-        now_ts = _v163_time.time()
-        for cid in _v167_known_chat_ids():
-            if (not safe) and _v261_google_sync_engine(int(cid)) != 'new':
-                continue
-            cfg = _v167_google_schedule_cfg(cid, create=False)
-            if not cfg:
-                continue
-            mode = _v169_google_mode(cfg)
-            if mode in {'manual', 'change'}:
-                continue
-            if not _v19_google_target_configured(int(cid)):
-                _v19_google_suspend_missing_target(int(cid), cfg, 'scheduler')
-                continue
-            _v19_google_resume_if_target_ready(int(cid), cfg)
-            run_key = ''
-            reason = mode
-            target_day = date_key
-            if mode == 'm15':
-                run_key = f'{date_key}@{hour:02d}:{minute // 15 * 15:02d}'
-            elif mode == 'h1':
-                run_key = f'{date_key}@{hour:02d}'
-            elif mode in {'d0001', 'd0501'}:
-                run_key, target_day, _selected = _v228_google_latest_due(now, mode)
-            if not run_key or str(cfg.get('last_success_key') or '') == run_key:
-                continue
-            if str(cfg.get('pending_run_key') or '') == run_key and now_ts - float(cfg.get('pending_since_ts') or 0) < 300:
-                continue
-            if str(cfg.get('last_attempt_key') or '') == run_key and float(cfg.get('next_retry_ts') or 0) > now_ts:
-                continue
-            cfg['last_attempt_key'] = run_key
-            cfg['last_attempt_at'] = now.isoformat(timespec='seconds')
-            cfg['pending_run_key'] = run_key
-            cfg['pending_since_ts'] = now_ts
-            cfg['last_target_day'] = target_day
-            s2, e2 = _v167_thuwed_bounds(target_day)
-            cfg['last_target_period'] = _v167_period_title(s2, e2)
-            _v167_persist_schedule(cid)
-            queued = _v169_google_enqueue(cid, reason, run_key, target_day)
-            if queued:
-                try:
-                    bot_journal('google_schedule_enqueued_v228', cid, f"run={run_key}; day={target_day}; tab={cfg['last_target_period']}; mode={mode}")
-                except Exception:
-                    pass
-            else:
-                cfg['pending_run_key'] = ''
-                cfg['pending_since_ts'] = 0.0
-                cfg['retry_count'] = int(cfg.get('retry_count') or 0) + 1
-                delay = _v228_google_retry_delay_seconds(cfg['retry_count'])
-                cfg['next_retry_ts'] = now_ts + delay
-                _v167_persist_schedule(cid)
-                try:
-                    bot_journal('google_schedule_enqueue_retry_v228', cid, f"run={run_key}; retry={cfg['retry_count']}; in={delay}s", 'WARN')
-                except Exception:
-                    pass
-    except Exception as exc:
-        try:
-            log_error(f'v169 google scheduler: {exc}')
-        except Exception:
-            pass
-    finally:
-        try:
-            if not (callable(globals().get('runtime_is_shutting_down')) and runtime_is_shutting_down()):
-                DELAYED_SCHEDULER.schedule('google-thuwed-scheduler', 20.0, _v167_google_scheduler_tick)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _v167_google_scheduler_loop -> 15_integration_google.py
+_owner_install('google', 'google:0067')
 
-def _v167_google_scheduler_loop():
-    return _v167_google_scheduler_tick()
-
-def _v167_start_google_scheduler():
-    global _V167_GOOGLE_SCHEDULER_STARTED
-    if _V167_GOOGLE_SCHEDULER_STARTED:
-        return
-    _V167_GOOGLE_SCHEDULER_STARTED = True
-    DELAYED_SCHEDULER.schedule('google-thuwed-scheduler', 3.0, _v167_google_scheduler_tick)
+# [OCH12.35 OWNER] _v167_start_google_scheduler -> 15_integration_google.py
+_owner_install('google', 'google:0068')
 
 def _v167_schedule_callback_filter(call):
     try:
@@ -11159,223 +8267,46 @@ def _v171_delete_message_quiet(chat_id: int, message_id: int) -> None:
         pass
 V171_FORWARD_COPY_EDIT_MODES = ('normal', 'button', 'slash')
 
-def _v171_forward_mode_root() -> dict:
-    try:
-        return data.setdefault('_global_settings', {})
-    except Exception:
-        return {}
+# [OCH12.35 OWNER] _v171_forward_mode_root -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0181')
 
-def _canon_forward_copy_edit_mode__001(chat_id: int | None=None) -> str:
-    gs = _v171_forward_mode_root()
-    mode = str(gs.get('forward_copy_edit_mode_global') or '').strip().lower()
-    if mode not in V171_FORWARD_COPY_EDIT_MODES:
-        candidates = [str(gs.get('forward_copy_edit_mode') or '').strip().lower()]
-        try:
-            owner = int(OWNER_ID or 0)
-            if owner:
-                candidates.append(str(owner_scoped_settings(owner).get('forward_copy_edit_mode') or '').strip().lower())
-                candidates.append(str(get_chat_store(owner).setdefault('settings', {}).get('forward_copy_edit_mode') or '').strip().lower())
-        except Exception:
-            pass
-        mode = next((x for x in candidates if x in V171_FORWARD_COPY_EDIT_MODES), 'normal')
-        gs['forward_copy_edit_mode_global'] = mode
-        gs['forward_copy_edit_mode'] = mode
-    try:
-        if not version_mode_feature('forward_copy_edit'):
-            return 'normal'
-    except Exception:
-        pass
-    return mode if mode in V171_FORWARD_COPY_EDIT_MODES else 'normal'
+# [OCH12.35 OWNER] _canon_forward_copy_edit_mode__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0182')
 
-def _canon_set_forward_copy_edit_mode__001(chat_id: int, mode: str):
-    mode = str(mode or 'normal').strip().lower()
-    if mode not in V171_FORWARD_COPY_EDIT_MODES:
-        mode = 'normal'
-    gs = _v171_forward_mode_root()
-    gs['forward_copy_edit_mode_global'] = mode
-    gs['forward_copy_edit_mode'] = mode
-    try:
-        for cid in collect_all_known_chat_ids(include_owner=True):
-            try:
-                get_chat_store(int(cid)).setdefault('settings', {})['forward_copy_edit_mode'] = mode
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        scheduler = globals().get('V166_CONFIG_IO_SCHEDULER')
-        if scheduler is not None:
-            scheduler.schedule('v171-forward-mode', 0.05, lambda: save_data(data, root_only=True))
-        else:
-            save_data(data, root_only=True)
-    except Exception:
-        pass
-    try:
-        schedule_config_backup_for_chats(delay=1.0)
-    except Exception:
-        pass
-    return mode
+# [OCH12.35 OWNER] _canon_set_forward_copy_edit_mode__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0183')
 
-def _canon_cycle_forward_copy_edit_mode__001(chat_id: int) -> str:
-    current = forward_copy_edit_mode(chat_id)
-    try:
-        idx = V171_FORWARD_COPY_EDIT_MODES.index(current)
-    except ValueError:
-        idx = 0
-    return set_forward_copy_edit_mode(int(chat_id), V171_FORWARD_COPY_EDIT_MODES[(idx + 1) % len(V171_FORWARD_COPY_EDIT_MODES)])
+# [OCH12.35 OWNER] _canon_cycle_forward_copy_edit_mode__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0184')
 
-def _canon_forward_copy_edit_mode_label__001(chat_id: int) -> str:
-    return {'normal': '💰фин.пересылка: обычно', 'button': '💰фин.пересылка: кнопка', 'slash': '💰фин.пересылка: слеш'}.get(forward_copy_edit_mode(chat_id), '💰фин.пересылка: обычно')
+# [OCH12.35 OWNER] _canon_forward_copy_edit_mode_label__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0185')
 _V171_PREV_REMINDER_CHAT_ALLOWED = _v177_legacy_0264_v149_reminder_chat_allowed
 
-def _v177_legacy_0265_v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
-    cid = int(chat_id)
-    try:
-        selected = {int(x) for x in (cfg or {}).get('chat_ids') or []}
-    except Exception:
-        selected = set()
-    if cid not in selected:
-        return False
-    try:
-        tid = str(_v149_reminder_cfg_tenant(cfg) or TENANT_PLATFORM_ID)
-    except Exception:
-        tid = str(globals().get('TENANT_PLATFORM_ID') or 'platform')
-    platform_id = str(globals().get('TENANT_PLATFORM_ID') or 'platform')
-    if tid == platform_id:
-        try:
-            known = {int(x) for x in collect_all_known_chat_ids(include_owner=True)}
-            return cid in known
-        except Exception:
-            return False
-    try:
-        return bool(_v149_chat_belongs_to_tenant(cid, tid))
-    except Exception:
-        return bool(_V171_PREV_REMINDER_CHAT_ALLOWED(cfg, cid)) if callable(_V171_PREV_REMINDER_CHAT_ALLOWED) else False
+# [OCH12.35 OWNER] _v177_legacy_0265_v149_reminder_chat_allowed -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0143')
 try:
     _v177_legacy_0265_v149_reminder_chat_allowed.__name__ = '_v149_reminder_chat_allowed'
 except Exception:
     pass
 V171_REMINDER_MERGE_MODES = ('off', 'smart', 'single')
 
-def _v171_reminder_global_mode(migrate: bool=True) -> str:
-    gs = data.setdefault('_global_settings', {})
-    mode = str(gs.get('reminder_merge_mode_global_v171') or '').strip().lower()
-    if mode not in V171_REMINDER_MERGE_MODES and migrate:
-        old = 'off'
-        try:
-            owner = int(OWNER_ID or 0)
-            if owner:
-                settings = _v149_reminder_chat_settings(None, owner)
-                old = str(settings.get('merge_mode') or '').strip().lower()
-                if old not in V171_REMINDER_MERGE_MODES:
-                    old = 'smart' if bool(settings.get('merge_enabled', False)) else 'off'
-        except Exception:
-            old = 'off'
-        mode = old if old in V171_REMINDER_MERGE_MODES else 'off'
-        gs['reminder_merge_mode_global_v171'] = mode
-    return mode if mode in V171_REMINDER_MERGE_MODES else 'off'
+# [OCH12.35 OWNER] _v171_reminder_global_mode -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0144')
 
-def _canon_reminder_merge_mode__001(tenant_id: str | None=None, chat_id: int | None=None) -> str:
-    return _v171_reminder_global_mode(True)
+# [OCH12.35 OWNER] _canon_reminder_merge_mode__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0145')
 
-def _canon_reminder_merge_enabled__001(tenant_id: str | None=None, chat_id: int | None=None) -> bool:
-    return reminder_merge_mode(tenant_id, chat_id) != 'off'
+# [OCH12.35 OWNER] _canon_reminder_merge_enabled__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0146')
 
-def _canon_reminder_merge_mode_label__001(tenant_id: str | None=None, chat_id: int | None=None) -> str:
-    return {'off': 'ВЫКЛ', 'smart': 'ВКЛ', 'single': '1 СООБЩЕНИЕ'}.get(reminder_merge_mode(tenant_id, chat_id), 'ВЫКЛ')
+# [OCH12.35 OWNER] _canon_reminder_merge_mode_label__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0147')
 
-def _v171_cycle_reminder_merge() -> str:
-    current = _v171_reminder_global_mode(True)
-    try:
-        idx = V171_REMINDER_MERGE_MODES.index(current)
-    except ValueError:
-        idx = 0
-    mode = V171_REMINDER_MERGE_MODES[(idx + 1) % len(V171_REMINDER_MERGE_MODES)]
-    data.setdefault('_global_settings', {})['reminder_merge_mode_global_v171'] = mode
-    try:
-        save_data(data, root_only=True)
-    except Exception:
-        pass
-    return mode
-def _reminder_extension_callback(call, data_str: str) -> bool:
-    raw = str(data_str or '')
-    if raw.startswith('v149:rem:item_merge:') or raw.startswith('v149:rem:item_complete:'):
-        chat_id = int(call.message.chat.id)
-        user_id = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
-        try:
-            tid = str(tenant_id_for_chat(chat_id, create=False) or TENANT_PLATFORM_ID)
-            if not tenant_can_manage(user_id, tid):
-                bot.answer_callback_query(call.id, 'Недостаточно прав', show_alert=True)
-                return True
-            parts = raw.split(':')
-            action = str(parts[2] or '')
-            rid = int(parts[3])
-            page = int(parts[4]) if len(parts) > 4 and str(parts[4]).isdigit() else 0
-            day_key = parts[5] if len(parts) > 5 else today_key()
-            with tenant_context(tid):
-                cfg = _reminder_cfg(rid)
-                if not isinstance(cfg, dict):
-                    bot.answer_callback_query(call.id, 'Напоминалка не найдена', show_alert=True)
-                    return True
-                if action == 'item_merge':
-                    current = _v207_reminder_merge_mode(cfg, chat_id)
-                    try:
-                        idx = REMINDER_MERGE_MODES_V169.index(current)
-                    except ValueError:
-                        idx = 0
-                    cfg['merge_mode_v207'] = REMINDER_MERGE_MODES_V169[(idx + 1) % len(REMINDER_MERGE_MODES_V169)]
-                    toast = _v207_reminder_merge_label(cfg, chat_id).replace('✅ ', '').replace('⬜ ', '')
-                else:
-                    cfg['show_complete_button_v207'] = not _v207_reminder_complete_button_enabled(cfg, chat_id)
-                    toast = f"Кнопка «Выполнить»: {('ВКЛ' if cfg['show_complete_button_v207'] else 'ВЫКЛ')}"
-                _reminder_touch(cfg)
-                _reminder_save(f'v207_{action}')
-                safe_edit(bot, call, build_reminder_menu_text(rid), reply_markup=build_reminder_menu_keyboard(rid, day_key, page, viewer_chat_id=chat_id))
-            try:
-                REMINDER_TASK_POOL.submit_unique('reminder-v149-batch', _v149_reminder_batch_job, int(chat_id))
-            except Exception:
-                pass
-            try:
-                bot.answer_callback_query(call.id, toast[:180])
-            except Exception:
-                pass
-            return True
-        except Exception as exc:
-            try:
-                log_error(f'v207 reminder item setting: {exc}')
-            except Exception:
-                pass
-            try:
-                bot.answer_callback_query(call.id, 'Не удалось обновить настройку', show_alert=True)
-            except Exception:
-                pass
-            return True
-    if raw.startswith(('v149:rem:merge:', 'v149:rem:command:')):
-        chat_id = int(call.message.chat.id)
-        user_id = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
-        try:
-            tid = str(tenant_id_for_chat(chat_id, create=False) or TENANT_PLATFORM_ID)
-            if not tenant_can_manage(user_id, tid):
-                bot.answer_callback_query(call.id, 'Недостаточно прав', show_alert=True)
-                return True
-        except Exception:
-            pass
-        parts = raw.split(':')
-        page = int(parts[3]) if len(parts) > 3 and str(parts[3]).isdigit() else 0
-        day_key = parts[4] if len(parts) > 4 else today_key()
-        try:
-            safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page))
-        except Exception as exc:
-            try:
-                log_error(f'v207 stale reminder global control redirect: {exc}')
-            except Exception:
-                pass
-        try:
-            bot.answer_callback_query(call.id, 'Эта настройка теперь находится внутри каждой напоминалки')
-        except Exception:
-            pass
-        return True
-    return False
+# [OCH12.35 OWNER] _v171_cycle_reminder_merge -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0148')
+# [OCH12.35 OWNER] _reminder_extension_callback -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0149')
 try:
     WINDOW_MARKER_CONSTANTS.update({'v171:desc': 'Ф241', 'v171:desc_close': 'Ф241'})
 except Exception:
@@ -11941,8 +8872,8 @@ def _v172_is_manager(user_id: int, chat_id: int) -> bool:
         pass
     return False
 
-def _v172_tasks_root() -> dict:
-    return data.setdefault(V172_TASKS_KEY, {})
+# [OCH12.35 OWNER] _v172_tasks_root -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0002')
 
 def _v172_settings_root() -> dict:
     return data.setdefault(V172_TASK_SETTINGS_KEY, {})
@@ -11958,11 +8889,8 @@ def _v172_chat_settings(chat_id: int) -> dict:
     row.setdefault('next_number', 1)
     return row
 
-def task_dispatcher_enabled(chat_id: int) -> bool:
-    try:
-        return bool(_v172_chat_settings(int(chat_id)).get('enabled', False))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] task_dispatcher_enabled -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0003')
 
 def _v172_persist(chat_id: int, reason: str='task_change') -> None:
     """Persist root state without holding data_lock during SQLite I/O (R36)."""
@@ -11995,20 +8923,11 @@ def _v172_new_uid() -> str:
             return uid
     return _v172_secrets.token_hex(8).upper()
 
-def _v172_task_for_uid(uid: str):
-    row = _v172_tasks_root().get(str(uid or '').upper())
-    return row if isinstance(row, dict) else None
+# [OCH12.35 OWNER] _v172_task_for_uid -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0004')
 
-def _v172_tasks_for_chat(chat_id: int, include_deleted: bool=False) -> list[dict]:
-    cid = int(chat_id)
-    out = []
-    for row in _v172_tasks_root().values():
-        if not isinstance(row, dict) or int(row.get('chat_id', 0) or 0) != cid:
-            continue
-        if not include_deleted and bool(row.get('deleted', False)):
-            continue
-        out.append(row)
-    return out
+# [OCH12.35 OWNER] _v172_tasks_for_chat -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0005')
 
 def _v172_status_map(task: dict):
     return _PURCHASE_STATUS if str(task.get('type')) == 'purchase' else _TASK_STATUS
@@ -12048,33 +8967,8 @@ def _v172_history(task: dict, action: str, user_id: int=0, user_name: str='', de
     if len(rows) > V172_HISTORY_KEEP:
         del rows[:-V172_HISTORY_KEEP]
 
-def _v172_create_task(chat_id: int, kind: str, text: str, creator, source_msg=None) -> dict:
-    cid = int(chat_id)
-    kind = 'purchase' if str(kind) == 'purchase' else 'task'
-    settings = _v172_chat_settings(cid)
-    num = max(1, int(settings.get('next_number', 1) or 1))
-    settings['next_number'] = num + 1
-    uid = _v172_new_uid()
-    source_id = int(getattr(source_msg, 'message_id', 0) or 0) if source_msg is not None else 0
-    source_user = getattr(source_msg, 'from_user', None) if source_msg is not None else None
-    source_username = ''
-    try:
-        source_username = str(getattr(getattr(source_msg, 'chat', None), 'username', '') or '').lstrip('@')
-    except Exception:
-        pass
-    creator_id = int(getattr(creator, 'id', 0) or 0)
-    creator_name = _v172_user_name(creator)
-    row = {'schema': V172_TASK_SCHEMA, 'uid': uid, 'number': num, 'chat_id': cid, 'type': kind, 'title': _v172_title(text), 'description': str(text or '').strip()[:4000], 'object': '', 'creator_user_id': creator_id, 'creator_name': creator_name, 'source_author_id': int(getattr(source_user, 'id', 0) or 0), 'source_author_name': _v172_user_name(source_user) if source_user else '', 'source_message_id': source_id, 'source_chat_username': source_username, 'assignees': [], 'status': 'need' if kind == 'purchase' else 'new', 'priority': 'normal', 'deadline': '', 'cost': '', 'comments': [], 'history': [], 'created_at': _v172_iso(), 'updated_at': _v172_iso(), 'completed_at': '', 'deleted': False}
-    _v172_history(row, 'created', creator_id, creator_name, 'Покупка' if kind == 'purchase' else 'Задача')
-    _v172_tasks_root()[uid] = row
-    if source_id:
-        _v172_source_root()[_v172_source_key(cid, source_id)] = uid
-    _v172_persist(cid, 'task_create')
-    try:
-        bot_journal('task_v172_created', cid, f'uid={uid} num={num} type={kind} source={source_id}')
-    except Exception:
-        pass
-    return row
+# [OCH12.35 OWNER] _v172_create_task -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0006')
 
 def _v172_touch(task: dict, user=None, action: str='updated', detail: str='') -> None:
     uid = int(getattr(user, 'id', 0) or 0) if user is not None else 0
@@ -12190,31 +9084,8 @@ def _v172_card_keyboard(task: dict, viewer_chat_id: int, viewer_user_id: int):
         kb.row(IB('🗑 Удалить', callback_data=f'v172:task:del:{uid}'))
     return _v172_standard_nav(kb, viewer_chat_id, 'v172:task:list:active:0')
 
-def _v172_filter_task(task: dict, filt: str, user_id: int=0) -> bool:
-    if bool(task.get('deleted', False)):
-        return False
-    f = str(filt or 'active')
-    if f == 'active':
-        return not _v172_is_complete(task) and str(task.get('status')) != 'deferred'
-    if f == 'all':
-        return not _v172_is_complete(task)
-    if f == 'work':
-        return str(task.get('status')) in {'work', 'search', 'ordered', 'bought'}
-    if f == 'wait':
-        return str(task.get('status')) == 'wait'
-    if f == 'deferred':
-        return str(task.get('status')) == 'deferred'
-    if f == 'urgent':
-        return str(task.get('priority')) == 'urgent' and (not _v172_is_complete(task))
-    if f == 'overdue':
-        return _v172_overdue(task)
-    if f == 'purchase':
-        return str(task.get('type')) == 'purchase' and (not _v172_is_complete(task))
-    if f == 'done':
-        return _v172_is_complete(task)
-    if f == 'mine':
-        return any((int(x.get('user_id', 0) or 0) == int(user_id or 0) for x in task.get('assignees') or [] if isinstance(x, dict))) and (not _v172_is_complete(task))
-    return True
+# [OCH12.35 OWNER] _v172_filter_task -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0007')
 
 def _v212_legacy__v172_sort_key(task: dict):
     complete = 1 if _v172_is_complete(task) else 0
@@ -12318,24 +9189,8 @@ def _v172_groups_text_kb(chat_id: int, kind: str, page: int):
         kb.row(IB('◀️', callback_data=f'v172:task:groups:{kind}:{(page - 1) % pages}'), IB(f'{page + 1}/{pages}', callback_data='none'), IB('▶️', callback_data=f'v172:task:groups:{kind}:{(page + 1) % pages}'))
     return (_v172_mark('\n'.join(lines), 'Ф246'), _v172_standard_nav(kb, chat_id, 'v172:task:list:active:0'))
 
-def _v172_group_tasks(chat_id: int, kind: str, token: str):
-    value = ''
-    for v, _count in _v172_group_values(chat_id, kind):
-        if _v172_value_token(v) == token:
-            value = v
-            break
-    if not value:
-        return ('', [])
-    rows = []
-    for task in _v172_tasks_for_chat(chat_id):
-        if _v172_is_complete(task):
-            continue
-        if kind == 'object' and str(task.get('object') or '').strip() == value:
-            rows.append(task)
-        elif kind == 'assignee' and any((str(a.get('name') or a.get('user_id') or '').strip() == value for a in task.get('assignees') or [] if isinstance(a, dict))):
-            rows.append(task)
-    rows.sort(key=_v172_sort_key)
-    return (value, rows)
+# [OCH12.35 OWNER] _v172_group_tasks -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0008')
 
 def _v172_history_text(task: dict):
     lines = [f"🕘 ИСТОРИЯ ЗАДАЧИ #{task.get('number')}", '']
@@ -12434,127 +9289,8 @@ def _v172_refresh_card(chat_id: int, message_id: int, task: dict, user_id: int):
     except Exception:
         pass
 
-def _canon_v172_task_message_input__001(msg) -> bool:
-    if getattr(msg, 'content_type', '') != 'text':
-        return False
-    cid = int(msg.chat.id)
-    uid_user = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-    wait = _v172_get_input(cid, uid_user)
-    if not wait:
-        return False
-    text = str(getattr(msg, 'text', '') or '').strip()
-    if text.lower() in {'отмена', 'cancel', 'стоп'}:
-        old = _v172_clear_input(cid, uid_user) or wait
-        _v172_delete_quiet(cid, int(old.get('prompt_id', 0) or 0))
-        _v172_delete_quiet(cid, int(getattr(msg, 'message_id', 0) or 0))
-        try:
-            send_and_auto_delete(cid, '❎ Действие отменено.', 6)
-        except Exception:
-            pass
-        return True
-    action = str(wait.get('action') or '')
-    task = _v172_task_for_uid(wait.get('uid')) if wait.get('uid') else None
-    if task is not None and int(task.get('chat_id', 0) or 0) != cid:
-        _v172_clear_input(cid, uid_user)
-        return True
-    user = getattr(msg, 'from_user', None)
-    ok = True
-    notice = '✅ Сохранено.'
-    if action in {'new_task', 'new_purchase'}:
-        if not task_dispatcher_enabled(cid):
-            notice = '❌ Диспетчер задач в этом чате выключен.'
-            ok = False
-        elif not text:
-            notice = '❌ Текст пустой.'
-            ok = False
-        else:
-            task = _v172_create_task(cid, 'purchase' if action == 'new_purchase' else 'task', text, user, source_msg=None)
-            notice = f"✅ Создана {('покупка' if action == 'new_purchase' else 'задача')} #{task.get('number')}."
-    elif not isinstance(task, dict):
-        notice = '❌ Задача не найдена.'
-        ok = False
-    elif action == 'text':
-        if not (_v172_is_manager(uid_user, cid) or uid_user == int(task.get('creator_user_id', 0) or 0)):
-            notice = '⛔ Изменять текст может автор или управляющий.'
-            ok = False
-        else:
-            task['description'] = text[:4000]
-            task['title'] = _v172_title(text)
-            _v172_touch(task, user, 'text_changed', text[:180])
-    elif action == 'object':
-        value = '' if text.lower() in {'нет', 'убрать', 'очистить', '-'} else text[:180]
-        task['object'] = value
-        _v172_touch(task, user, 'object_changed', value or 'очищено')
-    elif action == 'deadline':
-        value = _v172_parse_deadline(text)
-        if value is None:
-            notice = '❌ Срок не распознан. Пример: 12.08 18:00 или завтра 15:00.'
-            ok = False
-        else:
-            task['deadline'] = value
-            _v172_touch(task, user, 'deadline_changed', value or 'срок убран')
-    elif action == 'assign':
-        if not (_v172_is_manager(uid_user, cid) or uid_user == int(task.get('creator_user_id', 0) or 0)):
-            notice = '⛔ Назначать других может автор или управляющий.'
-            ok = False
-        else:
-            if text.lower() in {'нет', 'убрать', 'очистить', '-'}:
-                task['assignees'] = []
-            else:
-                names = [x.strip() for x in text.split(',') if x.strip()][:10]
-                task['assignees'] = [{'user_id': 0, 'name': x[:100]} for x in names]
-            _v172_touch(task, user, 'assignees_changed', _v172_assignee_text(task))
-    elif action == 'comment':
-        arr = task.setdefault('comments', [])
-        arr.append({'at': _v172_iso(), 'user_id': uid_user, 'user': _v172_user_name(user), 'text': text[:1200]})
-        if len(arr) > V172_COMMENT_KEEP:
-            del arr[:-V172_COMMENT_KEEP]
-        _v172_touch(task, user, 'comment_added', text[:220])
-    elif action == 'cost':
-        value = '' if text.lower() in {'нет', 'убрать', 'очистить', '-'} else text[:120]
-        task['cost'] = value
-        _v172_touch(task, user, 'cost_changed', value or 'очищено')
-    elif action == 'search':
-        q = text.casefold()
-        hits = []
-        for row in _v172_tasks_for_chat(cid):
-            hay = ' '.join([str(row.get('title') or ''), str(row.get('description') or ''), str(row.get('object') or ''), _v172_assignee_text(row)]).casefold()
-            if q in hay:
-                hits.append(row)
-        hits.sort(key=_v172_sort_key)
-        _V172_SEARCH_CACHE[cid, uid_user] = {'query': text[:200], 'uids': [x.get('uid') for x in hits], 'at': _v172_time.time()}
-        notice = f'🔎 Найдено: {len(hits)}'
-    old = _v172_clear_input(cid, uid_user) or wait
-    _v172_delete_quiet(cid, int(old.get('prompt_id', 0) or 0))
-    _v172_delete_quiet(cid, int(getattr(msg, 'message_id', 0) or 0))
-    if not ok:
-        try:
-            send_and_auto_delete(cid, notice, 10)
-        except Exception:
-            pass
-        if action == 'deadline' and isinstance(task, dict):
-            _v172_prompt(cid, uid_user, 'deadline', task.get('uid'), int(wait.get('message_id', 0) or 0))
-        return True
-    mid = int(wait.get('message_id', 0) or 0)
-    if action == 'search':
-        text2, kb2 = _v172_list_keyboard(cid, 'search', 0, uid_user)
-        if mid:
-            try:
-                bot.edit_message_text(text2, chat_id=cid, message_id=mid, reply_markup=kb2)
-            except Exception:
-                bot.send_message(cid, text2, reply_markup=kb2)
-        else:
-            bot.send_message(cid, text2, reply_markup=kb2)
-    elif isinstance(task, dict):
-        if mid:
-            _v172_refresh_card(cid, mid, task, uid_user)
-        elif action in {'new_task', 'new_purchase'}:
-            bot.send_message(cid, _v172_card_text(task), reply_markup=_v172_card_keyboard(task, cid, uid_user))
-    try:
-        send_and_auto_delete(cid, notice, 6)
-    except Exception:
-        pass
-    return True
+# [OCH12.35 OWNER] _canon_v172_task_message_input__001 -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0009')
 
 # R47 FINALIZATION: _v172_install_message_input_wrapper removed; hook is inline in on_any_message.
 
@@ -12947,63 +9683,11 @@ from datetime import datetime as _v173_datetime
 V173_FILE_MARKER = 'v173_reminder_crosschat_unique_journals'
 _V173_PREV_REMINDER_CHAT_ALLOWED = _v177_legacy_0265_v149_reminder_chat_allowed
 
-def _v173_reminder_selected_chat_ids(cfg: dict) -> set[int]:
-    out = set()
-    for raw in (cfg or {}).get('chat_ids') or []:
-        try:
-            out.add(int(raw))
-        except Exception:
-            continue
-    return out
+# [OCH12.35 OWNER] _v173_reminder_selected_chat_ids -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0150')
 
-def _canon_v149_reminder_chat_allowed__001(cfg: dict, chat_id: int) -> bool:
-    """Final send-time authority for reminder targets.
-
-    Platform owner reminder:
-      explicit selection in cfg.chat_ids is enough; Telegram itself is the final
-      reachability check.  Do not re-filter through a tenant-scoped chat picker.
-
-    Non-platform tenant reminder:
-      retain strict tenant membership so second-circle spaces cannot notify chats
-      belonging to another space merely by injecting an id into stored config.
-    """
-    try:
-        cid = int(chat_id)
-    except Exception:
-        return False
-    if cid not in _v173_reminder_selected_chat_ids(cfg):
-        return False
-    # R17: one final lifecycle authority for every reminder path.  A confirmed
-    # removed/migrated/archived chat is terminal and must never be retried by the
-    # scheduler, even if its old id is still present in a stale reminder snapshot.
-    try:
-        lifecycle_fn = globals().get('_v150_lifecycle')
-        status = str((lifecycle_fn(cid) or {}).get('status') or '') if callable(lifecycle_fn) else ''
-        if status in {'bot_removed', 'migrated', 'archived'}:
-            return False
-    except Exception:
-        try:
-            removed_fn = globals().get('is_chat_bot_removed')
-            if callable(removed_fn) and bool(removed_fn(cid)):
-                return False
-        except Exception:
-            pass
-    platform_id = str(globals().get('TENANT_PLATFORM_ID') or 'platform')
-    try:
-        tid = str(_v149_reminder_cfg_tenant(cfg) or platform_id)
-    except Exception:
-        tid = str((cfg or {}).get('tenant_id') or platform_id)
-    if tid == platform_id:
-        return True
-    try:
-        return bool(_v149_chat_belongs_to_tenant(cid, tid))
-    except Exception:
-        if callable(_V173_PREV_REMINDER_CHAT_ALLOWED):
-            try:
-                return bool(_V173_PREV_REMINDER_CHAT_ALLOWED(cfg, cid))
-            except Exception:
-                pass
-        return False
+# [OCH12.35 OWNER] _canon_v149_reminder_chat_allowed__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0151')
 _V173_BASE_REMINDER_SEND_INDIVIDUAL = globals().get('_v149_send_individual')
 if callable(_V173_BASE_REMINDER_SEND_INDIVIDUAL):
 
@@ -13329,28 +10013,11 @@ def _v212_legacy__v174_menu_text_kb(chat_id: int, user_id: int=0):
         pass
     return (text, kb)
 
-def _v174_task_by_number(chat_id: int, number: int):
-    for task in _v172_tasks_for_chat(int(chat_id)):
-        if int(task.get('number', 0) or 0) == int(number) and (not task.get('deleted')):
-            return task
-    return None
+# [OCH12.35 OWNER] _v174_task_by_number -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0010')
 
-def _v228_prev_v174_task_for_reply(chat_id: int, reply_message_id: int):
-    cid = int(chat_id)
-    mid = int(reply_message_id or 0)
-    if not mid:
-        return None
-    try:
-        uid = _v172_source_root().get(_v172_source_key(cid, mid))
-        task = _v172_task_for_uid(uid) if uid else None
-        if isinstance(task, dict) and (not task.get('deleted')):
-            return task
-    except Exception:
-        pass
-    for task in _v172_tasks_for_chat(cid):
-        if int(task.get('card_message_id', 0) or 0) == mid and (not task.get('deleted')):
-            return task
-    return None
+# [OCH12.35 OWNER] _v228_prev_v174_task_for_reply -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0011')
 
 def _v174_status_label(task: dict) -> str:
     status = str(task.get('status') or '')
@@ -13704,18 +10371,8 @@ def _v212_legacy__v174_handle_own_input(msg) -> bool:
 
 # R47 FINALIZATION: _v174_install_message_wrapper removed; hook is inline in on_any_message.
 
-def _v174_command_tasks(msg):
-    cid = int(msg.chat.id)
-    uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-    if cid == int(OWNER_ID or 0):
-        text, kb = _v174_admin_text_kb(1, 0)
-        bot.send_message(cid, text, reply_markup=kb)
-        return
-    if not task_dispatcher_enabled(cid):
-        bot.reply_to(msg, '📋 Диспетчер задач в этом чате выключен.')
-        return
-    text, kb = _v174_menu_text_kb(cid, uid)
-    bot.send_message(cid, text, reply_markup=kb)
+# [OCH12.35 OWNER] _v174_command_tasks -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0012')
 
 def _v174_command_create(msg, kind: str):
     cid = int(msg.chat.id)
@@ -14070,11 +10727,8 @@ import hashlib as _v212_hashlib
 import secrets as _v212_secrets
 V212_TASK_BRANCH_LIMIT = 24
 
-def _v212_task_branches(chat_id: int, include_deleted: bool=False) -> list[dict]:
-    rows = _v174_settings(int(chat_id)).setdefault('branches_v212', [])
-    out = [x for x in rows if isinstance(x, dict) and (include_deleted or not bool(x.get('deleted')))]
-    out.sort(key=lambda x: (int(x.get('display_order') or 9999), str(x.get('created_at') or ''), str(x.get('branch_id') or '')))
-    return out
+# [OCH12.35 OWNER] _v212_task_branches -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0013')
 
 def _v212_branch_by_id(chat_id: int, branch_id: str, include_deleted: bool=False):
     bid = str(branch_id or '')
@@ -14116,127 +10770,17 @@ def _v212_source_order_key(original_date, message_id: int) -> str:
         ts = 0.0
     return f'{int(message_id or 0):012d}:{ts:020.6f}'
 
-def _v212_task_hash(text: str, classification) -> str:
-    raw = f"{str(text or '')}\n{(classification or {}).get('kind', '')}\n{(classification or {}).get('branch_id', '')}"
-    return _v212_hashlib.sha256(raw.encode('utf-8', 'ignore')).hexdigest()[:24]
+# [OCH12.35 OWNER] _v212_task_hash -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0014')
 
-def _v212_task_service_text(text: str) -> bool:
-    low = _v174_normalize(text)
-    return low.startswith(('📋 задачи', '📋 диспетчер задач', '📋 задача №', '🛒 покупка №', '⚙️ ключевые слова', 'ф233', '✅ бот запущен'))
+# [OCH12.35 OWNER] _v212_task_service_text -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0015')
 
-def _v212_send_task_card(task: dict, reply_to_message_id: int=0):
-    cid = int(task.get('chat_id') or 0)
-    try:
-        sent = bot.send_message(cid, _v174_compact_text(task), reply_markup=_v174_compact_kb(task, cid, int(task.get('creator_user_id') or 0)), reply_to_message_id=int(reply_to_message_id or 0) or None, allow_sending_without_reply=True)
-        task['card_message_id'] = int(getattr(sent, 'message_id', 0) or 0)
-        _v172_persist(cid, 'v212_task_card')
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v212_send_task_card -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0016')
 
-def task_reconcile_source_message(chat_id: int, message_id: int, text: str, *, original_date=None, sender_id: int=0, sender_name: str='', sender_is_bot: bool=False, trusted_forwarding_copy: bool=False, origin_chat_id: int=0, origin_message_id: int=0, is_edit: bool=False, previous_message_id: int=0, content_type: str='text'):
-    """Single source-message reconcile: CREATE/UPDATE/RECLASSIFY/DEACTIVATE/REACTIVATE/NOOP."""
-    cid, mid = (int(chat_id), int(message_id or 0))
-    body = str(text or '').strip()
-    if not cid or not mid or (not task_dispatcher_enabled(cid)):
-        return None
-    if not bool(_v174_settings(cid).get('auto_capture', True)):
-        return None
-    if not body or body.startswith('/'):
-        return None
-    if sender_is_bot and (not trusted_forwarding_copy):
-        # R29: third-party bot messages are valid source data when enabled for this contour.
-        try:
-            if not bool(globals().get('r29_input_source_enabled', lambda _c, _k: True)(cid, 'other_bots')):
-                return None
-        except Exception:
-            return None
-    if _v212_task_service_text(body) and (not trusted_forwarding_copy):
-        return None
-    classification = _v212_match_classification(cid, body)
-    skey = _v172_source_key(cid, mid)
-    source_root = _v172_source_root()
-    existing_uid = source_root.get(skey)
-    if not existing_uid and int(previous_message_id or 0):
-        old_key = _v172_source_key(cid, int(previous_message_id))
-        existing_uid = source_root.get(old_key)
-        if existing_uid:
-            source_root.pop(old_key, None)
-            source_root[skey] = existing_uid
-    task = _v172_task_for_uid(existing_uid) if existing_uid else None
-    digest = _v212_task_hash(body, classification)
-    if isinstance(task, dict) and (not task.get('deleted')) and (str(task.get('source_reconcile_hash') or '') == digest) and (int(task.get('source_message_id') or 0) == mid):
-        return task
-    if not isinstance(task, dict) or task.get('deleted'):
-        if not classification:
-            return None
-
-        class _U:
-            pass
-
-        class _C:
-            pass
-
-        class _M:
-            pass
-        u = _U()
-        u.id = int(sender_id or 0)
-        u.first_name = str(sender_name or '')
-        u.last_name = ''
-        u.username = ''
-        u.is_bot = bool(sender_is_bot)
-        c = _C()
-        c.id = cid
-        c.username = ''
-        m = _M()
-        m.message_id = mid
-        m.from_user = u
-        m.chat = c
-        m.date = original_date
-        task = _v172_create_task(cid, str(classification.get('kind') or 'task'), body, u, source_msg=m)
-        first_mid = int(previous_message_id or mid)
-        task.update({'source_auto': True, 'source_auto_active': True, 'source_reconcile_hash': digest, 'source_text': body, 'source_order_key': _v212_source_order_key(original_date, first_mid), 'source_original_message_id': first_mid, 'source_original_date': str(original_date or ''), 'origin_chat_id': int(origin_chat_id or 0), 'origin_message_id': int(origin_message_id or 0), 'trusted_forwarding_copy': bool(trusted_forwarding_copy), 'branch_id': str(classification.get('branch_id') or '')})
-        if task.get('branch_id'):
-            br = _v212_branch_by_id(cid, task['branch_id'], include_deleted=True)
-            task['branch_name_snapshot'] = str((br or {}).get('name') or '')
-        _v172_history(task, 'source_autocaptured', int(sender_id or 0), str(sender_name or ''), f"keyword={classification.get('keyword')}; branch={task.get('branch_id') or task.get('type')}")
-        _v172_persist(cid, 'v212_source_create')
-        _v212_send_task_card(task, mid)
-        return task
-    old_type, old_branch = (str(task.get('type') or 'task'), str(task.get('branch_id') or ''))
-    task['source_message_id'] = mid
-    source_root[skey] = str(task.get('uid') or existing_uid)
-    if not task.get('source_order_key'):
-        task['source_order_key'] = _v212_source_order_key(original_date, int(task.get('source_original_message_id') or mid))
-    task['source_text'] = body
-    task['description'] = body[:4000]
-    task['title'] = _v172_title(body)
-    task['source_reconcile_hash'] = digest
-    task['origin_chat_id'] = int(origin_chat_id or task.get('origin_chat_id') or 0)
-    task['origin_message_id'] = int(origin_message_id or task.get('origin_message_id') or 0)
-    if classification:
-        new_type = str(classification.get('kind') or 'task')
-        new_branch = str(classification.get('branch_id') or '')
-        was_inactive = not bool(task.get('source_auto_active', True))
-        task['source_auto_active'] = True
-        task['source_auto'] = True
-        task['type'] = new_type
-        task['branch_id'] = new_branch
-        if new_branch:
-            br = _v212_branch_by_id(cid, new_branch, include_deleted=True)
-            task['branch_name_snapshot'] = str((br or {}).get('name') or task.get('branch_name_snapshot') or '')
-        if was_inactive:
-            _v172_history(task, 'source_reactivated', int(sender_id or 0), str(sender_name or ''), 'keyword returned')
-        if old_type != new_type or old_branch != new_branch:
-            _v172_history(task, 'source_reclassified', int(sender_id or 0), str(sender_name or ''), f"{old_type}/{old_branch or '-'} -> {new_type}/{new_branch or '-'}")
-        elif is_edit and (not was_inactive):
-            _v172_history(task, 'source_message_edited', int(sender_id or 0), str(sender_name or ''), body[:220])
-    elif bool(task.get('source_auto_active', True)):
-        task['source_auto_active'] = False
-        _v172_history(task, 'source_deactivated', int(sender_id or 0), str(sender_name or ''), 'classification keywords disappeared')
-    task['updated_at'] = _v172_iso()
-    _v172_persist(cid, 'v212_source_reconcile')
-    _v174_refresh_card(task)
-    return task
+# [OCH12.35 OWNER] task_reconcile_source_message -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0017')
 
 def _canon_v174_auto_process__001(msg) -> None:
     try:
@@ -14377,38 +10921,8 @@ def _v212_branch_detail(chat_id: int, branch_id: str):
     _v172_standard_nav(kb, int(chat_id), 'v174:td:menu')
     return (text, kb)
 
-def _v212_open_task_window(chat_id: int, user_id: int=0):
-    cid = int(chat_id)
-    text, kb = _v174_menu_text_kb(cid, user_id)
-    try:
-        reg = globals().get('_open_window_registry')
-        rows = list((reg() if callable(reg) else data.get('open_window_registry') or {}).values())
-        for item in rows:
-            if not isinstance(item, dict) or int(item.get('chat_id') or 0) != cid:
-                continue
-            if str(item.get('code') or '') == 'Ф248' or str(item.get('window_type') or '') == 'tasks':
-                mid = int(item.get('message_id') or 0)
-                if mid:
-                    try:
-                        bot.edit_message_text(text, chat_id=cid, message_id=mid, reply_markup=kb)
-                        return mid
-                    except Exception:
-                        try:
-                            unregister_open_window(cid, mid)
-                        except Exception:
-                            pass
-    except Exception:
-        pass
-    try:
-        sent = bot.send_message(cid, text, reply_markup=kb)
-        mid = int(getattr(sent, 'message_id', 0) or 0)
-        try:
-            register_open_window(cid, mid, 'tasks', code='Ф248', params={'task_dispatcher': True})
-        except Exception:
-            pass
-        return mid
-    except Exception:
-        return 0
+# [OCH12.35 OWNER] _v212_open_task_window -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0018')
 
 def _v174_admin_text_kb(level: int=1, page: int=0):
     level = 2 if int(level) == 2 else 1
@@ -14634,25 +11148,8 @@ try:
 except Exception:
     pass
 
-def _canon_task_dispatcher_callback_final__001(call) -> bool:
-    """v179 single task callback surface; supports both v174 current and v172 legacy buttons."""
-    raw = str(getattr(call, 'data', '') or '')
-    try:
-        resolver = globals().get('resolve_short_callback')
-        if callable(resolver):
-            raw = str(resolver(raw) or raw)
-    except Exception:
-        pass
-    if raw.startswith('v174:td:'):
-        _v174_callback(call)
-        return True
-    if raw.startswith('v172:task:'):
-        if _v174_legacy_filter(call):
-            _v174_legacy_callback(call)
-            return True
-        _v172_callback(call)
-        return True
-    return False
+# [OCH12.35 OWNER] _canon_task_dispatcher_callback_final__001 -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0019')
 import secrets as _v213_secrets
 import time as _v213_time
 V213_INPUT_FLOW_MARKER = 'Ф252'
@@ -14687,11 +11184,8 @@ def _v213_prompt_text(text: str) -> str:
     except Exception:
         return str(text or '') + f'\n\n{V213_INPUT_FLOW_MARKER} ⏰'
 
-def contour_visible_finance_enabled(chat_id: int) -> bool:
-    try:
-        return bool(is_finance_mode(int(chat_id)) and finance_window_mode(int(chat_id)) in {'normal', 'open', 'first'})
-    except Exception:
-        return False
+# [OCH12.35 OWNER] contour_visible_finance_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0208')
 
 def resolve_contour_home(chat_id: int) -> str:
     cid = int(chat_id)
@@ -14722,51 +11216,11 @@ def resolve_contour_home(chat_id: int) -> str:
         pass
     return 'neutral'
 
-def _v213_clear_finance_active_pointer(chat_id: int) -> None:
-    cid = int(chat_id)
-    try:
-        store = get_chat_store(cid)
-        day = str(store.get('current_view_day') or today_key())[:10]
-        try:
-            clear_active_window_id(cid, day)
-        except Exception:
-            pass
-        try:
-            state = _finance_window_state(cid)
-            if finance_window_mode(cid) == 'off':
-                state['main_windows'] = {}
-                state['balance_panel_id'] = None
-                state['auto_reopen_on_boot'] = False
-        except Exception:
-            pass
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v213_clear_finance_active_pointer -> 11_business_finance.py
+_owner_install('finance', 'finance:0209')
 
-def _v213_show_task_home(chat_id: int, user_id: int=0, current_message_id: int=0) -> int:
-    cid = int(chat_id)
-    uid = int(user_id or 0)
-    mid = int(current_message_id or 0)
-    text, kb = _v174_menu_text_kb(cid, uid)
-    if mid:
-        try:
-            result = fast_ui_edit_message_text(cid, mid, text, reply_markup=kb, purpose='contour_home_tasks_v213')
-            if result in {'ok', 'scheduled'}:
-                try:
-                    register_open_window(cid, mid, 'tasks', code='Ф248', params={'task_dispatcher': True, 'contour_home': True})
-                except Exception:
-                    pass
-                _v213_clear_finance_active_pointer(cid)
-                return mid
-            if result == 'not_found':
-                try:
-                    unregister_open_window(cid, mid)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    out = int(_v212_open_task_window(cid, uid) or 0)
-    _v213_clear_finance_active_pointer(cid)
-    return out
+# [OCH12.35 OWNER] _v213_show_task_home -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0020')
 
 def _canon_v213_show_neutral_home__001(chat_id: int, current_message_id: int=0) -> int:
     cid = int(chat_id)
@@ -14789,26 +11243,11 @@ def _canon_v213_show_neutral_home__001(chat_id: int, current_message_id: int=0) 
     except Exception:
         return 0
 
-def _v224_show_forward_home(chat_id: int, user_id: int=0, current_message_id: int=0) -> int:
-    cid = int(chat_id)
-    mid = int(current_message_id or 0)
-    text = window_mark('📤 ПЕРЕСЫЛКА\n\n✅ Пересылка разрешена владельцем для этого чата.\nПравила работают автоматически; пользовательские настройки режима заблокированы директивной политикой.', V217_FORWARD_SCOPE_MARKER if 'V217_FORWARD_SCOPE_MARKER' in globals() else 'Ф258')
-    kb = types.InlineKeyboardMarkup()
-    kb.row(IB('❌ Закрыть', callback_data='aux_close'))
-    return _v215_edit_or_send(cid, mid, text, kb, 'directive_forward_home_v224')
+# [OCH12.35 OWNER] _v224_show_forward_home -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0186')
 
-def _v224_show_reminders_home(chat_id: int, user_id: int=0, current_message_id: int=0) -> int:
-    cid = int(chat_id)
-    uid = int(user_id or 0)
-    mid = int(current_message_id or 0)
-    try:
-        text = build_v217_chat_reminders_text(cid)
-        kb = build_v217_chat_reminders_keyboard(cid, uid)
-    except Exception:
-        text = window_mark('⏰ НАПОМИНАНИЯ\n\nНапоминания разрешены владельцем для этого чата.', V217_CHAT_REMINDERS_MARKER if 'V217_CHAT_REMINDERS_MARKER' in globals() else 'Ф257')
-        kb = types.InlineKeyboardMarkup()
-        kb.row(IB('❌ Закрыть', callback_data='aux_close'))
-    return _v215_edit_or_send(cid, mid, text, kb, 'directive_reminders_home_v224')
+# [OCH12.35 OWNER] _v224_show_reminders_home -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0152')
 
 def v224_open_directive_mode_home(chat_id: int, user_id: int, current_message_id: int, mode: str) -> int:
     cid = int(chat_id)
@@ -15017,14 +11456,8 @@ def _canon_schedule_startup_main_windows__002(delay: float=3.0):
             pass
 _V213_PREV_FIN_MODE_CHOICE = _canon_apply_finance_window_mode_choice__001
 
-def _canon_apply_finance_window_mode_choice__002(chat_id: int, selected_mode: str) -> str:
-    result = _V213_PREV_FIN_MODE_CHOICE(int(chat_id), selected_mode)
-    try:
-        if result == 'off':
-            DELAYED_SCHEDULER.schedule(f'contour-home-mode:{int(chat_id)}', 0.1, lambda cid=int(chat_id): open_resolved_contour_home(cid, 0, 0))
-    except Exception:
-        pass
-    return result
+# [OCH12.35 OWNER] _canon_apply_finance_window_mode_choice__002 -> 11_business_finance.py
+_owner_install('finance', 'finance:0210')
 
 def schedule_contour_home_after_mode_change(chat_id: int, reason: str='mode_change', delay: float=0.15) -> None:
     cid = int(chat_id)
@@ -15044,28 +11477,11 @@ def schedule_contour_home_after_mode_change(chat_id: int, reason: str='mode_chan
     except Exception:
         pass
 
-def _v213_task_input_key(chat_id: int, user_id: int, legacy: bool=False) -> str:
-    return f"v213-input-{('v172' if legacy else 'v174')}:{int(chat_id)}:{int(user_id)}"
+# [OCH12.35 OWNER] _v213_task_input_key -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0021')
 
-def _canon_v213_task_input_timeout__001(chat_id: int, user_id: int, sid: str, legacy: bool=False):
-    lock = _V172_INPUT_LOCK if legacy else _V174_INPUT_LOCK
-    root = _V172_INPUT_WAIT if legacy else _V174_INPUT_WAIT
-    key = (int(chat_id), int(user_id))
-    with lock:
-        row = root.get(key)
-        if not isinstance(row, dict) or str(row.get('session_id') or '') != str(sid):
-            return False
-        root.pop(key, None)
-    _v172_delete_quiet(int(chat_id), int(row.get('prompt_id') or 0))
-    try:
-        send_and_auto_delete(int(chat_id), '⌛ Ввод отменён по таймеру.', 7)
-    except Exception:
-        pass
-    try:
-        bot_journal('input_timeout_v213', int(chat_id), f"flow={('v172' if legacy else 'v174')}; action={row.get('action')}; user={int(user_id)}")
-    except Exception:
-        pass
-    return True
+# [OCH12.35 OWNER] _canon_v213_task_input_timeout__001 -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0022')
 _V213_PREV_V174_SET_INPUT = _canon_v174_set_input__001
 
 def _v213_v174_set_input(chat_id: int, user_id: int, action: str, kind: str='', task_uid: str='', message_id: int=0, prompt_id: int=0):
@@ -15292,75 +11708,15 @@ def _canon_keepalive_cancel_input__002(chat_id: int) -> None:
 _V213_PREV_GOOGLE_WAIT = _canon_v149_google_wait__001
 _V213_PREV_GOOGLE_HANDLE = _canon_tenant_google_handle_message__001
 
-def _canon_v149_google_wait__002(tenant_id: str, kind: str, chat_id: int, user_id: int) -> None:
-    tid = _v149_tenant_id(tenant_id)
-    cfg = tenant_google_config(tid)
-    sid = _v213_input_sid()
-    delay = _v213_input_timeout_seconds()
-    cfg['input_wait'] = {'kind': str(kind), 'chat_id': int(chat_id), 'user_id': int(user_id), 'expires_at': _v149_time.time() + delay, 'session_id': sid, 'cancel_message_id': 0}
-    cfg['updated_at'] = _v149_now_iso()
-    tenant_google_persist(tid, 'tenant_google_update')
-    try:
-        sent = bot.send_message(int(chat_id), _v213_prompt_text(f'⏳ Ожидание данных Google. Автоотмена: {_format_duration_short(delay)}.'), reply_markup=_v213_cancel_markup('google', sid))
-        cfg['input_wait']['cancel_message_id'] = int(getattr(sent, 'message_id', 0) or 0)
-        tenant_google_persist(tid, 'tenant_google_update')
-    except Exception:
-        pass
-    key = f'v213-input-google:{tid}:{int(chat_id)}:{int(user_id)}'
-    DELAYED_SCHEDULER.cancel(key)
+# [OCH12.35 OWNER] _canon_v149_google_wait__002 -> 15_integration_google.py
+_owner_install('google', 'google:0069')
 
-    def _expire():
-        live = tenant_google_config(tid).get('input_wait') or {}
-        if str(live.get('session_id') or '') != sid:
-            return
-        mid = int(live.get('cancel_message_id') or 0)
-        tenant_google_config(tid)['input_wait'] = {}
-        tenant_google_persist(tid, 'tenant_google_update')
-        _v172_delete_quiet(int(chat_id), mid)
-        try:
-            send_and_auto_delete(int(chat_id), '⌛ Ввод Google отменён по таймеру.', 7)
-        except Exception:
-            pass
-    DELAYED_SCHEDULER.schedule(key, delay, _expire)
-
-def _canon_tenant_google_handle_message__002(msg) -> bool:
-    wait = {}
-    tid = ''
-    cid = 0
-    uid = 0
-    try:
-        cid = int(msg.chat.id)
-        uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-        tid = str(tenant_id_for_chat(cid, create=False) or '')
-        wait = dict((tenant_google_config(tid, create=False) or {}).get('input_wait') or {}) if tid else {}
-    except Exception:
-        pass
-    result = _V213_PREV_GOOGLE_HANDLE(msg)
-    if result and wait:
-        try:
-            live = (tenant_google_config(tid, create=False) or {}).get('input_wait') or {}
-            if not live:
-                DELAYED_SCHEDULER.cancel(f'v213-input-google:{tid}:{cid}:{uid}')
-                _v172_delete_quiet(cid, int(wait.get('cancel_message_id') or 0))
-        except Exception:
-            pass
-    return result
+# [OCH12.35 OWNER] _canon_tenant_google_handle_message__002 -> 15_integration_google.py
+_owner_install('google', 'google:0070')
 _V213_PREV_SECRET_BEGIN = _canon_begin_secret_full_edit__001
 
-def _canon_begin_secret_full_edit__002(viewer_chat_id: int, target_chat_id: int, day_key: str, record_id: int, source_window_msg_id=None) -> bool:
-    ok = _V213_PREV_SECRET_BEGIN(viewer_chat_id, target_chat_id, day_key, record_id, source_window_msg_id)
-    if not ok:
-        return ok
-    try:
-        wait = get_chat_store(int(viewer_chat_id)).get('secret_full_edit_wait') or {}
-        sid = _v213_input_sid()
-        wait['v213_session_id'] = sid
-        sent = bot.send_message(int(viewer_chat_id), _v213_prompt_text('Редактирование полного SECRET-текста активно.'), reply_markup=_v213_cancel_markup('secret', sid))
-        wait.setdefault('helper_message_ids', []).append(int(getattr(sent, 'message_id', 0) or 0))
-        save_data(data, chat_ids=[int(viewer_chat_id)])
-    except Exception:
-        pass
-    return ok
+# [OCH12.35 OWNER] _canon_begin_secret_full_edit__002 -> 18_business_secret.py
+_owner_install('secret', 'secret:0128')
 
 def _v213_cancel_authorized(call, expected_user_id: int) -> bool:
     actor = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
@@ -15518,28 +11874,8 @@ def _v213_v174_callback(call):
         return True
     return _V213_PREV_TD_CALLBACK(call)
 
-def _v213_task_dispatcher_callback_final(call) -> bool:
-    raw = str(getattr(call, 'data', '') or '')
-    try:
-        resolver = globals().get('resolve_short_callback')
-        if callable(resolver):
-            raw = str(resolver(raw) or raw)
-    except Exception:
-        pass
-    if raw.startswith('v213:input:cancel:'):
-        return pending_input_cancel_callback_final(call)
-    if raw.startswith('v213:itmr_input:'):
-        return _v213_internal_timer_quick_callback(call, raw)
-    if raw.startswith('v174:td:'):
-        _v174_callback(call)
-        return True
-    if raw.startswith('v172:task:'):
-        if _v174_legacy_filter(call):
-            _v174_legacy_callback(call)
-            return True
-        _v172_callback(call)
-        return True
-    return False
+# [OCH12.35 OWNER] _v213_task_dispatcher_callback_final -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0023')
 _V213_START_REPLACED = _v213_replace_start_handler()
 try:
     _v177_legacy_0007_bot_journal('v213_contour_pending_ready', int(OWNER_ID or 0), f'start_replaced={_V213_START_REPLACED}; input_idle={_v213_input_timeout_seconds():.0f}s; contour_home=1; F252=1')
@@ -15547,103 +11883,26 @@ except Exception:
     pass
 V214_TASK_CANCEL_LABEL = '❌ Отмена'
 
-def _v214_task_pending_row(chat_id: int, user_id: int, legacy: bool=False):
-    root = _V172_INPUT_WAIT if legacy else _V174_INPUT_WAIT
-    lock = _V172_INPUT_LOCK if legacy else _V174_INPUT_LOCK
-    with lock:
-        row = root.get((int(chat_id), int(user_id)))
-        return dict(row) if isinstance(row, dict) else None
+# [OCH12.35 OWNER] _v214_task_pending_row -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0024')
 
-def _v214_find_task_pending_by_sid(chat_id: int, sid_prefix: str, legacy: bool=False):
-    root = _V172_INPUT_WAIT if legacy else _V174_INPUT_WAIT
-    lock = _V172_INPUT_LOCK if legacy else _V174_INPUT_LOCK
-    cid = int(chat_id)
-    prefix = str(sid_prefix or '')
-    with lock:
-        for (row_chat, row_user), row in list(root.items()):
-            if int(row_chat) != cid or not isinstance(row, dict):
-                continue
-            if str(row.get('session_id') or '').startswith(prefix):
-                return (int(row_user), dict(row))
-    return (0, None)
+# [OCH12.35 OWNER] _v214_find_task_pending_by_sid -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0025')
 
-def _v214_cancel_task_input_rows(chat_id: int, user_id: int, reason: str='manual', expected_sid: str='', legacy=None):
-    """Cancel only Task Dispatcher pending input for chat+user; generation-safe and idempotent."""
-    cid, uid = (int(chat_id), int(user_id))
-    cancelled = []
-    variants = (True,) if legacy is True else (False,) if legacy is False else (False, True)
-    for is_legacy in variants:
-        root = _V172_INPUT_WAIT if is_legacy else _V174_INPUT_WAIT
-        lock = _V172_INPUT_LOCK if is_legacy else _V174_INPUT_LOCK
-        key = (cid, uid)
-        row = None
-        with lock:
-            live = root.get(key)
-            if not isinstance(live, dict):
-                continue
-            if expected_sid and str(live.get('session_id') or '') != str(expected_sid):
-                continue
-            row = root.pop(key, None)
-        if not isinstance(row, dict):
-            continue
-        try:
-            DELAYED_SCHEDULER.cancel(_v213_task_input_key(cid, uid, bool(is_legacy)))
-        except Exception:
-            pass
-        try:
-            _v172_delete_quiet(cid, int(row.get('prompt_id') or 0))
-        except Exception:
-            pass
-        cancelled.append((bool(is_legacy), row))
-    if cancelled:
-        try:
-            actions = ','.join((str(row.get('action') or '') for _, row in cancelled))
-            bot_journal('task_input_cancel_v214', cid, f'user={uid}; reason={reason}; action={actions}')
-        except Exception:
-            pass
-    return cancelled
+# [OCH12.35 OWNER] _v214_cancel_task_input_rows -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0026')
 
-def cancel_task_input(chat_id: int, user_id: int, reason: str='manual') -> bool:
-    """Single public cancellation helper required by v214 task-input navigation contract."""
-    return bool(_v214_cancel_task_input_rows(int(chat_id), int(user_id), str(reason or 'manual')))
+# [OCH12.35 OWNER] cancel_task_input -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0027')
 
-def _v214_task_input_timeout(chat_id: int, user_id: int, sid: str, legacy: bool=False):
-    cancelled = _v214_cancel_task_input_rows(int(chat_id), int(user_id), 'timeout', expected_sid=str(sid), legacy=bool(legacy))
-    if not cancelled:
-        return False
-    try:
-        send_and_auto_delete(int(chat_id), '⌛ Ввод отменён по таймеру.', 7)
-    except Exception:
-        pass
-    return True
+# [OCH12.35 OWNER] _v214_task_input_timeout -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0028')
 
-def _v214_task_back_callback(action: str, kind: str='', task_uid: str='', legacy: bool=False) -> str:
-    action = str(action or '')
-    kind = str(kind or '')
-    task_uid = str(task_uid or '').upper()
-    if legacy:
-        if task_uid:
-            return f'v172:task:open:{task_uid}'
-        return 'v172:task:list:active:0'
-    if task_uid:
-        return f'v174:td:open:{task_uid}'
-    if action == 'keywords' and kind:
-        return f'v174:td:kw:{kind}'
-    if action in {'branch_rename', 'branch_keywords'} and kind and (not kind.startswith('NEW|')):
-        return f'v174:td:branch:open:{kind}'
-    return 'v174:td:menu'
+# [OCH12.35 OWNER] _v214_task_back_callback -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0029')
 
-def _v214_task_prompt_markup(chat_id: int, flow: str, sid: str, action: str='', kind: str='', task_uid: str='', legacy: bool=False):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(IB(V214_TASK_CANCEL_LABEL, callback_data=f'v213:input:cancel:{str(flow)[:12]}:{str(sid)[:12]}'))
-    day = today_key()
-    try:
-        day = str(get_chat_store(int(chat_id)).get('current_view_day') or today_key())
-    except Exception:
-        pass
-    back_cb = _v214_task_back_callback(action, kind, task_uid, legacy)
-    kb.row(IB('🔙 Назад', callback_data=back_cb), IB('⬅️ Назад в основное', callback_data=f'd:{day}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v214_task_prompt_markup -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0030')
 
 def _v214_cancel_markup(flow: str, sid: str):
     kb = types.InlineKeyboardMarkup()
@@ -15721,31 +11980,11 @@ def _v214_v174_handle_own_input(msg) -> bool:
     return _V214_PREV_V174_HANDLE_OWN_INPUT(msg)
 _V214_PREV_V172_TASK_MESSAGE_INPUT = _canon_v172_task_message_input__001
 
-def _v214_v172_task_message_input(msg) -> bool:
-    try:
-        if str(getattr(msg, 'content_type', '') or '') == 'text':
-            cid = int(msg.chat.id)
-            uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-            text = str(getattr(msg, 'text', '') or '').strip().casefold()
-            if text in {'отмена', 'cancel', 'стоп'} and _v214_task_pending_row(cid, uid, True):
-                cancel_task_input(cid, uid, 'text_cancel')
-                _v172_delete_quiet(cid, int(getattr(msg, 'message_id', 0) or 0))
-                try:
-                    send_and_auto_delete(cid, '❎ Действие отменено.', 5)
-                except Exception:
-                    pass
-                return True
-    except Exception:
-        pass
-    return _V214_PREV_V172_TASK_MESSAGE_INPUT(msg)
+# [OCH12.35 OWNER] _v214_v172_task_message_input -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0031')
 
-def _v214_task_callback_requires_cancel(raw: str) -> bool:
-    value = str(raw or '')
-    if value.startswith('v213:input:cancel:'):
-        return False
-    if value in {'nav_prev', 'info_close', 'aux_close'} or value.endswith(':back_main'):
-        return True
-    return value.startswith(('v174:td:', 'v172:task:'))
+# [OCH12.35 OWNER] _v214_task_callback_requires_cancel -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0032')
 
 def _v214_cancel_pending_before_navigation(call, resolved: str) -> bool:
     try:
@@ -15865,43 +12104,17 @@ def _v215_mode_settings(chat_id: int) -> dict:
     except Exception:
         return {}
 
-def _v215_forward_rules_present(chat_id: int) -> bool:
-    try:
-        src = str(int(chat_id))
-        return bool((data.get('forward_rules', {}) or {}).get(src) or {})
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v215_forward_rules_present -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0187')
 
-def contour_forwarding_mode_enabled(chat_id: int) -> bool:
-    cid = int(chat_id)
-    settings = _v215_mode_settings(cid)
-    if V215_FORWARD_MODE_KEY not in settings:
-        return _v215_forward_rules_present(cid)
-    return bool(settings.get(V215_FORWARD_MODE_KEY))
+# [OCH12.35 OWNER] contour_forwarding_mode_enabled -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0188')
 
-def _v215_existing_reminder_target(chat_id: int) -> bool:
-    cid = int(chat_id)
-    try:
-        root = _reminders_root()
-        for cfg in (root.get('items', {}) or {}).values():
-            if not isinstance(cfg, dict):
-                continue
-            for raw in cfg.get('chat_ids') or []:
-                try:
-                    if int(raw) == cid:
-                        return True
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return False
+# [OCH12.35 OWNER] _v215_existing_reminder_target -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0153')
 
-def contour_reminders_mode_enabled(chat_id: int) -> bool:
-    cid = int(chat_id)
-    settings = _v215_mode_settings(cid)
-    if V215_REMINDER_MODE_KEY not in settings:
-        return _v215_existing_reminder_target(cid)
-    return bool(settings.get(V215_REMINDER_MODE_KEY))
+# [OCH12.35 OWNER] contour_reminders_mode_enabled -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0154')
 
 def _v215_persist_mode(chat_id: int, reason: str) -> None:
     cid = int(chat_id)
@@ -15920,21 +12133,11 @@ def _v215_persist_mode(chat_id: int, reason: str) -> None:
         except Exception:
             pass
 
-def _v215_set_forward_mode(chat_id: int, enabled: bool, *, persist: bool=True) -> bool:
-    cid = int(chat_id)
-    value = bool(enabled)
-    _v215_mode_settings(cid)[V215_FORWARD_MODE_KEY] = value
-    if persist:
-        _v215_persist_mode(cid, 'forward_mode')
-    return value
+# [OCH12.35 OWNER] _v215_set_forward_mode -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0189')
 
-def _v215_set_reminders_mode(chat_id: int, enabled: bool, *, persist: bool=True) -> bool:
-    cid = int(chat_id)
-    value = bool(enabled)
-    _v215_mode_settings(cid)[V215_REMINDER_MODE_KEY] = value
-    if persist:
-        _v215_persist_mode(cid, 'reminders_mode')
-    return value
+# [OCH12.35 OWNER] _v215_set_reminders_mode -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0155')
 
 def _v215_mode_enabled(chat_id: int, mode: str) -> bool:
     cid = int(chat_id)
@@ -16199,62 +12402,24 @@ def v215_contour_mode_callback(call, resolved: str) -> bool:
     return True
 _V215_PREV_FORWARD_ANY_MESSAGE = _canon_forward_any_message__001
 
-def _canon_forward_any_message__002(source_chat_id: int, msg):
-    cid = int(source_chat_id)
-    if _v215_circle_business_chat(cid) and (not contour_forwarding_mode_enabled(cid)):
-        try:
-            bot_journal('forward_mode_off_skip_v215', cid, f"message_id={int(getattr(msg, 'message_id', 0) or 0)}", 'INFO')
-        except Exception:
-            pass
-        return
-    return _V215_PREV_FORWARD_ANY_MESSAGE(cid, msg)
+# [OCH12.35 OWNER] _canon_forward_any_message__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0190')
 _V215_PREV_ADD_FORWARD_LINK = _canon_add_forward_link__001
 
-def _canon_add_forward_link__002(src_chat_id: int, dst_chat_id: int, mode: str):
-    result = _V215_PREV_ADD_FORWARD_LINK(int(src_chat_id), int(dst_chat_id), mode)
-    if _v215_circle_business_chat(int(src_chat_id)):
-        _v215_set_forward_mode(int(src_chat_id), True, persist=True)
-    return result
+# [OCH12.35 OWNER] _canon_add_forward_link__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0191')
 _V215_PREV_REMOVE_FORWARD_LINK = _canon_remove_forward_link__001
 
-def _canon_remove_forward_link__002(src_chat_id: int, dst_chat_id: int):
-    result = _V215_PREV_REMOVE_FORWARD_LINK(int(src_chat_id), int(dst_chat_id))
-    cid = int(src_chat_id)
-    if _v215_circle_business_chat(cid) and (not _v215_forward_rules_present(cid)):
-        _v215_set_forward_mode(cid, False, persist=True)
-    return result
+# [OCH12.35 OWNER] _canon_remove_forward_link__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0192')
 _V215_PREV_REMINDER_SEND_CYCLE = _canon_reminder_send_cycle__001
 
-def _canon_reminder_send_cycle__002(reminder_id: int, cfg: dict) -> bool:
-    if not isinstance(cfg, dict):
-        return _V215_PREV_REMINDER_SEND_CYCLE(reminder_id, cfg)
-    filtered = []
-    for raw in cfg.get('chat_ids') or []:
-        try:
-            cid = int(raw)
-        except Exception:
-            continue
-        if _v215_circle_business_chat(cid) and (not contour_reminders_mode_enabled(cid)):
-            continue
-        filtered.append(cid)
-    if filtered == list(cfg.get('chat_ids') or []):
-        return _V215_PREV_REMINDER_SEND_CYCLE(reminder_id, cfg)
-    clone = dict(cfg)
-    clone['chat_ids'] = filtered
-    return _V215_PREV_REMINDER_SEND_CYCLE(reminder_id, clone)
+# [OCH12.35 OWNER] _canon_reminder_send_cycle__002 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0156')
 _V215_PREV_REMINDER_GROUP_SEND = _canon_reminder_group_send_job__001
 
-def _canon_reminder_group_send_job__002(target_chat_id: int, day_key: str, force: bool=False) -> None:
-    cid = int(target_chat_id)
-    try:
-        lifecycle_fn = globals().get('_v150_lifecycle')
-        if callable(lifecycle_fn) and str((lifecycle_fn(cid) or {}).get('status') or '') in {'bot_removed', 'migrated', 'archived'}:
-            return
-    except Exception:
-        pass
-    if _v215_circle_business_chat(cid) and (not contour_reminders_mode_enabled(cid)):
-        return
-    return _V215_PREV_REMINDER_GROUP_SEND(cid, day_key, force)
+# [OCH12.35 OWNER] _canon_reminder_group_send_job__002 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0157')
 _V215_PREV_START_HANDLER = _v213_cmd_start_contour
 
 def _v215_cmd_start_modes(msg):
@@ -16481,147 +12646,52 @@ def _v217_build_main_keyboard(day_key: str, chat_id=None):
     return kb
 _V217_PREV_TASK_HOME_KB = _canon_v174_menu_text_kb__001
 
-def _v217_task_home_kb(chat_id: int, user_id: int=0):
-    text, kb = _V217_PREV_TASK_HOME_KB(int(chat_id), int(user_id or 0))
-    try:
-        if _v215_circle_business_chat(int(chat_id)):
-            _v217_insert_before_nav(kb, IB('☰ Меню', callback_data='v217:contour:menu'))
-    except Exception:
-        pass
-    return (text, kb)
+# [OCH12.35 OWNER] _v217_task_home_kb -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0033')
 _V217_PREV_FORWARD_PICKER_ITEMS = _canon_collect_forward_picker_items__001
 
-def _canon_collect_forward_picker_items__002(include_owner: bool=True, include_removed: bool=False):
-    rows, extra = _V217_PREV_FORWARD_PICKER_ITEMS(include_owner=include_owner, include_removed=include_removed) if callable(_V217_PREV_FORWARD_PICKER_ITEMS) else ([], None)
-    try:
-        ctx = int(current_state_chat_id() or 0)
-        if not _v215_circle_business_chat(ctx):
-            return (rows, extra)
-        tid = str(tenant_id_for_chat(ctx, create=False) or '')
-        allowed = set((int(x) for x in tenant_chat_ids(tid)))
-        clean = [(int(cid), title) for cid, title in rows if int(cid) in allowed]
-        return (clean, None)
-    except Exception:
-        return ([], None)
+# [OCH12.35 OWNER] _canon_collect_forward_picker_items__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0193')
 _V217_PREV_FORWARD_PAIRS = _canon_collect_forward_pairs_for_menu__001
 
-def _canon_collect_forward_pairs_for_menu__002() -> list[tuple[int, int]]:
-    rows = _V217_PREV_FORWARD_PAIRS() if callable(_V217_PREV_FORWARD_PAIRS) else []
-    try:
-        ctx = int(current_state_chat_id() or 0)
-        if not _v215_circle_business_chat(ctx):
-            return [(int(a), int(b)) for a, b in rows]
-        tid = str(tenant_id_for_chat(ctx, create=False) or '')
-        allowed = set((int(x) for x in tenant_chat_ids(tid)))
-        return [(int(a), int(b)) for a, b in rows if int(a) in allowed and int(b) in allowed]
-    except Exception:
-        return []
+# [OCH12.35 OWNER] _canon_collect_forward_pairs_for_menu__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0194')
 
-def _v217_forward_scope_guard(src_chat_id: int, dst_chat_id: int) -> None:
-    try:
-        ctx = int(current_state_chat_id() or 0)
-    except Exception:
-        ctx = 0
-    if not ctx or not _v215_circle_business_chat(ctx):
-        return
-    tid = str(tenant_id_for_chat(ctx, create=False) or '')
-    allowed = set((int(x) for x in tenant_chat_ids(tid)))
-    if int(src_chat_id) not in allowed or int(dst_chat_id) not in allowed or (not tenant_same_space(int(src_chat_id), int(dst_chat_id))):
-        raise PermissionError('Связь пересылки находится вне текущего пространства')
+# [OCH12.35 OWNER] _v217_forward_scope_guard -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0195')
 _V217_PREV_ADD_FORWARD_LINK = _canon_add_forward_link__002
 
-def _v217_add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
-    _v217_forward_scope_guard(int(src_chat_id), int(dst_chat_id))
-    return _V217_PREV_ADD_FORWARD_LINK(int(src_chat_id), int(dst_chat_id), mode)
+# [OCH12.35 OWNER] _v217_add_forward_link -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0196')
 _V217_PREV_REMOVE_FORWARD_LINK = _canon_remove_forward_link__002
 
-def _v217_remove_forward_link(src_chat_id: int, dst_chat_id: int):
-    _v217_forward_scope_guard(int(src_chat_id), int(dst_chat_id))
-    return _V217_PREV_REMOVE_FORWARD_LINK(int(src_chat_id), int(dst_chat_id))
+# [OCH12.35 OWNER] _v217_remove_forward_link -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0197')
 _V217_PREV_SET_FORWARD_FINANCE = _canon_set_forward_finance__001
 
-def _canon_set_forward_finance__002(src_chat_id: int, dst_chat_id: int, enabled: bool):
-    _v217_forward_scope_guard(int(src_chat_id), int(dst_chat_id))
-    return _V217_PREV_SET_FORWARD_FINANCE(int(src_chat_id), int(dst_chat_id), bool(enabled))
+# [OCH12.35 OWNER] _canon_set_forward_finance__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0198')
 _V217_PREV_REMOVE_FORWARD_FINANCE = _canon_remove_forward_finance__001
 
-def _canon_remove_forward_finance__002(src_chat_id: int, dst_chat_id: int):
-    _v217_forward_scope_guard(int(src_chat_id), int(dst_chat_id))
-    return _V217_PREV_REMOVE_FORWARD_FINANCE(int(src_chat_id), int(dst_chat_id))
+# [OCH12.35 OWNER] _canon_remove_forward_finance__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0199')
 _V217_PREV_FORWARD_MENU_KB = _canon_build_forward_menu_keyboard_for_current_mode__001
 
-def _canon_build_forward_menu_keyboard_for_current_mode__002(day_key: str | None=None, A: int | None=None, B: int | None=None):
-    kb = _V217_PREV_FORWARD_MENU_KB(day_key, A, B)
-    try:
-        cid = int(current_state_chat_id() or 0)
-        if _v215_circle_business_chat(cid):
-            rows = []
-            for row in _v217_rows(kb):
-                kept = [b for b in row or [] if not _v217_btn_cb(b).startswith('v164:circle:forward:')]
-                if kept:
-                    rows.append(kept)
-            _v217_set_rows(kb, rows)
-            _v217_insert_before_nav(kb, IB('☰ Меню', callback_data='v217:contour:menu'))
-    except Exception:
-        pass
-    return kb
+# [OCH12.35 OWNER] _canon_build_forward_menu_keyboard_for_current_mode__002 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0200')
 
-def _v217_forward_scope_rows(chat_id: int) -> tuple[list[int], list[tuple[int, int, str, bool]]]:
-    cid = int(chat_id)
-    tid = str(tenant_id_for_chat(cid, create=False) or '')
-    allowed = sorted(set((int(x) for x in tenant_chat_ids(tid))), key=lambda x: str(get_chat_display_name(x) or x).casefold())
-    pairs = []
-    fr = data.get('forward_rules', {}) or {}
-    ff = data.get('forward_finance', {}) or {}
-    seen = set()
-    for src_raw, dsts in fr.items():
-        try:
-            src = int(src_raw)
-        except Exception:
-            continue
-        if src not in allowed:
-            continue
-        for dst_raw, mode in (dsts or {}).items():
-            try:
-                dst = int(dst_raw)
-            except Exception:
-                continue
-            if dst not in allowed:
-                continue
-            key = (src, dst)
-            if key in seen:
-                continue
-            seen.add(key)
-            pairs.append((src, dst, str(mode or 'copy'), bool((ff.get(str(src)) or {}).get(str(dst), False))))
-    return (allowed, pairs)
+# [OCH12.35 OWNER] _v217_forward_scope_rows -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0201')
 
-def build_v217_forward_scope_text(chat_id: int) -> str:
-    allowed, pairs = _v217_forward_scope_rows(int(chat_id))
-    lines = ['📤 ПЕРЕСЫЛКА ЭТОГО ПРОСТРАНСТВА', '', f'Чатов: {len(allowed)} · связей: {len(pairs)}', '']
-    if not pairs:
-        lines.append('Связи пересылки для этого пространства пока не настроены.')
-    else:
-        for src, dst, mode, fin in pairs[:30]:
-            lines.append(f'• {get_chat_display_name(src)} → {get_chat_display_name(dst)} · {mode}' + (' · 💰' if fin else ''))
-    lines += ['', 'Здесь никогда не показываются связи других контуров.']
-    return window_mark('\n'.join(lines)[:3900], V217_FORWARD_SCOPE_MARKER)
+# [OCH12.35 OWNER] build_v217_forward_scope_text -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0202')
 
-def _canon_build_v217_forward_scope_keyboard__001(chat_id: int, user_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    can_manage = False
-    try:
-        can_manage = bool(security_user_allowed(int(user_id or 0), 'forward_manage'))
-    except Exception:
-        pass
-    if can_manage:
-        kb.row(IB('⚙️ Открыть настройки пересылки', callback_data='v217:fwdscope:manage'))
-    kb.row(IB('🔙 К режиму', callback_data='v215:mode:open:forward'))
-    kb.row(IB('☰ Меню', callback_data='v217:contour:menu'))
-    return kb
+# [OCH12.35 OWNER] _canon_build_v217_forward_scope_keyboard__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0203')
 _V217_PREV_REMINDER_MESSAGE_TEXT = _canon_v149_reminder_message_text__001
 
-def _canon_v149_reminder_message_text__002(reminder_id: int, cfg: dict, chat_id: int, active_count: int=1) -> str:
-    return '\n'.join([f'НАПОМИНАЛКА #{int(reminder_id)}🕰️', '', str((cfg or {}).get('text') or '').strip()])[:4000]
+# [OCH12.35 OWNER] _canon_v149_reminder_message_text__002 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0158')
 _V217_PREV_GROUP_MESSAGE_TEXT = _canon_v149_group_message_text__001
 
 def _canon_v149_group_message_text__002(chat_id: int, members: list[tuple[int, dict]]) -> str:
@@ -16634,134 +12704,30 @@ def _canon_v149_group_message_text__002(chat_id: int, members: list[tuple[int, d
         lines.append(block)
     return '\n'.join(lines)[:4000]
 
-def _canon_v207_reminder_complete_keyboard__002(reminder_id: int, cfg: dict, chat_id: int):
-    if not _v207_reminder_complete_button_enabled(cfg, chat_id):
-        return None
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('✅ Выполнено', callback_data=f'v149:rem:done:{int(reminder_id)}:{int(chat_id)}'))
-    return kb
+# [OCH12.35 OWNER] _canon_v207_reminder_complete_keyboard__002 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0159')
 
-def _canon_v207_reminder_group_keyboard__002(chat_id: int, members: list[tuple[int, dict]]):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    count = 0
-    for rid, cfg in members:
-        if not _v207_reminder_complete_button_enabled(cfg, chat_id):
-            continue
-        label = str((cfg or {}).get('text') or f'Напоминалка {rid}').strip().replace('\n', ' ')
-        if len(label) > 40:
-            label = label[:37] + '…'
-        kb.row(IB(f'✅ Выполнено · #{int(rid)} {label}', callback_data=f'v149:rem:done:{int(rid)}:{int(chat_id)}'))
-        count += 1
-    return kb if count else None
+# [OCH12.35 OWNER] _canon_v207_reminder_group_keyboard__002 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0160')
 _V217_PREV_REMINDER_LIST_KB = _canon_build_reminder_list_keyboard__001
 
-def _canon_build_reminder_list_keyboard__002(day_key: str | None=None, page: int=0):
-    kb = _V217_PREV_REMINDER_LIST_KB(day_key, page)
-    try:
-        cid = int(current_state_chat_id() or 0)
-        if _v215_circle_business_chat(cid):
-            _v217_insert_before_nav(kb, IB('📋 Напоминалки этого чата', callback_data='v217:remchat:list'))
-            _v217_insert_before_nav(kb, IB('☰ Меню', callback_data='v217:contour:menu'))
-    except Exception:
-        pass
-    return kb
+# [OCH12.35 OWNER] _canon_build_reminder_list_keyboard__002 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0161')
 
-def _canon_v217_chat_reminder_rows__001(chat_id: int) -> list[tuple[int, dict]]:
-    cid = int(chat_id)
-    tid = str(tenant_id_for_chat(cid, create=False) or '')
-    rows = []
-    try:
-        with tenant_context(tid):
-            for rid, cfg in _reminder_items(include_completed=True):
-                if int(cid) in [int(x) for x in cfg.get('chat_ids') or [] if str(x).lstrip('-').isdigit()]:
-                    rows.append((int(rid), cfg))
-    except Exception:
-        pass
-    rows.sort(key=lambda x: x[0])
-    return rows
+# [OCH12.35 OWNER] _canon_v217_chat_reminder_rows__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0162')
 
-def _v217_reminder_status(cfg: dict) -> str:
-    if _reminder_is_completed(cfg):
-        return '✅ выполнена'
-    if bool(cfg.get('enabled')):
-        return '✅ активна'
-    return '⬜ выключена'
+# [OCH12.35 OWNER] _v217_reminder_status -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0163')
 
-def build_v217_chat_reminders_text(chat_id: int) -> str:
-    rows = _v217_chat_reminder_rows(int(chat_id))
-    lines = ['📋 НАПОМИНАЛКИ ЭТОГО ЧАТА', '', str(get_chat_display_name(int(chat_id)) or chat_id), f'Всего: {len(rows)}', '']
-    if not rows:
-        lines.append('Для этого чата напоминалок нет.')
-    for rid, cfg in rows[:35]:
-        short = _v217_re.sub('\\s+', ' ', str(cfg.get('text') or '').strip())
-        if len(short) > 52:
-            short = short[:49] + '…'
-        next_at = _reminder_fmt_dt(cfg.get('next_run_at')) if cfg.get('next_run_at') else '—'
-        try:
-            period = _reminder_interval_label(cfg.get('interval_minutes', 120))
-        except Exception:
-            period = f"{int(cfg.get('interval_minutes', 0) or 0)} мин"
-        lines.append(f"#{rid} · {_v217_reminder_status(cfg)}\n{short or 'без текста'}\nПериод: {period} · Следующая: {next_at}")
-    return window_mark('\n\n'.join(lines)[:3900], V217_CHAT_REMINDERS_MARKER)
+# [OCH12.35 OWNER] build_v217_chat_reminders_text -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0164')
 
-def _canon_build_v217_chat_reminders_keyboard__001(chat_id: int, user_id: int):
-    cid = int(chat_id)
-    uid = int(user_id or 0)
-    rows = _v217_chat_reminder_rows(cid)
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    can_manage = False
-    try:
-        can_manage = bool(security_user_allowed(uid, 'reminder_manage'))
-    except Exception:
-        pass
-    for rid, cfg in rows[:30]:
-        label = _v217_re.sub('\\s+', ' ', str(cfg.get('text') or '').strip())
-        if len(label) > 43:
-            label = label[:40] + '…'
-        cb = f'v217:remchat:open:{rid}' if can_manage else 'none'
-        kb.row(IB(f"#{rid} · {_v217_reminder_status(cfg)} · {label or 'без текста'}", callback_data=cb))
-    try:
-        directive_single = bool(globals().get('directive_chat_enabled_v223', lambda _c: False)(cid)) and resolve_contour_home(cid) == 'reminders'
-    except Exception:
-        directive_single = False
-    if not directive_single:
-        kb.row(IB('🔙 К режиму', callback_data='v215:mode:open:reminders'))
-        kb.row(IB('☰ Меню', callback_data='v217:contour:menu'))
-    else:
-        kb.row(IB('❌ Закрыть', callback_data='aux_close'))
-    return kb
+# [OCH12.35 OWNER] _canon_build_v217_chat_reminders_keyboard__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0165')
 
-def _canon_v217_find_reply_reminder__001(chat_id: int, reply_message_id: int) -> tuple[int | None, str]:
-    cid = int(chat_id)
-    mid = int(reply_message_id or 0)
-    candidates = []
-    for rid, cfg in _v217_chat_reminder_rows(cid):
-        if _reminder_is_completed(cfg) or not cfg.get('enabled'):
-            continue
-        try:
-            if int((cfg.get('last_message_ids') or {}).get(str(cid)) or 0) == mid:
-                candidates.append(int(rid))
-        except Exception:
-            pass
-    try:
-        state = _v149_group_state_root().get(_v149_group_key(cid), {}) or {}
-        if int(state.get('last_message_id') or 0) == mid:
-            for raw in state.get('member_ids') or []:
-                try:
-                    rid = int(raw)
-                    if rid not in candidates:
-                        cfg = _reminder_cfg(rid)
-                        if cfg and (not _reminder_is_completed(cfg)) and cfg.get('enabled'):
-                            candidates.append(rid)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    if len(candidates) == 1:
-        return (candidates[0], 'ok')
-    if len(candidates) > 1:
-        return (None, 'В этом сообщении несколько напоминалок. Укажите /выполнено #N.')
-    return (None, 'Ответьте именно на сообщение нужной напоминалки или укажите /выполнено #N.')
+# [OCH12.35 OWNER] _canon_v217_find_reply_reminder__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0166')
 
 def _v217_complete_command(msg) -> bool:
     text = str(getattr(msg, 'text', '') or '').strip()
@@ -17000,15 +12966,12 @@ def _v218_cycle_completion_mode(cfg: dict, chat_id: int | None=None) -> str:
     return nxt
 _V218_PREV_COMPLETE_ENABLED = _canon_v207_reminder_complete_button_enabled__001
 
-def _v218_reminder_complete_button_enabled(cfg: dict | None, chat_id: int | None=None) -> bool:
-    return _v218_completion_mode(cfg, chat_id) == 'button'
+# [OCH12.35 OWNER] _v218_reminder_complete_button_enabled -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0167')
 _V218_PREV_REMINDER_MESSAGE_TEXT = _canon_v149_reminder_message_text__002
 
-def _v218_reminder_message_text(reminder_id: int, cfg: dict, chat_id: int, active_count: int=1) -> str:
-    lines = [f'НАПОМИНАЛКА #{int(reminder_id)}🕰️', '', str((cfg or {}).get('text') or '').strip()]
-    if _v218_completion_mode(cfg, chat_id) == 'slash':
-        lines += ['', f'Выполнить: /done_{int(reminder_id)}']
-    return '\n'.join(lines)[:4000]
+# [OCH12.35 OWNER] _v218_reminder_message_text -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0168')
 _V218_PREV_GROUP_MESSAGE_TEXT = _canon_v149_group_message_text__002
 
 def _v218_group_message_text(chat_id: int, members: list[tuple[int, dict]]) -> str:
@@ -17023,49 +12986,19 @@ def _v218_group_message_text(chat_id: int, members: list[tuple[int, dict]]) -> s
         lines.append(block)
     return '\n'.join(lines)[:4000]
 
-def _v218_reminder_complete_keyboard(reminder_id: int, cfg: dict, chat_id: int):
-    if _v218_completion_mode(cfg, chat_id) != 'button':
-        return None
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('✅ Выполнить', callback_data=f'v149:rem:done:{int(reminder_id)}:{int(chat_id)}'))
-    return kb
+# [OCH12.35 OWNER] _v218_reminder_complete_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0169')
 
-def _v218_reminder_group_keyboard(chat_id: int, members: list[tuple[int, dict]]):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    count = 0
-    for rid, cfg in members:
-        if _v218_completion_mode(cfg, chat_id) != 'button':
-            continue
-        label = str((cfg or {}).get('text') or f'Напоминалка {rid}').strip().replace('\n', ' ')
-        if len(label) > 40:
-            label = label[:37] + '…'
-        kb.row(IB(f'✅ Выполнить · #{int(rid)} {label}', callback_data=f'v149:rem:done:{int(rid)}:{int(chat_id)}'))
-        count += 1
-    return kb if count else None
+# [OCH12.35 OWNER] _v218_reminder_group_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0170')
 _V218_PREV_REMINDER_MENU_KB = _canon_build_reminder_menu_keyboard__001
 
-def _v218_build_reminder_menu_keyboard(reminder_id: int, day_key: str | None=None, page: int=0, viewer_chat_id: int | None=None):
-    kb = _V218_PREV_REMINDER_MENU_KB(reminder_id, day_key, page, viewer_chat_id)
-    cfg = _reminder_cfg(reminder_id)
-    if not isinstance(cfg, dict):
-        return kb
-    try:
-        for row in _v217_rows(kb):
-            for btn in row or []:
-                if _v217_btn_cb(btn).startswith('v149:rem:item_complete:'):
-                    label = _v218_completion_label(cfg, viewer_chat_id)
-                    if isinstance(btn, dict):
-                        btn['text'] = label
-                    else:
-                        btn.text = label
-    except Exception:
-        pass
-    return kb
+# [OCH12.35 OWNER] _v218_build_reminder_menu_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0171')
 _V218_PREV_REMINDERS_FOR_COMPLETION = _canon_v149_reminders_for_completion__001
 
-def _v218_reminders_for_completion(chat_id: int) -> list[tuple[int, dict]]:
-    rows = _V218_PREV_REMINDERS_FOR_COMPLETION(int(chat_id))
-    return [(rid, cfg) for rid, cfg in rows if _v218_completion_mode(cfg, int(chat_id)) == 'slash']
+# [OCH12.35 OWNER] _v218_reminders_for_completion -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0172')
 
 def _v218_completion_command_target(msg) -> tuple[int | None, bool]:
     text = str(getattr(msg, 'text', '') or '').strip()
@@ -17329,23 +13262,11 @@ import re as _v219_re
 V219_TASK_INLINE_INSERT_MAX = 256
 V219_TASK_TEXT_MAX = 4000
 
-def _v219_task_message_text(msg) -> str:
-    return str(getattr(msg, 'text', None) or getattr(msg, 'caption', None) or '').strip()
+# [OCH12.35 OWNER] _v219_task_message_text -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0034')
 
-def _v219_task_pending_for_sender(chat_id: int, user_id: int) -> bool:
-    if not int(user_id or 0):
-        return False
-    try:
-        if _v174_get_input(int(chat_id), int(user_id)):
-            return True
-    except Exception:
-        pass
-    try:
-        if _v172_get_input(int(chat_id), int(user_id)):
-            return True
-    except Exception:
-        pass
-    return False
+# [OCH12.35 OWNER] _v219_task_pending_for_sender -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0035')
 
 def _v219_status_target_from_message(msg, body: str):
     try:
@@ -17377,223 +13298,28 @@ def _v219_match_status_kind(chat_id: int, text: str) -> str:
     candidates.sort(key=lambda x: (-x[0], x[1], x[2]))
     return str(candidates[0][3])
 
-def _v219_task_ingest_message(msg, *, is_edit: bool=False, source_kind: str='message'):
-    try:
-        cid = int(msg.chat.id)
-        mid = int(getattr(msg, 'message_id', 0) or 0)
-    except Exception:
-        return None
-    body = _v219_task_message_text(msg)
-    if not cid or not mid or (not body) or body.startswith('/') or (not task_dispatcher_enabled(cid)):
-        return None
-    sender = getattr(msg, 'from_user', None)
-    sender_id = int(getattr(sender, 'id', 0) or 0) if sender is not None else 0
-    sender_is_bot = bool(getattr(sender, 'is_bot', False)) if sender is not None else False
-    if not is_edit and _v219_task_pending_for_sender(cid, sender_id):
-        return None
-    if sender_is_bot:
-        # R29: accept delivered third-party bot messages when the local source switch is ON.
-        try:
-            if not bool(globals().get('r29_input_source_enabled', lambda _c, _k: True)(cid, 'other_bots')):
-                return None
-        except Exception:
-            return None
-    if _v212_task_service_text(body):
-        return None
-    target = _v219_status_target_from_message(msg, body)
-    if target is not None:
-        status_kind = _v219_match_status_kind(cid, body)
-        if status_kind:
-            status = ('received' if str(target.get('type')) == 'purchase' else 'done') if status_kind == 'done' else ('search' if str(target.get('type')) == 'purchase' else 'work') if status_kind == 'work' else status_kind
-            if _v174_set_status(target, status, sender, f'по ключевому слову: {status_kind}'):
-                _v174_refresh_card(target)
-                try:
-                    bot_journal('task_status_keyword_v219', cid, f"task={target.get('number')}; status={status}; msg={mid}; source={source_kind}")
-                except Exception:
-                    pass
-            return target
-    return task_reconcile_source_message(cid, mid, body, original_date=getattr(msg, 'date', None), sender_id=sender_id, sender_name=_v172_user_name(sender) if sender is not None else '', sender_is_bot=sender_is_bot, trusted_forwarding_copy=False, is_edit=bool(is_edit), content_type=str(getattr(msg, 'content_type', '') or 'text'))
+# [OCH12.35 OWNER] _v219_task_ingest_message -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0036')
 _V219_PREV_AUTO_PROCESS = _canon_v174_auto_process__001
 
-def _v219_task_auto_process(msg) -> None:
-    try:
-        if bool(getattr(msg, '_v219_task_ingested', False)):
-            return
-        return _v219_task_ingest_message(msg, is_edit=False, source_kind='handler')
-    except Exception as exc:
-        try:
-            log_error(f'v219 task auto process: {exc}')
-        except Exception:
-            pass
-        return None
+# [OCH12.35 OWNER] _v219_task_auto_process -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0037')
 # FINALIZED: v219 interception is executed inline by the single dispatcher in 89_callback_final.py.
 
-def _v219_task_text_prompt_keyboard(chat_id: int, sid: str, task: dict, message_id: int=0):
-    kb = _v214_task_prompt_markup(int(chat_id), 'task', sid, 'text', '', str(task.get('uid') or ''), False)
-    current = str(task.get('description') or task.get('title') or '')
-    try:
-        rows = list(getattr(kb, 'keyboard', None) or [])
-    except Exception:
-        rows = []
-    insert_row = []
-    if len(current) <= V219_TASK_INLINE_INSERT_MAX:
-        try:
-            insert_row = [make_copy_or_inline_button('✏️ Вставить текущий текст', current, viewer_chat_id=int(chat_id))]
-        except Exception:
-            insert_row = [IB('📄 Показать текущий текст', callback_data=f"v219:task:showtext:{str(task.get('uid') or '')}")]
-    else:
-        insert_row = [IB('📄 Показать полный текст', callback_data=f"v219:task:showtext:{str(task.get('uid') or '')}")]
-    try:
-        if insert_row:
-            kb.keyboard = [insert_row] + rows
-    except Exception:
-        if insert_row:
-            try:
-                kb.row(*insert_row)
-            except Exception:
-                pass
-    return kb
+# [OCH12.35 OWNER] _v219_task_text_prompt_keyboard -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0038')
 _V219_PREV_PROMPT_INPUT = _v214_v174_prompt_input
 
-def _v219_task_prompt_input(chat_id: int, user_id: int, action: str, kind: str='', task_uid: str='', message_id: int=0):
-    if str(action) != 'text':
-        return _V219_PREV_PROMPT_INPUT(chat_id, user_id, action, kind, task_uid, message_id)
-    cid, uid = (int(chat_id), int(user_id))
-    task = _v172_task_for_uid(str(task_uid or '').upper())
-    if not isinstance(task, dict) or int(task.get('chat_id', 0) or 0) != cid:
-        try:
-            send_and_auto_delete(cid, '❌ Задача не найдена.', 8)
-        except Exception:
-            pass
-        return None
-    cancel_task_input(cid, uid, 'new_input')
-    sid = _v213_input_sid()
-    delay = _v213_input_timeout_seconds()
-    current = str(task.get('description') or task.get('title') or '')
-    short_view = current if len(current) <= 1500 else current[:1500] + '\n…\nПолный текст показан отдельным helper-сообщением.'
-    prompt = f"✏️ ИЗМЕНИТЬ ТЕКСТ ЗАДАЧИ #{task.get('number')}\n\nТекущий текст:\n{short_view}\n\nОтредактируйте текст и отправьте его одним сообщением.\n⏳ Автоотмена бездействия: {_format_duration_short(delay)}."
-    pid = 0
-    try:
-        sent = bot.send_message(cid, _v213_prompt_text(prompt), reply_markup=_v219_task_text_prompt_keyboard(cid, sid, task, message_id))
-        pid = int(getattr(sent, 'message_id', 0) or 0)
-    except Exception:
-        pass
-    if len(current) > V219_TASK_INLINE_INSERT_MAX:
-        try:
-            send_and_auto_delete(cid, current, max(120, int(delay)))
-        except Exception:
-            pass
-    with _V174_INPUT_LOCK:
-        _V174_INPUT_WAIT[cid, uid] = {'action': 'text', 'kind': str(kind), 'task_uid': str(task_uid or '').upper(), 'message_id': int(message_id or 0), 'prompt_id': pid, 'created': _v213_time.time(), 'last_activity': _v213_time.time(), 'session_id': sid, 'generation': 1}
-    key = _v213_task_input_key(cid, uid, False)
-    try:
-        DELAYED_SCHEDULER.cancel(key)
-    except Exception:
-        pass
-    DELAYED_SCHEDULER.schedule(key, delay, _v214_task_input_timeout, cid, uid, sid, False)
-    return sid
+# [OCH12.35 OWNER] _v219_task_prompt_input -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0039')
 _V219_PREV_HANDLE_OWN_INPUT = _v214_v174_handle_own_input
 
-def _v219_task_handle_own_input(msg) -> bool:
-    try:
-        if str(getattr(msg, 'content_type', '') or '') != 'text':
-            return _V219_PREV_HANDLE_OWN_INPUT(msg)
-        cid = int(msg.chat.id)
-        uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-        row = _v214_task_pending_row(cid, uid, False)
-        if not row or str(row.get('action') or '') != 'text':
-            return _V219_PREV_HANDLE_OWN_INPUT(msg)
-        raw = str(getattr(msg, 'text', '') or '').strip()
-        if raw.casefold() in {'отмена', 'cancel', 'стоп'}:
-            cancel_task_input(cid, uid, 'text_cancel')
-            _v172_delete_quiet(cid, int(getattr(msg, 'message_id', 0) or 0))
-            try:
-                send_and_auto_delete(cid, '❎ Действие отменено.', 5)
-            except Exception:
-                pass
-            return True
-        clean = sanitize_telegram_inserted_text(raw)
-        if len(clean) > V219_TASK_TEXT_MAX:
-            try:
-                send_and_auto_delete(cid, f'❌ Текст не сохранён: максимум {V219_TASK_TEXT_MAX} символов. Ничего не обрезано.', 12)
-            except Exception:
-                pass
-            task_uid = str(row.get('task_uid') or '')
-            cancel_task_input(cid, uid, 'too_long_retry')
-            _v174_prompt_input(cid, uid, 'text', task_uid=task_uid, message_id=int(row.get('message_id', 0) or 0))
-            return True
-        task = _v172_task_for_uid(str(row.get('task_uid') or ''))
-        if not isinstance(task, dict) or int(task.get('chat_id', 0) or 0) != cid:
-            cancel_task_input(cid, uid, 'target_missing')
-            return True
-        if not (_v172_is_manager(uid, cid) or uid == int(task.get('creator_user_id', 0) or 0)):
-            cancel_task_input(cid, uid, 'forbidden')
-            try:
-                send_and_auto_delete(cid, '⛔ Изменять текст может автор или управляющий.', 10)
-            except Exception:
-                pass
-            return True
-        cancel_task_input(cid, uid, 'submitted')
-        user = getattr(msg, 'from_user', None)
-        task['description'] = clean
-        task['title'] = _v172_title(clean)
-        _v172_touch(task, user, 'text_changed', clean[:180])
-        _v172_delete_quiet(cid, int(getattr(msg, 'message_id', 0) or 0))
-        _v174_refresh_card(task)
-        mid = int(row.get('message_id', 0) or 0)
-        if mid:
-            try:
-                bot.edit_message_text(_v174_compact_text(task), chat_id=cid, message_id=mid, reply_markup=_v174_compact_kb(task, cid, uid))
-            except Exception:
-                pass
-        return True
-    except Exception as exc:
-        try:
-            log_error(f'v219 task text input: {exc}')
-        except Exception:
-            pass
-        return True
+# [OCH12.35 OWNER] _v219_task_handle_own_input -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0040')
 _V219_PREV_TASK_CALLBACK_FINAL = _v213_task_dispatcher_callback_final
 
-def _v219_task_dispatcher_callback_final(call) -> bool:
-    raw = str(getattr(call, 'data', '') or '')
-    try:
-        resolver = globals().get('resolve_short_callback')
-        if callable(resolver):
-            raw = str(resolver(raw) or raw)
-    except Exception:
-        pass
-    if raw.startswith('v219:task:showtext:'):
-        try:
-            cid = int(call.message.chat.id)
-            actor = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
-        except Exception:
-            return True
-        uid = raw.split(':', 3)[3].upper() if len(raw.split(':', 3)) > 3 else ''
-        task = _v172_task_for_uid(uid)
-        if not isinstance(task, dict) or int(task.get('chat_id', 0) or 0) != cid:
-            try:
-                bot.answer_callback_query(call.id, 'Задача не найдена.', show_alert=True)
-            except Exception:
-                pass
-            return True
-        pending = _v214_task_pending_row(cid, actor, False)
-        if not pending or str(pending.get('action') or '') != 'text' or str(pending.get('task_uid') or '').upper() != uid:
-            try:
-                bot.answer_callback_query(call.id, 'Режим редактирования уже завершён.', show_alert=True)
-            except Exception:
-                pass
-            return True
-        try:
-            bot.answer_callback_query(call.id, 'Полный текст отправлен ниже')
-        except Exception:
-            pass
-        try:
-            send_and_auto_delete(cid, str(task.get('description') or task.get('title') or ''), max(120, int(_v213_input_timeout_seconds())))
-        except Exception:
-            pass
-        return True
-    return bool(_V219_PREV_TASK_CALLBACK_FINAL(call))
+# [OCH12.35 OWNER] _v219_task_dispatcher_callback_final -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0041')
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('v219:task:showtext:*', 'Ф252')
     _v177_legacy_0007_bot_journal('v219_task_reconcile_ready', int(OWNER_ID or 0), 'update_ingest=message/edit/channel/caption; text_insert=exact<=256; long_fallback=helper')
@@ -17659,35 +13385,24 @@ def _v220_build_main_keyboard(day_key: str, chat_id=None):
     return _v220_remove_contour_menu_button(kb, cid)
 _V220_PREV_TASK_MENU = _v217_task_home_kb
 
-def _v220_task_menu_text_kb(chat_id: int, user_id: int=0):
-    text, kb = _V220_PREV_TASK_MENU(int(chat_id), int(user_id or 0))
-    return (text, _v220_remove_contour_menu_button(kb, int(chat_id)))
+# [OCH12.35 OWNER] _v220_task_menu_text_kb -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0042')
 _V220_PREV_FORWARD_MENU = _canon_build_forward_menu_keyboard_for_current_mode__002
 
-def _v220_forward_menu_keyboard(day_key: str | None=None, A: int | None=None, B: int | None=None):
-    kb = _V220_PREV_FORWARD_MENU(day_key, A, B)
-    try:
-        cid = int(current_state_chat_id() or 0)
-    except Exception:
-        cid = 0
-    return _v220_remove_contour_menu_button(kb, cid)
+# [OCH12.35 OWNER] _v220_forward_menu_keyboard -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0204')
 _V220_PREV_FORWARD_SCOPE_KB = _canon_build_v217_forward_scope_keyboard__001
 
-def _v220_forward_scope_keyboard(chat_id: int, user_id: int):
-    return _v220_remove_contour_menu_button(_V220_PREV_FORWARD_SCOPE_KB(int(chat_id), int(user_id or 0)), int(chat_id))
+# [OCH12.35 OWNER] _v220_forward_scope_keyboard -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0205')
 _V220_PREV_REMINDER_LIST_KB = _canon_build_reminder_list_keyboard__002
 
-def _v220_reminder_list_keyboard(day_key: str | None=None, page: int=0):
-    kb = _V220_PREV_REMINDER_LIST_KB(day_key, page)
-    try:
-        cid = int(current_state_chat_id() or 0)
-    except Exception:
-        cid = 0
-    return _v220_remove_contour_menu_button(kb, cid)
+# [OCH12.35 OWNER] _v220_reminder_list_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0173')
 _V220_PREV_CHAT_REMINDER_KB = _canon_build_v217_chat_reminders_keyboard__001
 
-def _v220_chat_reminder_keyboard(chat_id: int, user_id: int):
-    return _v220_remove_contour_menu_button(_V220_PREV_CHAT_REMINDER_KB(int(chat_id), int(user_id or 0)), int(chat_id))
+# [OCH12.35 OWNER] _v220_chat_reminder_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0174')
 _V220_PREV_NEUTRAL_HOME = _canon_v213_show_neutral_home__001
 
 def _v220_show_neutral_home(chat_id: int, current_message_id: int=0) -> int:
@@ -17850,59 +13565,18 @@ def refresh_circle_annotation_windows_v220() -> int:
         pass
     return changed
 
-def _v220_reconcile_completed_reminder_groups(reminder_id: int, chat_ids: list[int]) -> None:
-    for cid in sorted(set((int(x) for x in chat_ids or [] if int(x)))):
-        try:
-            _v149_reminder_batch_job(int(cid))
-        except Exception as exc:
-            try:
-                log_error(f'v220 reminder group reconcile {int(reminder_id)} chat {cid}: {exc}')
-            except Exception:
-                pass
+# [OCH12.35 OWNER] _v220_reconcile_completed_reminder_groups -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0175')
 _V220_PREV_COMPLETE_REMINDER = _canon_v149_complete_reminder__001
 
-def _v220_complete_reminder(reminder_id: int, chat_id: int, actor_user_id: int, actor_label: str) -> tuple[bool, str]:
-    rid = int(reminder_id)
-    cid = int(chat_id)
-    try:
-        cfg_before = _reminder_cfg(rid)
-        recipients = list(_v149_reminder_chat_ids(cfg_before)) if isinstance(cfg_before, dict) else []
-    except Exception:
-        recipients = []
-    ok, answer = _V220_PREV_COMPLETE_REMINDER(rid, cid, int(actor_user_id or 0), str(actor_label or ''))
-    if ok:
-        try:
-            REMINDER_TASK_POOL.submit_unique(f'reminder-v220-complete-reconcile:{rid}', _v220_reconcile_completed_reminder_groups, rid, list(recipients))
-        except Exception:
-            try:
-                _v220_reconcile_completed_reminder_groups(rid, list(recipients))
-            except Exception:
-                pass
-        try:
-            bot_journal('reminder_global_reconcile_v220', cid, f'reminder_id={rid}; recipients={sorted(set(recipients))}')
-        except Exception:
-            pass
-    return (ok, answer)
+# [OCH12.35 OWNER] _v220_complete_reminder -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0176')
 
-def _v220_reminder_complete_keyboard(reminder_id: int, cfg: dict, chat_id: int):
-    if _v218_completion_mode(cfg, chat_id) != 'button':
-        return None
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('✅ Выполнено', callback_data=f'v149:rem:done:{int(reminder_id)}:{int(chat_id)}'))
-    return kb
+# [OCH12.35 OWNER] _v220_reminder_complete_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0177')
 
-def _v220_reminder_group_keyboard(chat_id: int, members: list[tuple[int, dict]]):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    count = 0
-    for rid, cfg in members:
-        if _v218_completion_mode(cfg, chat_id) != 'button':
-            continue
-        label = str((cfg or {}).get('text') or f'Напоминалка {rid}').strip().replace('\n', ' ')
-        if len(label) > 40:
-            label = label[:37] + '…'
-        kb.row(IB(f'✅ Выполнено · #{int(rid)} {label}', callback_data=f'v149:rem:done:{int(rid)}:{int(chat_id)}'))
-        count += 1
-    return kb if count else None
+# [OCH12.35 OWNER] _v220_reminder_group_keyboard -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0178')
 try:
     WINDOW_MARKER_CONSTANTS.update({'v174:td:admin:*': 'Ф247', 'v174:td:toggle:*': 'Ф247', 'v174:td:list:*': 'Ф248', 'keepalive_peer': 'Ф92', 'keepalive_peer_toggle': 'Ф92', 'keepalive_peer_interval': 'Ф92', 'keepalive_peer_url': 'Ф92', 'keepalive_peer_url_cancel': 'Ф92', 'keepalive_peer_clear': 'Ф92', 'keepalive_peer_now': 'Ф92'})
 except Exception:
@@ -18060,28 +13734,8 @@ def _v221_markup_fingerprint(kb) -> tuple:
         out.append(tuple(rr))
     return tuple(out)
 
-def v227_render_effective_contour_markup(source_markup, text: str, chat_id: int):
-    """Build the exact Telegram markup from the canonical source, then apply final visibility.
-
-    v226 could remember a pre-augmentation keyboard while Telegram actually received a later
-    augmented keyboard.  Keeping source+delivered separately makes OFF removal and ON restore
-    symmetric and prevents the live refresh from comparing against the wrong snapshot.
-    """
-    cid = int(chat_id or 0)
-    try:
-        kb = _v221_copy.deepcopy(source_markup)
-    except Exception:
-        kb = source_markup
-    try:
-        augment = globals().get('_v160_augment_markup')
-        if callable(augment):
-            kb = augment(kb, str(text or ''), cid)
-    except Exception:
-        pass
-    try:
-        return v221_finalize_contour_markup(kb, cid)
-    except Exception:
-        return kb
+# [OCH12.35 COMPAT] legacy v227_render_effective_contour_markup -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0020')
 
 def v221_record_live_markup(chat_id: int, message_id: int, reply_markup, text: str='', source_markup=None) -> None:
     try:
@@ -18702,33 +14356,11 @@ def v221_owner_requests_callback_final(call, resolved: str) -> bool:
             pass
     return True
 
-def _v221_chat_reminder_rows(chat_id: int) -> list[tuple[int, dict]]:
-    cid = int(chat_id)
-    rows = []
-    try:
-        source = reminder_items_global_for_completion(include_completed=True)
-    except Exception:
-        source = []
-    for rid, cfg in source:
-        try:
-            if cid in _v149_reminder_chat_ids(cfg):
-                rows.append((int(rid), cfg))
-        except Exception:
-            pass
-    rows.sort(key=lambda x: x[0])
-    return rows
+# [OCH12.35 OWNER] _v221_chat_reminder_rows -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0179')
 
-def _v221_reminders_for_completion(chat_id: int) -> list[tuple[int, dict]]:
-    cid = int(chat_id)
-    out = []
-    for rid, cfg in reminder_items_global_for_completion(include_completed=False):
-        try:
-            if cid in _v149_reminder_chat_ids(cfg) and cfg.get('enabled') and (_v218_completion_mode(cfg, cid) == 'slash'):
-                out.append((int(rid), cfg))
-        except Exception:
-            pass
-    out.sort(key=lambda x: x[0])
-    return out
+# [OCH12.35 OWNER] _v221_reminders_for_completion -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0180')
 
 def _v221_complete_command(msg) -> bool:
     rid, matched = _v218_completion_command_target(msg)
@@ -18766,25 +14398,8 @@ def _v221_complete_command(msg) -> bool:
     return True
 _V221_PREV_COMPLETE_REMINDER = _V220_PREV_COMPLETE_REMINDER
 
-def _v221_complete_reminder(reminder_id: int, chat_id: int, actor_user_id: int, actor_label: str) -> tuple[bool, str]:
-    rid = int(reminder_id)
-    cid = int(chat_id)
-    cfg_before = reminder_cfg_global_for_completion(rid)
-    recipients = list(_v149_reminder_chat_ids(cfg_before)) if isinstance(cfg_before, dict) else []
-    ok, answer = _V221_PREV_COMPLETE_REMINDER(rid, cid, int(actor_user_id or 0), str(actor_label or ''))
-    if ok:
-        try:
-            REMINDER_TASK_POOL.submit_unique(f'reminder-v221-complete-reconcile:{rid}', _v220_reconcile_completed_reminder_groups, rid, list(recipients))
-        except Exception:
-            try:
-                _v220_reconcile_completed_reminder_groups(rid, list(recipients))
-            except Exception:
-                pass
-        try:
-            bot_journal('reminder_global_reconcile_v221', cid, f'reminder_id={rid}; recipients={sorted(set(recipients))}')
-        except Exception:
-            pass
-    return (ok, answer)
+# [OCH12.35 OWNER] _v221_complete_reminder -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0181')
 _V221_PREV_V218_CALLBACK = _canon_v218_callback_final__001
 
 def _v221_v218_callback_final(call, resolved: str) -> bool:
@@ -18823,36 +14438,8 @@ try:
 except Exception:
     pass
 
-def _v221_find_reply_reminder(chat_id: int, reply_message_id: int) -> tuple[int | None, str]:
-    cid = int(chat_id)
-    mid = int(reply_message_id or 0)
-    candidates = []
-    for rid, cfg in _v221_chat_reminder_rows(cid):
-        if _reminder_is_completed(cfg) or not cfg.get('enabled'):
-            continue
-        try:
-            if int((cfg.get('last_message_ids') or {}).get(str(cid)) or 0) == mid:
-                candidates.append(int(rid))
-        except Exception:
-            pass
-    try:
-        state = _v149_group_state_root().get(_v149_group_key(cid), {}) or {}
-        if int(state.get('last_message_id') or 0) == mid:
-            for raw in state.get('member_ids') or []:
-                try:
-                    rid = int(raw)
-                    cfg = reminder_cfg_global_for_completion(rid)
-                    if rid not in candidates and cfg and (cid in _v149_reminder_chat_ids(cfg)) and (not _reminder_is_completed(cfg)) and cfg.get('enabled'):
-                        candidates.append(rid)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    if len(candidates) == 1:
-        return (candidates[0], 'ok')
-    if len(candidates) > 1:
-        return (None, 'В этом сообщении несколько напоминалок. Укажите /выполнено #N.')
-    return (None, 'Ответьте именно на сообщение нужной напоминалки или укажите /выполнено #N.')
+# [OCH12.35 OWNER] _v221_find_reply_reminder -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0182')
 
 def _v221_request_full_text_if_needed(call, request_id: int) -> None:
     row = _v221_owner_request_get(int(request_id))
@@ -19232,24 +14819,11 @@ except Exception:
     pass
 V229_TASK_SINGLE_WINDOW_KEY = 'tasks_single_window_v229'
 
-def tasks_single_window_enabled_v229() -> bool:
-    gs = data.setdefault('_global_settings', {})
-    if V229_TASK_SINGLE_WINDOW_KEY not in gs:
-        gs[V229_TASK_SINGLE_WINDOW_KEY] = True
-    return bool(gs.get(V229_TASK_SINGLE_WINDOW_KEY, True))
+# [OCH12.35 OWNER] tasks_single_window_enabled_v229 -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0043')
 
-def set_tasks_single_window_v229(enabled: bool) -> bool:
-    gs = data.setdefault('_global_settings', {})
-    gs[V229_TASK_SINGLE_WINDOW_KEY] = bool(enabled)
-    try:
-        save_data(data, root_only=True)
-    except Exception:
-        pass
-    try:
-        schedule_delta_backup(int(OWNER_ID or 0), delay=0.2, reason='v229_tasks_single_window')
-    except Exception:
-        pass
-    return bool(gs[V229_TASK_SINGLE_WINDOW_KEY])
+# [OCH12.35 OWNER] set_tasks_single_window_v229 -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0044')
 
 def _v229_annotation_target_chat(chat_id: int) -> bool:
     try:
@@ -19284,48 +14858,14 @@ def annotation_effective_v229(kind: str, chat_id: int) -> bool:
     except Exception:
         return True
 
-def _v229_task_window_id(chat_id: int, fallback: int=0) -> int:
-    cid = int(chat_id)
-    try:
-        reg = globals().get('_open_window_registry')
-        rows = list((reg() if callable(reg) else data.get('open_window_registry') or {}).values())
-        candidates = []
-        for row in rows:
-            if not isinstance(row, dict) or int(row.get('chat_id') or 0) != cid:
-                continue
-            if str(row.get('window_type') or '') == 'tasks' or str(row.get('code') or '') in {'Ф248', 'Ф249', 'Ф252'}:
-                mid = int(row.get('message_id') or 0)
-                if mid:
-                    candidates.append(mid)
-        if candidates:
-            return max(candidates)
-    except Exception:
-        pass
-    return int(fallback or 0)
+# [OCH12.35 OWNER] _v229_task_window_id -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0045')
 
-def _v229_task_set_current(chat_id: int, task_uid: str='') -> None:
-    try:
-        s = _v174_settings(int(chat_id))
-        s['single_window_current_uid_v229'] = str(task_uid or '').upper()
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v229_task_set_current -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0046')
 
-def _v229_task_restore(chat_id: int, message_id: int, user_id: int=0, task_uid: str='') -> None:
-    cid = int(chat_id)
-    mid = int(message_id or 0)
-    if not mid:
-        return
-    try:
-        task = _v172_task_for_uid(str(task_uid or '').upper()) if task_uid else None
-        if isinstance(task, dict) and int(task.get('chat_id', 0) or 0) == cid and (not task.get('deleted')):
-            text, kb = (_v174_compact_text(task), _v174_compact_kb(task, cid, int(user_id or 0)))
-            _v229_task_set_current(cid, str(task.get('uid') or ''))
-        else:
-            text, kb = _v174_menu_text_kb(cid, int(user_id or 0))
-            _v229_task_set_current(cid, '')
-        bot.edit_message_text(text, chat_id=cid, message_id=mid, reply_markup=kb)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v229_task_restore -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0047')
 _V229_PREV_TASK_EDIT_CALL = _v228_prev_v174_edit_call
 
 def _v174_edit_call(call, text, kb):
@@ -19398,12 +14938,8 @@ def _canon_v174_prompt_input__001(chat_id: int, user_id: int, action: str, kind:
     return sid
 _V229_PREV_TASK_TIMEOUT = _v214_task_input_timeout
 
-def _v229_task_input_timeout(chat_id: int, user_id: int, sid: str, legacy: bool=False):
-    row = _v214_task_pending_row(int(chat_id), int(user_id), bool(legacy))
-    result = _V229_PREV_TASK_TIMEOUT(chat_id, user_id, sid, legacy)
-    if result and isinstance(row, dict) and row.get('single_window_v229'):
-        _v229_task_restore(int(chat_id), int(row.get('message_id') or 0), int(user_id), str(row.get('task_uid') or ''))
-    return result
+# [OCH12.35 OWNER] _v229_task_input_timeout -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0048')
 _V229_PREV_PENDING_CANCEL = _v214_pending_input_cancel_callback_final
 
 def _canon_pending_input_cancel_callback_final__001(call) -> bool:
@@ -19547,34 +15083,12 @@ def _v174_refresh_card(task: dict):
     return _V229_PREV_REFRESH_CARD(task)
 _V229_PREV_TASK_FOR_REPLY = _v228_prev_v174_task_for_reply
 
-def _v174_task_for_reply(chat_id: int, reply_message_id: int):
-    try:
-        cid = int(chat_id)
-        mid = int(reply_message_id or 0)
-        if tasks_single_window_enabled_v229() and mid and (mid == _v229_task_window_id(cid, 0)):
-            uid = str(_v174_settings(cid).get('single_window_current_uid_v229') or '').upper()
-            task = _v172_task_for_uid(uid) if uid else None
-            if isinstance(task, dict) and (not task.get('deleted')):
-                return task
-    except Exception:
-        pass
-    return _V229_PREV_TASK_FOR_REPLY(chat_id, reply_message_id)
+# [OCH12.35 OWNER] _v174_task_for_reply -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0049')
 _V229_PREV_COMMAND_TASKS = _v174_command_tasks
 
-def _v229_command_tasks(msg):
-    try:
-        cid = int(msg.chat.id)
-        uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-        if tasks_single_window_enabled_v229() and task_dispatcher_enabled(cid):
-            _v212_open_task_window(cid, uid)
-            try:
-                _v172_delete_quiet(cid, int(getattr(msg, 'message_id', 0) or 0))
-            except Exception:
-                pass
-            return
-    except Exception:
-        pass
-    return _V229_PREV_COMMAND_TASKS(msg)
+# [OCH12.35 OWNER] _v229_command_tasks -> 13_business_tasks.py
+_owner_install('tasks', 'tasks:0050')
 try:
     for _row in list(getattr(bot, 'message_handlers', []) or []):
         if isinstance(_row, dict) and _row.get('function') is _V229_PREV_COMMAND_TASKS:
@@ -19865,5 +15379,4 @@ try:
     _R17_TERMINAL_BOOT_REPORT = r17_reconcile_terminal_chats_on_boot()
 except Exception as _r17_boot_exc:
     _R17_TERMINAL_BOOT_REPORT = {'error': f'{type(_r17_boot_exc).__name__}: {str(_r17_boot_exc)[:180]}'}
-
-# v262
+# v266

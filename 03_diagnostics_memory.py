@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 # --- ИСТОЧНИК: 16_window_diagnostics.py ---
 import inspect as _window_diag_inspect
 WINDOW_DIAGNOSTICS_ENABLED = str(os.getenv('WINDOW_DIAGNOSTICS_ENABLED', '1') or '1').strip().lower() not in {'0', 'false', 'off', 'no'}
@@ -1548,48 +1549,11 @@ def category_edit_items_for_chat(chat_id: int) -> list[dict]:
     store = get_chat_store(chat_id)
     return list(_base_category_items(store)) + list(_custom_category_list(store))
 
-def remove_custom_expense_categories(chat_id: int, slugs: set[str]) -> int:
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    custom = settings.setdefault('expense_categories_custom', [])
-    before = len(custom) if isinstance(custom, list) else 0
-    settings['expense_categories_custom'] = [item for item in (custom if isinstance(custom, list) else []) if not (isinstance(item, dict) and str(item.get('slug')) in slugs)]
-    store['category_delete_selection'] = []
-    removed = before - len(settings['expense_categories_custom'])
-    save_data(data)
-    if removed:
-        schedule_config_backup_for_chats(chat_id)
-    return removed
+# [OCH12.35 OWNER] remove_custom_expense_categories -> 11_business_finance.py
+_owner_install('finance', 'finance:0095')
 
-def update_custom_expense_category(chat_id: int, old_slug: str, name: str, keywords: list[str]) -> dict | None:
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    name = str(name or '').strip().upper()
-    keywords = sorted(set((str(x).strip().lower() for x in keywords or [] if str(x).strip())))
-    if str(old_slug) in CATEGORY_BY_SLUG:
-        overrides = settings.setdefault('expense_categories_base_overrides', {})
-        if not isinstance(overrides, dict):
-            overrides = {}
-            settings['expense_categories_base_overrides'] = overrides
-        overrides[str(old_slug)] = {'name': name, 'keywords': keywords}
-        save_data(data)
-        schedule_config_backup_for_chats(chat_id)
-        bot_journal('base_category_edited', chat_id, f"{old_slug} -> {name}: {', '.join(keywords)}")
-        return {'name': name, 'slug': str(old_slug), 'keywords': keywords, 'base': True}
-    custom = settings.setdefault('expense_categories_custom', [])
-    if not isinstance(custom, list):
-        custom = []
-        settings['expense_categories_custom'] = custom
-    for item in custom:
-        if isinstance(item, dict) and str(item.get('slug')) == str(old_slug):
-            item['name'] = name
-            item['keywords'] = keywords
-            item.setdefault('slug', old_slug)
-            save_data(data)
-            schedule_config_backup_for_chats(chat_id)
-            bot_journal('category_edited', chat_id, f"{old_slug} -> {name}: {', '.join(keywords)}")
-            return item
-    return None
+# [OCH12.35 OWNER] update_custom_expense_category -> 11_business_finance.py
+_owner_install('finance', 'finance:0096')
 
 def build_category_delete_keyboard(chat_id: int):
     store = get_chat_store(chat_id)
@@ -1868,4 +1832,4 @@ def ram_inspector_trim_v1224() -> dict:
         except Exception:
             pass
     return {'before': before, 'after': memory_quick_snapshot(), 'evicted': evicted}
-# v262
+# v266

@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 72_multitenant_runtime.py ---
 _V146_WINDOW_LOCK = threading.RLock()
@@ -323,33 +324,8 @@ def _v177_legacy_0045_refresh_registered_financial_windows(chat_id: int):
     schedule_financial_window_refresh(int(chat_id), reason='registry_refresh')
     return True
 
-def _finance_changed_now(chat_id: int, day_key: str | None=None, reason: str='change'):
-    """v243 finance fast path: per-chat durability first, derived/global work detached."""
-    chat_id = int(chat_id)
-    day_key = str(day_key or get_chat_store(chat_id).get('current_view_day') or today_key())[:10]
-    finance_cache_invalidate(chat_id, f'finance_changed:{reason}')
-    with locked_chat(chat_id):
-        store = get_chat_store(chat_id)
-        _safe_stabilize('normalize_chat_records', lambda: normalize_chat_records(chat_id))
-        _safe_stabilize('recalc_balance', lambda: recalc_balance(chat_id))
-        _safe_stabilize('rebuild_month_short_ids', lambda: rebuild_month_short_ids(chat_id))
-        _safe_stabilize('currency_ledger_snapshot', lambda: _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store)))
-        _r48_need_persist = True
-    _safe_stabilize('delta_queue_early', lambda: schedule_quick_backup(chat_id, MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS))
-    _safe_stabilize('finance_ui_fast_dispatch_v243', lambda: schedule_financial_window_refresh(chat_id, day_key, reason=f'finalize:{reason}', delay=0.01))
-    fn = globals().get('schedule_finance_postcommit_background_v243')
-    if callable(fn):
-        _safe_stabilize('finance_postcommit_schedule_v243', lambda: fn(chat_id, reason=reason, delay=0.2))
-    else:
-        _safe_stabilize('full_backup_queue', lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
-    if callable(globals().get('persist_finance_chat_local_fast')):
-        persist_finance_chat_local_fast(chat_id)
-
-    try:
-        bot_journal('finance_business_complete_v243', chat_id, f'day={day_key} reason={reason}; chat_durable=1; derived_background=1')
-    except Exception:
-        pass
-    return True
+# [OCH12.35 OWNER] _finance_changed_now -> 11_business_finance.py
+_owner_install('finance', 'finance:0173')
 _V146_ORIG_WINDOW_DIAG_PREPARE = _v177_legacy_0114_window_diag_prepare_fast_ui_payload
 _V146_ORIG_WINDOW_DIAG_APPLY = _v177_legacy_0115_window_diag_fast_ui_apply
 
@@ -405,97 +381,14 @@ def _canon_run_pending_ui_edit__001(key):
     _perform_fast_ui_edit(payload)
 _V146_ORIG_PERSIST_FORWARD_FINANCE = _v177_legacy_0155_persist_forward_finance_delivery_now
 
-def _canon_persist_forward_finance_delivery_now__001(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int, rec: dict | None=None):
-    batch_id = _fin_forward_batch_id(int(src_chat_id), int(src_msg_id)) if '_fin_forward_batch_id' in globals() else ''
-    with _FIN_FORWARD_BATCH_LOCK:
-        in_batch = batch_id in _FIN_FORWARD_BATCHES
-    if not in_batch or not callable(_V146_ORIG_PERSIST_FORWARD_FINANCE):
-        return _V146_ORIG_PERSIST_FORWARD_FINANCE(src_chat_id, src_msg_id, dst_chat_id, dst_msg_id, rec) if callable(_V146_ORIG_PERSIST_FORWARD_FINANCE) else False
-    try:
-        if isinstance(rec, dict):
-            tags = {'forwarded_by_bot': True, 'forward_source_chat_id': int(src_chat_id), 'forward_source_msg_id': int(src_msg_id), 'forward_dst_chat_id': int(dst_chat_id), 'forward_dst_msg_id': int(dst_msg_id)}
-            rec.update(tags)
-            store = get_chat_store(int(dst_chat_id))
-            rid = rec.get('id')
-            for arr in (store.get('daily_records', {}) or {}).values():
-                for rr in arr or []:
-                    if isinstance(rr, dict) and rr.get('id') == rid:
-                        rr.update(tags)
-        _persist_forward_index_in_data(data)
-        save_data(data, chat_ids=[int(dst_chat_id)])
-        schedule_quick_backup(int(dst_chat_id), 0.5)
-        with _FIN_FORWARD_BATCH_LOCK:
-            row = _FIN_FORWARD_BATCHES.get(batch_id)
-            if isinstance(row, dict):
-                row.setdefault('durable_chats', set()).add(int(dst_chat_id))
-        bot_journal('forward_finance_local_committed', int(dst_chat_id), f'batch={batch_id} src={src_chat_id}:{src_msg_id} dst_msg={dst_msg_id}; combined_delta=1')
-        return True
-    except Exception as exc:
-        log_error(f'[V146 FWD FINANCE LOCAL ERROR] {src_chat_id}:{src_msg_id}->{dst_chat_id}:{dst_msg_id}: {exc}')
-        return False
+# [OCH12.35 OWNER] _canon_persist_forward_finance_delivery_now__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0141')
 
-def _v146_finish_forward_follow(follow: dict, durable_ok: bool, durable_error: str=''):
-    source_chat_id = int(follow.get('source_chat_id'))
-    source_msg_id = int(follow.get('source_msg_id'))
-    normal_targets = list(follow.get('normal_targets') or [])
-    if durable_ok:
-        if normal_targets:
-            if not FORWARD_TASK_POOL.submit(source_chat_id, _forward_normal_stage, source_chat_id, follow.get('msg'), normal_targets):
-                _forward_normal_stage(source_chat_id, follow.get('msg'), normal_targets)
-        elif source_msg_id:
-            _forward_outcome_update(source_chat_id, source_msg_id, state='completed')
-    else:
-        _forward_outcome_update(source_chat_id, source_msg_id, state='durable_pending', error=str(durable_error or 'delta upload failed')[:300])
+# [OCH12.35 OWNER] _v146_finish_forward_follow -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0142')
 
-        def _retry():
-            ok = False
-            try:
-                ok = bool(durable_run_pending_delta_now_v234())
-            except Exception as exc:
-                log_error(f'V146 FIN BATCH DELTA RETRY {source_chat_id}:{source_msg_id}: {exc}')
-            if ok:
-                _v146_finish_forward_follow(follow, True)
-            else:
-                DELAYED_SCHEDULER.schedule(f'v146-fin-batch-delta:{source_chat_id}:{source_msg_id}', 5.0, _retry)
-        DELAYED_SCHEDULER.schedule(f'v146-fin-batch-delta:{source_chat_id}:{source_msg_id}', 5.0, _retry)
-
-def _canon_fin_forward_batch_finish_target__001(batch_id: str, dst_chat_id: int, ok: bool, elapsed: float, error: str='') -> None:
-    follow = None
-    with _FIN_FORWARD_BATCH_LOCK:
-        row = _FIN_FORWARD_BATCHES.get(str(batch_id))
-        if not isinstance(row, dict):
-            return
-        row.setdefault('targets', {})[str(int(dst_chat_id))] = {'ok': bool(ok), 'elapsed': round(float(elapsed), 3), 'error': str(error or '')[:300]}
-        row['remaining'] = max(0, int(row.get('remaining', 0)) - 1)
-        if row['remaining'] == 0:
-            follow = dict(row)
-            if isinstance(row.get('durable_chats'), set):
-                follow['durable_chats'] = sorted(row.get('durable_chats'))
-            _FIN_FORWARD_BATCHES.pop(str(batch_id), None)
-    try:
-        bot_journal('finance_forward_target_done', (follow or {}).get('source_chat_id'), f"batch={batch_id} dst={int(dst_chat_id)} ok={bool(ok)} elapsed={elapsed:.3f}s error={str(error or '')[:180]}", 'INFO' if ok else 'ERROR')
-    except Exception:
-        pass
-    if not follow:
-        return
-    started = float(follow.get('started_mono') or time.monotonic())
-    durable_started = time.monotonic()
-    durable_ok = False
-    durable_error = ''
-    try:
-        durable_ok = bool(durable_run_pending_delta_now_v234())
-        if not durable_ok:
-            durable_error = 'combined delta returned false'
-    except Exception as exc:
-        durable_error = str(exc)
-        log_error(f'V146 FIN BATCH COMBINED DELTA {batch_id}: {exc}')
-    _v146_finish_forward_follow(follow, durable_ok, durable_error)
-    try:
-        target_rows = follow.get('targets') or {}
-        failed = sum((1 for x in target_rows.values() if not bool((x or {}).get('ok'))))
-        bot_journal('finance_forward_batch_done', int(follow.get('source_chat_id')), f'batch={batch_id} targets={len(target_rows)} failed={failed} durable={int(durable_ok)} delta_elapsed={time.monotonic() - durable_started:.3f}s total_elapsed={time.monotonic() - started:.3f}s')
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _canon_fin_forward_batch_finish_target__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0143')
 
 def _canon_wait_durable_subtasks__001(chat_id, timeout: float=20.0, wait_forward: bool=True, payload: dict | None=None, expected: dict | None=None, update_id=None) -> bool:
     if chat_id is None or not wait_forward or (not isinstance(payload, dict)):
@@ -535,16 +428,8 @@ def _canon_wait_durable_subtasks__001(chat_id, timeout: float=20.0, wait_forward
 _V146_ORIG_MEGA_TASK_FINISH = _canon_mega_task_finish__001
 _V146_ORIG_MEGA_TASK_STATS = _canon_mega_task_registry_stats__001
 
-def _canon_mega_task_finish__002(update_id, success: bool, error: str='') -> bool:
-    result = _V146_ORIG_MEGA_TASK_FINISH(update_id, success, error) if callable(_V146_ORIG_MEGA_TASK_FINISH) else False
-    if not success:
-        key = _mega_task_id(update_id)
-        _V146_FAILED_TASK_RUNTIME_ERRORS[key] = {'error': str(error or '')[:500], 'at': _v146_iso_now()}
-        try:
-            GENERAL_TASK_POOL.submit_unique('v146-failed-task-details', refresh_failed_task_diagnostics, True)
-        except Exception:
-            pass
-    return result
+# [OCH12.35 OWNER] _canon_mega_task_finish__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0122')
 
 def _v146_load_failed_task_detail(key: str, row: dict) -> dict:
     local = None
@@ -605,28 +490,8 @@ def refresh_failed_task_diagnostics(force: bool=False) -> list[dict]:
     finally:
         _V146_FAILED_TASK_LOAD_LOCK.release()
 
-def _v177_legacy_0065_mega_task_registry_stats() -> dict:
-    base = _V146_ORIG_MEGA_TASK_STATS() if callable(_V146_ORIG_MEGA_TASK_STATS) else {}
-    try:
-        with _MEGA_TASK_LOCK:
-            current_failed = [str(key) for key, row in _mega_task_registry.items() if str((row or {}).get('state') or '') == 'failed'][:_V146_FAILED_DIAG_LIMIT]
-    except Exception:
-        current_failed = []
-    current_set = set(current_failed)
-    details = [row for row in list(_V146_FAILED_TASK_DETAILS) if str((row or {}).get('task_id') or '') in current_set]
-    detail_set = {str((row or {}).get('task_id') or '') for row in details}
-    mismatch = detail_set != current_set
-    if mismatch:
-        try:
-            GENERAL_TASK_POOL.submit_unique('v147-failed-task-details', refresh_failed_task_diagnostics, True)
-        except Exception:
-            pass
-    base['failed_details'] = details
-    base['failed_task_ids'] = sorted(current_set)
-    base['failed_details_at'] = _V146_FAILED_TASK_DETAILS_AT
-    base['failed_details_pending'] = bool(current_set and mismatch)
-    base['failed_details_summary'] = {'failed': len(current_set), 'loaded': len(details), 'pending': bool(current_set and mismatch)}
-    return base
+# [OCH12.35 OWNER] _v177_legacy_0065_mega_task_registry_stats -> 17_integration_mega.py
+_owner_install('mega', 'mega:0123')
 try:
     _v177_legacy_0065_mega_task_registry_stats.__name__ = 'mega_task_registry_stats'
 except Exception:
@@ -659,33 +524,14 @@ _V146_ORIG_REM_DELETE_MAP = _v177_legacy_0131_reminder_delete_message_map
 _V146_ORIG_REM_COMPLETE = _v177_legacy_0122_reminder_mark_completed
 _V146_ORIG_REM_GROUP_DELETE = _v177_legacy_0134_reminder_group_delete_message
 
-def _canon_reminder_delete_message_map__001(last_map: dict) -> None:
-    for cid_raw, mid_raw in list((last_map or {}).items()):
-        try:
-            bot.delete_message(int(cid_raw), int(mid_raw))
-            bot_journal('reminder_previous_deleted', int(cid_raw), f'message_id={int(mid_raw)}')
-        except Exception as exc:
-            bot_journal('reminder_previous_delete_failed', int(cid_raw), f'message_id={mid_raw} error={str(exc)[:300]}', 'WARN')
+# [OCH12.35 OWNER] _canon_reminder_delete_message_map__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0103')
 
-def _canon_reminder_mark_completed__001(reminder_id: int, cfg: dict, reason: str='time_finished', delete_messages: bool=True) -> None:
-    was_completed = _reminder_is_completed(cfg)
-    if callable(_V146_ORIG_REM_COMPLETE):
-        _V146_ORIG_REM_COMPLETE(reminder_id, cfg, reason, delete_messages)
-    if not was_completed and _reminder_is_completed(cfg):
-        try:
-            bot_journal('reminder_completed', None, f'reminder_id={int(reminder_id)} reason={reason} delete_messages={int(bool(delete_messages))}')
-            bot_journal('reminder_archived', None, f"reminder_id={int(reminder_id)} completed_at={cfg.get('completed_at')}")
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _canon_reminder_mark_completed__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0104')
 
-def _canon_reminder_group_delete_message__001(chat_id: int, message_id: int):
-    try:
-        result = _V146_ORIG_REM_GROUP_DELETE(chat_id, message_id) if callable(_V146_ORIG_REM_GROUP_DELETE) else bot.delete_message(int(chat_id), int(message_id))
-        bot_journal('reminder_group_previous_deleted', int(chat_id), f'message_id={int(message_id)}')
-        return result
-    except Exception as exc:
-        bot_journal('reminder_group_previous_delete_failed', int(chat_id), f'message_id={message_id} error={str(exc)[:300]}', 'WARN')
-        return None
+# [OCH12.35 OWNER] _canon_reminder_group_delete_message__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0105')
 _V146_ORIG_RUNTIME_MARK_READY = _v177_legacy_0082_runtime_mark_ready
 
 def _v177_legacy_0083_runtime_mark_ready(detail: str=''):
@@ -1221,22 +1067,8 @@ def _canon_bind_chat_to_owner_scope__001(chat_id: int, scope_id: int):
         save_data(data, chat_ids=[int(chat_id), int(scope_id)], root_only=False)
     return ok
 
-def _canon_collect_forward_menu_chats__001() -> dict:
-    tid = tenant_current_id()
-    result = {}
-    resolver = globals().get('resolve_canonical_chat_id_v199')
-    suspended = globals().get('is_forward_target_suspended_v199')
-    for raw_cid in tenant_chat_ids(tid):
-        try:
-            cid = int(resolver(int(raw_cid))) if callable(resolver) else int(raw_cid)
-            if callable(suspended) and suspended(cid):
-                continue
-            store = get_chat_store(cid)
-            info = store.get('info') or {}
-            result[str(cid)] = {'title': info.get('title') or get_chat_display_name(cid) or f'Чат {cid}', 'username': info.get('username'), 'type': info.get('type')}
-        except Exception:
-            continue
-    return result
+# [OCH12.35 OWNER] _canon_collect_forward_menu_chats__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0144')
 
 def _canon_collect_all_known_chat_ids__001(include_owner: bool=True) -> list[int]:
     resolver = globals().get('resolve_canonical_chat_id_v199')
@@ -1254,61 +1086,23 @@ def _canon_collect_all_known_chat_ids__001(include_owner: bool=True) -> list[int
     return sorted(set(ids), key=lambda cid: get_chat_display_name(cid).casefold())
 _V148_ORIG_RESOLVE_FORWARD_TARGETS = _v177_legacy_0140_resolve_forward_targets
 
-def _canon_resolve_forward_targets__001(source_chat_id: int):
-    resolver = globals().get('resolve_canonical_chat_id_v199')
-    suspended = globals().get('is_forward_target_suspended_v199')
-    src = int(resolver(int(source_chat_id))) if callable(resolver) else int(source_chat_id)
-    rows = _V148_ORIG_RESOLVE_FORWARD_TARGETS(src) if callable(_V148_ORIG_RESOLVE_FORWARD_TARGETS) else []
-    out = []
-    seen = set()
-    for dst, mode, fin in rows or []:
-        dst = int(resolver(int(dst))) if callable(resolver) else int(dst)
-        if dst in seen or (callable(suspended) and suspended(dst)):
-            continue
-        if tenant_same_space(src, dst):
-            out.append((dst, mode, bool(fin)))
-            seen.add(dst)
-        else:
-            try:
-                bot_journal('tenant_cross_forward_blocked', src, f'dst={dst}')
-            except Exception:
-                pass
-    return out
+# [OCH12.35 OWNER] _canon_resolve_forward_targets__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0145')
 _V148_ORIG_ADD_FORWARD_LINK = _v177_legacy_0141_add_forward_link
 
-def _v177_legacy_0142_add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
-    if not tenant_same_space(int(src_chat_id), int(dst_chat_id)):
-        raise PermissionError('Нельзя связать пересылкой чаты из разных пространств')
-    return _V148_ORIG_ADD_FORWARD_LINK(int(src_chat_id), int(dst_chat_id), mode)
+# [OCH12.35 OWNER] _v177_legacy_0142_add_forward_link -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0146')
 try:
     _v177_legacy_0142_add_forward_link.__name__ = 'add_forward_link'
 except Exception:
     pass
 
-def _canon_clear_forward_all__001():
-    """v148: очищает связи только текущего пространства, а не чужие контуры."""
-    allowed = {str(x) for x in tenant_chat_ids(tenant_current_id())}
-    fr = data.setdefault('forward_rules', {})
-    ff = data.setdefault('forward_finance', {})
-    for src in list(fr.keys()):
-        if str(src) in allowed:
-            fr.pop(src, None)
-            ff.pop(src, None)
-            continue
-        for dst in list((fr.get(src) or {}).keys()):
-            if str(dst) in allowed:
-                (fr.get(src) or {}).pop(dst, None)
-                (ff.get(src) or {}).pop(dst, None)
-    data['forward_pair_order'] = [key for key in data.get('forward_pair_order') or [] if not any((part in allowed for part in str(key).split(':', 1)))]
-    persist_forward_rules_to_owner()
-    save_data(data, full=True)
+# [OCH12.35 OWNER] _canon_clear_forward_all__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0147')
 _V148_ORIG_COLLECT_FORWARD_PAIRS = _v177_legacy_0189_collect_forward_pairs_for_menu
 
-def _v177_legacy_0190_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
-    rows = _V148_ORIG_COLLECT_FORWARD_PAIRS() if callable(_V148_ORIG_COLLECT_FORWARD_PAIRS) else []
-    tid = tenant_current_id()
-    allowed = set(tenant_chat_ids(tid))
-    return [(int(a), int(b)) for a, b in rows if int(a) in allowed and int(b) in allowed]
+# [OCH12.35 OWNER] _v177_legacy_0190_collect_forward_pairs_for_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0148')
 try:
     _v177_legacy_0190_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
 except Exception:
@@ -1322,35 +1116,25 @@ def _canon_get_connected_chat_ids__001(chat_id: int):
 def _tenant_settings_for_context(chat_id: int | None=None) -> dict:
     return owner_scoped_settings(chat_id)
 
-def _v177_legacy_0147_forward_copy_edit_mode(chat_id: int | None=None) -> str:
-    mode = str(_tenant_settings_for_context(chat_id).get('forward_copy_edit_mode') or 'normal').lower()
-    return mode if mode in FORWARD_COPY_EDIT_MODES and version_mode_feature('forward_copy_edit') else 'normal'
+# [OCH12.35 OWNER] _v177_legacy_0147_forward_copy_edit_mode -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0149')
 try:
     _v177_legacy_0147_forward_copy_edit_mode.__name__ = 'forward_copy_edit_mode'
 except Exception:
     pass
 
-def _v177_legacy_0149_set_forward_copy_edit_mode(chat_id: int, mode: str):
-    mode = str(mode or 'normal').lower()
-    if mode not in FORWARD_COPY_EDIT_MODES:
-        mode = 'normal'
-    _tenant_settings_for_context(chat_id)['forward_copy_edit_mode'] = mode
-    save_data(data, root_only=True)
-    return mode
+# [OCH12.35 OWNER] _v177_legacy_0149_set_forward_copy_edit_mode -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0150')
 try:
     _v177_legacy_0149_set_forward_copy_edit_mode.__name__ = 'set_forward_copy_edit_mode'
 except Exception:
     pass
 
-def _canon_reminder_ui_mode__001() -> str:
-    mode = str(_tenant_settings_for_context().get('reminder_ui_mode_v142') or 'new').lower()
-    return mode if mode in {'old', 'new'} else 'new'
+# [OCH12.35 OWNER] _canon_reminder_ui_mode__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0106')
 
-def _canon_set_reminder_ui_mode__001(mode: str) -> str:
-    mode = 'new' if str(mode).lower() == 'new' else 'old'
-    _tenant_settings_for_context()['reminder_ui_mode_v142'] = mode
-    save_data(data, root_only=True)
-    return mode
+# [OCH12.35 OWNER] _canon_set_reminder_ui_mode__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0107')
 
 def _canon_internal_timer_seconds__001(key: str, fallback=None) -> float:
     spec = INTERNAL_TIMER_DEFS.get(str(key), {})
@@ -1370,122 +1154,50 @@ def _canon_set_internal_timer_seconds__001(key: str, seconds: int | float) -> fl
     save_data(data, root_only=True)
     return value
 
-def _canon_backup_excel_all_enabled__001(chat_id: int | None=None) -> bool:
-    return bool(_tenant_settings_for_context(chat_id).get('backup_excel_all_enabled', True))
+# [OCH12.35 OWNER] _canon_backup_excel_all_enabled__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0051')
 
-def _canon_set_backup_excel_all_enabled__001(enabled: bool, chat_id: int | None=None):
-    _tenant_settings_for_context(chat_id)['backup_excel_all_enabled'] = bool(enabled)
-    save_data(data, root_only=True)
+# [OCH12.35 OWNER] _canon_set_backup_excel_all_enabled__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0052')
 
-def _canon_excel_interface_mode__001(chat_id: int | None=None) -> str:
-    mode = str(_tenant_settings_for_context(chat_id).get('excel_interface_mode') or 'new').lower()
-    return mode if mode in {'old', 'new'} else 'new'
+# [OCH12.35 OWNER] _canon_excel_interface_mode__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0053')
 
-def _canon_set_excel_interface_mode__001(mode: str) -> str:
-    mode = 'old' if str(mode).lower() == 'old' else 'new'
-    _tenant_settings_for_context()['excel_interface_mode'] = mode
-    save_data(data, root_only=True)
-    return mode
+# [OCH12.35 OWNER] _canon_set_excel_interface_mode__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0054')
 
-def _canon_excel_new_export_options__001() -> dict:
-    settings = _tenant_settings_for_context()
-    options = settings.get('excel_new_export_options')
-    if not isinstance(options, dict):
-        options = {'old_table': False, 'comments': False, 'notes': True, 'description_column': False}
-        settings['excel_new_export_options'] = options
-    return normalize_excel_export_options(options)
+# [OCH12.35 OWNER] _canon_excel_new_export_options__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0055')
 
-def _canon_toggle_excel_new_export_option__001(option: str) -> dict:
-    opts = excel_new_export_options()
-    option = str(option or '')
-    if option in opts:
-        opts[option] = not bool(opts.get(option))
-    if option == 'old_table' and opts.get('old_table'):
-        opts['comments'] = opts['notes'] = opts['description_column'] = False
-    elif option in {'comments', 'notes', 'description_column'} and opts.get(option):
-        opts['old_table'] = False
-        if option in {'comments', 'notes'}:
-            for other in {'comments', 'notes'} - {option}:
-                opts[other] = False
-    _tenant_settings_for_context()['excel_new_export_options'] = dict(opts)
-    save_data(data, root_only=True)
-    return opts
+# [OCH12.35 OWNER] _canon_toggle_excel_new_export_option__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0056')
 
-def _canon_excel_table_style__001(chat_id: int) -> str:
-    mode = _normalize_excel_table_style(_tenant_settings_for_context(chat_id).get('excel_table_style'))
-    return mode or 'new_notes'
+# [OCH12.35 OWNER] _canon_excel_table_style__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0057')
 
-def _canon_set_excel_table_style__001(chat_id: int, mode: str) -> str:
-    mode = _normalize_excel_table_style(mode) or 'new_notes'
-    _tenant_settings_for_context(chat_id)['excel_table_style'] = mode
-    try:
-        get_chat_store(int(chat_id)).setdefault('settings', {})['excel_table_style'] = mode
-    except Exception:
-        pass
-    save_data(data, chat_ids=[int(chat_id)])
-    return mode
+# [OCH12.35 OWNER] _canon_set_excel_table_style__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0058')
 _V148_ORIG_REMINDER_ITEMS = _v177_legacy_0119_reminder_items
 _V148_ORIG_REMINDER_CFG = _v177_legacy_0120_reminder_cfg
 _V148_ORIG_REMINDER_CREATE = _v177_legacy_0121_reminder_create
 
-def _reminder_context_filter_active() -> bool:
-    return bool(getattr(_TENANT_CONTEXT, 'tenant_id', None) or current_state_chat_id() is not None)
+# [OCH12.35 OWNER] _reminder_context_filter_active -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0108')
 
-def _canon_reminder_items__001(include_completed: bool=False) -> list[tuple[int, dict]]:
-    rows = _V148_ORIG_REMINDER_ITEMS(include_completed=include_completed) if callable(_V148_ORIG_REMINDER_ITEMS) else []
-    if not _reminder_context_filter_active():
-        return rows
-    tid = tenant_current_id()
-    return [(rid, cfg) for rid, cfg in rows if str((cfg or {}).get('tenant_id') or TENANT_PLATFORM_ID) == tid]
+# [OCH12.35 OWNER] _canon_reminder_items__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0109')
 
-def _canon_reminder_cfg__001(reminder_id: int | str | None=None, create: bool=False) -> dict | None:
-    cfg = _V148_ORIG_REMINDER_CFG(reminder_id, create=create) if callable(_V148_ORIG_REMINDER_CFG) else None
-    if not isinstance(cfg, dict):
-        return cfg
-    if create and (not cfg.get('tenant_id')):
-        cfg['tenant_id'] = tenant_current_id()
-    if _reminder_context_filter_active() and str(cfg.get('tenant_id') or TENANT_PLATFORM_ID) != tenant_current_id():
-        return None
-    return cfg
+# [OCH12.35 OWNER] _canon_reminder_cfg__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0110')
 
-def _canon_reminder_create__001() -> tuple[int, dict]:
-    rid, cfg = _V148_ORIG_REMINDER_CREATE()
-    cfg['tenant_id'] = tenant_current_id()
-    _reminder_save('tenant_reminder_add')
-    return (rid, cfg)
+# [OCH12.35 OWNER] _canon_reminder_create__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0111')
 
-def reminder_cfg_global_for_completion(reminder_id: int | str | None) -> dict | None:
-    """Canonical delivered-completion lookup.
+# [OCH12.35 OWNER] reminder_cfg_global_for_completion -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0112')
 
-    Reminder IDs are global.  UI tenant context must never hide a reminder that was
-    actually delivered to the current recipient chat.  This helper deliberately
-    bypasses the v148 UI-context filter but does not grant any action by itself;
-    callers must still validate the real recipient chat and selected completion mode.
-    """
-    if reminder_id is None:
-        return None
-    try:
-        rid = int(reminder_id)
-    except Exception:
-        return None
-    try:
-        cfg = _V148_ORIG_REMINDER_CFG(rid, create=False) if callable(_V148_ORIG_REMINDER_CFG) else None
-    except Exception:
-        cfg = None
-    return cfg if isinstance(cfg, dict) else None
-
-def reminder_items_global_for_completion(include_completed: bool=False) -> list[tuple[int, dict]]:
-    """Return the canonical global reminder registry for recipient-side actions.
-
-    Unlike _reminder_items/_v149_reminder_all_rows this helper never consults the
-    current Telegram tenant context.  It is intentionally narrow: callers still
-    authorize every action by exact recipient chat membership.
-    """
-    try:
-        rows = _V148_ORIG_REMINDER_ITEMS(include_completed=bool(include_completed)) if callable(_V148_ORIG_REMINDER_ITEMS) else []
-    except Exception:
-        rows = []
-    return [(int(rid), cfg) for rid, cfg in list(rows or []) if isinstance(cfg, dict)]
+# [OCH12.35 OWNER] reminder_items_global_for_completion -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0113')
 
 def _canon_security_role_for_user__001(user_id: int | None) -> str:
     return tenant_role_for_user(user_id, chat_id=current_state_chat_id())
@@ -2057,36 +1769,8 @@ def _canon_build_fin_windows_chat_menu__001(day_key: str):
     kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
     return kb
 
-def _v177_legacy_0061_build_forward_status_lines() -> list[str]:
-    lines = []
-    fr = data.get('forward_rules', {}) or {}
-    ff = data.get('forward_finance', {}) or {}
-    allowed = set(tenant_chat_ids(tenant_current_id()))
-    pairs = set()
-    for src, dsts in fr.items():
-        try:
-            a = int(src)
-        except Exception:
-            continue
-        if a not in allowed:
-            continue
-        for dst in (dsts or {}).keys():
-            try:
-                b = int(dst)
-            except Exception:
-                continue
-            if b not in allowed:
-                continue
-            pairs.add(tuple(sorted((a, b))))
-    for a, b in sorted(pairs, key=lambda p: (get_chat_display_name(p[0]).casefold(), get_chat_display_name(p[1]).casefold())):
-        ab = str(b) in (fr.get(str(a), {}) or {})
-        ba = str(a) in (fr.get(str(b), {}) or {})
-        if not (ab or ba):
-            continue
-        ab_fin = bool((ff.get(str(a), {}) or {}).get(str(b), False))
-        ba_fin = bool((ff.get(str(b), {}) or {}).get(str(a), False))
-        lines.append(f'• {chat_button_title(a)} -({_forward_arrow_icon(ab, ba)})-({_forward_fin_icon(ab_fin, ba_fin)})-{chat_button_title(b)}')
-    return lines or ['• Связи пересылки не настроены']
+# [OCH12.35 OWNER] _v177_legacy_0061_build_forward_status_lines -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0151')
 try:
     _v177_legacy_0061_build_forward_status_lines.__name__ = 'build_forward_status_lines'
 except Exception:
@@ -2146,43 +1830,8 @@ def _canon_build_help_text__001(chat_id: int) -> str:
         lines.extend(['/space_chat_link — подключить свой дополнительный чат', '/space_user_link operator — пригласить пользователя', '/space_users — пользователи и роли', '/space_chats — чаты пространства'])
     return '\n'.join(lines)[:3900]
 
-def tenant_v148_enforce_forward_isolation() -> int:
-    removed = 0
-    fr = data.setdefault('forward_rules', {})
-    ff = data.setdefault('forward_finance', {})
-    for src, dsts in list(fr.items()):
-        try:
-            src_id = int(src)
-        except Exception:
-            fr.pop(src, None)
-            ff.pop(str(src), None)
-            continue
-        if not isinstance(dsts, dict):
-            fr.pop(src, None)
-            ff.pop(str(src_id), None)
-            continue
-        for dst in list(dsts.keys()):
-            try:
-                dst_id = int(dst)
-            except Exception:
-                dsts.pop(dst, None)
-                (ff.get(str(src_id)) or {}).pop(str(dst), None)
-                removed += 1
-                continue
-            if not tenant_same_space(src_id, dst_id):
-                dsts.pop(dst, None)
-                (ff.get(str(src_id)) or {}).pop(str(dst_id), None)
-                removed += 1
-        if not dsts:
-            fr.pop(str(src), None)
-            ff.pop(str(src_id), None)
-    if removed:
-        persist_forward_rules_to_owner()
-        try:
-            bot_journal('tenant_cross_links_removed', OWNER_ID, f'count={removed}', 'WARN')
-        except Exception:
-            pass
-    return removed
+# [OCH12.35 OWNER] tenant_v148_enforce_forward_isolation -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0152')
 
 def tenant_v148_bootstrap() -> dict:
     root = _tenants_root()
@@ -2338,42 +1987,11 @@ def tenant_google_context(tenant_id: str | None=None, target_chat_id: int | None
     finally:
         _V149_GOOGLE_CONTEXT.tenant_id = previous
 
-def tenant_google_config(tenant_id: str | None=None, create: bool=True) -> dict:
-    tid = _v149_tenant_id(tenant_id)
-    row = tenant_get(tid)
-    if not isinstance(row, dict):
-        if not create:
-            return {}
-        raise RuntimeError('Пространство Google не найдено')
-    cfg = row.get('google_v149')
-    if not isinstance(cfg, dict):
-        if not create:
-            return {}
-        cfg = {}
-        row['google_v149'] = cfg
-    cfg.setdefault('schema_version', V149_GOOGLE_SCHEMA_VERSION)
-    cfg.setdefault('credentials_sealed', '')
-    cfg.setdefault('credential_fingerprint', '')
-    cfg.setdefault('service_account_email', '')
-    cfg.setdefault('owner_google_email', '')
-    cfg.setdefault('spreadsheet_id', '')
-    cfg.setdefault('spreadsheet_title', '')
-    cfg.setdefault('drive_folder_id', '')
-    cfg.setdefault('drive_folder_name', '')
-    cfg.setdefault('export_settings', {'sheet_enabled': True, 'drive_enabled': True, 'sheet_mode': 'new_tab', 'history_limit': 100, 'error_limit': 50})
-    cfg.setdefault('history', [])
-    cfg.setdefault('errors', [])
-    cfg.setdefault('input_wait', {})
-    cfg.setdefault('connected_at', '')
-    cfg.setdefault('connected_by', 0)
-    cfg.setdefault('updated_at', _v149_now_iso())
-    return cfg
+# [OCH12.35 OWNER] tenant_google_config -> 15_integration_google.py
+_owner_install('google', 'google:0010')
 
-def _v149_google_master_key() -> bytes:
-    raw = str(_v149_os.getenv('TENANT_GOOGLE_MASTER_KEY') or _v149_os.getenv('GOOGLE_TENANT_MASTER_KEY') or '').strip()
-    if len(raw) < 24:
-        raise RuntimeError('Для подключения Google пространств задайте в Render секрет TENANT_GOOGLE_MASTER_KEY длиной не менее 24 символов')
-    return _v149_hashlib.sha256(raw.encode('utf-8')).digest()
+# [OCH12.35 OWNER] _v149_google_master_key -> 15_integration_google.py
+_owner_install('google', 'google:0011')
 
 def _v149_stream_xor(payload: bytes, key: bytes, nonce: bytes) -> bytes:
     out = bytearray(len(payload))
@@ -2388,314 +2006,53 @@ def _v149_stream_xor(payload: bytes, key: bytes, nonce: bytes) -> bytes:
         counter += 1
     return bytes(out)
 
-def _v149_seal_secret(raw: str) -> str:
-    master = _v149_google_master_key()
-    nonce = _v149_secrets.token_bytes(16)
-    enc_key = _v149_hmac.new(master, b'enc:' + nonce, _v149_hashlib.sha256).digest()
-    mac_key = _v149_hmac.new(master, b'mac:' + nonce, _v149_hashlib.sha256).digest()
-    cipher = _v149_stream_xor(str(raw).encode('utf-8'), enc_key, nonce)
-    tag = _v149_hmac.new(mac_key, b'v1:' + nonce + cipher, _v149_hashlib.sha256).digest()
-    return 'v1.' + _v149_base64.urlsafe_b64encode(nonce + tag + cipher).decode('ascii')
+# [OCH12.35 OWNER] _v149_seal_secret -> 18_business_secret.py
+_owner_install('secret', 'secret:0124')
 
-def _v149_open_secret(sealed: str) -> str:
-    if not str(sealed or '').startswith('v1.'):
-        raise RuntimeError('Формат зашифрованного Google-ключа не поддерживается')
-    try:
-        blob = _v149_base64.urlsafe_b64decode(str(sealed).split('.', 1)[1].encode('ascii'))
-        nonce, tag, cipher = (blob[:16], blob[16:48], blob[48:])
-    except Exception as exc:
-        raise RuntimeError(f'Google-ключ повреждён: {exc}')
-    master = _v149_google_master_key()
-    enc_key = _v149_hmac.new(master, b'enc:' + nonce, _v149_hashlib.sha256).digest()
-    mac_key = _v149_hmac.new(master, b'mac:' + nonce, _v149_hashlib.sha256).digest()
-    expected = _v149_hmac.new(mac_key, b'v1:' + nonce + cipher, _v149_hashlib.sha256).digest()
-    if not _v149_hmac.compare_digest(tag, expected):
-        raise RuntimeError('Google-ключ не прошёл проверку целостности')
-    try:
-        return _v149_stream_xor(cipher, enc_key, nonce).decode('utf-8')
-    except Exception as exc:
-        raise RuntimeError(f'Google-ключ не расшифрован: {exc}')
+# [OCH12.35 OWNER] _v149_open_secret -> 18_business_secret.py
+_owner_install('secret', 'secret:0125')
 
-def _v149_parse_google_service_json(raw: str) -> dict:
-    try:
-        info = _v149_json.loads(str(raw))
-    except Exception as exc:
-        raise RuntimeError(f'JSON Google повреждён: {exc}')
-    if not isinstance(info, dict):
-        raise RuntimeError('JSON Google должен быть объектом')
-    if str(info.get('type') or '') != 'service_account':
-        raise RuntimeError('Нужен JSON ключ типа service_account')
-    for key in ('client_email', 'private_key', 'token_uri'):
-        if not str(info.get(key) or '').strip():
-            raise RuntimeError(f'В Google JSON отсутствует {key}')
-    return info
+# [OCH12.35 OWNER] _v149_parse_google_service_json -> 15_integration_google.py
+_owner_install('google', 'google:0012')
 
-def tenant_google_set_credentials(tenant_id: str, raw: str, actor_user_id: int) -> dict:
-    tid = _v149_tenant_id(tenant_id)
-    info = _v149_parse_google_service_json(raw)
-    cfg = tenant_google_config(tenant_id)
-    cfg['credentials_sealed'] = _v149_seal_secret(_v149_json.dumps(info, ensure_ascii=False, separators=(',', ':')))
-    cfg['credential_fingerprint'] = _v149_hashlib.sha256(str(info.get('client_email') or '').encode('utf-8') + str(info.get('private_key_id') or '').encode('utf-8')).hexdigest()[:20]
-    cfg['service_account_email'] = str(info.get('client_email') or '')[:250]
-    cfg['connected_at'] = _v149_now_iso()
-    cfg['connected_by'] = int(actor_user_id or 0)
-    cfg['updated_at'] = _v149_now_iso()
-    cfg['input_wait'] = {}
-    with _V149_GOOGLE_TOKEN_LOCK:
-        for key in list(_V149_GOOGLE_TOKEN_CACHE):
-            if str(key).startswith(str(tenant_id) + ':'):
-                _V149_GOOGLE_TOKEN_CACHE.pop(key, None)
-    tenant_google_history(tenant_id, 'account_connected', 'Google service account подключён', ok=True)
-    tenant_google_persist(tid, 'tenant_google_update')
-    return info
+# [OCH12.35 OWNER] tenant_google_set_credentials -> 15_integration_google.py
+_owner_install('google', 'google:0013')
 
-def tenant_google_persist(tenant_id: str, reason: str='tenant_google') -> None:
-    tid = _v149_tenant_id(tenant_id)
-    save_data(data, root_only=True)
-    try:
-        row = tenant_get(tid) or {}
-        scope_chat = int(row.get('root_chat_id') or OWNER_ID or 0)
-        if scope_chat:
-            schedule_delta_backup(scope_chat, delay=0.35, reason=str(reason or 'tenant_google'))
-    except Exception as exc:
-        try:
-            log_error(f'tenant google delta schedule: {exc}')
-        except Exception:
-            pass
+# [OCH12.35 OWNER] tenant_google_persist -> 15_integration_google.py
+_owner_install('google', 'google:0014')
 
-def tenant_google_history(tenant_id: str, action: str, detail: str='', ok: bool=True, **meta) -> None:
-    cfg = tenant_google_config(tenant_id)
-    row = {'at': _v149_now_iso(), 'action': str(action)[:80], 'ok': bool(ok), 'detail': str(detail or '')[:500]}
-    if meta:
-        row['meta'] = {str(k)[:50]: str(v)[:250] for k, v in meta.items() if k not in {'credentials', 'private_key', 'token'}}
-    rows = cfg.setdefault('history', [])
-    rows.append(row)
-    limit = max(10, min(500, int((cfg.get('export_settings') or {}).get('history_limit', 100) or 100)))
-    del rows[:-limit]
-    cfg['updated_at'] = _v149_now_iso()
+# [OCH12.35 OWNER] tenant_google_history -> 15_integration_google.py
+_owner_install('google', 'google:0015')
 
-def tenant_google_error(tenant_id: str, action: str, exc) -> None:
-    tid = _v149_tenant_id(tenant_id)
-    cfg = tenant_google_config(tenant_id)
-    message = str(exc or 'Ошибка')
-    message = _v149_re.sub('-----BEGIN [^-]+-----.*?-----END [^-]+-----', '[REDACTED KEY]', message, flags=_v149_re.S)
-    message = _v149_re.sub('(?i)(access_token|refresh_token|private_key|client_secret)\\s*[:=]\\s*[^,\\s]+', '\\1=[REDACTED]', message)
-    rows = cfg.setdefault('errors', [])
-    rows.append({'at': _v149_now_iso(), 'action': str(action)[:80], 'error': message[:1000]})
-    limit = max(10, min(200, int((cfg.get('export_settings') or {}).get('error_limit', 50) or 50)))
-    del rows[:-limit]
-    cfg['updated_at'] = _v149_now_iso()
-    try:
-        tenant_google_persist(tid, 'tenant_google_update')
-    except Exception:
-        pass
+# [OCH12.35 OWNER] tenant_google_error -> 15_integration_google.py
+_owner_install('google', 'google:0016')
 
-def _canon_google_service_account_info__001(tenant_id: str | None=None) -> dict:
-    tid = _v149_tenant_id(tenant_id)
-    cfg = tenant_google_config(tid, create=False)
-    sealed = str(cfg.get('credentials_sealed') or '') if cfg else ''
-    if sealed:
-        return _v149_parse_google_service_json(_v149_open_secret(sealed))
-    if tid == str(TENANT_PLATFORM_ID) and _V149_PLATFORM_GOOGLE_JSON:
-        raw = _V149_PLATFORM_GOOGLE_JSON
-        try:
-            if raw.lstrip().startswith('{'):
-                return _v149_parse_google_service_json(raw)
-            return _v149_parse_google_service_json(_v149_base64.b64decode(raw).decode('utf-8'))
-        except Exception as exc:
-            raise RuntimeError(f'GOOGLE_SERVICE_ACCOUNT_JSON владельца платформы повреждён: {exc}')
-    raise RuntimeError('Google-аккаунт этого пространства не подключён. Откройте /google')
+# [OCH12.35 OWNER] _canon_google_service_account_info__001 -> 15_integration_google.py
+_owner_install('google', 'google:0017')
 
-def _v149_google_id(value: str, kind: str) -> str:
-    raw = str(value or '').strip()
-    if kind == 'sheet':
-        match = _v149_re.search('/spreadsheets/d/([A-Za-z0-9_-]+)', raw)
-    else:
-        match = _v149_re.search('/folders/([A-Za-z0-9_-]+)', raw)
-    if match:
-        raw = match.group(1)
-    raw = raw.split('?')[0].split('#')[0].strip().strip('/')
-    if not _v149_re.fullmatch('[A-Za-z0-9_-]{10,}', raw):
-        raise RuntimeError('Неверная ссылка или ID Google ' + ('таблицы' if kind == 'sheet' else 'папки'))
-    return raw
+# [OCH12.35 OWNER] _v149_google_id -> 15_integration_google.py
+_owner_install('google', 'google:0018')
 
-def _canon_google_spreadsheet_id__001(value: str | None=None, tenant_id: str | None=None) -> str:
-    if value is not None and str(value).strip():
-        return _v149_google_id(str(value), 'sheet')
-    tid = _v149_tenant_id(tenant_id)
-    cfg = tenant_google_config(tid, create=False)
-    raw = str((cfg or {}).get('spreadsheet_id') or '')
-    if not raw and tid == str(TENANT_PLATFORM_ID):
-        raw = _V149_PLATFORM_GOOGLE_SHEET
-    if not raw:
-        raise RuntimeError('Для этого пространства не выбрана Google Таблица. Откройте /google')
-    return _v149_google_id(raw, 'sheet')
+# [OCH12.35 OWNER] _canon_google_spreadsheet_id__001 -> 15_integration_google.py
+_owner_install('google', 'google:0019')
 
-def tenant_google_drive_folder_id(tenant_id: str | None=None) -> str:
-    tid = _v149_tenant_id(tenant_id)
-    raw = str(tenant_google_config(tid, create=False).get('drive_folder_id') or '')
-    if not raw:
-        raise RuntimeError('Для этого пространства не выбрана папка Google Drive. Откройте /google')
-    return _v149_google_id(raw, 'folder')
+# [OCH12.35 OWNER] tenant_google_drive_folder_id -> 15_integration_google.py
+_owner_install('google', 'google:0020')
 
-def _canon_google_access_token__001(tenant_id: str | None=None) -> str:
-    tid = _v149_tenant_id(tenant_id)
-    info = _google_service_account_info(tid)
-    fingerprint = _v149_hashlib.sha256((str(info.get('client_email')) + str(info.get('private_key_id'))).encode('utf-8')).hexdigest()[:20]
-    cache_key = f'{tid}:{fingerprint}'
-    with _V149_GOOGLE_TOKEN_LOCK:
-        now = _v149_time.time()
-        cached = _V149_GOOGLE_TOKEN_CACHE.get(cache_key) or {}
-        if cached.get('token') and now < float(cached.get('expires_at', 0)) - 120:
-            return str(cached['token'])
-        header = {'alg': 'RS256', 'typ': 'JWT'}
-        claims = {'iss': info['client_email'], 'scope': 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive', 'aud': info.get('token_uri') or 'https://oauth2.googleapis.com/token', 'iat': int(now), 'exp': int(now) + 3600}
-        signing_input = (_b64url(_v149_json.dumps(header, separators=(',', ':')).encode('utf-8')) + '.' + _b64url(_v149_json.dumps(claims, separators=(',', ':')).encode('utf-8'))).encode('ascii')
-        signature = _google_sign_rs256(signing_input, info['private_key'])
-        assertion = signing_input.decode('ascii') + '.' + _b64url(signature)
-        response = _google_request_guarded('oauth', requests.post, info.get('token_uri') or 'https://oauth2.googleapis.com/token', data={'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer', 'assertion': assertion}, timeout=30, attempts=2)
-        if response.status_code >= 300:
-            raise RuntimeError(f'Google OAuth {response.status_code}: {response.text[:500]}')
-        payload = response.json()
-        token = str(payload.get('access_token') or '')
-        if not token:
-            raise RuntimeError('Google OAuth не вернул access_token')
-        _V149_GOOGLE_TOKEN_CACHE[cache_key] = {'token': token, 'expires_at': now + int(payload.get('expires_in', 3600) or 3600)}
-        return token
+# [OCH12.35 OWNER] _canon_google_access_token__001 -> 15_integration_google.py
+_owner_install('google', 'google:0021')
 
-def _canon_google_sheets_create_category_report__001(title: str, rows: list[list], layout: str='category', annotations_override: dict | None=None, include_annotations: bool=True, tenant_id: str | None=None, target_chat_id: int | None=None) -> str:
-    if not callable(_V149_BASE_GOOGLE_SHEETS_CREATE):
-        raise RuntimeError('Модуль Google Sheets не загружен')
-    tid = _v149_tenant_id(tenant_id, target_chat_id)
-    if target_chat_id is not None and (not _v149_chat_belongs_to_tenant(int(target_chat_id), tid)):
-        raise RuntimeError('Google export blocked: target chat is not connected to this space')
-    cfg = tenant_google_config(tid)
-    if not bool((cfg.get('export_settings') or {}).get('sheet_enabled', True)):
-        raise RuntimeError('Выгрузка в Google Sheets выключена для этого пространства')
-    try:
-        with tenant_google_context(tid):
-            url = _V149_BASE_GOOGLE_SHEETS_CREATE(title, rows, layout=layout, annotations_override=annotations_override, include_annotations=include_annotations)
-        tenant_google_history(tid, 'sheets_export', title, ok=True, chat_id=target_chat_id or 0, url=url)
-        tenant_google_persist(tid, 'tenant_google_update')
-        return url
-    except Exception as exc:
-        tenant_google_error(tid, 'sheets_export', exc)
-        raise
+# [OCH12.35 OWNER] _canon_google_sheets_create_category_report__001 -> 15_integration_google.py
+_owner_install('google', 'google:0022')
 
-def tenant_google_upload_export(local_path: str, display_name: str, target_chat_id: int, mime_type: str | None=None) -> str:
-    tid = _v149_tenant_id(target_chat_id=target_chat_id)
-    if not _v149_chat_belongs_to_tenant(int(target_chat_id), tid):
-        raise RuntimeError('Google Drive export blocked: target chat is not connected to this space')
-    cfg = tenant_google_config(tid)
-    if not bool((cfg.get('export_settings') or {}).get('drive_enabled', True)):
-        raise RuntimeError('Выгрузка в Google Drive выключена для этого пространства')
-    folder_id = tenant_google_drive_folder_id(tid)
-    token = _google_access_token(tid)
-    mime_type = str(mime_type or _v149_mimetypes.guess_type(display_name)[0] or 'application/octet-stream')
-    headers = {'Authorization': f'Bearer {token}'}
-    metadata = {'name': str(display_name or _v149_Path(local_path).name)[:240], 'parents': [folder_id], 'appProperties': {'tenant_id': tid, 'source_chat_id': str(int(target_chat_id))}}
-    try:
-        with open(local_path, 'rb') as fh:
-            response = _google_request_guarded('drive_upload', requests.post, 'https://www.googleapis.com/upload/drive/v3/files', headers=headers, params={'uploadType': 'multipart', 'fields': 'id,name,webViewLink,parents'}, files={'metadata': (None, _v149_json.dumps(metadata, ensure_ascii=False), 'application/json; charset=UTF-8'), 'file': (metadata['name'], fh, mime_type)}, timeout=120, attempts=1)
-        if response.status_code >= 300:
-            raise RuntimeError(f'Google Drive upload {response.status_code}: {response.text[:700]}')
-        payload = response.json()
-        file_id = str(payload.get('id') or '')
-        url = str(payload.get('webViewLink') or (f'https://drive.google.com/file/d/{file_id}/view' if file_id else ''))
-        tenant_google_history(tid, 'drive_export', metadata['name'], ok=True, chat_id=target_chat_id, file_id=file_id)
-        tenant_google_persist(tid, 'tenant_google_update')
-        return url
-    except Exception as exc:
-        tenant_google_error(tid, 'drive_export', exc)
-        raise
+# [OCH12.35 OWNER] tenant_google_upload_export -> 15_integration_google.py
+_owner_install('google', 'google:0023')
 
-def tenant_google_create_spreadsheet(tenant_id: str, title: str='Финансы бота') -> str:
-    """v244: create a usable spreadsheet even when no Drive folder was configured.
+# [OCH12.35 OWNER] tenant_google_create_spreadsheet -> 15_integration_google.py
+_owner_install('google', 'google:0024')
 
-    If a folder exists we place the file there. Otherwise Google creates it in the
-    service account Drive root. When an owner/share email is known, grant writer
-    access immediately so the owner can open the newly created file.
-    """
-    tid = _v149_tenant_id(tenant_id)
-    token = _google_access_token(tid)
-    cfg = tenant_google_config(tid)
-    folder_raw = str(cfg.get('drive_folder_id') or '').strip()
-    folder_id = _v149_google_id(folder_raw, 'folder') if folder_raw else ''
-    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    metadata = {'name': str(title or 'Финансы бота')[:200], 'mimeType': 'application/vnd.google-apps.spreadsheet', 'appProperties': {'tenant_id': tid, 'created_by_bot_version': VERSION}}
-    if folder_id:
-        metadata['parents'] = [folder_id]
-    response = _google_request_guarded('drive_create_sheet_v244', requests.post, 'https://www.googleapis.com/drive/v3/files', headers=headers, params={'fields': 'id,name,webViewLink,parents'}, json=metadata, timeout=60, attempts=1)
-    if response.status_code >= 300 and (not folder_id):
-        sheet_create = _google_request_guarded('sheets_create_spreadsheet_v244', requests.post, 'https://sheets.googleapis.com/v4/spreadsheets', headers=headers, json={'properties': {'title': str(title or 'Финансы бота')[:200]}}, timeout=60, attempts=1)
-        if sheet_create.status_code < 300:
-            sp = sheet_create.json()
-            sid = str(sp.get('spreadsheetId') or '')
-            response = type('_V244GoogleCreateResponse', (), {'status_code': 200, 'json': lambda self, _sid=sid, _title=str((sp.get('properties') or {}).get('title') or title): {'id': _sid, 'name': _title, 'webViewLink': f'https://docs.google.com/spreadsheets/d/{_sid}/edit'}, 'text': ''})()
-    if response.status_code >= 300:
-        exc = RuntimeError(f'Google create spreadsheet {response.status_code}: {response.text[:700]}')
-        tenant_google_error(tid, 'create_spreadsheet', exc)
-        raise exc
-    payload = response.json()
-    spreadsheet_id = _v149_google_id(str(payload.get('id') or ''), 'sheet')
-    cfg['spreadsheet_id'] = spreadsheet_id
-    cfg['spreadsheet_title'] = str(payload.get('name') or title)[:200]
-    cfg['updated_at'] = _v149_now_iso()
-    share_email = str(cfg.get('owner_google_email') or '').strip()
-    if not share_email and tid == str(TENANT_PLATFORM_ID):
-        share_email = str(_V149_PLATFORM_GOOGLE_SHARE or '').strip()
-    share_note = ''
-    if share_email:
-        try:
-            perm = _google_request_guarded('drive_share_sheet_v244', requests.post, f'https://www.googleapis.com/drive/v3/files/{spreadsheet_id}/permissions', headers=headers, params={'sendNotificationEmail': 'false', 'fields': 'id'}, json={'type': 'user', 'role': 'writer', 'emailAddress': share_email}, timeout=45, attempts=1)
-            if perm.status_code < 300:
-                share_note = f'; shared={share_email}'
-            else:
-                share_note = f'; share_warning={perm.status_code}'
-                tenant_google_error(tid, 'share_created_spreadsheet', RuntimeError(perm.text[:500]))
-        except Exception as exc:
-            share_note = '; share_warning=exception'
-            try:
-                tenant_google_error(tid, 'share_created_spreadsheet', exc)
-            except Exception:
-                pass
-    tenant_google_history(tid, 'create_spreadsheet_v244', cfg['spreadsheet_title'] + share_note, ok=True, spreadsheet_id=spreadsheet_id, folder_id=folder_id or 'root')
-    tenant_google_persist(tid, 'tenant_google_update')
-    return str(payload.get('webViewLink') or f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit')
-
-def tenant_google_test(tenant_id: str) -> tuple[bool, str]:
-    tid = _v149_tenant_id(tenant_id)
-    try:
-        token = _google_access_token(tid)
-        headers = {'Authorization': f'Bearer {token}'}
-        parts = []
-        folder_id = str(tenant_google_config(tid).get('drive_folder_id') or '')
-        if folder_id:
-            response = _google_request_guarded('drive_folder_test', requests.get, f"https://www.googleapis.com/drive/v3/files/{_v149_google_id(folder_id, 'folder')}", headers=headers, params={'fields': 'id,name,mimeType,trashed'}, timeout=30, attempts=2)
-            if response.status_code >= 300:
-                raise RuntimeError(f'Drive folder {response.status_code}: {response.text[:500]}')
-            payload = response.json()
-            tenant_google_config(tid)['drive_folder_name'] = str(payload.get('name') or '')[:200]
-            parts.append('Drive: доступ есть')
-        sheet_raw = str(tenant_google_config(tid).get('spreadsheet_id') or '')
-        if not sheet_raw and tid == str(TENANT_PLATFORM_ID):
-            sheet_raw = _V149_PLATFORM_GOOGLE_SHEET
-        if sheet_raw:
-            sid = _v149_google_id(sheet_raw, 'sheet')
-            response = _google_request_guarded('sheet_test', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{sid}', headers=headers, params={'fields': 'spreadsheetId,properties.title'}, timeout=30, attempts=2)
-            if response.status_code >= 300:
-                raise RuntimeError(f'Sheets {response.status_code}: {response.text[:500]}')
-            payload = response.json()
-            tenant_google_config(tid)['spreadsheet_title'] = str((payload.get('properties') or {}).get('title') or '')[:200]
-            parts.append('Sheets: доступ есть')
-        if not parts:
-            parts.append('Аккаунт подключён; задайте таблицу и папку')
-        tenant_google_history(tid, 'connection_test', '; '.join(parts), ok=True)
-        tenant_google_persist(tid, 'tenant_google_update')
-        return (True, '✅ ' + '; '.join(parts))
-    except Exception as exc:
-        tenant_google_error(tid, 'connection_test', exc)
-        return (False, '❌ ' + str(exc)[:700])
+# [OCH12.35 OWNER] tenant_google_test -> 15_integration_google.py
+_owner_install('google', 'google:0025')
 
 def _v149_mask_id(value: str) -> str:
     raw = str(value or '')
@@ -2703,142 +2060,23 @@ def _v149_mask_id(value: str) -> str:
         return raw or 'не задан'
     return raw[:6] + '…' + raw[-4:]
 
-def tenant_google_status_text(tenant_id: str) -> str:
-    tid = _v149_tenant_id(tenant_id)
-    row = tenant_get(tid) or {}
-    cfg = tenant_google_config(tid)
-    env_fallback = tid == str(TENANT_PLATFORM_ID) and (not cfg.get('credentials_sealed')) and bool(_V149_PLATFORM_GOOGLE_JSON)
-    account = str(cfg.get('service_account_email') or ('Render Environment' if env_fallback else 'не подключён'))
-    sheet = str(cfg.get('spreadsheet_title') or '')
-    folder = str(cfg.get('drive_folder_name') or '')
-    return f"☁️ GOOGLE · {row.get('name') or tid}\n\nАккаунт: {account}\nGoogle владельца: {cfg.get('owner_google_email') or 'не указан'}\nТаблица: {sheet or _v149_mask_id(cfg.get('spreadsheet_id') or (_V149_PLATFORM_GOOGLE_SHEET if env_fallback else ''))}\nПапка Drive: {folder or _v149_mask_id(cfg.get('drive_folder_id'))}\nВыгрузка Sheets: {('включена' if bool((cfg.get('export_settings') or {}).get('sheet_enabled', True)) else 'выключена')}\nВыгрузка Drive: {('включена' if bool((cfg.get('export_settings') or {}).get('drive_enabled', True)) else 'выключена')}\nИстория: {len(cfg.get('history') or [])}\nОшибки: {len(cfg.get('errors') or [])}\n\nДанные, токены, таблица, папка, история и ошибки принадлежат только этому пространству.\nДля подключения нужен JSON ключ service_account и общий мастер-ключ TENANT_GOOGLE_MASTER_KEY в Render."
+# [OCH12.35 OWNER] tenant_google_status_text -> 15_integration_google.py
+_owner_install('google', 'google:0026')
 
-def tenant_google_keyboard(tenant_id: str):
-    tid = str(tenant_id)
-    cfg = tenant_google_config(tid)
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('🔑 Подключить / заменить аккаунт', callback_data='v149:google:connect'))
-    kb.row(IB('📊 Указать Google Таблицу', callback_data='v149:google:sheet'))
-    kb.row(IB('📁 Указать папку Google Drive', callback_data='v149:google:folder'))
-    kb.row(IB('👤 Указать email Google владельца', callback_data='v149:google:owner_email'))
-    settings = cfg.get('export_settings') or {}
-    kb.row(IB(f"{('✅' if settings.get('sheet_enabled', True) else '⬜')} 📊 Выгрузка Sheets: {('ВКЛ' if settings.get('sheet_enabled', True) else 'ВЫКЛ')}", callback_data='v149:google:toggle_sheet'))
-    kb.row(IB(f"{('✅' if settings.get('drive_enabled', True) else '⬜')} 📁 Выгрузка Drive: {('ВКЛ' if settings.get('drive_enabled', True) else 'ВЫКЛ')}", callback_data='v149:google:toggle_drive'))
-    kb.row(IB('➕ Создать таблицу в папке', callback_data='v149:google:create_sheet'))
-    kb.row(IB('🧪 Проверить подключение', callback_data='v149:google:test'))
-    kb.row(IB(f"📜 История ({len(cfg.get('history') or [])})", callback_data='v149:google:history'), IB(f"⚠️ Ошибки ({len(cfg.get('errors') or [])})", callback_data='v149:google:errors'))
-    kb.row(IB('🧹 Отключить Google', callback_data='v149:google:disconnect_confirm'))
-    return kb
+# [OCH12.35 OWNER] tenant_google_keyboard -> 15_integration_google.py
+_owner_install('google', 'google:0027')
 
-def _canon_v149_google_wait__001(tenant_id: str, kind: str, chat_id: int, user_id: int) -> None:
-    tid = _v149_tenant_id(tenant_id)
-    cfg = tenant_google_config(tid)
-    cfg['input_wait'] = {'kind': str(kind), 'chat_id': int(chat_id), 'user_id': int(user_id), 'expires_at': _v149_time.time() + 900}
-    cfg['updated_at'] = _v149_now_iso()
-    tenant_google_persist(tid, 'tenant_google_update')
+# [OCH12.35 OWNER] _canon_v149_google_wait__001 -> 15_integration_google.py
+_owner_install('google', 'google:0028')
 
-def _v149_google_can_manage(chat_id: int, user_id: int, owner_only: bool=True) -> tuple[bool, str]:
-    tid = str(tenant_id_for_chat(int(chat_id), create=True, actor_user_id=int(user_id)) or TENANT_PLATFORM_ID)
-    return (bool(tenant_can_manage(int(user_id), tid, owner_only=owner_only)), tid)
+# [OCH12.35 OWNER] _v149_google_can_manage -> 15_integration_google.py
+_owner_install('google', 'google:0029')
 
-def _canon_tenant_google_handle_message__001(msg) -> bool:
-    """Called near the top of the common non-command message router."""
-    try:
-        chat_id = int(msg.chat.id)
-        user_id = _v149_actor_id(msg)
-        tid = str(tenant_id_for_chat(chat_id, create=False) or '')
-        if not tid:
-            return False
-        cfg = tenant_google_config(tid, create=False)
-        wait = (cfg or {}).get('input_wait') or {}
-        if not wait:
-            return False
-        if not tenant_can_manage(user_id, tid, owner_only=True):
-            return False
-        if not wait or int(wait.get('chat_id') or 0) != chat_id or int(wait.get('user_id') or 0) != user_id:
-            return False
-        if _v149_time.time() > float(wait.get('expires_at') or 0):
-            cfg['input_wait'] = {}
-            tenant_google_persist(tid, 'tenant_google_update')
-            return False
-        kind = str(wait.get('kind') or '')
-        if kind == 'credentials':
-            if str(getattr(msg, 'content_type', '')) != 'document':
-                send_and_auto_delete(chat_id, 'Пришлите JSON-файл service_account как документ.', 12)
-                return True
-            document = getattr(msg, 'document', None)
-            if not document or int(getattr(document, 'file_size', 0) or 0) > 250000:
-                send_and_auto_delete(chat_id, 'JSON-файл отсутствует или слишком большой.', 12)
-                return True
-            filename = str(getattr(document, 'file_name', '') or '').lower()
-            if filename and (not filename.endswith('.json')):
-                send_and_auto_delete(chat_id, 'Нужен файл с расширением .json.', 12)
-                return True
-            file_info = bot.get_file(document.file_id)
-            raw_bytes = bot.download_file(file_info.file_path)
-            raw = bytes(raw_bytes).decode('utf-8')
-            info = tenant_google_set_credentials(tid, raw, user_id)
-            try:
-                bot.delete_message(chat_id, msg.message_id)
-            except Exception:
-                pass
-            bot.send_message(chat_id, f"✅ Google-аккаунт подключён: {info.get('client_email')}\n\nТеперь укажите свою таблицу и папку Drive через /google.")
-            return True
-        if str(getattr(msg, 'content_type', '')) != 'text':
-            send_and_auto_delete(chat_id, 'Пришлите ссылку или ID текстом.', 10)
-            return True
-        value = str(getattr(msg, 'text', '') or '').strip()
-        if kind == 'sheet':
-            cfg['spreadsheet_id'] = _v149_google_id(value, 'sheet')
-            cfg['spreadsheet_title'] = ''
-            action = 'sheet_configured'
-            text = '✅ Google Таблица сохранена.'
-        elif kind == 'folder':
-            cfg['drive_folder_id'] = _v149_google_id(value, 'folder')
-            cfg['drive_folder_name'] = ''
-            action = 'drive_folder_configured'
-            text = '✅ Папка Google Drive сохранена.'
-        elif kind == 'owner_email':
-            if not _v149_re.fullmatch('[^@\\s]+@[^@\\s]+\\.[^@\\s]+', value):
-                raise RuntimeError('Неверный email')
-            cfg['owner_google_email'] = value[:250]
-            action = 'owner_email_configured'
-            text = '✅ Email владельца Google сохранён.'
-        else:
-            return False
-        cfg['input_wait'] = {}
-        cfg['updated_at'] = _v149_now_iso()
-        tenant_google_history(tid, action, text, ok=True)
-        tenant_google_persist(tid, 'tenant_google_update')
-        try:
-            bot.delete_message(chat_id, msg.message_id)
-        except Exception:
-            pass
-        bot.send_message(chat_id, text, reply_markup=tenant_google_keyboard(tid))
-        return True
-    except Exception as exc:
-        try:
-            tid = str(tenant_id_for_chat(int(msg.chat.id), create=False) or TENANT_PLATFORM_ID)
-            tenant_google_error(tid, 'input', exc)
-            send_and_auto_delete(int(msg.chat.id), '❌ ' + str(exc)[:700], 20)
-        except Exception:
-            pass
-        return True
+# [OCH12.35 OWNER] _canon_tenant_google_handle_message__001 -> 15_integration_google.py
+_owner_install('google', 'google:0030')
 
-def _v149_google_history_text(tenant_id: str, errors: bool=False) -> str:
-    cfg = tenant_google_config(tenant_id)
-    rows = list(cfg.get('errors' if errors else 'history') or [])[-20:]
-    title = '⚠️ ОШИБКИ GOOGLE' if errors else '📜 ИСТОРИЯ GOOGLE'
-    if not rows:
-        return title + '\n\nПока пусто.'
-    lines = [title, '']
-    for row in reversed(rows):
-        if errors:
-            lines.append(f"{row.get('at')} · {row.get('action')}\n{row.get('error')}")
-        else:
-            mark = '✅' if row.get('ok') else '❌'
-            lines.append(f"{mark} {row.get('at')} · {row.get('action')}\n{row.get('detail')}")
-    return '\n\n'.join(lines)[:3900]
+# [OCH12.35 OWNER] _v149_google_history_text -> 15_integration_google.py
+_owner_install('google', 'google:0031')
 
 @bot.message_handler(commands=['google', 'google_space', 'google_tenant'])
 def cmd_v149_google(msg):
@@ -2946,169 +2184,73 @@ def cmd_v149_google_email(msg):
     _v149_google_wait(tid, 'owner_email', chat_id, user_id)
     bot.send_message(chat_id, '👤 Пришлите email Google-аккаунта владельца пространства.')
 
-def _v149_reminder_settings(tenant_id: str | None=None) -> dict:
-    """Tenant-level reminder metadata (history and per-chat setting map)."""
-    tid = _v149_tenant_id(tenant_id)
-    row = tenant_get(tid)
-    if not isinstance(row, dict):
-        return {}
-    settings = row.setdefault('settings', {})
-    settings.setdefault('reminder_completion_history_v149', [])
-    settings.setdefault('reminder_chat_settings_v149', {})
-    return settings
+# [OCH12.35 OWNER] _v149_reminder_settings -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0114')
 
-def _v149_reminder_chat_settings(tenant_id: str | None=None, chat_id: int | None=None) -> dict:
-    tid = _v149_tenant_id(tenant_id, chat_id)
-    row = tenant_get(tid) or {}
-    if chat_id is None:
-        try:
-            chat_id = int(current_state_chat_id() or row.get('root_chat_id') or 0)
-        except Exception:
-            chat_id = int(row.get('root_chat_id') or 0)
-    try:
-        cid = int(chat_id or 0)
-    except Exception:
-        cid = 0
-    settings = _v149_reminder_settings(tid)
-    mapping = settings.setdefault('reminder_chat_settings_v149', {})
-    key = str(cid)
-    item = mapping.get(key)
-    if not isinstance(item, dict):
-        item = {'merge_enabled': bool(settings.get('reminder_merge_enabled_v149', False)), 'merge_mode': 'smart' if bool(settings.get('reminder_merge_enabled_v149', False)) else 'off', 'show_complete_command': bool(settings.get('reminder_show_complete_command_v149', False))}
-        mapping[key] = item
-    item.setdefault('merge_enabled', False)
-    if str(item.get('merge_mode') or '') not in {'off', 'smart', 'single'}:
-        item['merge_mode'] = 'smart' if bool(item.get('merge_enabled', False)) else 'off'
-    item['merge_enabled'] = str(item.get('merge_mode') or 'off') != 'off'
-    item.setdefault('show_complete_command', False)
-    item['chat_id'] = cid
-    item['tenant_id'] = tid
-    return item
+# [OCH12.35 OWNER] _v149_reminder_chat_settings -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0115')
 REMINDER_MERGE_MODES_V169 = ('off', 'smart', 'single')
 
-def _v177_legacy_0261_reminder_merge_mode(tenant_id: str | None=None, chat_id: int | None=None) -> str:
-    settings = _v149_reminder_chat_settings(tenant_id, chat_id)
-    mode = str(settings.get('merge_mode') or '').strip().lower()
-    if mode not in REMINDER_MERGE_MODES_V169:
-        mode = 'smart' if bool(settings.get('merge_enabled', False)) else 'off'
-    settings['merge_mode'] = mode
-    settings['merge_enabled'] = mode != 'off'
-    return mode
+# [OCH12.35 OWNER] _v177_legacy_0261_reminder_merge_mode -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0116')
 try:
     _v177_legacy_0261_reminder_merge_mode.__name__ = 'reminder_merge_mode'
 except Exception:
     pass
 
-def _v177_legacy_0262_reminder_merge_enabled(tenant_id: str | None=None, chat_id: int | None=None) -> bool:
-    return reminder_merge_mode(tenant_id, chat_id) != 'off'
+# [OCH12.35 OWNER] _v177_legacy_0262_reminder_merge_enabled -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0117')
 try:
     _v177_legacy_0262_reminder_merge_enabled.__name__ = 'reminder_merge_enabled'
 except Exception:
     pass
 
-def _v177_legacy_0263_reminder_merge_mode_label(tenant_id: str | None=None, chat_id: int | None=None) -> str:
-    return {'off': 'ВЫКЛ', 'smart': 'ВКЛ', 'single': '1 СООБЩЕНИЕ'}.get(reminder_merge_mode(tenant_id, chat_id), 'ВЫКЛ')
+# [OCH12.35 OWNER] _v177_legacy_0263_reminder_merge_mode_label -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0118')
 try:
     _v177_legacy_0263_reminder_merge_mode_label.__name__ = 'reminder_merge_mode_label'
 except Exception:
     pass
 
-def reminder_show_complete_command(tenant_id: str | None=None, chat_id: int | None=None) -> bool:
-    return bool(_v149_reminder_chat_settings(tenant_id, chat_id).get('show_complete_command', False))
+# [OCH12.35 OWNER] reminder_show_complete_command -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0119')
 
-def _v207_reminder_setting_chat(cfg: dict | None, chat_id: int | None=None) -> int:
-    try:
-        if chat_id is not None and int(chat_id):
-            return int(chat_id)
-    except Exception:
-        pass
-    for raw in (cfg or {}).get('chat_ids') or []:
-        try:
-            return int(raw)
-        except Exception:
-            continue
-    try:
-        return int(current_state_chat_id() or 0)
-    except Exception:
-        return 0
+# [OCH12.35 OWNER] _v207_reminder_setting_chat -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0120')
 
-def _v207_reminder_merge_mode(cfg: dict | None, chat_id: int | None=None) -> str:
-    if not isinstance(cfg, dict):
-        return 'off'
-    mode = str(cfg.get('merge_mode_v207') or '').strip().lower()
-    if mode in REMINDER_MERGE_MODES_V169:
-        return mode
-    cid = _v207_reminder_setting_chat(cfg, chat_id)
-    try:
-        mode = str(reminder_merge_mode(chat_id=cid) or 'off').strip().lower()
-    except Exception:
-        mode = 'off'
-    if mode not in REMINDER_MERGE_MODES_V169:
-        mode = 'off'
-    return mode
+# [OCH12.35 OWNER] _v207_reminder_merge_mode -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0121')
 
-def _canon_v207_reminder_complete_button_enabled__001(cfg: dict | None, chat_id: int | None=None) -> bool:
-    if not isinstance(cfg, dict):
-        return False
-    value = cfg.get('show_complete_button_v207', None)
-    if value is not None:
-        return bool(value)
-    cid = _v207_reminder_setting_chat(cfg, chat_id)
-    try:
-        return bool(reminder_show_complete_command(chat_id=cid))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _canon_v207_reminder_complete_button_enabled__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0122')
 
-def _v207_reminder_merge_label(cfg: dict | None, chat_id: int | None=None) -> str:
-    return {'off': '⬜ Объединять: ВЫКЛ', 'smart': '✅ Объединять: ВКЛ', 'single': '✅ Объединять: 1 СООБЩЕНИЕ'}.get(_v207_reminder_merge_mode(cfg, chat_id), '⬜ Объединять: ВЫКЛ')
+# [OCH12.35 OWNER] _v207_reminder_merge_label -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0123')
 
-def _canon_v207_reminder_complete_keyboard__001(reminder_id: int, cfg: dict, chat_id: int):
-    if not _v207_reminder_complete_button_enabled(cfg, chat_id):
-        return None
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('✅ Выполнить', callback_data=f'v149:rem:done:{int(reminder_id)}:{int(chat_id)}'))
-    return kb
+# [OCH12.35 OWNER] _canon_v207_reminder_complete_keyboard__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0124')
 
-def _canon_v207_reminder_group_keyboard__001(chat_id: int, members: list[tuple[int, dict]]):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    count = 0
-    for rid, cfg in members:
-        if not _v207_reminder_complete_button_enabled(cfg, chat_id):
-            continue
-        label = str((cfg or {}).get('text') or f'Напоминалка {rid}').strip().replace('\n', ' ')
-        if len(label) > 44:
-            label = label[:41] + '…'
-        kb.row(IB(f'✅ Выполнить · {label}', callback_data=f'v149:rem:done:{int(rid)}:{int(chat_id)}'))
-        count += 1
-    return kb if count else None
+# [OCH12.35 OWNER] _canon_v207_reminder_group_keyboard__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0125')
 
-def _v149_reminder_all_rows(include_completed: bool=False) -> list[tuple[int, dict]]:
-    return reminder_items_global_for_completion(include_completed=include_completed)
+# [OCH12.35 OWNER] _v149_reminder_all_rows -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0126')
 
-def _v149_reminder_chat_ids(cfg: dict) -> list[int]:
-    result = []
-    for raw in (cfg or {}).get('chat_ids') or []:
-        try:
-            cid = int(raw)
-        except Exception:
-            continue
-        if cid not in result:
-            result.append(cid)
-    return result
+# [OCH12.35 OWNER] _v149_reminder_chat_ids -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0127')
 
-def _v149_reminder_cfg_tenant(cfg: dict) -> str:
-    return str((cfg or {}).get('tenant_id') or TENANT_PLATFORM_ID)
+# [OCH12.35 OWNER] _v149_reminder_cfg_tenant -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0128')
 
-def _v177_legacy_0264_v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
-    tid = _v149_reminder_cfg_tenant(cfg)
-    return _v149_chat_belongs_to_tenant(int(chat_id), tid)
+# [OCH12.35 OWNER] _v177_legacy_0264_v149_reminder_chat_allowed -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0129')
 try:
     _v177_legacy_0264_v149_reminder_chat_allowed.__name__ = '_v149_reminder_chat_allowed'
 except Exception:
     pass
 
-def _v149_reminder_active_now(cfg: dict, now_dt) -> bool:
-    return bool(cfg and cfg.get('enabled') and (not _reminder_is_completed(cfg)) and str(cfg.get('text') or '').strip() and _reminder_date_allowed(now_dt, cfg) and _reminder_time_allowed(now_dt, cfg))
+# [OCH12.35 OWNER] _v149_reminder_active_now -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0130')
 
 def _v149_group_state_root() -> dict:
     root = data.setdefault('_global_settings', {}).setdefault('reminder_groups_v149', {})
@@ -3120,8 +2262,8 @@ def _v149_group_key(chat_id: int) -> str:
 def _v149_completion_history(tenant_id: str) -> list:
     return _v149_reminder_settings(tenant_id).setdefault('reminder_completion_history_v149', [])
 
-def _canon_v149_reminder_message_text__001(reminder_id: int, cfg: dict, chat_id: int, active_count: int=1) -> str:
-    return '\n'.join(['НАПОМИНАЛКА🕰️', '', str(cfg.get('text') or '').strip()])[:4000]
+# [OCH12.35 OWNER] _canon_v149_reminder_message_text__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0131')
 
 def _canon_v149_group_message_text__001(chat_id: int, members: list[tuple[int, dict]]) -> str:
     lines = ['НАПОМИНАЛКА🕰️', '']
@@ -3209,24 +2351,8 @@ def _v149_cleanup_legacy_group_state_once() -> bool:
     gs['reminder_groups_v149_migrated'] = True
     return True
 
-def _v245_reminder_snapshot_valid(reminder_id: int, snapshot: dict, chat_id: int | None=None) -> bool:
-    """Reject stale queued reminder work after OFF/done/edit/chat changes."""
-    try:
-        with _REMINDER_CONFIG_LOCK:
-            current = _reminder_cfg(int(reminder_id))
-            if not current or not bool(current.get('enabled')) or _reminder_is_completed(current):
-                return False
-            if _reminder_generation_v245(current) != _reminder_generation_v245(snapshot):
-                return False
-            if chat_id is not None:
-                cid = int(chat_id)
-                if cid not in _v149_reminder_chat_ids(current):
-                    return False
-                if not _v149_reminder_chat_allowed(current, cid):
-                    return False
-            return True
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v245_reminder_snapshot_valid -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0132')
 
 def _v245_delivery_cycle_prepare(cfg: dict, due_token: str) -> set[int]:
     """Return already-acked chats for this exact due cycle; reset stale acks."""
@@ -3252,324 +2378,26 @@ def _v245_expected_delivery_chats(cfg: dict) -> set[int]:
             pass
     return out
 
-def _v149_reminder_batch_job(force_chat_id: int | None=None) -> None:
-    """One atomic reminder cycle for all chats.
+# [OCH12.35 OWNER] _v149_reminder_batch_job -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0133')
 
-    Every reminder retains its own interval. A merged chat refreshes whenever any member is due,
-    so the visible common message follows the smallest currently active interval. Membership
-    changes (completed/outside hours) refresh the same message even when no reminder is due.
-    """
-    if not _V149_REMINDER_BATCH_LOCK.acquire(blocking=False):
-        return
-    try:
-        legacy_migrated = _v149_cleanup_legacy_group_state_once()
-        now_dt = now_local()
-        due_ids = set()
-        due_chats_by_rid = {}
-        cycle_token_by_rid = {}
-        snapshots = {}
-        active_by_chat = _v149_defaultdict(list)
-        ended_changed = False
-        delivery_runtime_changed = False
-        with _REMINDER_CONFIG_LOCK:
-            for rid, cfg in _v149_reminder_all_rows(include_completed=False):
-                rid = int(rid)
-                if _reminder_end_has_passed(cfg, now_dt):
-                    _reminder_mark_completed(rid, cfg, 'end_date_finished', delete_messages=True)
-                    ended_changed = True
-                    continue
-                if _reminder_due_now(cfg, now_dt):
-                    if _reminder_date_allowed(now_dt, cfg) and _reminder_time_allowed(now_dt, cfg):
-                        due_token = str(cfg.get('next_run_at') or '')
-                        acked = _v245_delivery_cycle_prepare(cfg, due_token)
-                        expected = _v245_expected_delivery_chats(cfg)
-                        pending = expected - acked
-                        if force_chat_id is not None:
-                            pending = {int(force_chat_id)} if int(force_chat_id) in pending else set()
-                        cycle_token_by_rid[rid] = due_token
-                        due_chats_by_rid[rid] = set(pending)
-                        if pending:
-                            due_ids.add(rid)
-                        elif expected:
-                            due_ids.add(rid)
-                        delivery_runtime_changed = True
-                    else:
-                        next_dt = _reminder_next_valid_start(now_dt, cfg)
-                        cfg['next_run_at'] = next_dt.isoformat(timespec='seconds') if next_dt else ''
-                        if next_dt is None:
-                            _reminder_mark_completed(rid, cfg, 'schedule_finished', delete_messages=True)
-                        else:
-                            _reminder_touch(cfg)
-                        ended_changed = True
-                if _v149_reminder_active_now(cfg, now_dt):
-                    snap = _v149_deepcopy(cfg)
-                    snapshots[rid] = snap
-                    for cid in _v149_reminder_chat_ids(snap):
-                        if force_chat_id is not None and int(cid) != int(force_chat_id):
-                            continue
-                        if _v149_reminder_chat_allowed(snap, cid):
-                            active_by_chat[int(cid)].append((rid, snap))
-                        else:
-                            try:
-                                bot_journal('tenant_reminder_cross_chat_blocked', int(cid), f'reminder_id={rid} tenant={_v149_reminder_cfg_tenant(snap)}', 'WARN')
-                            except Exception:
-                                pass
-            state_snapshot = _v149_deepcopy(_v149_group_state_root())
-        individual_updates = {}
-        group_updates = {}
-        group_remove_individual = _v149_defaultdict(list)
-        acked_updates = _v149_defaultdict(set)
-        chats_to_consider = set(active_by_chat)
-        if force_chat_id is None:
-            chats_to_consider.update((int(k) for k in state_snapshot.keys() if str(k).lstrip('-').isdigit()))
-        else:
-            chats_to_consider.add(int(force_chat_id))
-        for cid in sorted(chats_to_consider):
-            members = [row for row in active_by_chat.get(cid, []) if _v245_reminder_snapshot_valid(row[0], row[1], cid)]
-            members = sorted(members, key=lambda row: row[0])
-            state = state_snapshot.get(_v149_group_key(cid), {}) or {}
-            old_group_mid = int(state.get('last_message_id') or 0)
-            old_member_ids = [int(x) for x in state.get('member_ids') or [] if str(x).isdigit()]
-            merge_members = []
-            individual_members = []
-            force_individual_ids = set()
-            for rid, cfg in members:
-                mode = _v207_reminder_merge_mode(cfg, cid)
-                if mode == 'off':
-                    individual_members.append((rid, cfg))
-                else:
-                    merge_members.append((rid, cfg))
-            current_group_ids = [rid for rid, _cfg in merge_members]
-            due_group = [rid for rid, _cfg in merge_members if rid in due_ids and int(cid) in due_chats_by_rid.get(rid, set())]
-            keep_group = bool(len(merge_members) >= 2 or any((_v207_reminder_merge_mode(cfg, cid) == 'single' for _rid, cfg in merge_members)))
-            membership_changed = current_group_ids != old_member_ids
-            if keep_group:
-                if due_group or membership_changed or force_chat_id is not None or (not old_group_mid):
-                    ok, message_id = _v149_send_or_edit_group(cid, _v149_group_message_text(cid, merge_members), old_group_mid, reply_markup=_v207_reminder_group_keyboard(cid, merge_members))
-                    if ok:
-                        for rid, cfg in merge_members:
-                            if rid in due_group and _v245_reminder_snapshot_valid(rid, cfg, cid):
-                                acked_updates[rid].add(int(cid))
-                            old_individual = int((cfg.get('last_message_ids') or {}).get(str(cid)) or 0)
-                            if old_individual:
-                                group_remove_individual[rid].append((cid, old_individual))
-                        group_updates[cid] = {'last_message_id': message_id, 'member_ids': current_group_ids, 'last_sent_at': _v149_now_iso(), 'tenant_id': _v149_tenant_id(target_chat_id=cid)}
-                force_individual_ids.update(set(old_member_ids) - set(current_group_ids))
-            else:
-                if old_group_mid:
-                    _v149_delete_message(cid, old_group_mid)
-                    group_updates[cid] = None
-                    force_individual_ids.update(old_member_ids)
-                individual_members.extend(merge_members)
-            active_count = len(individual_members)
-            for rid, cfg in individual_members:
-                is_due_here = rid in due_ids and int(cid) in due_chats_by_rid.get(rid, set())
-                if not is_due_here and rid not in force_individual_ids and (force_chat_id is None):
-                    continue
-                if not _v245_reminder_snapshot_valid(rid, cfg, cid):
-                    continue
-                ok, message_id = _v149_send_individual(cid, rid, cfg, active_count)
-                if ok:
-                    if not _v245_reminder_snapshot_valid(rid, cfg, cid):
-                        try:
-                            _v149_delete_message(cid, message_id)
-                        except Exception:
-                            pass
-                        continue
-                    if is_due_here:
-                        acked_updates[rid].add(int(cid))
-                    individual_updates[rid, cid] = message_id
-        for rid, pairs in group_remove_individual.items():
-            for cid, mid in pairs:
-                _v149_delete_message(cid, mid)
-        changed = bool(ended_changed or legacy_migrated or delivery_runtime_changed)
-        with _REMINDER_CONFIG_LOCK:
-            state_root = _v149_group_state_root()
-            for cid, update in group_updates.items():
-                key = _v149_group_key(cid)
-                if update is None:
-                    state_root.pop(key, None)
-                else:
-                    state_root[key] = update
-                changed = True
-            for (rid, cid), mid in individual_updates.items():
-                cfg = _reminder_cfg(rid)
-                if cfg:
-                    cfg.setdefault('last_message_ids', {})[str(cid)] = int(mid)
-                    changed = True
-            for rid, pairs in group_remove_individual.items():
-                cfg = _reminder_cfg(rid)
-                if cfg:
-                    for cid, _mid in pairs:
-                        cfg.setdefault('last_message_ids', {}).pop(str(cid), None)
-                    changed = True
-            for rid in sorted(due_ids):
-                cfg = _reminder_cfg(rid)
-                snap = snapshots.get(rid)
-                if not cfg or not snap or _reminder_is_completed(cfg) or (not cfg.get('enabled')):
-                    continue
-                if _reminder_generation_v245(cfg) != _reminder_generation_v245(snap):
-                    continue
-                token = str(cycle_token_by_rid.get(rid) or cfg.get('next_run_at') or '')
-                if str(cfg.get('delivery_cycle_v245') or '') != token:
-                    cfg['delivery_cycle_v245'] = token
-                    cfg['delivery_acked_chats_v245'] = []
-                acked = set()
-                for raw in cfg.get('delivery_acked_chats_v245') or []:
-                    try:
-                        acked.add(int(raw))
-                    except Exception:
-                        pass
-                acked.update((int(x) for x in acked_updates.get(rid, set())))
-                cfg['delivery_acked_chats_v245'] = sorted(acked)
-                expected = _v245_expected_delivery_chats(cfg)
-                if expected and expected.issubset(acked):
-                    cfg['last_sent_at'] = now_dt.isoformat(timespec='seconds')
-                    cfg['delivery_cycle_v245'] = ''
-                    cfg['delivery_acked_chats_v245'] = []
-                    _reminder_advance_after_send(now_dt, cfg)
-                    if not cfg.get('next_run_at') or _reminder_end_has_passed(cfg, now_local()):
-                        _reminder_mark_completed(rid, cfg, 'schedule_finished', delete_messages=True)
-                    else:
-                        _reminder_touch(cfg)
-                    try:
-                        bot_journal('reminder_cycle_delivered_v245', None, f'reminder_id={rid} chats={len(expected)}')
-                    except Exception:
-                        pass
-                else:
-                    missing = sorted(expected - acked)
-                    try:
-                        bot_journal('reminder_cycle_retry_v245', None, f'reminder_id={rid} missing={missing}', 'WARN')
-                    except Exception:
-                        pass
-                changed = True
-            for cid, row in list(state_root.items()):
-                try:
-                    chat_id = int(cid)
-                except Exception:
-                    continue
-                next_rows = []
-                member_ids = []
-                for rid, cfg in _v149_reminder_all_rows(include_completed=False):
-                    if not _v149_reminder_active_now(cfg, now_local()) or chat_id not in _v149_reminder_chat_ids(cfg):
-                        continue
-                    if not _v149_reminder_chat_allowed(cfg, chat_id):
-                        continue
-                    if _v207_reminder_merge_mode(cfg, chat_id) == 'off':
-                        continue
-                    member_ids.append(int(rid))
-                    dt = _reminder_parse_dt(cfg.get('next_run_at'))
-                    if dt is not None:
-                        next_rows.append(dt)
-                row['member_ids'] = sorted(member_ids)
-                row['next_run_at'] = min(next_rows).isoformat(timespec='seconds') if next_rows else ''
-        if changed:
-            _reminder_save('v149_dynamic_merged_tick')
-        if due_ids or group_updates:
-            try:
-                bot_journal('reminder_v149_batch', None, f'due={len(due_ids)} chats={len(chats_to_consider)} groups={sum((1 for v in group_updates.values() if v))}')
-            except Exception:
-                pass
-    finally:
-        _V149_REMINDER_BATCH_LOCK.release()
+# [OCH12.35 OWNER] _canon_reminder_tick__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0134')
 
-def _canon_reminder_tick__001() -> None:
-    global _REMINDER_FINANCE_BUSY_SINCE
-    finance_busy = _reminder_finance_priority_busy()
-    if finance_busy:
-        if not _REMINDER_FINANCE_BUSY_SINCE:
-            _REMINDER_FINANCE_BUSY_SINCE = _v149_time.monotonic()
-        if _v149_time.monotonic() - _REMINDER_FINANCE_BUSY_SINCE < _REMINDER_FINANCE_PRIORITY_GRACE_SECONDS:
-            return
-    else:
-        _REMINDER_FINANCE_BUSY_SINCE = 0.0
-    if not REMINDER_TASK_POOL.submit_unique('reminder-v149-batch', _v149_reminder_batch_job, None):
-        try:
-            bot_journal('reminder_dispatch_coalesced', None, 'v149 batch')
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _canon_reminder_group_send_job__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0135')
 
-def _canon_reminder_group_send_job__001(target_chat_id: int, day_key: str | None=None, force: bool=False) -> None:
-    _v149_reminder_batch_job(int(target_chat_id))
+# [OCH12.35 OWNER] _canon_build_reminder_list_text__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0136')
 
-def _canon_build_reminder_list_text__001() -> str:
-    rows = _reminder_items()
-    enabled = sum((1 for _rid, cfg in rows if bool(cfg.get('enabled'))))
-    return f'⏰ НАПОМИНАЛКИ\n\nТекущих: {len(rows)} · активных: {enabled}\nЗавершённых: {len(_reminder_completed_items())}\n\nНастройки «Объединять» и кнопки «Выполнить» теперь задаются отдельно внутри каждой напоминалки.'
+# [OCH12.35 OWNER] _canon_build_reminder_list_keyboard__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0137')
 
-def _canon_build_reminder_list_keyboard__001(day_key: str | None=None, page: int=0):
-    day_key = str(day_key or today_key())
-    rows = _reminder_items()
-    pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE)
-    page = max(0, min(int(page or 0), pages - 1))
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('+добавить⏰', callback_data=f'rem:add:{page}:{day_key}'))
-    start = page * _REMINDER_LIST_PAGE_SIZE
-    for idx, (rid, cfg) in enumerate(rows[start:start + _REMINDER_LIST_PAGE_SIZE], start=start + 1):
-        kb.row(IB(_reminder_button_label(idx, cfg), callback_data=f'rem:open:{rid}:{page}:{day_key}'))
-    if pages > 1:
-        nav = []
-        if page > 0:
-            nav.append(IB('⬅️', callback_data=f'rem:list:{page - 1}:{day_key}'))
-        nav.append(IB(f'{page + 1}/{pages}', callback_data='none'))
-        if page + 1 < pages:
-            nav.append(IB('➡️', callback_data=f'rem:list:{page + 1}:{day_key}'))
-        kb.row(*nav)
-    kb.row(IB(f'✅ Завершённые ({len(_reminder_completed_items())})', callback_data='rem:completed:0:0'))
-    kb.row(IB('📜 История выполнений', callback_data='v149:rem:history'))
-    kb.row(IB('⬅️ Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _canon_v149_reminders_for_completion__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0138')
 
-def _canon_v149_reminders_for_completion__001(chat_id: int) -> list[tuple[int, dict]]:
-    rows = []
-    current = now_local()
-    for rid, cfg in _reminder_items(include_completed=False):
-        if not _v149_reminder_active_now(cfg, current):
-            continue
-        if int(chat_id) not in _v149_reminder_chat_ids(cfg):
-            continue
-        if not _v149_reminder_chat_allowed(cfg, chat_id):
-            continue
-        rows.append((int(rid), cfg))
-    rows.sort(key=lambda row: row[0])
-    return rows
-
-def _canon_v149_complete_reminder__001(reminder_id: int, chat_id: int, actor_user_id: int, actor_label: str) -> tuple[bool, str]:
-    with _V149_COMPLETION_LOCK, _REMINDER_CONFIG_LOCK:
-        cfg = reminder_cfg_global_for_completion(int(reminder_id))
-        if not cfg or int(chat_id) not in _v149_reminder_chat_ids(cfg):
-            return (False, 'Напоминалка не найдена в этом чате.')
-        if _reminder_is_completed(cfg) or not cfg.get('enabled'):
-            return (False, 'Эта напоминалка уже выполнена или выключена. Повторное выполнение не записано.')
-        tenant_id = _v149_reminder_cfg_tenant(cfg)
-        event_id = _v149_hashlib.sha256(f"{tenant_id}:{int(reminder_id)}:{cfg.get('created_at')}:{cfg.get('updated_at')}".encode('utf-8')).hexdigest()[:24]
-        history = _v149_completion_history(tenant_id)
-        if any((str(row.get('event_id')) == event_id for row in history if isinstance(row, dict))):
-            return (False, 'Это выполнение уже учтено.')
-        text = str(cfg.get('text') or '').strip()
-        _reminder_mark_completed(int(reminder_id), cfg, 'manual_vyapl', delete_messages=True)
-        cfg['completed_by_user_id'] = int(actor_user_id or 0)
-        cfg['completed_by_label'] = str(actor_label or '')[:120]
-        cfg['completed_in_chat_id'] = int(chat_id)
-        cfg['completion_event_id'] = event_id
-        event = {'event_id': event_id, 'at': str(cfg.get('completed_at') or _v149_now_iso()), 'tenant_id': tenant_id, 'reminder_id': int(reminder_id), 'reminder_text': text[:500], 'chat_id': int(chat_id), 'chat_title': str(get_chat_display_name(int(chat_id)) or '')[:150], 'user_id': int(actor_user_id or 0), 'user': str(actor_label or '')[:120]}
-        history.append(event)
-        del history[:-500]
-        _reminder_save('reminder_manual_vyapl')
-    try:
-        submitted = REMINDER_TASK_POOL.submit_unique('reminder-v149-batch', _v149_reminder_batch_job, None)
-        if not submitted:
-            try:
-                DELAYED_SCHEDULER.schedule(f'reminder-v245-complete:{int(reminder_id)}', 0.5, lambda: REMINDER_TASK_POOL.submit_unique('reminder-v149-batch', _v149_reminder_batch_job, None))
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        bot_journal('reminder_manual_completed', int(chat_id), f'reminder_id={int(reminder_id)} user={int(actor_user_id or 0)} event={event_id}')
-    except Exception:
-        pass
-    return (True, f'✅ Выполнено: {text[:300]}')
+# [OCH12.35 OWNER] _canon_v149_complete_reminder__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0139')
 
 def _v149_completion_keyboard(chat_id: int, rows: list[tuple[int, dict]]):
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -6344,67 +5172,14 @@ def _v150_command_from_payload(payload: dict) -> tuple[str, int | None, int | No
         user_id = None
     return (first, chat_id, msg_id, user_id)
 
-def _v150_reminder_chat_lines(cfg: dict) -> list[str]:
-    chat_ids = []
-    for raw in (cfg or {}).get('chat_ids') or []:
-        try:
-            cid = int(raw)
-        except Exception:
-            continue
-        if cid not in chat_ids:
-            chat_ids.append(cid)
-    if not chat_ids:
-        return ['💬 Чат: не выбран']
-    if len(chat_ids) == 1:
-        return [f'💬 Чат: {get_chat_display_name(chat_ids[0])}']
-    lines = ['💬 Чаты:']
-    for cid in chat_ids:
-        lines.append(f'• {get_chat_display_name(cid)}')
-    return lines
+# [OCH12.35 OWNER] _v150_reminder_chat_lines -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0140')
 
-def _canon_build_reminder_menu_text__001(reminder_id: int) -> str:
-    cfg = _reminder_cfg(reminder_id)
-    base = _V150_BASE_REMINDER_MENU_TEXT(reminder_id) if callable(_V150_BASE_REMINDER_MENU_TEXT) else ''
-    if not isinstance(cfg, dict):
-        return base
-    lines = str(base or '').splitlines()
-    out = []
-    inserted = False
-    for line in lines:
-        if _v150_re.match('^\\s*[✅⬜❌]\\s*2\\.\\s*Чаты\\s*:', str(line), flags=_v150_re.I):
-            out.extend(_v150_reminder_chat_lines(cfg))
-            inserted = True
-            continue
-        out.append(line)
-    if not inserted:
-        insert_at = 2 if len(out) >= 2 else len(out)
-        for idx, line in enumerate(out):
-            if 'Период:' in line or 'Расписание:' in line or 'Состояние:' in line:
-                insert_at = idx
-                break
-        out[insert_at:insert_at] = _v150_reminder_chat_lines(cfg) + ['']
-    return '\n'.join(out)[:3900]
+# [OCH12.35 OWNER] _canon_build_reminder_menu_text__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0141')
 
-def _canon_build_reminder_menu_keyboard__001(reminder_id: int, day_key: str | None=None, page: int=0, viewer_chat_id: int | None=None):
-    kb = _V150_BASE_REMINDER_MENU_KEYBOARD(reminder_id, day_key, page, viewer_chat_id) if callable(_V150_BASE_REMINDER_MENU_KEYBOARD) else types.InlineKeyboardMarkup()
-    try:
-        filtered = []
-        for row in list(getattr(kb, 'keyboard', None) or []):
-            clean = []
-            for button in row:
-                text = str(getattr(button, 'text', '') or '').strip()
-                if 'К напоминалкам' not in text and _v150_re.search('(^|\\s)(⬅️|🔙)?\\s*Назад\\s*$', text, flags=_v150_re.I):
-                    continue
-                clean.append(button)
-            if clean:
-                filtered.append(clean)
-        kb.keyboard = filtered
-    except Exception as exc:
-        try:
-            log_error(f'v150 f191 keyboard cleanup: {exc}')
-        except Exception:
-            pass
-    return kb
+# [OCH12.35 OWNER] _canon_build_reminder_menu_keyboard__001 -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0142')
 
 def _v150_export_currency(chat_id: int) -> str:
     try:
@@ -6418,12 +5193,8 @@ def _v150_export_reserve(chat_id: int) -> float:
     except Exception:
         return 0.0
 
-def _v150_usd_rate() -> float:
-    try:
-        row = usd_rate_cached(force=False) or {}
-        return max(0.0, _v150_float(row.get('rate') or row.get('venta') or row.get('sell')))
-    except Exception:
-        return 0.0
+# [OCH12.35 OWNER] _v150_usd_rate -> 11_business_finance.py
+_owner_install('finance', 'finance:0174')
 
 def _v150_food_per_person(products_total: float) -> float:
     rate = _v150_usd_rate()
@@ -6477,91 +5248,29 @@ def _v150_cell_value(value) -> float:
         return _v150_float(value.get('value'))
     return _v150_float(value)
 
-def _v177_legacy_0175_build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    rows = _V150_BASE_CATEGORY_ROWS(target_chat_id, start_key, start_rid, end_key, end_rid)
-    closing = 0.0
-    for row in reversed(rows or []):
-        if len(row) > 2 and str(row[1] if len(row) > 1 else '').strip().casefold() == 'остаток на руках':
-            closing = _v150_cell_value(row[2])
-            break
-    try:
-        records = exact_record_range(get_chat_store(int(target_chat_id)), start_key, start_rid, end_key, end_rid)
-        products_total = _v150_product_total_from_records(int(target_chat_id), records)
-    except Exception:
-        products_total = 0.0
-    return _v150_append_summary_rows(rows, int(target_chat_id), closing, products_total, 'wide')
+# [OCH12.35 OWNER] _v177_legacy_0175_build_exact_category_stats_xlsx_rows -> 16_integration_excel.py
+_owner_install('excel', 'excel:0059')
 try:
     _v177_legacy_0175_build_exact_category_stats_xlsx_rows.__name__ = 'build_exact_category_stats_xlsx_rows'
 except Exception:
     pass
 
-def _v177_legacy_0091_xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None=None) -> list[list]:
-    base = _V150_BASE_SIMPLE_ROWS(rows, opening_balance, target_chat_id) if _V150_BASE_SIMPLE_ROWS.__code__.co_argcount >= 3 else _V150_BASE_SIMPLE_ROWS(rows, opening_balance)
-    closing = 0.0
-    for row in reversed(base or []):
-        if len(row) > 2 and str(row[1] if len(row) > 1 else '').strip().casefold() == 'остаток на руках':
-            closing = _v150_cell_value(row[2])
-            break
-    products_total = 0.0
-    if target_chat_id is not None:
-        store = get_chat_store(int(target_chat_id))
-        for row in (rows or [])[1:]:
-            if len(row) < 4:
-                continue
-            note = str(row[1] or '')
-            expense = _v150_float(row[3])
-            if expense <= 0:
-                continue
-            try:
-                category = resolve_expense_category(note, store)
-            except Exception:
-                category = ''
-            if _v150_is_products_category(category):
-                products_total += expense
-    return _v150_append_summary_rows(base, target_chat_id, closing, products_total, 'wide')
+# [OCH12.35 OWNER] _v177_legacy_0091_xlsx_simple_rows_with_balances -> 16_integration_excel.py
+_owner_install('excel', 'excel:0060')
 try:
     _v177_legacy_0091_xlsx_simple_rows_with_balances.__name__ = '_xlsx_simple_rows_with_balances'
 except Exception:
     pass
 
-def _v177_legacy_0094_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None=None) -> tuple[list[list], dict[tuple[int, int], str]]:
-    if _V150_BASE_COMPACT_ROWS.__code__.co_argcount >= 3:
-        base, notes = _V150_BASE_COMPACT_ROWS(raw_rows, opening_balance, target_chat_id)
-    else:
-        base, notes = _V150_BASE_COMPACT_ROWS(raw_rows, opening_balance)
-    closing = 0.0
-    for row in reversed(base or []):
-        if row and str(row[0] or '').strip().casefold() == 'остаток на руках':
-            closing = _v150_cell_value(row[1] if len(row) > 1 else 0)
-            break
-    products_total = 0.0
-    if target_chat_id is not None:
-        store = get_chat_store(int(target_chat_id))
-        for _date, amount_raw, note in raw_rows or []:
-            try:
-                amount = parse_csv_amount(amount_raw)
-            except Exception:
-                amount = _v150_float(amount_raw)
-            if amount >= 0:
-                continue
-            try:
-                category = resolve_expense_category(str(note or ''), store)
-            except Exception:
-                category = ''
-            if _v150_is_products_category(category):
-                products_total += abs(amount)
-    return (_v150_append_summary_rows(base, target_chat_id, closing, products_total, 'compact'), notes)
+# [OCH12.35 OWNER] _v177_legacy_0094_compact_simple_excel_rows_and_annotations -> 16_integration_excel.py
+_owner_install('excel', 'excel:0061')
 try:
     _v177_legacy_0094_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
 except Exception:
     pass
 
-def _v150_ledger_balance(store: dict, currency: str) -> float:
-    currency = 'usd' if str(currency).lower() == 'usd' else 'ars'
-    active = str(store.setdefault('settings', {}).get('_active_currency_ledger') or 'ars').lower()
-    if active == currency:
-        return _v150_float(store.get('balance'))
-    return _v150_float(store.get(f'{currency}_balance'))
+# [OCH12.35 OWNER] _v150_ledger_balance -> 11_business_finance.py
+_owner_install('finance', 'finance:0175')
 
 def _v150_reduce_reserve_entries(chat_id: int, currency: str, consume: float) -> list[dict]:
     entries = [dict(x) for x in gomonk_entries(int(chat_id), currency) or []]
@@ -6575,14 +5284,8 @@ def _v150_reduce_reserve_entries(chat_id: int, currency: str, consume: float) ->
         left -= used
     return [x for x in entries if _v150_float(x.get('amount')) > 1e-09]
 
-def _v150_rebalance_key(chat_id: int, currency: str, rec: dict) -> str:
-    operation_key = str((rec or {}).get('operation_key') or '').strip()
-    if operation_key:
-        return f'{chat_id}:{currency}:{operation_key}'
-    source = int((rec or {}).get('source_msg_id') or 0)
-    if source:
-        return f'{chat_id}:{currency}:msg:{source}'
-    return f"{chat_id}:{currency}:rid:{int((rec or {}).get('id') or 0)}:{str((rec or {}).get('timestamp') or '')}"
+# [OCH12.35 OWNER] _v150_rebalance_key -> 11_business_finance.py
+_owner_install('finance', 'finance:0176')
 
 def _v150_apply_reserve_cover(chat_id: int, currency: str, rec: dict | None, reason: str='new_finance_operation') -> dict:
     if not isinstance(rec, dict):
@@ -6664,29 +5367,8 @@ def _v150_add_currency_record_compat(chat_id: int, ledger: str, amount: float, n
         _v150_apply_reserve_cover(int(chat_id), ledger, rec)
     return rec
 
-def _v150_repair_pending_rebalances() -> int:
-    repaired = 0
-    intents = data.setdefault('gomonk_rebalance_intents_v150', {})
-    for key, intent in list(intents.items()):
-        if not isinstance(intent, dict) or intent.get('status') != 'pending':
-            continue
-        try:
-            chat_id = int(intent.get('chat_id'))
-            currency = str(intent.get('currency') or 'ars')
-            source_msg_id = int(intent.get('source_msg_id') or 0)
-            store = get_chat_store(chat_id)
-            active = str(store.setdefault('settings', {}).get('_active_currency_ledger') or 'ars')
-            records = store.get('records', []) if active == currency else store.get(f'{currency}_records', [])
-            rec = next((r for r in records or [] if isinstance(r, dict) and int(r.get('source_msg_id') or 0) == source_msg_id), None)
-            if isinstance(rec, dict):
-                _v150_apply_reserve_cover(chat_id, currency, rec, 'startup_pending_repair')
-                repaired += 1
-        except Exception as exc:
-            try:
-                log_error(f'v150 rebalance repair {key}: {exc}')
-            except Exception:
-                pass
-    return repaired
+# [OCH12.35 OWNER] _v150_repair_pending_rebalances -> 11_business_finance.py
+_owner_install('finance', 'finance:0177')
 
 def _v150_error_class(err) -> tuple[str, str]:
     text = str(err or '').strip()
@@ -7306,52 +5988,8 @@ def _v151_ars_records(chat_id: int) -> list[dict]:
     except Exception:
         return rows
 
-def _v177_legacy_0271_v151_usd_records(chat_id: int) -> list[dict]:
-    """Собирает отдельный USD-контур и старые usd_amount без дублей."""
-    store = get_chat_store(int(chat_id))
-    active = _v151_sync_currency_snapshots(store)
-    independent = store.get('records', []) if active == 'usd' else store.get('usd_records', [])
-    ars_source = store.get('records', []) if active == 'ars' else store.get('ars_records', [])
-    rows = []
-    seen = set()
-
-    def _key(rec: dict, prefix: str=''):
-        operation_key = str(rec.get('operation_key') or '').strip()
-        source_msg_id = int(rec.get('source_msg_id') or 0)
-        if operation_key:
-            return ('op', operation_key)
-        if source_msg_id:
-            return ('msg', source_msg_id)
-        return (prefix, int(rec.get('id') or 0), str(rec.get('timestamp') or ''), _v151_day_key(rec))
-    for rec in independent or []:
-        if not isinstance(rec, dict):
-            continue
-        item = dict(rec)
-        item['_v151_amount'] = _v151_float(rec.get('amount'))
-        item['_v151_note'] = str(rec.get('note') or rec.get('usd_note') or '')
-        item['_v151_currency'] = 'usd'
-        key = _key(item, 'usd')
-        seen.add(key)
-        rows.append(item)
-    for rec in ars_source or []:
-        if not isinstance(rec, dict):
-            continue
-        if rec.get('usd_amount') is None or abs(_v151_float(rec.get('usd_amount'))) <= 1e-12:
-            continue
-        key = _key(rec, 'embedded')
-        if key in seen:
-            continue
-        item = dict(rec)
-        item['_v151_amount'] = _v151_float(rec.get('usd_amount'))
-        item['_v151_note'] = str(rec.get('usd_note') or rec.get('note') or '')
-        item['_v151_currency'] = 'usd'
-        item['_v151_embedded'] = True
-        seen.add(key)
-        rows.append(item)
-    try:
-        return sorted(rows, key=record_sort_key)
-    except Exception:
-        return rows
+# [OCH12.35 OWNER] _v177_legacy_0271_v151_usd_records -> 11_business_finance.py
+_owner_install('finance', 'finance:0178')
 try:
     _v177_legacy_0271_v151_usd_records.__name__ = '_v151_usd_records'
 except Exception:
@@ -7424,35 +6062,11 @@ def _v151_records_in_context(chat_id: int, currency: str, ctx: dict | None=None)
     except Exception:
         return out
 
-def _v151_opening_balance(chat_id: int, currency: str, ctx: dict | None=None) -> float:
-    ctx = dict(ctx or _v151_context())
-    start_key, _end_key = _v151_context_bounds(chat_id, ctx)
-    start_rid = int(ctx.get('start_rid') or 0)
-    exact = str(ctx.get('kind') or '') == 'exact'
-    canonical = globals().get('_excel_canonical_opening_balance')
-    if callable(canonical):
-        return float(canonical(int(chat_id), currency, start_key, start_rid, exact))
-    total = 0.0
-    for rec in _v151_all_records(chat_id, currency):
-        day = _v151_day_key(rec)
-        if day < start_key:
-            total += _v151_float(rec.get('_v151_amount'))
-            continue
-        if day > start_key:
-            break
-        if exact and str(currency).lower() == 'ars' and start_rid:
-            if int(rec.get('id') or 0) < start_rid:
-                total += _v151_float(rec.get('_v151_amount'))
-                continue
-        break
-    return total
+# [OCH12.35 OWNER] _v151_opening_balance -> 11_business_finance.py
+_owner_install('finance', 'finance:0179')
 
-def _v151_usd_rate() -> float:
-    try:
-        row = usd_rate_cached(force=False) or {}
-        return max(0.0, _v151_float(row.get('rate') or row.get('venta') or row.get('sell')))
-    except Exception:
-        return 0.0
+# [OCH12.35 OWNER] _v151_usd_rate -> 11_business_finance.py
+_owner_install('finance', 'finance:0180')
 
 def _v151_product_total(chat_id: int, records: list[dict]) -> float:
     store = get_chat_store(int(chat_id))
@@ -7634,60 +6248,29 @@ try:
 except Exception:
     pass
 
-def _v177_legacy_0176_build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    previous = getattr(_V151_EXPORT_LOCAL, 'value', None)
-    if not previous:
-        _V151_EXPORT_LOCAL.value = {'kind': 'exact', 'target_chat_id': int(target_chat_id), 'start_key': str(start_key)[:10], 'start_rid': int(start_rid or 0), 'end_key': str(end_key)[:10], 'end_rid': int(end_rid or 0), 'file_type': 'xlsxstat'}
-    try:
-        ars_rows = _v151_category_table(int(target_chat_id), 'ars')
-        usd_rows = _v151_category_table(int(target_chat_id), 'usd')
-        return ars_rows + [[], []] + usd_rows
-    finally:
-        if not previous:
-            _V151_EXPORT_LOCAL.value = None
+# [OCH12.35 OWNER] _v177_legacy_0176_build_exact_category_stats_xlsx_rows -> 16_integration_excel.py
+_owner_install('excel', 'excel:0062')
 try:
     _v177_legacy_0176_build_exact_category_stats_xlsx_rows.__name__ = 'build_exact_category_stats_xlsx_rows'
 except Exception:
     pass
 
-def _v177_legacy_0092_xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None=None) -> list[list]:
-    if target_chat_id is None:
-        return globals().get('_V150_BASE_SIMPLE_ROWS', lambda r, o, *_: r)(rows, opening_balance, target_chat_id)
-    ars_rows, _ = _v151_simple_table(int(target_chat_id), 'ars', compact=False)
-    usd_rows, _ = _v151_simple_table(int(target_chat_id), 'usd', compact=False)
-    return ars_rows + [[], []] + usd_rows
+# [OCH12.35 OWNER] _v177_legacy_0092_xlsx_simple_rows_with_balances -> 16_integration_excel.py
+_owner_install('excel', 'excel:0063')
 try:
     _v177_legacy_0092_xlsx_simple_rows_with_balances.__name__ = '_xlsx_simple_rows_with_balances'
 except Exception:
     pass
 
-def _v177_legacy_0095_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None=None) -> tuple[list[list], dict[tuple[int, int], str]]:
-    if target_chat_id is None:
-        base = globals().get('_V150_BASE_COMPACT_ROWS')
-        return base(raw_rows, opening_balance, target_chat_id) if callable(base) else ([], {})
-    ars_rows, ars_notes = _v151_simple_table(int(target_chat_id), 'ars', compact=True)
-    offset = len(ars_rows) + 2
-    usd_rows, usd_notes = _v151_simple_table(int(target_chat_id), 'usd', compact=True)
-    notes = dict(ars_notes)
-    for (row_idx, col_idx), text in usd_notes.items():
-        notes[int(row_idx) + offset, int(col_idx)] = text
-    return (ars_rows + [[], []] + usd_rows, notes)
+# [OCH12.35 OWNER] _v177_legacy_0095_compact_simple_excel_rows_and_annotations -> 16_integration_excel.py
+_owner_install('excel', 'excel:0064')
 try:
     _v177_legacy_0095_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
 except Exception:
     pass
 
-def _v151_excel_options_for_style(style: str | None, options: dict | None) -> dict | None:
-    if isinstance(options, dict):
-        return options
-    mode = str(style or '').strip().lower()
-    if not mode:
-        try:
-            return normalize_excel_export_options()
-        except Exception:
-            return {'old_table': True, 'comments': False, 'notes': False, 'description_column': True}
-    mapping = {'old': {'old_table': True, 'comments': False, 'notes': False, 'description_column': True}, 'new_plain': {'old_table': False, 'comments': False, 'notes': False, 'description_column': True}, 'new_comments': {'old_table': False, 'comments': True, 'notes': False, 'description_column': True}, 'new_notes': {'old_table': False, 'comments': False, 'notes': True, 'description_column': True}, 'google_notes': {'old_table': False, 'comments': False, 'notes': True, 'description_column': True}}
-    return mapping.get(mode) or normalize_excel_export_options()
+# [OCH12.35 OWNER] _v151_excel_options_for_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0065')
 
 def _canon_send_export_for_chat_to__001(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str='csv', excel_style_override: str | None=None, excel_options_override: dict | None=None, delivery: str='chat'):
     previous = getattr(_V151_EXPORT_LOCAL, 'value', None)
@@ -7748,17 +6331,11 @@ def _canon_exact_export_rows__001(chat_id: int, start_key: str, start_rid: int, 
         records = _v151_records_in_context(int(chat_id), 'usd', ctx)
     return [(fmt_date_table(_v151_day_key(r)), fmt_csv_amount(r.get('_v151_amount')), r.get('_v151_note', '')) for r in records]
 
-def _v151_rebalance_key(chat_id: int, currency: str, rec: dict) -> str:
-    operation_key = str((rec or {}).get('operation_key') or '').strip()
-    if operation_key:
-        return f'{int(chat_id)}:{currency}:{operation_key}'
-    source_msg_id = int((rec or {}).get('source_msg_id') or 0)
-    if source_msg_id:
-        return f'{int(chat_id)}:{currency}:msg:{source_msg_id}'
-    return f"{int(chat_id)}:{currency}:rid:{int((rec or {}).get('id') or 0)}:{str((rec or {}).get('timestamp') or '')}"
+# [OCH12.35 OWNER] _v151_rebalance_key -> 11_business_finance.py
+_owner_install('finance', 'finance:0181')
 
-def _v151_ledger_balance(chat_id: int, currency: str) -> float:
-    return sum((_v151_float(r.get('_v151_amount')) for r in _v151_all_records(int(chat_id), currency)))
+# [OCH12.35 OWNER] _v151_ledger_balance -> 11_business_finance.py
+_owner_install('finance', 'finance:0182')
 
 def _v151_reduce_reserve(chat_id: int, currency: str, amount: float) -> list[dict]:
     entries = [dict(x) for x in gomonk_entries(int(chat_id), currency) or []]
@@ -7929,18 +6506,8 @@ def _v151_schedule_postcommit_cover(chat_id: int, rec: dict | None, currencies) 
             _V151_POSTCOMMIT_RUNNING.discard(cid)
         return False
 
-def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str='', usd_only: bool=False, source_finance_text: str=''):
-    rec = _V151_BASE_ADD_RECORD(chat_id, amount, note, owner, source_msg=source_msg, day_key=day_key, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_finance_text=source_finance_text)
-    if isinstance(rec, dict):
-        try:
-            ensure_finance_record_uid(int(chat_id), rec)
-        except Exception:
-            pass
-        currencies = ['ars']
-        if usd_amount is not None:
-            currencies.append('usd')
-        _v151_schedule_postcommit_cover(int(chat_id), rec, currencies)
-    return rec
+# [OCH12.35 COMPAT] legacy add_record_to_chat -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0019')
 
 def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None=None):
     ledger = 'usd' if str(ledger).lower() == 'usd' else 'ars'
@@ -7972,31 +6539,8 @@ def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, not
             pass
     return result if result is not None else rec
 
-def _v151_repair_pending_rebalances() -> int:
-    repaired = 0
-    receipts = data.setdefault('gomonk_rebalance_receipts_v151', {})
-    for key, receipt in list(receipts.items()):
-        if not isinstance(receipt, dict) or receipt.get('status') != 'pending':
-            continue
-        try:
-            chat_id = int(receipt.get('chat_id'))
-            currency = str(receipt.get('currency') or 'ars')
-            source_msg_id = int(receipt.get('source_msg_id') or 0)
-            record_id = int(receipt.get('record_id') or 0)
-            rec = next((r for r in _v151_all_records(chat_id, currency) if source_msg_id and int(r.get('source_msg_id') or 0) == source_msg_id or (record_id and int(r.get('id') or 0) == record_id)), None)
-            if isinstance(rec, dict):
-                _v151_apply_reserve_cover(chat_id, currency, rec, 'startup_pending_repair')
-                repaired += 1
-            else:
-                receipt.update({'status': 'cancelled_no_record', 'closed_at': _v151_now()})
-        except Exception as exc:
-            try:
-                log_error(f'v151 reserve receipt repair {key}: {exc}')
-            except Exception:
-                pass
-    if repaired:
-        save_data(data)
-    return repaired
+# [OCH12.35 OWNER] _v151_repair_pending_rebalances -> 11_business_finance.py
+_owner_install('finance', 'finance:0183')
 _V151_EXAMPLE_RE = _v151_re.compile('^\\(?\\s*(?:пример\\s*:\\s*)?имя\\s*1\\s+1?[ .]?000\\s*:\\s*имя\\s*2\\s+5?[ .]?777\\s*\\)?$', flags=_v151_re.I)
 
 def _v151_gomonk_payload(text: str) -> tuple[str, str | None]:
@@ -8117,49 +6661,14 @@ try:
 except Exception:
     pass
 
-def _canon_render_usd_month_window__001(chat_id: int, day_key: str):
-    month_key = str(day_key or today_key())[:7]
-    try:
-        month_dt = _v151_datetime.strptime(month_key + '-01', '%Y-%m-%d')
-        month_label = month_dt.strftime('%m.%Y')
-    except Exception:
-        month_label = month_key
-    rows = [r for r in usd_records_for_month(int(chat_id), month_key) if _v151_float(r.get('usd_amount')) < 0]
-    total_expense = sum((abs(_v151_float(r.get('usd_amount'))) for r in rows))
-    lines = [f'💵 USD расходы за {month_label}', '']
-    if rows:
-        for rec in rows:
-            amount = abs(_v151_float(rec.get('usd_amount')))
-            sid = str(rec.get('usd_short_id') or rec.get('short_id') or f"U{rec.get('id', '')}")
-            date_label = fmt_date_ddmmyy(_v151_day_key(rec))
-            note = html.escape(str(rec.get('usd_note') or rec.get('note') or ''))
-            lines.append(f'{sid} {date_label} -${fmt_num_plain(amount)} {note}'.rstrip())
-    else:
-        lines.append('Нет USD-расходов за этот месяц.')
-    balance = usd_balance_for_chat(int(chat_id))
-    lines.extend(['', f'📉 Расход за месяц: -${fmt_num_plain(total_expense)}', f"🏦 USD остаток по чату: {('+' if balance >= 0 else '-')}${fmt_num_plain(abs(balance))}"])
-    try:
-        _V151_MONTH_LOCAL.chat_id = int(chat_id)
-    except Exception:
-        pass
-    return (wm_common('\n'.join(lines), 1, html_mode=True), -total_expense)
+# [OCH12.35 OWNER] _canon_render_usd_month_window__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0184')
 
-def _canon_build_usd_month_keyboard__001(day_key: str):
-    """Возвращает ту же клавиатуру, что уже была в USD-окне."""
-    chat_id = getattr(_V151_MONTH_LOCAL, 'chat_id', None)
-    if chat_id is not None:
-        try:
-            return build_main_keyboard(str(day_key)[:10], int(chat_id))
-        except Exception:
-            pass
-    try:
-        return build_main_keyboard(str(day_key)[:10], None)
-    except Exception:
-        return types.InlineKeyboardMarkup()
+# [OCH12.35 OWNER] _canon_build_usd_month_keyboard__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0185')
 
-def _canon_build_fin_window_usd_month_keyboard__001(target_chat_id: int, day_key: str, owner_day_key: str):
-    """В окне владельца также сохраняется исходное расположение кнопок чата."""
-    return build_fin_window_view_keyboard(int(target_chat_id), str(day_key)[:10], str(owner_day_key)[:10])
+# [OCH12.35 OWNER] _canon_build_fin_window_usd_month_keyboard__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0186')
 
 def _canon_set_webhook__001():
     try:
@@ -8675,17 +7184,8 @@ def _canon_handle_gomonk_insert_message__001(msg):
     return _V152_ORIG_HANDLE_GOMONK_INSERT(msg) if callable(_V152_ORIG_HANDLE_GOMONK_INSERT) else False
 _V152_ORIG_SCHEDULE_FORWARD = _v177_legacy_0001_schedule_forward_any_message
 
-def _canon_schedule_forward_any_message__001(chat_id: int, msg):
-    cid = int(chat_id)
-    uid = _v152_actor_id(msg)
-    capability = 'forward.media_groups' if getattr(msg, 'media_group_id', None) else 'forward.messages'
-    if not _v152_actor_is_platform_owner(uid) and (not v152_chat_permission_allowed(cid, capability)):
-        try:
-            bot_journal('chat_permission_forward_blocked', cid, f'user={uid}; capability={capability}', 'WARN')
-        except Exception:
-            pass
-        return None
-    return _V152_ORIG_SCHEDULE_FORWARD(cid, msg) if callable(_V152_ORIG_SCHEDULE_FORWARD) else None
+# [OCH12.35 OWNER] _canon_schedule_forward_any_message__001 -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0153')
 
 class _V152NamedFileProxy:
 
@@ -9020,16 +7520,8 @@ def _v153_can_manage_tenant(uid: int, tenant_id: str) -> bool:
 _V153_SECRET_KEY_RE = _v153_re.compile('^(?:password|passwd|pass|mega_password|telegram_token|bot_token|access[_-]?token|refresh[_-]?token|oauth[_-]?token|google[_-]?oauth[_-]?token|api[_-]?key|private[_-]?key|credential(?:s)?|authorization|cookie|webhook[_-]?secret|client[_-]?secret)$', _v153_re.I)
 _V153_ENV_SECRET_RE = _v153_re.compile('(?:PASS|PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|COOKIE|OAUTH|WEBHOOK)', _v153_re.I)
 
-def _v153_secret_values() -> list[str]:
-    values = set()
-    for key, value in _v153_os.environ.items():
-        if _V153_ENV_SECRET_RE.search(str(key)) and value and (len(str(value)) >= 6):
-            values.add(str(value))
-    for name in ('MEGA_EMAIL', 'MEGA_PASSWORD', 'BOT_TOKEN', 'B_T', 'GOOGLE_SERVICE_ACCOUNT_JSON', 'TENANT_GOOGLE_MASTER_KEY', 'GOOGLE_TENANT_MASTER_KEY', 'WEBHOOK_SECRET'):
-        value = str(globals().get(name) or _v153_os.getenv(name) or '')
-        if value and len(value) >= 6:
-            values.add(value)
-    return sorted(values, key=len, reverse=True)
+# [OCH12.35 OWNER] _v153_secret_values -> 18_business_secret.py
+_owner_install('secret', 'secret:0126')
 
 def v153_redact_text(value) -> str:
     text = str(value or '')
@@ -9093,26 +7585,8 @@ def _canon_make_global_backup_payload__001():
     payload = _V153_ORIG_MAKE_GLOBAL_BACKUP() if callable(_V153_ORIG_MAKE_GLOBAL_BACKUP) else {}
     return v153_sanitize(payload)
 
-def _mega_run(cmd: str, args=None, timeout=None, check: bool=True, control_plane: bool=False):
-    if not callable(_mega_exec_raw):
-        raise RuntimeError('MEGA runner unavailable')
-    safe_args = list(args or [])
-    temp_dir = ''
-    try:
-        if str(cmd or '').lower() == 'mega-put' and safe_args:
-            source = str(safe_args[0] or '')
-            if _v153_os.path.isfile(source):
-                safe = v153_prepare_safe_file(source, 'mega upload task snapshot failed backup audit runtime')
-                if safe != source:
-                    safe_args[0] = safe
-                    temp_dir = _v153_os.path.dirname(safe)
-        return _mega_exec_raw(cmd, safe_args, timeout=timeout, check=check, control_plane=control_plane)
-    except Exception as exc:
-        raise RuntimeError(v153_redact_text(exc)) from None
-    finally:
-        if temp_dir:
-            _v153_shutil.rmtree(temp_dir, ignore_errors=True)
-            _V153_SANITIZED_TEMP.discard(temp_dir)
+# [OCH12.35 OWNER] _mega_run -> 17_integration_mega.py
+_owner_install('mega', 'mega:0124')
 
 def _v153_text_extension(path: str) -> bool:
     return _v153_os.path.splitext(str(path or ''))[1].lower() in {'.txt', '.json', '.csv', '.log', '.md', '.xml', '.yaml', '.yml'}
@@ -9254,18 +7728,8 @@ _V153_ORIG_CLASSIFY_PREVIOUS = _v177_legacy_0078_runtime_classify_previous
 _V153_INSTANCE_SUPERSEDED = False
 _V153_INSTANCE_LEASE_LAST = 0.0
 
-def _canon_mega_task_registry_stats__002() -> dict:
-    base = _V153_ORIG_MEGA_STATS() if callable(_V153_ORIG_MEGA_STATS) else {}
-    try:
-        with _MEGA_TASK_LOCK:
-            failed_ids = [str(k) for k, row in _mega_task_registry.items() if str((row or {}).get('state') or '') == 'failed']
-        details = [x for x in list(base.get('failed_details') or []) if str((x or {}).get('task_id') or '') in set(failed_ids)]
-        base['failed'] = len(failed_ids)
-        base['failed_details'] = details
-        base['failed_details_pending'] = len(details) != min(len(failed_ids), int(globals().get('_V146_FAILED_DIAG_LIMIT') or 10))
-    except Exception:
-        pass
-    return v153_sanitize(base)
+# [OCH12.35 OWNER] _canon_mega_task_registry_stats__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0125')
 
 def _canon_runtime_export_select_paths__001(start_dt=None, end_dt=None, max_downloads: int=360):
     indexed, _legacy_selected = _V153_ORIG_RUNTIME_SELECT(start_dt, end_dt, max_downloads=max_downloads) if callable(_V153_ORIG_RUNTIME_SELECT) else ([], [])
@@ -9353,26 +7817,14 @@ def _v153_remote_marker_exists(root: str) -> bool:
     except Exception:
         return False
 
-def _v153_select_boot_mega_root() -> str:
-    root = str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
-    _v153_apply_mega_root(root)
-    return root
+# [OCH12.35 OWNER] _v153_select_boot_mega_root -> 17_integration_mega.py
+_owner_install('mega', 'mega:0126')
 
-def _canon_mega_restore_sqlite_snapshot_from_cloud__001(force: bool=False) -> tuple[bool, str]:
-    """v241: preserve explicit owner force=True through the compatibility wrapper."""
-    _v153_select_boot_mega_root()
-    if callable(_V153_ORIG_RESTORE_SQLITE):
-        try:
-            return _V153_ORIG_RESTORE_SQLITE(force=bool(force))
-        except TypeError:
-            return _V153_ORIG_RESTORE_SQLITE()
-    return (False, 'SQLite restore unavailable')
+# [OCH12.35 OWNER] _canon_mega_restore_sqlite_snapshot_from_cloud__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0127')
 
-def _canon_mega_restore_full_from_cloud__001(force: bool=False) -> tuple[bool, str]:
-    _v153_select_boot_mega_root()
-    if callable(_V153_ORIG_RESTORE_FULL):
-        return _V153_ORIG_RESTORE_FULL(force=force)
-    return (False, 'Full restore unavailable')
+# [OCH12.35 OWNER] _canon_mega_restore_full_from_cloud__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0128')
 
 def _v153_instance_lease_payload() -> dict:
     return {'kind': 'telegram_bot_active_instance_v153', 'instance_id': str(_v153_os.getenv('RENDER_INSTANCE_ID') or _v153_os.uname().nodename), 'commit': str(_v153_os.getenv('RENDER_GIT_COMMIT') or ''), 'started_at': str(globals().get('_RUNTIME_STARTED_AT') or _v153_now()), 'heartbeat_at': _v153_now(), 'version': VERSION}
@@ -9463,16 +7915,8 @@ def _canon_runtime_upload_snapshot__001(event: str='snapshot', immutable_event: 
 def _v153_migration_store(root=None) -> dict:
     return {'status': 'removed_v238', 'copied_files': 0, 'total_files': 0, 'remaining_files': 0, 'last_error': '', 'active_root': str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '')}
 
-def _v153_apply_mega_root(root: str) -> None:
-    canonical = str(globals().get('MEGA_CANONICAL_BACKUP_DIR_V238') or globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
-    globals()['MEGA_BACKUP_DIR'] = canonical
-    globals()['MEGA_LEGACY_BACKUP_DIR'] = canonical
-    globals()['MEGA_TARGET_BACKUP_DIR'] = canonical
-    globals()['BOT_SOURCE_ARCHIVE_DIR'] = f'{canonical}/runtime/bot_versions'
-    try:
-        globals()['DURABLE_JOURNAL_REMOTE_DIR'] = f'{canonical}/runtime/journal'
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v153_apply_mega_root -> 17_integration_mega.py
+_owner_install('mega', 'mega:0129')
 _V153_ORIG_LOAD_DATA = _v177_legacy_0087_load_data
 
 def _canon_load_data__001():
@@ -9486,21 +7930,8 @@ def _canon_load_data__001():
         pass
     return loaded
 
-def purge_legacy_mega_root_state_v238(persist: bool=True) -> bool:
-    """Remove retired root-migration payload even if an old delta/checkpoint reintroduced it."""
-    changed = False
-    try:
-        gs = data.setdefault('_global_settings', {})
-        changed = gs.pop('mega_root_migration_v153', None) is not None
-        if changed and persist:
-            SQLITE.save_root(_sqlite_pack_root(data))
-            try:
-                bot_journal('mega_root_legacy_state_purged_v238', int(OWNER_ID or 0) or None, 'mega_root_migration_v153 removed', 'INFO')
-            except Exception:
-                pass
-    except Exception:
-        return False
-    return changed
+# [OCH12.35 OWNER] purge_legacy_mega_root_state_v238 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0130')
 
 def _v153_remote_relative(path: str, root: str) -> str:
     raw = str(path or '')
@@ -9514,33 +7945,11 @@ def _v153_sha256_file(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
-def _v153_mega_copy_verify(old_remote: str, new_remote: str) -> tuple[bool, str]:
-    local_old = local_new = None
-    try:
-        local_old = _mega_download_remote_path(old_remote)
-        if not local_old:
-            return (False, 'download old failed')
-        old_hash = _v153_sha256_file(local_old)
-        new_dir, new_name = new_remote.rsplit('/', 1)
-        if not mega_put_replace(local_old, new_dir, new_name, archive_previous=False):
-            return (False, 'upload new failed')
-        local_new = _mega_download_remote_path(new_remote)
-        if not local_new:
-            return (False, 'verify download failed')
-        new_hash = _v153_sha256_file(local_new)
-        return (old_hash == new_hash, old_hash if old_hash == new_hash else 'checksum mismatch')
-    finally:
-        for local in (local_old, local_new):
-            try:
-                if local:
-                    _v153_shutil.rmtree(_v153_os.path.dirname(local), ignore_errors=True)
-            except Exception:
-                pass
+# [OCH12.35 OWNER] _v153_mega_copy_verify -> 17_integration_mega.py
+_owner_install('mega', 'mega:0131')
 
-def v153_migrate_mega_root() -> dict:
-    """v179 compatibility status: root migration is permanently retired."""
-    root = str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
-    return {'status': 'disabled_v179', 'active_root': root, 'canonical_root': str(globals().get('MEGA_BACKUP_DIR') or ''), 'remaining_files': 0, 'last_error': ''}
+# [OCH12.35 OWNER] v153_migrate_mega_root -> 17_integration_mega.py
+_owner_install('mega', 'mega:0132')
 
 def _v179_base_schedule_migration():
     return False
@@ -10582,11 +8991,8 @@ def v153_cmd_full_audit(msg):
         return
     bot.reply_to(msg, _v153_runtime_audit_text()[:3900])
 
-def v153_cmd_mega_migration_status(msg):
-    uid = _v153_actor_id(msg)
-    if not _v153_platform_owner(uid):
-        return
-    bot.reply_to(msg, f"☁️ Хранилище MEGA\n✅ v238: один канонический корень\nАктивная папка: {globals().get('MEGA_BACKUP_DIR')}\nПодкорневые release-каталоги и legacy migration state не используются.")
+# [OCH12.35 OWNER] v153_cmd_mega_migration_status -> 17_integration_mega.py
+_owner_install('mega', 'mega:0133')
 
 def _v153_callback_once(call, key: str) -> bool:
     now = _v153_time.time()
@@ -10849,53 +9255,20 @@ _V154_BASE_MODERN_SIMPLE = _v177_legacy_0099_modern_simple_excel_styles_comments
 _V154_BASE_MODERN_CATEGORY = _v177_legacy_0101_modern_category_excel_styles_comments
 _V154_BASE_MODERN_CATEGORY_COMPACT = _v177_legacy_0103_modern_category_no_description_styles_comments
 
-def excel_usd_table_enabled(chat_id: int) -> bool:
-    """Whether a separate USD operation table is appended to Excel/Google exports."""
-    try:
-        settings = get_chat_store(int(chat_id)).setdefault('settings', {})
-        return bool(settings.get('excel_include_usd_table', True))
-    except Exception:
-        return True
+# [OCH12.35 OWNER] excel_usd_table_enabled -> 16_integration_excel.py
+_owner_install('excel', 'excel:0066')
 
-def set_excel_usd_table_enabled(chat_id: int, enabled: bool) -> bool:
-    chat_id = int(chat_id)
-    settings = get_chat_store(chat_id).setdefault('settings', {})
-    settings['excel_include_usd_table'] = bool(enabled)
-    save_data(data, chat_ids=[chat_id])
-    try:
-        schedule_config_backup_for_chats(chat_id, delay=0.5)
-    except Exception:
-        pass
-    try:
-        bot_journal('excel_usd_table_toggle', chat_id, f'enabled={bool(enabled)}')
-    except Exception:
-        pass
-    return bool(enabled)
+# [OCH12.35 OWNER] set_excel_usd_table_enabled -> 16_integration_excel.py
+_owner_install('excel', 'excel:0067')
 
-def toggle_excel_usd_table_enabled(chat_id: int) -> bool:
-    return set_excel_usd_table_enabled(int(chat_id), not excel_usd_table_enabled(int(chat_id)))
+# [OCH12.35 OWNER] toggle_excel_usd_table_enabled -> 16_integration_excel.py
+_owner_install('excel', 'excel:0068')
 
-def _canon_period_excel_style_keyboard__001(scope: str, target_chat_id: int, mode: str, file_type: str, day_key: str, owner_day_key: str):
-    """F179: original controls + an explicit independent USD-table switch."""
-    kb = _V154_BASE_PERIOD_EXCEL_KEYBOARD(scope, target_chat_id, mode, file_type, day_key, owner_day_key)
-    enabled = excel_usd_table_enabled(int(target_chat_id))
-    label = f"{('✅' if enabled else '⬜')} 💵 USD расходы в таблице: {('ВКЛ' if enabled else 'ВЫКЛ')}"
-    row = [IB(label, callback_data=export_callback(f'exp_excel_dollar_toggle:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{day_key}:{owner_day_key}'))]
-    try:
-        insert_at = max(0, len(kb.keyboard) - 2)
-        kb.keyboard.insert(insert_at, row)
-    except Exception:
-        kb.row(*row)
-    return kb
+# [OCH12.35 OWNER] _canon_period_excel_style_keyboard__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0069')
 
-def _v154_day_has_expense(chat_id: int | None, day_key: str) -> bool:
-    if chat_id is None:
-        return False
-    try:
-        store = get_chat_store(int(chat_id))
-        return bool(expense_anchor_records_for_day(store, str(day_key)))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v154_day_has_expense -> 11_business_finance.py
+_owner_install('finance', 'finance:0187')
 
 def _v177_legacy_0169_export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str, chat_id: int | None=None):
     """F111. Mark a date with 📝 only when that day actually has an expense."""
@@ -10952,173 +9325,17 @@ try:
 except Exception:
     pass
 
-def _excel_canonical_opening_balance(chat_id: int, currency: str, start_day: str, start_rid: int | None=0, exact: bool=False) -> float:
-    cid = int(chat_id)
-    cur = 'usd' if str(currency or 'ars').strip().lower() == 'usd' else 'ars'
-    start = str(start_day or '')[:10]
-    try:
-        start_rid = int(start_rid or 0)
-    except Exception:
-        start_rid = 0
-    total = 0.0
-    rows = list(_v151_all_records(cid, cur) or [])
-    try:
-        rows = sorted(rows, key=record_sort_key)
-    except Exception:
-        pass
-    target_sort_key = None
-    if bool(exact) and start_rid and (cur == 'ars'):
-        try:
-            target = next((r for r in rows if _v151_day_key(r) == start and int(r.get('id') or 0) == start_rid), None)
-            if target is not None:
-                target_sort_key = record_sort_key(target)
-        except Exception:
-            target_sort_key = None
-    for rec in rows:
-        day = _v151_day_key(rec)
-        if not day:
-            continue
-        amount = _v151_float(rec.get('_v151_amount'))
-        if day < start:
-            total += amount
-            continue
-        if day > start:
-            break
-        if not bool(exact) or not start_rid or cur != 'ars':
-            break
-        if target_sort_key is not None:
-            try:
-                if record_sort_key(rec) < target_sort_key:
-                    total += amount
-                    continue
-            except Exception:
-                pass
-            break
-        try:
-            if int(rec.get('id') or 0) < start_rid:
-                total += amount
-                continue
-        except Exception:
-            pass
-        break
-    return float(total)
+# [OCH12.35 OWNER] _excel_canonical_opening_balance -> 16_integration_excel.py
+_owner_install('excel', 'excel:0070')
 
-def _excel_canonical_records_for_range(chat_id: int, currency: str, start_day: str, end_day: str) -> list[dict]:
-    cid = int(chat_id)
-    cur = 'usd' if str(currency or 'ars').strip().lower() == 'usd' else 'ars'
-    start = str(start_day or '')[:10]
-    end = str(end_day or start)[:10]
-    if end < start:
-        start, end = (end, start)
-    out = []
-    for rec in _v151_all_records(cid, cur) or []:
-        day = _v151_day_key(rec)
-        if day and start <= day <= end:
-            out.append(rec)
-    try:
-        return sorted(out, key=record_sort_key)
-    except Exception:
-        return out
+# [OCH12.35 OWNER] _excel_canonical_records_for_range -> 16_integration_excel.py
+_owner_install('excel', 'excel:0071')
 
-def _excel_chat_id_for_store(store: dict | None) -> int | None:
-    if not isinstance(store, dict):
-        return None
-    try:
-        ctx = _v151_context()
-        cid = int(ctx.get('target_chat_id') or 0)
-        if cid:
-            return cid
-    except Exception:
-        pass
-    try:
-        for raw_cid, row in (data.get('chats', {}) or {}).items():
-            if row is store:
-                return int(raw_cid)
-    except Exception:
-        pass
-    try:
-        owner_scope = int((store.get('settings', {}) or {}).get('owner_scope_id') or 0)
-        if owner_scope:
-            return owner_scope
-    except Exception:
-        pass
-    return None
+# [OCH12.35 OWNER] _excel_chat_id_for_store -> 16_integration_excel.py
+_owner_install('excel', 'excel:0072')
 
-def _v177_legacy_0272_v151_usd_records(chat_id: int) -> list[dict]:
-    store = get_chat_store(int(chat_id))
-    active = _v151_sync_currency_snapshots(store)
-    ars_source = store.get('records', []) if active == 'ars' else store.get('ars_records', [])
-    usd_source = store.get('records', []) if active == 'usd' else store.get('usd_records', [])
-    ars_by_msg = {}
-    ars_by_op = {}
-    for rec in ars_source or []:
-        if not isinstance(rec, dict):
-            continue
-        msg = int(rec.get('source_msg_id') or 0)
-        op = str(rec.get('operation_key') or '').strip()
-        if msg:
-            ars_by_msg[msg] = rec
-        if op:
-            ars_by_op[op] = rec
-
-    def _same_business_row(left: dict, right: dict) -> bool:
-        try:
-            return abs(_v151_float(left.get('amount')) - _v151_float(right.get('amount'))) <= 1e-09 and str(left.get('note') or '').strip() == str(right.get('note') or '').strip() and (_v151_day_key(left) == _v151_day_key(right))
-        except Exception:
-            return False
-    rows = []
-    represented_sources = set()
-    seen_independent = set()
-    for rec in usd_source or []:
-        if not isinstance(rec, dict):
-            continue
-        operation_key = str(rec.get('operation_key') or '').strip()
-        source_msg_id = int(rec.get('source_msg_id') or 0)
-        peer = ars_by_msg.get(source_msg_id) if source_msg_id else None
-        if peer is None and operation_key:
-            peer = ars_by_op.get(operation_key)
-        explicit_usd = str(rec.get('currency') or '').strip().upper() == 'USD'
-        if peer is not None and _same_business_row(rec, peer) and (not explicit_usd):
-            continue
-        key = ('op', operation_key) if operation_key else ('msg', source_msg_id) if source_msg_id else (int(rec.get('id') or 0), str(rec.get('timestamp') or ''), _v151_day_key(rec), _v151_float(rec.get('amount')))
-        if key in seen_independent:
-            continue
-        seen_independent.add(key)
-        item = dict(rec)
-        item['_v151_amount'] = _v151_float(rec.get('amount'))
-        item['_v151_note'] = str(rec.get('note') or rec.get('usd_note') or '')
-        item['_v151_currency'] = 'usd'
-        rows.append(item)
-        if source_msg_id:
-            represented_sources.add(('msg', source_msg_id))
-        if operation_key:
-            represented_sources.add(('op', operation_key))
-    for rec in ars_source or []:
-        if not isinstance(rec, dict):
-            continue
-        usd_amount = _v151_float(rec.get('usd_amount'))
-        if abs(usd_amount) <= 1e-12:
-            continue
-        operation_key = str(rec.get('operation_key') or '').strip()
-        source_msg_id = int(rec.get('source_msg_id') or 0)
-        source_keys = set()
-        if source_msg_id:
-            source_keys.add(('msg', source_msg_id))
-        if operation_key:
-            source_keys.add(('op', operation_key))
-        if source_keys and any((k in represented_sources for k in source_keys)):
-            continue
-        item = dict(rec)
-        item['_v151_amount'] = usd_amount
-        item['_v151_note'] = str(rec.get('usd_note') or rec.get('note') or '')
-        item['_v151_currency'] = 'usd'
-        item['_v151_embedded'] = True
-        rows.append(item)
-        represented_sources.update(source_keys)
-    try:
-        return sorted(rows, key=record_sort_key)
-    except Exception:
-        return rows
+# [OCH12.35 OWNER] _v177_legacy_0272_v151_usd_records -> 11_business_finance.py
+_owner_install('finance', 'finance:0188')
 try:
     _v177_legacy_0272_v151_usd_records.__name__ = '_v151_usd_records'
 except Exception:
@@ -11178,48 +9395,17 @@ def _v193_validate_currency_formula_domains(rows: list[list]) -> bool:
         raise RuntimeError(f'Excel USD formula escaped into ARS section: {bad[:8]}')
     return True
 
-def _v154_join_ars_usd(ars_rows: list[list], usd_rows: list[list], chat_id: int) -> list[list]:
-    if not excel_usd_table_enabled(int(chat_id)):
-        return list(ars_rows or [])
-    prefix = list(ars_rows or []) + [[], []]
-    shifted_usd = _v193_shift_formula_rows(list(usd_rows or []), len(prefix))
-    joined = prefix + shifted_usd
-    _v193_validate_currency_formula_domains(joined)
-    return joined
+# [OCH12.35 OWNER] _v154_join_ars_usd -> 11_business_finance.py
+_owner_install('finance', 'finance:0189')
 
-def _canon_build_exact_category_stats_xlsx_rows__001(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    """ARS keeps category layout; USD is always a clean four-column operation table."""
-    previous = getattr(_V151_EXPORT_LOCAL, 'value', None)
-    if not previous:
-        _V151_EXPORT_LOCAL.value = {'kind': 'exact', 'target_chat_id': int(target_chat_id), 'start_key': str(start_key)[:10], 'start_rid': int(start_rid or 0), 'end_key': str(end_key)[:10], 'end_rid': int(end_rid or 0), 'file_type': 'xlsxstat'}
-    try:
-        ars_rows = _v151_category_table(int(target_chat_id), 'ars')
-        usd_rows, _ = _v151_simple_table(int(target_chat_id), 'usd', compact=False)
-        return _v154_join_ars_usd(ars_rows, usd_rows, int(target_chat_id))
-    finally:
-        if not previous:
-            _V151_EXPORT_LOCAL.value = None
+# [OCH12.35 OWNER] _canon_build_exact_category_stats_xlsx_rows__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0073')
 
-def _canon_xlsx_simple_rows_with_balances__001(rows: list[list], opening_balance: float, target_chat_id: int | None=None) -> list[list]:
-    if target_chat_id is None:
-        return globals().get('_V150_BASE_SIMPLE_ROWS', lambda r, o, *_: r)(rows, opening_balance, target_chat_id)
-    ars_rows, _ = _v151_simple_table(int(target_chat_id), 'ars', compact=False)
-    usd_rows, _ = _v151_simple_table(int(target_chat_id), 'usd', compact=False)
-    return _v154_join_ars_usd(ars_rows, usd_rows, int(target_chat_id))
+# [OCH12.35 OWNER] _canon_xlsx_simple_rows_with_balances__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0074')
 
-def _v177_legacy_0096_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None=None) -> tuple[list[list], dict[tuple[int, int], str]]:
-    if target_chat_id is None:
-        base = globals().get('_V150_BASE_COMPACT_ROWS')
-        return base(raw_rows, opening_balance, target_chat_id) if callable(base) else ([], {})
-    ars_rows, ars_notes = _v151_simple_table(int(target_chat_id), 'ars', compact=True)
-    if not excel_usd_table_enabled(int(target_chat_id)):
-        return (ars_rows, dict(ars_notes))
-    usd_rows, _ = _v151_simple_table(int(target_chat_id), 'usd', compact=False)
-    prefix = list(ars_rows or []) + [[], []]
-    shifted_usd = _v193_shift_formula_rows(usd_rows, len(prefix))
-    joined = prefix + shifted_usd
-    _v193_validate_currency_formula_domains(joined)
-    return (joined, dict(ars_notes))
+# [OCH12.35 OWNER] _v177_legacy_0096_compact_simple_excel_rows_and_annotations -> 16_integration_excel.py
+_owner_install('excel', 'excel:0075')
 try:
     _v177_legacy_0096_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
 except Exception:
@@ -11246,14 +9432,8 @@ try:
 except Exception:
     pass
 
-def _v154_find_usd_section(rows: list[list]) -> int | None:
-    for idx, row in enumerate(rows or []):
-        try:
-            if str((row or [''])[0]).strip().upper() == 'USD':
-                return idx
-        except Exception:
-            pass
-    return None
+# [OCH12.35 OWNER] _v154_find_usd_section -> 11_business_finance.py
+_owner_install('finance', 'finance:0190')
 
 def _v154_merge_styles(prefix_rows, suffix_rows, prefix_result, suffix_result, keep_suffix_comments=True):
     p_styles, p_comments, p_freeze, p_widths = prefix_result
@@ -11269,22 +9449,11 @@ def _v154_merge_styles(prefix_rows, suffix_rows, prefix_result, suffix_result, k
         widths.append(max((p_widths or [0])[i] if i < len(p_widths or []) else 0, (s_widths or [0])[i] if i < len(s_widths or []) else 0))
     return (list(p_styles or []) + list(s_styles or []), comments, p_freeze, widths)
 
-def _canon_modern_compact_excel_styles_comments__001(rows: list[list], annotations: dict[tuple[int, int], str]):
-    """Compact ARS may stay 3-column, while appended USD keeps its four-column simple layout."""
-    idx = _v154_find_usd_section(rows)
-    if idx is None or not callable(_V154_BASE_MODERN_COMPACT) or (not callable(_V154_BASE_MODERN_SIMPLE)):
-        return _V154_BASE_MODERN_COMPACT(rows, annotations)
-    prefix, suffix = (list(rows[:idx]), list(rows[idx:]))
-    p = _V154_BASE_MODERN_COMPACT(prefix, annotations)
-    s = _V154_BASE_MODERN_SIMPLE(suffix)
-    return _v154_merge_styles(prefix, suffix, p, s, keep_suffix_comments=False)
+# [OCH12.35 OWNER] _canon_modern_compact_excel_styles_comments__001 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0076')
 
-def _v177_legacy_0102_modern_category_excel_styles_comments(rows: list[list]):
-    idx = _v154_find_usd_section(rows)
-    if idx is None or not callable(_V154_BASE_MODERN_CATEGORY) or (not callable(_V154_BASE_MODERN_SIMPLE)):
-        return _V154_BASE_MODERN_CATEGORY(rows)
-    prefix, suffix = (list(rows[:idx]), list(rows[idx:]))
-    return _v154_merge_styles(prefix, suffix, _V154_BASE_MODERN_CATEGORY(prefix), _V154_BASE_MODERN_SIMPLE(suffix), keep_suffix_comments=True)
+# [OCH12.35 OWNER] _v177_legacy_0102_modern_category_excel_styles_comments -> 16_integration_excel.py
+_owner_install('excel', 'excel:0077')
 try:
     _v177_legacy_0102_modern_category_excel_styles_comments.__name__ = '_modern_category_excel_styles_comments'
 except Exception:
@@ -11428,213 +9597,12 @@ def _canon_v240_restore_reanchor_guaranteed__002(reason: str) -> dict:
 
 _V242_MEGA_DB_CATALOG_CACHE = {}
 
-def _v242_mega_database_catalog(limit: int=14) -> list[dict]:
-    """List actual recoverable SQLite files in the canonical MEGA database tree."""
-    if not mega_is_configured():
-        return []
-    rows = []
-    seen = set()
-    finder = globals().get('_mega_find_remote_files')
-    if not callable(finder):
-        return rows
-    active = {}
-    try:
-        active = constitution_load_active_manifest_remote(force=True) or {}
-    except Exception:
-        active = {}
-    active_remote = str(active.get('remote_generation') or '')
+# [OCH12.35 OWNER] _v242_mega_database_catalog -> 17_integration_mega.py
+_owner_install('mega', 'mega:0134')
 
-    def add(remote, kind):
-        remote = str(remote or '').strip()
-        if not remote or remote in seen:
-            return
-        seen.add(remote)
-        name = os.path.basename(remote)
-        token = hashlib.sha256(remote.encode('utf-8')).hexdigest()[:12]
-        row = {'token': token, 'remote': remote, 'name': name, 'kind': kind, 'active': bool(active_remote and remote == active_remote)}
-        _V242_MEGA_DB_CATALOG_CACHE[token] = row
-        rows.append(row)
-    try:
-        for remote in finder(constitution_generations_dir(), 'generation_*.sqlite3.gz', limit=max(8, int(limit))):
-            add(remote, 'generation')
-    except Exception:
-        pass
-    try:
-        for remote in finder(constitution_database_dir(), LOWRAM_DB_LATEST_NAME, limit=2):
-            add(remote, 'legacy_latest')
-    except Exception:
-        pass
-    try:
-        for remote in finder(constitution_database_dir() + '/history', 'bot_state_*.sqlite3.gz', limit=6):
-            add(remote, 'legacy_history')
-    except Exception:
-        pass
-    try:
-        for remote in finder(constitution_database_dir() + '/pre_restore', 'pre_restore_*.sqlite3.gz', limit=6):
-            add(remote, 'pre_restore')
-    except Exception:
-        pass
-    return rows[:max(1, int(limit))]
+# [OCH12.35 OWNER] _v242_mega_catalog_entry -> 17_integration_mega.py
+_owner_install('mega', 'mega:0135')
 
-def _v242_mega_catalog_entry(token: str) -> dict:
-    token = str(token or '')
-    row = _V242_MEGA_DB_CATALOG_CACHE.get(token)
-    if row:
-        return dict(row)
-    _v242_mega_database_catalog(24)
-    return dict(_V242_MEGA_DB_CATALOG_CACHE.get(token) or {})
-
-def _v242_restore_selected_mega_database(token: str, chat_id: int) -> dict:
-    """R65 exact point-in-time restore selected in the all-MEGA browser.
-
-    FAST never logs into MEGA when MEGA_ENABLED=0.  The selected file is streamed from
-    authenticated HEAVY, validated locally, then FAST seals the accepted SQLite into Redis.
-    """
-    browser_entry = globals().get('_v265_mdb_entry')
-    row = dict(browser_entry(token) or {}) if callable(browser_entry) else {}
-    if not row:
-        row = _v242_mega_catalog_entry(token)
-    if not row:
-        raise RuntimeError('Выбранный файл больше не найден в каталоге MEGA')
-    if str(row.get('kind') or '') == 'dir':
-        raise RuntimeError('Для восстановления нужно выбрать файл, а не папку')
-    remote = str(row.get('path') or row.get('remote') or '')
-    if not remote:
-        raise RuntimeError('У выбранного файла отсутствует MEGA path')
-    previous = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
-    epoch = 0
-    backup_dir = ''
-    success = False
-    try:
-        begin = globals().get('_v241_restore_storage_barrier_begin')
-        if callable(begin):
-            epoch = int(begin() or 0)
-        backup_dir = _v153_backup_before_restore()
-        work = _v153_tempfile.mkdtemp(prefix='v242_mega_selected_')
-        try:
-            downloaded = ''
-            fetch = globals().get('_v265_heavy_download_mega_file')
-            if callable(fetch):
-                downloaded = str(fetch(remote, work) or '')
-            elif mega_is_configured():
-                res = _mega_run('mega-get', [remote, work], check=False, timeout=max(float(MEGA_TIMEOUT), 240.0))
-                if res.returncode != 0:
-                    raise RuntimeError('Не удалось скачать выбранную базу MEGA')
-                found = [str(x) for x in Path(work).rglob('*') if x.is_file()]
-                downloaded = found[0] if found else ''
-            else:
-                raise RuntimeError('Render #2 недоступен, а прямой MEGA на FAST отключён')
-            if not downloaded or not os.path.isfile(downloaded):
-                raise RuntimeError('Скачанный файл базы не найден')
-            raw = os.path.join(work, 'selected.sqlite3')
-            with open(downloaded, 'rb') as _r65_in:
-                magic = _r65_in.read(2)
-            if magic == b'\x1f\x8b':
-                _lowram_gunzip_file(downloaded, raw)
-            else:
-                _v153_shutil.copy2(downloaded, raw)
-            semantic = constitution_semantic_manifest_from_sqlite(raw) or {}
-            conn = sqlite3.connect(raw)
-            try:
-                qc = conn.execute('PRAGMA quick_check').fetchone()
-                if not qc or str(qc[0]).lower() != 'ok':
-                    raise RuntimeError(f'SQLite quick_check failed: {qc}')
-            finally:
-                conn.close()
-            SQLITE.replace_database(raw)
-            restored = load_data()
-            data.clear()
-            data.update(restored)
-            try:
-                tenant_v148_bootstrap()
-            except Exception:
-                pass
-            try:
-                tenant_v148_enforce_forward_isolation()
-            except Exception:
-                pass
-            try:
-                fn = globals().get('_v184_post_restore_rehydrate')
-                if callable(fn):
-                    fn(data)
-            except Exception:
-                pass
-            # OCH12.31 low-RAM restore seal: persist only root settings and chat
-            # stores that are already resident after rehydrate.  Never materialize
-            # every cold ledger just to seal a manually restored SQLite.
-            save_data(data, root_only=True)
-            flush_loaded = globals().get('_och1226_flush_loaded_chat_stores_only')
-            if callable(flush_loaded):
-                flush_loaded()
-            # OCH12.31: the owner-selected generation is now the live authority.
-            # Update in-session restore diagnostics immediately; the background
-            # canonical reanchor will make the next deploy use this state too.
-            try:
-                _raw_trace=str(os.getenv('R68_RESTORE_TRACE_JSON','') or '{}')
-                _trace=json.loads(_raw_trace) if _raw_trace else {}
-                if not isinstance(_trace,dict): _trace={}
-                _trace.update({'base_source':'MANUAL_MEGA_RESTORE','manual_restore_source':remote,
-                               'manual_restore_at':now_local().isoformat(timespec='seconds'),
-                               'empty_init_reason':'','empty_boot_mega_write_guard':False})
-                os.environ['R68_RESTORE_TRACE_JSON']=json.dumps(_trace,ensure_ascii=False,separators=(',',':'))
-                os.environ['OCH1227_EMPTY_BOOT']='0'
-                os.environ['OCH1227_EMPTY_BOOT_REASON']=''
-                os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
-                os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='0'
-            except Exception:
-                pass
-            checkpoint_row = {'required': False, 'ok': False, 'detail': 'helper unavailable'}
-            try:
-                seal = globals().get('r64_publish_restore_snapshot_v271')
-                if callable(seal):
-                    checkpoint_row = dict(seal('owner_selected_mega_database_r65') or checkpoint_row)
-            except Exception as _r65_seal_exc:
-                checkpoint_row = {'required': True, 'ok': False, 'detail': f'{type(_r65_seal_exc).__name__}: {str(_r65_seal_exc)[:220]}'}
-            reanchor = _v240_restore_reanchor_guaranteed('owner_selected_mega_database_r65') or {}
-            try:
-                rec = globals().get('_reminder_boot_reconcile_v241')
-                if callable(rec):
-                    rec()
-            except Exception:
-                pass
-            success = True
-            active = reanchor.get('active') or {}
-            return {
-                'ok': True, 'source': remote,
-                'source_records': int(semantic.get('total_records') or 0),
-                'generation': str(active.get('generation') or ''),
-                'remote_confirmed': bool(reanchor.get('remote_confirmed_v242', False)),
-                'checkpoint_required': bool(checkpoint_row.get('required')),
-                'checkpoint_ok': bool(checkpoint_row.get('ok')),
-                'checkpoint_detail': str(checkpoint_row.get('detail') or '')[:300],
-            }
-        finally:
-            _v153_shutil.rmtree(work, ignore_errors=True)
-    finally:
-        if backup_dir:
-            try:
-                _v153_shutil.rmtree(backup_dir, ignore_errors=True)
-            except Exception:
-                pass
-        end = globals().get('_v241_restore_storage_barrier_end')
-        if epoch and callable(end):
-            try:
-                end(epoch, success)
-            except Exception:
-                pass
-        # OCH12.31: once a user-confirmed MEGA restore succeeded, the restored
-        # SQLite becomes the new canonical MEGA lineage automatically.  This also
-        # clears any EMPTY_INIT write fence left by the preceding deploy.
-        if success:
-            try:
-                os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
-                os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='0'
-                schedule=globals().get('_och1230_schedule_manual_mega_reanchor')
-                if callable(schedule):
-                    schedule('owner_selected_mega_database_r65',2.0,0)
-            except Exception:
-                pass
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(previous)
-
-# v262
+# [OCH12.35 OWNER] _v242_restore_selected_mega_database -> 17_integration_mega.py
+_owner_install('mega', 'mega:0136')
+# v266

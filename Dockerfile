@@ -17,11 +17,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # R70 CLEAN DEPLOY ROOT: explicit allowlist. Never COPY the whole repository.
 # Stale legacy modules (00_core.py, 89_callback_final.py, 97_r29_policy_ui.py, etc.)
 # therefore cannot coexist with the compact runtime inside /app.
-COPY bot.py start_front.py runtime_config.py modules_manifest.json FINALIZATION_GATE.py ./
+COPY bot.py start_front.py runtime_config.py modules_manifest.json owners_manifest.json FINALIZATION_GATE.py ./
 COPY 01_core_data.py 02_transport_safety.py 03_diagnostics_memory.py \
      04_messages_features.py 05_finance_ui.py 06_commands_callbacks.py \
      07_state_web.py 08_reliability_tasks.py 09_final_transport.py \
-     10_split_policy_offload.py ./
+     10_split_policy_offload.py 11_business_finance.py 12_business_finance_forward.py \
+     13_business_tasks.py 14_business_reminders.py 15_integration_google.py \
+     16_integration_excel.py 17_integration_mega.py 18_business_secret.py 19_compat_legacy.py ./
 # INFO/ is release documentation and is intentionally NOT copied into the runtime image.
 # Missing docs in a Render/Git build context must never prevent the bot from starting.
 

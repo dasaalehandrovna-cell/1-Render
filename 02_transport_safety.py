@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 12_telegram_durable.py ---
 TG_DURABLE_SCHEMA_V234 = 1
@@ -73,93 +74,11 @@ def _v246_iso_epoch(value) -> float:
     except Exception:
         return 0.0
 
-def mega_storage_control_read_v246() -> dict | None:
-    """Read the tiny mode beacon even while normal MEGA storage is disabled."""
-    if not bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD):
-        return None
-    work = tempfile.mkdtemp(prefix='storage_control_v246_')
-    try:
-        if not mega_login_if_needed(control_plane=True):
-            return None
-        remote = _storage_control_remote_v246()
-        res = _mega_run('mega-get', [remote, work], check=False, timeout=min(60, int(MEGA_TIMEOUT)), control_plane=True)
-        if int(getattr(res, 'returncode', 1)) != 0:
-            return None
-        candidates = list(Path(work).rglob(STORAGE_CONTROL_FILENAME_V246))
-        if not candidates:
-            return None
-        obj = json.loads(candidates[0].read_text(encoding='utf-8'))
-        if not isinstance(obj, dict) or str(obj.get('kind') or '') != STORAGE_CONTROL_KIND_V246:
-            return None
-        raw_mode = str(obj.get('mode') or '').strip()
-        if not raw_mode:
-            return None
-        mode = _storage_profile_normalize_v237_1(raw_mode)
-        if mode not in {STORAGE_PROFILE_LOCAL_V237_1, STORAGE_PROFILE_TELEGRAM_V237_1, STORAGE_PROFILE_MEGA_V237_1}:
-            return None
-        obj['mode'] = mode
-        return obj
-    except Exception as exc:
-        try:
-            bot_journal('storage_control_read_v246', int(OWNER_ID or 0) or None, str(exc)[:240], 'WARN')
-        except Exception:
-            pass
-        return None
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+# [OCH12.35 OWNER] mega_storage_control_read_v246 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0091')
 
-def mega_storage_control_write_v246(mode: str, reason: str='switch', epoch: int | None=None) -> bool:
-    """Publish one canonical MEGA mode beacon using candidate -> replace."""
-    mode = _storage_profile_normalize_v237_1(mode)
-    if not bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD):
-        return False
-    with _STORAGE_CONTROL_REMOTE_LOCK_V246:
-        if epoch is not None and int(epoch) != int(globals().get('_V241_STORAGE_EPOCH', 0) or 0):
-            return False
-        work = tempfile.mkdtemp(prefix='storage_control_publish_v246_')
-        candidate_remote = ''
-        try:
-            if not mega_login_if_needed(control_plane=True):
-                return False
-            root = str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
-            payload = {
-                'kind': STORAGE_CONTROL_KIND_V246,
-                'schema_version': STORAGE_CONTROL_SCHEMA_V246,
-                'mode': mode,
-                'updated_at': now_local().isoformat(timespec='microseconds'),
-                'bot_version': str(globals().get('VERSION') or 'выс-262'),
-                'epoch': int(globals().get('_V241_STORAGE_EPOCH', 0) or 0),
-                'reason': str(reason or 'switch')[:120],
-            }
-            stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
-            candidate_name = f'storage_control_candidate_{stamp}.json'
-            local = Path(work) / candidate_name
-            local.write_text(json.dumps(payload, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
-            _mega_run('mega-mkdir', [root], check=False, timeout=30, control_plane=True)
-            put = _mega_run('mega-put', [str(local), root], check=False, timeout=min(60, int(MEGA_TIMEOUT)), control_plane=True)
-            if int(getattr(put, 'returncode', 1)) != 0:
-                return False
-            candidate_remote = root + '/' + candidate_name
-            final_remote = root + '/' + STORAGE_CONTROL_FILENAME_V246
-            _mega_run('mega-rm', [final_remote], check=False, timeout=30, control_plane=True)
-            mv = _mega_run('mega-mv', [candidate_remote, final_remote], check=False, timeout=30, control_plane=True)
-            if int(getattr(mv, 'returncode', 1)) != 0:
-                return False
-            verify = mega_storage_control_read_v246() or {}
-            return str(verify.get('mode') or '') == mode and int(verify.get('epoch') or 0) == int(payload['epoch'])
-        except Exception as exc:
-            try:
-                bot_journal('storage_control_write_v246', int(OWNER_ID or 0) or None, str(exc)[:240], 'WARN')
-            except Exception:
-                pass
-            return False
-        finally:
-            if candidate_remote:
-                try:
-                    _mega_run('mega-rm', [candidate_remote], check=False, timeout=20, control_plane=True)
-                except Exception:
-                    pass
-            shutil.rmtree(work, ignore_errors=True)
+# [OCH12.35 OWNER] mega_storage_control_write_v246 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0092')
 
 def _v246_telegram_restore_evidence() -> dict:
     out = {'backend': 'telegram', 'available': False, 'full': False, 'fresh_at': '', 'fresh_epoch': 0.0, 'richness': 1, 'detail': ''}
@@ -179,89 +98,8 @@ def _v246_telegram_restore_evidence() -> dict:
         out['detail'] = str(exc)[:240]
     return out
 
-def _v246_mega_restore_evidence() -> dict:
-    """Describe the effective MEGA truth: full DB generation plus newest recoverable delta."""
-    out = {'backend': 'mega', 'available': False, 'full': False, 'fresh_at': '', 'fresh_epoch': 0.0, 'richness': 2, 'detail': ''}
-    if not bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD):
-        return out
-    work = tempfile.mkdtemp(prefix='mega_evidence_v246_')
-    try:
-        if not mega_login_if_needed(control_plane=True):
-            return out
-        remote = (constitution_current_manifest_remote() if callable(globals().get('constitution_current_manifest_remote')) else str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/') + '/database/current_manifest.json')
-        res = _mega_run('mega-get', [remote, work], check=False, timeout=min(60, int(MEGA_TIMEOUT)), control_plane=True)
-        if int(getattr(res, 'returncode', 1)) != 0:
-            return out
-        candidates = list(Path(work).rglob('current_manifest.json'))
-        if not candidates:
-            candidates = list(Path(work).rglob('*.json'))
-        if not candidates:
-            return out
-        manifest = json.loads(candidates[0].read_text(encoding='utf-8'))
-        if not isinstance(manifest, dict):
-            return out
-        created = str(manifest.get('created_at') or manifest.get('snapshot_created_at') or '')
-        full = bool(manifest.get('remote_generation') and (manifest.get('sqlite_sha256') or manifest.get('semantic_hash')))
-
-        latest_delta_path = ''
-        latest_delta_epoch = 0.0
-        latest_delta_at = ''
-        roots = []
-        try:
-            roots.append(str(mega_delta_remote_root()))
-        except Exception:
-            pass
-        try:
-            shard_root = str(globals().get('MEGA_SHARD_CHATS_ROOT_V240') or '').strip()
-            if shard_root:
-                roots.append(shard_root)
-        except Exception:
-            pass
-        for root in dict.fromkeys(x for x in roots if x):
-            try:
-                found = _mega_run('mega-find', [root, '--pattern=delta_*.json', '--type=f'], check=False, timeout=60, control_plane=True)
-                if int(getattr(found, 'returncode', 1)) != 0:
-                    continue
-                for row in (getattr(found, 'stdout', '') or '').splitlines():
-                    path = str(row or '').strip()
-                    name = os.path.basename(path)
-                    m = re.search(r'delta_(\d{8})_(\d{6})_(\d{6})_', name)
-                    if not m:
-                        continue
-                    try:
-                        dt = datetime.strptime(''.join(m.groups()), '%Y%m%d%H%M%S%f').replace(tzinfo=get_tz())
-                        epoch = float(dt.timestamp())
-                    except Exception:
-                        continue
-                    if epoch > latest_delta_epoch:
-                        latest_delta_epoch = epoch
-                        latest_delta_path = path
-                        latest_delta_at = dt.isoformat(timespec='microseconds')
-            except Exception:
-                pass
-
-        snapshot_epoch = _v246_iso_epoch(created)
-        if latest_delta_epoch > snapshot_epoch:
-            fresh_at, fresh_epoch = latest_delta_at, latest_delta_epoch
-        else:
-            fresh_at, fresh_epoch = created, snapshot_epoch
-        out.update({
-            'available': True,
-            'full': full,
-            'fresh_at': fresh_at,
-            'fresh_epoch': fresh_epoch,
-            'detail': (
-                f"generation={manifest.get('generation') or '—'}; "
-                f"records={manifest.get('total_records', '—')}; "
-                f"ledger={manifest.get('ledger_highwater_seq', '—')}; "
-                f"latest_delta={os.path.basename(latest_delta_path) if latest_delta_path else '—'}"
-            ),
-        })
-    except Exception as exc:
-        out['detail'] = str(exc)[:240]
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
-    return out
+# [OCH12.35 OWNER] _v246_mega_restore_evidence -> 17_integration_mega.py
+_owner_install('mega', 'mega:0093')
 
 def _v246_best_render_restore_backend() -> str:
     """Prefer a complete snapshot first, then the freshest effective source; MEGA wins exact ties."""
@@ -354,48 +192,24 @@ def telegram_durable_configured_v234() -> bool:
 def telegram_durable_primary_v234() -> bool:
     return bool(telegram_durable_available_v237_1() and storage_profile_v237_1() == STORAGE_PROFILE_TELEGRAM_V237_1)
 
-def mega_contour_enabled_v234() -> bool:
-    return storage_profile_v237_1() == STORAGE_PROFILE_MEGA_V237_1
+# [OCH12.35 OWNER] mega_contour_enabled_v234 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0094')
 
 def storage_profile_status_v237_1() -> dict:
     profile = storage_profile_v237_1()
     return {'profile': profile, 'render': profile == STORAGE_PROFILE_LOCAL_V237_1, 'render_telegram': profile == STORAGE_PROFILE_LOCAL_V237_1, 'telegram_durable': profile == STORAGE_PROFILE_TELEGRAM_V237_1 and telegram_durable_available_v237_1(), 'mega': profile == STORAGE_PROFILE_MEGA_V237_1, 'telegram_available': telegram_durable_available_v237_1(), 'mega_configured': bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD), 'mega_root': str(globals().get('MEGA_BACKUP_DIR') or '')}
 
-def secret_storage_backend_v234() -> str:
-    raw_env = str(os.getenv('SECRET_STORAGE_BACKEND', '') or '').strip().casefold()
-    if raw_env in {'telegram', 'tg', 'channel', 'канал'}:
-        return 'telegram'
-    if raw_env in {'mega', 'мега'}:
-        return 'mega'
-    try:
-        raw = str(_tg_v234_root_settings().get('secret_storage_backend_v234') or 'telegram').strip().casefold()
-    except Exception:
-        raw = 'telegram'
-    return 'mega' if raw == 'mega' else 'telegram'
+# [OCH12.35 OWNER] secret_storage_backend_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0025')
 
-def _secret_storage_migration_state_v234() -> dict:
-    try:
-        row = _tg_v234_root_settings().get('secret_storage_migration_v234') or {}
-        return dict(row) if isinstance(row, dict) else {}
-    except Exception:
-        return {}
+# [OCH12.35 OWNER] _secret_storage_migration_state_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0026')
 
-def _secret_mega_prerequisites_v234() -> bool:
-    try:
-        return bool(mega_contour_enabled_v234() and (not callable(globals().get('external_access_allowed_v233')) or external_access_allowed_v233('mega')) and MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD)
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _secret_mega_prerequisites_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0027')
 
-def secret_storage_effective_backend_v234() -> str:
-    requested = secret_storage_backend_v234()
-    if requested != 'mega':
-        return 'telegram'
-    if not _secret_mega_prerequisites_v234():
-        return 'telegram' if telegram_durable_configured_v234() else 'mega'
-    migration = _secret_storage_migration_state_v234()
-    if str(migration.get('target') or '') == 'mega' and str(migration.get('state') or '') not in {'done', 'not_needed'}:
-        return 'telegram'
-    return 'mega'
+# [OCH12.35 OWNER] secret_storage_effective_backend_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0028')
 
 def _tg_durable_default_head_v234() -> dict:
     return {'kind': TG_DURABLE_HEAD_KIND_V234, 'schema_version': TG_DURABLE_SCHEMA_V234, 'bot_version': globals().get('VERSION', ''), 'generation': 0, 'created_at': now_local().isoformat(timespec='seconds') if 'now_local' in globals() else datetime.now(timezone.utc).isoformat(), 'updated_at': '', 'snapshot': None, 'deltas': [], 'tasks': {}, 'controls': {'storage_profile': storage_profile_v237_1(), 'render_telegram_only': storage_profile_v237_1() == STORAGE_PROFILE_LOCAL_V237_1, 'telegram_durable_enabled': storage_profile_v237_1() == STORAGE_PROFILE_TELEGRAM_V237_1, 'mega_contour_enabled': storage_profile_v237_1() == STORAGE_PROFILE_MEGA_V237_1, 'secret_storage_backend': 'mega' if storage_profile_v237_1() == STORAGE_PROFILE_MEGA_V237_1 else 'telegram'}}
@@ -672,15 +486,8 @@ def _storage_cancel_telegram_jobs_v237_1() -> None:
         except Exception:
             pass
 
-def _storage_cancel_mega_jobs_v237_1() -> None:
-    sched = globals().get('DELAYED_SCHEDULER')
-    if sched is None:
-        return
-    for key in ('mega-delta-batch-v90', 'mega-task-startup-recovery', 'mega-task-safe-failed-repair', 'mega-global-quiet-v90', 'mega-global-max-v90', 'mega-global-retry-v90', 'mega-global-user-idle-v190', 'mega-node-housekeeping-v211', 'mega-root-reseed-v190'):
-        try:
-            sched.cancel(key)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _storage_cancel_mega_jobs_v237_1 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0095')
 
 def set_storage_profile_v237_1(profile: str) -> str:
     """Atomic radio switch; local state/UI first, remote control beacons in background."""
@@ -760,133 +567,17 @@ def set_telegram_durable_enabled_v237_1(enabled: bool) -> bool:
         set_storage_profile_v237_1(STORAGE_PROFILE_LOCAL_V237_1)
     return False
 
-def set_mega_contour_enabled_v234(enabled: bool) -> bool:
-    if bool(enabled):
-        return set_storage_profile_v237_1(STORAGE_PROFILE_MEGA_V237_1) == STORAGE_PROFILE_MEGA_V237_1
-    if storage_profile_v237_1() == STORAGE_PROFILE_MEGA_V237_1:
-        set_storage_profile_v237_1(STORAGE_PROFILE_TELEGRAM_V237_1)
-    return False
+# [OCH12.35 OWNER] set_mega_contour_enabled_v234 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0096')
 
-def _run_secret_storage_migration_v234(target: str) -> bool:
-    target = 'mega' if str(target or '').casefold() == 'mega' else 'telegram'
-    root = _tg_v234_root_settings()
-    state = {'target': target, 'state': 'running', 'started_at': now_local().isoformat(timespec='seconds'), 'error': ''}
-    root['secret_storage_migration_v234'] = state
-    try:
-        save_data(data, root_only=True)
-    except Exception:
-        pass
-    try:
-        chats_fn = globals().get('secret_chats')
-        chats = list(chats_fn() or []) if callable(chats_fn) else []
-        if target == 'mega':
-            if not _secret_mega_prerequisites_v234():
-                state.update({'state': 'blocked', 'error': 'MEGA contour/master/config is not available'})
-                root['secret_storage_migration_v234'] = state
-                try:
-                    save_data(data, root_only=True)
-                except Exception:
-                    pass
-                return False
-            uploader = globals().get('upload_chat_secrets_to_mega')
-            if not callable(uploader):
-                raise RuntimeError('MEGA secret uploader unavailable')
-            failed = []
-            for cid in chats:
-                if not bool(uploader(int(cid))):
-                    failed.append(int(cid))
-            if failed:
-                raise RuntimeError('MEGA secret migration failed for chats: ' + ','.join(map(str, failed[:20])))
-        else:
-            global _delta_generation
-            with _delta_state_lock:
-                for cid in chats:
-                    _delta_generation += 1
-                    _delta_pending_chats.add(int(cid))
-                    _delta_chat_generation[int(cid)] = _delta_generation
-            if chats and (not durable_run_pending_delta_now_v234()):
-                raise RuntimeError('Telegram secret migration delta failed')
-            telegram_schedule_full_snapshot_v234('secret_backend_migration', delay=30.0)
-        state.update({'state': 'done', 'completed_at': now_local().isoformat(timespec='seconds'), 'chats': len(chats), 'error': ''})
-        root['secret_storage_migration_v234'] = state
-        try:
-            save_data(data, root_only=True)
-        except Exception:
-            pass
-        try:
-            telegram_durable_persist_controls_v234()
-        except Exception:
-            pass
-        try:
-            bot_journal('secret_storage_migration_done_v234', int(OWNER_ID or 0) or None, f'target={target}; chats={len(chats)}')
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        state.update({'state': 'failed', 'completed_at': now_local().isoformat(timespec='seconds'), 'error': str(exc)[:500]})
-        root['secret_storage_migration_v234'] = state
-        try:
-            save_data(data, root_only=True)
-        except Exception:
-            pass
-        try:
-            bot_journal('secret_storage_migration_failed_v234', int(OWNER_ID or 0) or None, f'target={target}; {exc}', 'ERROR')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _run_secret_storage_migration_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0029')
 
-def schedule_secret_storage_migration_v234(target: str) -> bool:
-    target = 'mega' if str(target or '').casefold() == 'mega' else 'telegram'
-    state = _secret_storage_migration_state_v234()
-    if str(state.get('target') or '') == target and str(state.get('state') or '') in {'running', 'done'}:
-        return True
-    row = {'target': target, 'state': 'pending', 'requested_at': now_local().isoformat(timespec='seconds'), 'error': ''}
-    _tg_v234_root_settings()['secret_storage_migration_v234'] = row
-    try:
-        save_data(data, root_only=True)
-    except Exception:
-        pass
-    pool = globals().get('RECOVERY_TASK_POOL') or globals().get('BACKUP_TASK_POOL')
-    try:
-        if pool is not None and pool.submit_unique(f'secret-storage-migrate:{target}', _run_secret_storage_migration_v234, target):
-            return True
-    except Exception:
-        pass
-    try:
-        DELAYED_SCHEDULER.schedule(f'secret-storage-migrate:{target}', 0.2, _run_secret_storage_migration_v234, target)
-        return True
-    except Exception:
-        return False
+# [OCH12.35 OWNER] schedule_secret_storage_migration_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0030')
 
-def set_secret_storage_backend_v234(backend: str) -> str:
-    backend = 'mega' if str(backend or '').strip().casefold() == 'mega' else 'telegram'
-    _tg_v234_root_settings()['secret_storage_backend_v234'] = backend
-    state = _secret_storage_migration_state_v234()
-    if str(state.get('target') or '') != backend:
-        _tg_v234_root_settings()['secret_storage_migration_v234'] = {'target': backend, 'state': 'pending', 'requested_at': now_local().isoformat(timespec='seconds'), 'error': ''}
-    try:
-        save_data(data, root_only=True)
-    except Exception:
-        pass
-    try:
-        telegram_durable_persist_controls_v234()
-    except Exception:
-        pass
-    if backend == 'telegram' or _secret_mega_prerequisites_v234():
-        schedule_secret_storage_migration_v234(backend)
-    else:
-        row = _secret_storage_migration_state_v234()
-        row.update({'target': 'mega', 'state': 'blocked', 'error': 'MEGA is blocked or not configured'})
-        _tg_v234_root_settings()['secret_storage_migration_v234'] = row
-        try:
-            save_data(data, root_only=True)
-        except Exception:
-            pass
-    try:
-        bot_journal('secret_storage_backend_v234', int(OWNER_ID or 0) or None, f'requested={backend}; effective={secret_storage_effective_backend_v234()}')
-    except Exception:
-        pass
-    return backend
+# [OCH12.35 OWNER] set_secret_storage_backend_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0031')
 
 def telegram_durable_status_v234() -> dict:
     head = telegram_durable_bootstrap_v234(False) if telegram_durable_primary_v234() else _tg_durable_default_head_v234()
@@ -1390,10 +1081,8 @@ def durable_run_pending_delta_now_v234() -> bool:
         log_error(f'[V234 DURABLE] legacy MEGA combined delta failed: {exc}')
         return False
 
-def _canon_mega_tasks_active__002() -> bool:
-    if telegram_durable_primary_v234():
-        return not RESTORE_GUARD_ACTIVE
-    return bool(_V234_MEGA_TASKS_ACTIVE()) if callable(_V234_MEGA_TASKS_ACTIVE) else False
+# [OCH12.35 OWNER] _canon_mega_tasks_active__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0097')
 
 def _tg_task_row_v234(update_id) -> dict | None:
     key = _mega_task_id(update_id)
@@ -1401,11 +1090,8 @@ def _tg_task_row_v234(update_id) -> dict | None:
     row = (head.get('tasks') or {}).get(key)
     return row if isinstance(row, dict) else None
 
-def _canon_mega_task_known_state__002(update_id) -> str:
-    if telegram_durable_primary_v234():
-        row = _tg_task_row_v234(update_id)
-        return str((row or {}).get('state') or '')
-    return str(_V234_MEGA_TASK_KNOWN_STATE(update_id) or '') if callable(_V234_MEGA_TASK_KNOWN_STATE) else ''
+# [OCH12.35 OWNER] _canon_mega_task_known_state__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0098')
 
 def _tg_task_prune_done_v234(tasks: dict) -> dict:
     done = [(k, v) for k, v in tasks.items() if str((v or {}).get('state') or '') == 'done']
@@ -1416,115 +1102,20 @@ def _tg_task_prune_done_v234(tasks: dict) -> dict:
         tasks.pop(key, None)
     return tasks
 
-def _canon_mega_task_upload_new_pending__002(update_id, task_payload: dict) -> bool:
-    if not telegram_durable_primary_v234():
-        return bool(_V234_MEGA_TASK_UPLOAD_PENDING(update_id, task_payload)) if callable(_V234_MEGA_TASK_UPLOAD_PENDING) else False
-    key = _mega_task_id(update_id)
-    with _TG_DURABLE_LOCK_V234:
-        head = telegram_durable_bootstrap_v234(False)
-        tasks = head.setdefault('tasks', {})
-        existing = tasks.get(key)
-        if isinstance(existing, dict) and str(existing.get('state') or '') in {'pending', 'running', 'done', 'failed'}:
-            return True
-        row = _delta_json_clone(task_payload or {})
-        row['state'] = 'pending'
-        row['created_at'] = row.get('created_at') or now_local().isoformat(timespec='microseconds')
-        row['updated_at'] = now_local().isoformat(timespec='microseconds')
-        row['backend'] = 'telegram'
-        tasks[key] = row
-        _tg_task_prune_done_v234(tasks)
-        if not _tg_durable_persist_head_v234(f'task_pending:{key}'):
-            tasks.pop(key, None)
-            return False
-    with _MEGA_TASK_LOCK:
-        _mega_task_registry[key] = {'state': 'pending', 'path': f'telegram-head:{key}', 'loaded_at': now_local().isoformat(timespec='seconds')}
-        _mega_task_counters['persisted'] += 1
-    _TG_DURABLE_STATS_V234['task_writes'] += 1
-    return True
+# [OCH12.35 OWNER] _canon_mega_task_upload_new_pending__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0099')
 
-def _canon_mega_task_begin__002(update_id, allow_existing_running: bool=False) -> bool:
-    if not telegram_durable_primary_v234():
-        return bool(_V234_MEGA_TASK_BEGIN(update_id, allow_existing_running=allow_existing_running)) if callable(_V234_MEGA_TASK_BEGIN) else False
-    key = _mega_task_id(update_id)
-    with _TG_DURABLE_LOCK_V234:
-        head = telegram_durable_bootstrap_v234(False)
-        tasks = head.setdefault('tasks', {})
-        row = tasks.get(key)
-        if not isinstance(row, dict):
-            return False
-        state = str(row.get('state') or '')
-        if state == 'running' and allow_existing_running:
-            return True
-        if state != 'pending':
-            return False
-        row['state'] = 'running'
-        row['started_at'] = now_local().isoformat(timespec='microseconds')
-        row['updated_at'] = row['started_at']
-        if not _tg_durable_persist_head_v234(f'task_running:{key}'):
-            row['state'] = 'pending'
-            return False
-    with _MEGA_TASK_LOCK:
-        _mega_task_registry[key] = {'state': 'running', 'path': f'telegram-head:{key}', 'loaded_at': now_local().isoformat(timespec='seconds')}
-        _mega_task_processing.add(key)
-    return True
+# [OCH12.35 OWNER] _canon_mega_task_begin__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0100')
 
-def _canon_mega_task_finish__001(update_id, success: bool, error: str='') -> bool:
-    if not telegram_durable_primary_v234():
-        return bool(_V234_MEGA_TASK_FINISH(update_id, success, error)) if callable(_V234_MEGA_TASK_FINISH) else False
-    key = _mega_task_id(update_id)
-    target = 'done' if success else 'failed'
-    with _TG_DURABLE_LOCK_V234:
-        head = telegram_durable_bootstrap_v234(False)
-        tasks = head.setdefault('tasks', {})
-        row = tasks.get(key)
-        if not isinstance(row, dict):
-            row = {'update_id': key, 'backend': 'telegram'}
-            tasks[key] = row
-        row['state'] = target
-        row['updated_at'] = now_local().isoformat(timespec='microseconds')
-        row['error'] = str(error or '')[:1200]
-        _tg_task_prune_done_v234(tasks)
-        if not _tg_durable_persist_head_v234(f'task_{target}:{key}'):
-            return False
-    with _MEGA_TASK_LOCK:
-        _mega_task_processing.discard(key)
-        _mega_task_registry[key] = {'state': target, 'path': f'telegram-head:{key}', 'loaded_at': now_local().isoformat(timespec='seconds')}
-        if success:
-            _mega_task_counters['completed'] += 1
-        else:
-            _mega_task_counters['failed'] += 1
-    return True
+# [OCH12.35 OWNER] _canon_mega_task_finish__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0101')
 
-def _canon_mega_task_refresh_registry__002() -> dict:
-    global _mega_task_registry_loaded_at, _mega_task_last_error
-    if not telegram_durable_primary_v234():
-        return _V234_MEGA_TASK_REFRESH() if callable(_V234_MEGA_TASK_REFRESH) else mega_task_registry_stats()
-    try:
-        head = telegram_durable_bootstrap_v234(True)
-        tasks = head.get('tasks') or {}
-        with _MEGA_TASK_LOCK:
-            _mega_task_registry.clear()
-            for key, row in tasks.items():
-                if not isinstance(row, dict):
-                    continue
-                _mega_task_registry[str(key)] = {'state': str(row.get('state') or ''), 'path': f'telegram-head:{key}', 'loaded_at': now_local().isoformat(timespec='seconds')}
-            _mega_task_registry_loaded_at = now_local().isoformat(timespec='seconds')
-            _mega_task_last_error = ''
-        return mega_task_registry_stats()
-    except Exception as exc:
-        _mega_task_last_error = str(exc)[:500]
-        return mega_task_registry_stats()
+# [OCH12.35 OWNER] _canon_mega_task_refresh_registry__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0102')
 
-def _canon_mega_task_registry_stats__001() -> dict:
-    if not telegram_durable_primary_v234() and callable(_V234_MEGA_TASK_STATS):
-        return _V234_MEGA_TASK_STATS()
-    with _MEGA_TASK_LOCK:
-        states = defaultdict(int)
-        for row in _mega_task_registry.values():
-            states[str((row or {}).get('state') or 'unknown')] += 1
-        counters = dict(_mega_task_counters)
-    st = telegram_durable_status_v234() if telegram_durable_configured_v234() else {}
-    return {'backend': 'telegram', 'pending': int(states.get('pending', 0)), 'running': int(states.get('running', 0)), 'done': int(states.get('done', 0)), 'failed': int(states.get('failed', 0)), 'processing': len(_mega_task_processing), 'loaded_at': globals().get('_mega_task_registry_loaded_at', ''), 'last_error': str(st.get('last_error') or globals().get('_mega_task_last_error', '')), **counters}
+# [OCH12.35 OWNER] _canon_mega_task_registry_stats__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0103')
 
 def _tg_task_recover_one_v234(update_id: str, row: dict):
     key = _mega_task_id(update_id)
@@ -1572,23 +1163,8 @@ def _tg_task_recover_one_v234(update_id: str, row: dict):
         except Exception:
             pass
 
-def _canon_schedule_mega_task_recovery__002(delay: float | None=None):
-    if not telegram_durable_primary_v234():
-        return _V234_MEGA_TASK_RECOVERY(delay) if callable(_V234_MEGA_TASK_RECOVERY) else None
-    if not mega_tasks_active():
-        return None
-    delay = max(0.1, float(delay if delay is not None else 1.0))
-
-    def _scan():
-        head = telegram_durable_bootstrap_v234(True)
-        rows = [(str(k), dict(v)) for k, v in (head.get('tasks') or {}).items() if isinstance(v, dict) and str(v.get('state') or '') in {'pending', 'running'}]
-        rows.sort(key=lambda kv: int(kv[0]) if kv[0].isdigit() else kv[0])
-        for key, row in rows[:MEGA_TASK_RECOVERY_LIMIT]:
-            pool = globals().get('RECOVERY_TASK_POOL')
-            if pool is None or not pool.submit('telegram-recover-global', _tg_task_recover_one_v234, key, row):
-                _tg_task_recover_one_v234(key, row)
-    DELAYED_SCHEDULER.cancel('telegram-task-startup-recovery-v234')
-    return DELAYED_SCHEDULER.schedule('telegram-task-startup-recovery-v234', delay, _scan)
+# [OCH12.35 OWNER] _canon_schedule_mega_task_recovery__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0104')
 
 def _canon_schedule_safe_failed_task_repairs__002(delay: float=6.0, limit: int=20):
     if telegram_durable_primary_v234():
@@ -1596,10 +1172,8 @@ def _canon_schedule_safe_failed_task_repairs__002(delay: float=6.0, limit: int=2
     return _V234_MEGA_SAFE_FAILED_REPAIR(delay, limit) if callable(_V234_MEGA_SAFE_FAILED_REPAIR) else None
 _V234_SECRET_MEGA_UPLOAD = globals().get('schedule_secret_mega_upload')
 
-def telegram_secret_checkpoint_v234(chat_id: int) -> bool:
-    if not telegram_durable_primary_v234():
-        return False
-    return telegram_schedule_delta_backup_v234(int(chat_id), delay=0.5, reason='secret')
+# [OCH12.35 OWNER] telegram_secret_checkpoint_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0032')
 try:
     _v177_legacy_0006_bot_journal('telegram_durable_primary_ready_v234', int(OWNER_ID or 0) or None, 'primary=telegram_channel; mega=optional_off_default; head=pinned; sqlite_snapshot=chunked; delta=discoverable')
 except Exception:
@@ -1678,21 +1252,11 @@ def _canon_telegram_apply_remote_deltas_v234__002() -> int:
         return 0
     return int(_V240_TG_APPLY_DELTA_ORIG() or 0)
 
-def _canon_mega_task_upload_new_pending__003(update_id, task_payload: dict) -> bool:
-    p = storage_profile_v237_1()
-    if p == STORAGE_PROFILE_TELEGRAM_V237_1 and (not storage_mode_feature_enabled_v240('telegram_durable', 'tasks')):
-        return False
-    if p == STORAGE_PROFILE_MEGA_V237_1 and (not storage_mode_feature_enabled_v240('mega', 'tasks')):
-        return False
-    return bool(_V240_TASK_UPLOAD_PENDING_ORIG(update_id, task_payload))
+# [OCH12.35 OWNER] _canon_mega_task_upload_new_pending__003 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0105')
 
-def _canon_schedule_mega_task_recovery__003(delay: float | None=None):
-    p = storage_profile_v237_1()
-    if p == STORAGE_PROFILE_TELEGRAM_V237_1 and (not storage_mode_feature_enabled_v240('telegram_durable', 'tasks')):
-        return None
-    if p == STORAGE_PROFILE_MEGA_V237_1 and (not storage_mode_feature_enabled_v240('mega', 'tasks')):
-        return None
-    return _V240_TASK_RECOVERY_ORIG(delay)
+# [OCH12.35 OWNER] _canon_schedule_mega_task_recovery__003 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0106')
 
 # --- ИСТОЧНИК: 13_telegram_stable_slots.py ---
 TG_STABLE_SLOT_SCHEMA_V236 = 1
@@ -2058,18 +1622,8 @@ MEGA_SHARD_HEAD_ENABLED_V240 = _v240_env_bool('MEGA_SHARD_HEAD_ENABLED', '1')
 MEGA_SHARD_ROOT_V240 = MEGA_BACKUP_DIR.rstrip('/') + '/shards'
 MEGA_SHARD_CHATS_ROOT_V240 = MEGA_SHARD_ROOT_V240 + '/chats'
 
-def _v240_mega_business_active() -> bool:
-    """True only when MEGA is the selected durable contour, not Telegram-primary."""
-    try:
-        tg = globals().get('telegram_durable_primary_v234')
-        if callable(tg) and bool(tg()):
-            return False
-    except Exception:
-        pass
-    try:
-        return bool(mega_is_configured())
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v240_mega_business_active -> 17_integration_mega.py
+_owner_install('mega', 'mega:0107')
 _V240_LANE_LIMITS = {'finance': _v240_env_int('MEGA_LANE_FINANCE', 2, 1, 8), 'forwarding': _v240_env_int('MEGA_LANE_FORWARD', 2, 1, 8), 'reminders': _v240_env_int('MEGA_LANE_REMINDERS', 1, 1, 8), 'tasks': _v240_env_int('MEGA_LANE_TASKS', 2, 1, 8), 'gomonk': _v240_env_int('MEGA_LANE_GOMONK', 1, 1, 8), 'settings': _v240_env_int('MEGA_LANE_SETTINGS', 1, 1, 8), 'snapshot': _v240_env_int('MEGA_LANE_SNAPSHOT', 1, 1, 2), 'restore': _v240_env_int('MEGA_LANE_RESTORE', 2, 1, 8), 'journal': _v240_env_int('MEGA_LANE_JOURNAL', 1, 1, 4), 'cleanup': _v240_env_int('MEGA_LANE_CLEANUP', 1, 1, 2), 'misc': _v240_env_int('MEGA_LANE_MISC', 1, 1, 8)}
 _V240_LANE_SEM = {k: threading.BoundedSemaphore(v) for k, v in _V240_LANE_LIMITS.items()}
 _V240_PAR_CV = threading.Condition(threading.RLock())
@@ -2080,12 +1634,11 @@ _V240_RESOURCE_LOCKS = {}
 _V240_PAR_STATS_LOCK = threading.RLock()
 _V240_PAR_STATS = {'active': 0, 'peak': 0, 'started': 0, 'completed': 0, 'errors': 0, 'by_lane': defaultdict(lambda: {'started': 0, 'completed': 0, 'errors': 0, 'active': 0, 'peak': 0})}
 
-def mega_shard_chat_dir_v240(chat_id: int) -> str:
-    return f'{MEGA_SHARD_CHATS_ROOT_V240}/chat_{int(chat_id)}'
+# [OCH12.35 OWNER] mega_shard_chat_dir_v240 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0108')
 
-def mega_shard_domain_dir_v240(chat_id: int, domain: str) -> str:
-    safe = re.sub('[^a-z0-9_-]+', '_', str(domain or 'state').casefold()).strip('_') or 'state'
-    return mega_shard_chat_dir_v240(int(chat_id)).rstrip('/') + '/' + safe
+# [OCH12.35 OWNER] mega_shard_domain_dir_v240 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0109')
 
 def _v240_chat_id_from_path(text: str):
     m = re.search('/shards/chats/chat_(-?\\d+)(?:/|$)', str(text or '').replace('\\', '/'))
@@ -2169,51 +1722,11 @@ def _v240_priority_exit():
         _V240_PAR_ACTIVE = max(0, _V240_PAR_ACTIVE - 1)
         _V240_PAR_CV.notify_all()
 
-def mega_parallel_execute_v240(exe: str, cmd: str, args, timeout_value):
-    """OCH12.26: one MEGAcmd command at a time on the 512 MB FAST instance.
+# [OCH12.35 OWNER] mega_parallel_execute_v240 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0110')
 
-    v240 used per-shard parallel subprocesses.  MEGAcmd itself owns one account/session
-    daemon, so login/put/rm from different lanes can race even when the remote paths are
-    unrelated.  Keep the shard metadata/layout, but serialize the actual CLI command.
-    """
-    lane, resource, priority = _v240_lane_and_resource(cmd, args)
-    lane_sem = _V240_LANE_SEM.get(lane) or _V240_LANE_SEM['misc']
-    resource_lock = _v240_resource_lock(resource)
-    with resource_lock:
-        lane_sem.acquire()
-        _v240_priority_enter(priority)
-        with _V240_PAR_STATS_LOCK:
-            _V240_PAR_STATS['active'] += 1
-            _V240_PAR_STATS['started'] += 1
-            _V240_PAR_STATS['peak'] = max(_V240_PAR_STATS['peak'], _V240_PAR_STATS['active'])
-            row = _V240_PAR_STATS['by_lane'][lane]
-            row['active'] += 1
-            row['started'] += 1
-            row['peak'] = max(row['peak'], row['active'])
-        try:
-            # OCH12.26 transaction fence: MEGAcmd has a single session state.
-            # Never allow LOGIN/PUT/RM/MV/GET to overlap across lanes.
-            with MEGA_COMMAND_LOCK:
-                cp = subprocess.run([exe] + list(args or []), capture_output=True, text=True, timeout=timeout_value)
-            with _V240_PAR_STATS_LOCK:
-                _V240_PAR_STATS['completed'] += 1
-                _V240_PAR_STATS['by_lane'][lane]['completed'] += 1
-            return cp
-        except Exception:
-            with _V240_PAR_STATS_LOCK:
-                _V240_PAR_STATS['errors'] += 1
-                _V240_PAR_STATS['by_lane'][lane]['errors'] += 1
-            raise
-        finally:
-            with _V240_PAR_STATS_LOCK:
-                _V240_PAR_STATS['active'] = max(0, _V240_PAR_STATS['active'] - 1)
-                _V240_PAR_STATS['by_lane'][lane]['active'] = max(0, _V240_PAR_STATS['by_lane'][lane]['active'] - 1)
-            _v240_priority_exit()
-            lane_sem.release()
-
-def mega_parallel_status_v240() -> dict:
-    with _V240_PAR_STATS_LOCK:
-        return {'enabled': bool(MEGA_SHARDED_STORAGE_V240), 'global_limit': int(MEGA_PARALLEL_MAX_V240), 'active': int(_V240_PAR_STATS['active']), 'peak': int(_V240_PAR_STATS['peak']), 'started': int(_V240_PAR_STATS['started']), 'completed': int(_V240_PAR_STATS['completed']), 'errors': int(_V240_PAR_STATS['errors']), 'lane_limits': dict(_V240_LANE_LIMITS), 'by_lane': {k: dict(v) for k, v in _V240_PAR_STATS['by_lane'].items()}}
+# [OCH12.35 OWNER] mega_parallel_status_v240 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0111')
 _V240_META_LOCK = threading.RLock()
 _V240_META_SEEDED = set()
 
@@ -2658,57 +2171,11 @@ def _canon_v177_download_remote_json_batch__002(remote_paths: list[str], batch_t
 _V240_ORIG_CHAT_BACKUP_BUNDLE = _canon_mega_upload_chat_backup_bundle__001
 _V240_ORIG_CHAT_LATEST_ONLY = _canon_mega_upload_chat_latest_json_only__001
 
-def _canon_mega_upload_chat_backup_bundle__002(chat_id: int, month_key: str | None=None) -> bool:
-    """Same public command semantics; files now live under chat/finance shard."""
-    if not MEGA_SHARDED_STORAGE_V240 or not _v240_mega_business_active():
-        return bool(_V240_ORIG_CHAT_BACKUP_BUNDLE(chat_id, month_key)) if callable(_V240_ORIG_CHAT_BACKUP_BUNDLE) else False
-    if not is_backup_to_mega_enabled(chat_id):
-        return False
-    cid = int(chat_id)
-    try:
-        save_chat_json(cid)
-        finance_root = mega_shard_domain_dir_v240(cid, 'finance')
-        checkpoint_dir = finance_root + '/checkpoints'
-        ok = bool(mega_put_replace(chat_json_file(cid), checkpoint_dir, 'latest.json', archive_previous=True))
-        month_key = month_key or current_month_key()
-        month_files = save_chat_monthly_backup_files(cid, month_key)
-        json_month_path = month_files.get('json')
-        if json_month_path:
-            ok = bool(mega_put_replace(json_month_path, finance_root + '/monthly/' + str(month_key), 'current.json', archive_previous=True)) and ok
-        _v240_schedule_chat_meta(cid)
-        if ok:
-            try:
-                bot_journal('mega_chat_backup_sharded_v240', cid, f'month={month_key}')
-            except Exception:
-                pass
-        return ok
-    except Exception as exc:
-        try:
-            log_error(f'[MEGA SHARD CHAT BACKUP ERROR] {cid}: {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _canon_mega_upload_chat_backup_bundle__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0112')
 
-def _canon_mega_upload_chat_latest_json_only__002(chat_id: int) -> bool:
-    if not MEGA_SHARDED_STORAGE_V240 or not _v240_mega_business_active():
-        return bool(_V240_ORIG_CHAT_LATEST_ONLY(chat_id)) if callable(_V240_ORIG_CHAT_LATEST_ONLY) else False
-    cid = int(chat_id)
-    if not is_backup_to_mega_enabled(cid):
-        return False
-    try:
-        local_path = chat_json_file(cid)
-        if not os.path.exists(local_path):
-            local_path = save_chat_json_only(cid)
-        if not local_path:
-            return False
-        _v240_schedule_chat_meta(cid)
-        return bool(mega_put_replace(local_path, mega_shard_domain_dir_v240(cid, 'finance') + '/checkpoints', 'latest.json', archive_previous=True))
-    except Exception as exc:
-        try:
-            log_error(f'mega_upload_chat_latest_json_only shard v240({cid}): {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _canon_mega_upload_chat_latest_json_only__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0113')
 _V240_ORIG_TASK_UPLOAD_PENDING = _canon_mega_task_upload_new_pending__003
 _V240_ORIG_TASK_MOVE = _canon_mega_task_move__001
 _V240_ORIG_TASK_REFRESH = _canon_mega_task_refresh_registry__002
@@ -2719,167 +2186,17 @@ def _v240_task_dir(chat_id: int, state: str) -> str:
         state = 'pending'
     return mega_shard_domain_dir_v240(int(chat_id), 'tasks').rstrip('/') + '/' + state
 
-def _canon_mega_task_upload_new_pending__004(update_id, task_payload: dict) -> bool:
-    global _mega_task_last_error
-    try:
-        tg = globals().get('telegram_durable_primary_v234')
-        if callable(tg) and bool(tg()):
-            return bool(_V240_ORIG_TASK_UPLOAD_PENDING(update_id, task_payload)) if callable(_V240_ORIG_TASK_UPLOAD_PENDING) else False
-    except Exception:
-        pass
-    chat_id = (task_payload or {}).get('chat_id')
-    if not MEGA_SHARDED_STORAGE_V240 or chat_id in (None, ''):
-        return bool(_V240_ORIG_TASK_UPLOAD_PENDING(update_id, task_payload)) if callable(_V240_ORIG_TASK_UPLOAD_PENDING) else False
-    key = _mega_task_id(update_id)
-    local_path = ''
-    started = time.monotonic()
-    if not mega_tasks_active():
-        return False
-    try:
-        known = mega_task_known_state(key)
-        if known in {'pending', 'running', 'done'}:
-            return True
-        remote_dir = _v240_task_dir(int(chat_id), 'pending')
-        mega_ensure_remote_path(remote_dir)
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, mega_task_filename(key))
-        with open(local_path, 'w', encoding='utf-8') as fh:
-            json.dump(task_payload, fh, ensure_ascii=False, separators=(',', ':'), default=str)
-        try:
-            _mega_run('mega-put', [local_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        except Exception:
-            existing = _mega_find_remote_files(remote_dir, mega_task_filename(key), limit=2)
-            if not existing:
-                raise
-        remote_final = remote_dir.rstrip('/') + '/' + mega_task_filename(key)
-        _mega_task_update_registry(key, 'pending', remote_final)
-        with _MEGA_TASK_LOCK:
-            _mega_task_counters['persisted'] += 1
-        _v240_schedule_chat_meta(int(chat_id))
-        try:
-            bot_journal('mega_task_timing', int(chat_id), f'phase=sharded_pending_v240 update={key} elapsed={time.monotonic() - started:.3f}s')
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        _mega_task_last_error = str(exc)[:500]
-        with _MEGA_TASK_LOCK:
-            _mega_task_counters['persist_errors'] += 1
-        try:
-            log_error(f'[MEGA SHARD TASK PERSIST] update={key}: {exc}')
-        except Exception:
-            pass
-        return False
-    finally:
-        try:
-            if local_path and os.path.exists(local_path):
-                os.remove(local_path)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _canon_mega_task_upload_new_pending__004 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0114')
 
-def _canon_mega_task_move__002(update_id, from_state: str, to_state: str) -> bool:
-    global _mega_task_last_error
-    if not MEGA_SHARDED_STORAGE_V240:
-        return bool(_V240_ORIG_TASK_MOVE(update_id, from_state, to_state)) if callable(_V240_ORIG_TASK_MOVE) else False
-    key = _mega_task_id(update_id)
-    with _MEGA_TASK_LOCK:
-        row = dict(_mega_task_registry.get(key) or {})
-    src = str(row.get('path') or mega_task_remote_path(key, from_state))
-    norm = src.replace('\\', '/')
-    if f'/{from_state}/' in norm:
-        dst = norm.replace(f'/{from_state}/', f'/{to_state}/', 1)
-        dst_dir = dst.rsplit('/', 1)[0]
-    else:
-        dst_dir = mega_task_remote_dir(to_state)
-        dst = dst_dir.rstrip('/') + '/' + mega_task_filename(key)
-    try:
-        mega_ensure_remote_path(dst_dir)
-        res = _mega_run('mega-mv', [src, dst], check=False, timeout=60)
-        if res.returncode != 0:
-            found = _mega_find_remote_files(dst_dir, mega_task_filename(key), limit=2)
-            if not found:
-                raise RuntimeError((res.stderr or res.stdout or f'cannot move {src} -> {dst}')[:500])
-        _mega_task_update_registry(key, to_state, dst)
-        return True
-    except Exception as exc:
-        _mega_task_last_error = str(exc)[:500]
-        try:
-            log_error(f'[MEGA SHARD TASK MOVE] update={key} {from_state}->{to_state}: {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _canon_mega_task_move__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0115')
 
-def _canon_mega_task_refresh_registry__003() -> dict:
-    global _mega_task_registry_loaded_at, _mega_task_last_error
-    if not mega_tasks_active():
-        return mega_task_registry_stats()
-    try:
-        tg = globals().get('telegram_durable_primary_v234')
-        if callable(tg) and bool(tg()):
-            return _V240_ORIG_TASK_REFRESH() if callable(_V240_ORIG_TASK_REFRESH) else mega_task_registry_stats()
-    except Exception:
-        pass
-    if callable(_V240_ORIG_TASK_REFRESH):
-        try:
-            _V240_ORIG_TASK_REFRESH()
-        except Exception:
-            pass
-    try:
-        rows = _mega_find_remote_files(MEGA_SHARD_CHATS_ROOT_V240, 'task_*.json', limit=None) if MEGA_SHARDED_STORAGE_V240 else []
-        rank = {'failed': 1, 'pending': 2, 'running': 3, 'done': 4}
-        with _MEGA_TASK_LOCK:
-            for path in rows:
-                name = os.path.basename(path)
-                m = re.fullmatch('task_([A-Za-z0-9_-]+)\\.json', name)
-                if not m:
-                    continue
-                state = next((s for s in ('pending', 'running', 'done', 'failed') if f'/{s}/' in path.replace('\\', '/')), '')
-                if not state:
-                    continue
-                key = m.group(1)
-                old = _mega_task_registry.get(key)
-                if old is None or rank[state] >= rank.get(str(old.get('state') or ''), 0):
-                    _mega_task_registry[key] = {'state': state, 'path': path, 'loaded_at': now_local().isoformat(timespec='seconds')}
-            _mega_task_registry_loaded_at = now_local().isoformat(timespec='seconds')
-        return mega_task_registry_stats()
-    except Exception as exc:
-        _mega_task_last_error = str(exc)[:500]
-        try:
-            log_error(f'mega_task_refresh_registry shard v240: {exc}')
-        except Exception:
-            pass
-        return mega_task_registry_stats()
+# [OCH12.35 OWNER] _canon_mega_task_refresh_registry__003 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0116')
 
-def _canon_mega_task_prune_done_async__002():
-
-    def worker():
-        try:
-            rows = []
-            try:
-                rows.extend(_mega_find_remote_files(mega_task_remote_root(), 'task_*.json'))
-            except Exception:
-                pass
-            if MEGA_SHARDED_STORAGE_V240:
-                try:
-                    rows.extend(_mega_find_remote_files(MEGA_SHARD_CHATS_ROOT_V240, 'task_*.json'))
-                except Exception:
-                    pass
-            groups = defaultdict(list)
-            for p in rows:
-                if '/done/' in p.replace('\\', '/'):
-                    groups[p.rsplit('/', 1)[0]].append(p)
-            for _parent, group in groups.items():
-                for remote in sorted(group, reverse=True)[MEGA_TASK_DONE_KEEP:]:
-                    try:
-                        _mega_run('mega-rm', [remote], check=False, timeout=30)
-                    except Exception:
-                        pass
-        except Exception as exc:
-            try:
-                log_error(f'_mega_task_prune_done_async v240: {exc}')
-            except Exception:
-                pass
-    threading.Thread(target=worker, daemon=True).start()
+# [OCH12.35 OWNER] _canon_mega_task_prune_done_async__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0117')
 try:
     runtime_event('mega_sharded_parallel_v240', f"enabled={int(MEGA_SHARDED_STORAGE_V240)}; global={MEGA_PARALLEL_MAX_V240}; lanes={json.dumps(_V240_LANE_LIMITS, separators=(',', ':'))}", 'INFO')
 except Exception:
@@ -2952,22 +2269,8 @@ def external_local_only_v233_enabled() -> bool:
     except Exception:
         return False
 
-def external_access_allowed_v233(category: str='other_http') -> bool:
-    """v246 Render-only means storage-only isolation, not an offline bot.
-
-    Normal Telegram bot traffic, Google, FX and other user features stay available.
-    Only the two remote backup contours (MEGA and Telegram backup-channel) are blocked.
-    The tiny MEGA storage-control beacon is a control-plane exception so the next deploy
-    can know which mode was selected before it restarted.
-    """
-    cat = str(category or 'other_http').strip().casefold()
-    if cat in {'telegram', 'local', 'sqlite', 'memory', 'render_inbound', 'mega_control'}:
-        return True
-    if bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)) and cat in {'mega', 'mega_put', 'mega_get', 'mega_critical', 'mega_backup', 'telegram_backup', 'telegram_durable'}:
-        return True
-    if not external_local_only_v233_enabled():
-        return True
-    return cat not in {'mega', 'mega_put', 'mega_get', 'mega_critical', 'mega_backup', 'telegram_backup', 'telegram_durable', 'backup_channel'}
+# [OCH12.35 COMPAT] legacy external_access_allowed_v233 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0007')
 
 def external_blocked_v233(category: str='other_http') -> bool:
     return not external_access_allowed_v233(category)
@@ -3444,32 +2747,14 @@ def operation_problem_count() -> tuple[int, int]:
     rows = operation_recent(500, {'yellow', 'red'})
     return (sum((1 for r in rows if r.get('level') == 'yellow')), sum((1 for r in rows if r.get('level') == 'red')))
 
-def finance_currency_context(chat_id: int, currency: str | None=None) -> dict:
-    """Одна оболочка ARS/USD без смешивания режима ARS+эквивалент с USD-контуром."""
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    requested = str(currency or '').strip().lower()
-    if requested in {'usd', 'dollar', 'доллар'}:
-        ledger = 'usd'
-    elif requested in {'ars', 'peso', 'песо', 'ars_usd'}:
-        ledger = 'ars'
-    else:
-        mode = str(settings.get('currency_mode') or 'ars').strip().lower()
-        ledger = 'usd' if mode == 'usd' else 'ars'
-    current = _ensure_currency_ledgers(store)
-    prefix = ledger
-    records_key = 'records' if current == ledger else f'{prefix}_records'
-    daily_key = 'daily_records' if current == ledger else f'{prefix}_daily_records'
-    return {'chat_id': chat_id, 'store': store, 'currency': ledger, 'symbol': 'USD' if ledger == 'usd' else 'ARS', 'records_key': records_key, 'daily_key': daily_key, 'balance_key': 'balance' if current == ledger else f'{prefix}_balance', 'next_id_key': 'next_id' if current == ledger else f'{prefix}_next_id'}
+# [OCH12.35 OWNER] finance_currency_context -> 11_business_finance.py
+_owner_install('finance', 'finance:0067')
 
-def finance_currency_records(chat_id: int, currency: str | None=None) -> list[dict]:
-    ctx = finance_currency_context(chat_id, currency)
-    return list(ctx['store'].get(ctx['records_key'], []) or [])
+# [OCH12.35 OWNER] finance_currency_records -> 11_business_finance.py
+_owner_install('finance', 'finance:0068')
 
-def finance_currency_daily(chat_id: int, currency: str | None=None) -> dict:
-    ctx = finance_currency_context(chat_id, currency)
-    return ctx['store'].get(ctx['daily_key'], {}) or {}
+# [OCH12.35 OWNER] finance_currency_daily -> 11_business_finance.py
+_owner_install('finance', 'finance:0069')
 
 def process_register(process_id: str, label: str, chat_id=None, phase: str='ожидает', cancellable: bool=False, meta: dict | None=None):
     with _PROCESS_CENTER_LOCK:
@@ -3597,185 +2882,48 @@ def window_registry_summary() -> dict:
         pass
     return {'total': total, 'timer': timer, 'missing': missing}
 
-def _expense_inbox_root() -> dict:
-    root = _root_settings().setdefault('expense_inbox_v141', {})
-    root.setdefault('next_id', 1)
-    root.setdefault('items', {})
-    root.setdefault('evening_enabled', True)
-    root.setdefault('evening_hour', 21)
-    root.setdefault('evening_last_date', '')
-    root.setdefault('quick_message_buttons_enabled', True)
-    root.setdefault('recent_event_migration_v142_at', '')
-    return root
+# [OCH12.35 OWNER] _expense_inbox_root -> 11_business_finance.py
+_owner_install('finance', 'finance:0070')
 
-def expense_quick_buttons_enabled() -> bool:
-    return bool(_expense_inbox_root().get('quick_message_buttons_enabled', True))
+# [OCH12.35 OWNER] expense_quick_buttons_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0071')
 
-def expense_quick_buttons_label() -> str:
-    return '📱 Отметка: С КНОПКАМИ' if expense_quick_buttons_enabled() else '📱 Отметка: БЕЗ КНОПОК'
+# [OCH12.35 OWNER] expense_quick_buttons_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0072')
 
-def toggle_expense_quick_buttons() -> bool:
-    root = _expense_inbox_root()
-    root['quick_message_buttons_enabled'] = not bool(root.get('quick_message_buttons_enabled', True))
-    _root_save('expense_quick_buttons_toggle')
-    return bool(root['quick_message_buttons_enabled'])
+# [OCH12.35 OWNER] toggle_expense_quick_buttons -> 11_business_finance.py
+_owner_install('finance', 'finance:0073')
 
-def _expense_event_dt(row: dict):
-    try:
-        value = str((row or {}).get('created_at') or '')
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=now_local().tzinfo)
-        return dt
-    except Exception:
-        try:
-            return datetime.fromtimestamp(float((row or {}).get('created_ts') or 0), tz=now_local().tzinfo)
-        except Exception:
-            return None
+# [OCH12.35 OWNER] _expense_event_dt -> 11_business_finance.py
+_owner_install('finance', 'finance:0074')
 
-def _v177_legacy_0112_migrate_recent_expense_shortcut_events(days: int=2, refresh_messages: bool=False) -> dict:
-    """Подхватывает быстрые отметки v140/v141 за последние 48 часов."""
-    cfg_fn = globals().get('expense_shortcut_config')
-    if not callable(cfg_fn):
-        return {'imported': 0, 'updated': 0, 'seen': 0}
-    try:
-        shortcut = cfg_fn(False) or {}
-    except Exception:
-        shortcut = {}
-    cutoff = now_local() - timedelta(days=max(1, int(days or 2)))
-    imported = updated = seen = 0
-    duplicate = too_old = missing_message_id = refresh_failed = 0
-    total_events = len(list(shortcut.get('events') or []))
-    for event in list(shortcut.get('events') or []):
-        if not isinstance(event, dict) or not event.get('id'):
-            continue
-        dt = _expense_event_dt(event)
-        if dt is None or dt < cutoff:
-            too_old += 1
-            continue
-        seen += 1
-        event_id = str(event.get('id'))
-        target = int(event.get('target_chat_id') or shortcut.get('target_chat_id') or OWNER_ID or 0)
-        before = None
-        with _EXPENSE_INBOX_LOCK:
-            for existing in (_expense_inbox_root().get('items') or {}).values():
-                if str((existing or {}).get('source_event_id') or '') == event_id:
-                    before = existing
-                    break
-        draft = expense_draft_for_event(event_id, target, dt.isoformat(timespec='seconds'))
-        if before is None:
-            imported += 1
-        else:
-            duplicate += 1
-        mid = int(event.get('telegram_message_id') or 0)
-        if not mid:
-            missing_message_id += 1
-        if mid and int((draft or {}).get('telegram_message_id') or 0) != mid:
-            with _EXPENSE_INBOX_LOCK:
-                draft['telegram_message_id'] = mid
-        if refresh_messages and mid and target:
-            try:
-                text_fn = globals().get('expense_compact_message_text')
-                text = text_fn(dt.isoformat(timespec='seconds')) if callable(text_fn) else f"💸 iPhone · {dt.strftime('%H:%M')}"
-                markup = expense_draft_message_keyboard(int(draft.get('id') or 0), target)
-                bot.edit_message_text(text, chat_id=target, message_id=mid, reply_markup=markup)
-                updated += 1
-            except Exception as exc:
-                if 'message is not modified' not in str(exc).lower():
-                    try:
-                        fast_ui_edit_reply_markup(target, mid, expense_draft_message_keyboard(int(draft.get('id') or 0), target), purpose='expense_draft_markup')
-                        updated += 1
-                    except Exception:
-                        refresh_failed += 1
-    root = _expense_inbox_root()
-    root['recent_event_migration_v142_at'] = now_local().isoformat(timespec='seconds')
-    _root_save('expense_recent_event_migration')
-    try:
-        bot_journal('expense_recent_events_migrated', OWNER_ID, f'total={total_events} seen_48h={seen} imported={imported} existing={duplicate} updated={updated} too_old_or_bad_date={too_old} missing_message_id={missing_message_id} refresh_failed={refresh_failed}')
-    except Exception:
-        pass
-    return {'imported': imported, 'updated': updated, 'seen': seen, 'existing': duplicate, 'too_old': too_old, 'missing_message_id': missing_message_id, 'refresh_failed': refresh_failed}
+# [OCH12.35 OWNER] _v177_legacy_0112_migrate_recent_expense_shortcut_events -> 11_business_finance.py
+_owner_install('finance', 'finance:0075')
 try:
     _v177_legacy_0112_migrate_recent_expense_shortcut_events.__name__ = 'migrate_recent_expense_shortcut_events'
 except Exception:
     pass
 
-def expense_draft_create(source: str, target_chat_id: int, created_at: str | None=None, source_event_id: str='') -> dict:
-    with _EXPENSE_INBOX_LOCK:
-        root = _expense_inbox_root()
-        rid = int(root.get('next_id') or 1)
-        root['next_id'] = rid + 1
-        row = {'id': rid, 'status': 'open', 'source': str(source or 'manual'), 'source_event_id': str(source_event_id or ''), 'target_chat_id': int(target_chat_id), 'created_at': str(created_at or now_local().isoformat(timespec='seconds')), 'amount': None, 'category': '', 'note': '', 'telegram_message_id': 0}
-        root.setdefault('items', {})[str(rid)] = row
-        items = root.get('items') or {}
-        if len(items) > _EXPENSE_DRAFT_KEEP:
-            closed = sorted((x for x in items.values() if x.get('status') != 'open'), key=lambda x: str(x.get('created_at') or ''))
-            for old in closed[:max(0, len(items) - _EXPENSE_DRAFT_KEEP)]:
-                items.pop(str(old.get('id')), None)
-    _root_save('expense_draft_create')
-    return row
+# [OCH12.35 OWNER] expense_draft_create -> 11_business_finance.py
+_owner_install('finance', 'finance:0076')
 
-def expense_draft_for_event(event_id: str, target_chat_id: int, created_at: str | None=None) -> dict:
-    with _EXPENSE_INBOX_LOCK:
-        for row in (_expense_inbox_root().get('items') or {}).values():
-            if str(row.get('source_event_id') or '') == str(event_id):
-                return row
-    return expense_draft_create('iphone', target_chat_id, created_at, source_event_id=event_id)
+# [OCH12.35 OWNER] expense_draft_for_event -> 11_business_finance.py
+_owner_install('finance', 'finance:0077')
 
-def expense_draft_set_message(draft_id: int, message_id: int):
-    with _EXPENSE_INBOX_LOCK:
-        row = (_expense_inbox_root().get('items') or {}).get(str(int(draft_id)))
-        if row:
-            row['telegram_message_id'] = int(message_id)
-    _root_save('expense_draft_message')
+# [OCH12.35 OWNER] expense_draft_set_message -> 11_business_finance.py
+_owner_install('finance', 'finance:0078')
 
-def expense_draft_mark(draft_id: int, status: str, amount=None, category: str='', note: str='') -> bool:
-    with _EXPENSE_INBOX_LOCK:
-        row = (_expense_inbox_root().get('items') or {}).get(str(int(draft_id)))
-        if not isinstance(row, dict):
-            return False
-        row['status'] = str(status)
-        if amount is not None:
-            row['amount'] = float(amount)
-        if category:
-            row['category'] = str(category)
-        if note:
-            row['note'] = str(note)
-        row['updated_at'] = now_local().isoformat(timespec='seconds')
-    _root_save('expense_draft_mark')
-    return True
+# [OCH12.35 OWNER] expense_draft_mark -> 11_business_finance.py
+_owner_install('finance', 'finance:0079')
 
-def expense_open_rows(limit: int=100) -> list[dict]:
-    with _EXPENSE_INBOX_LOCK:
-        rows = [copy.deepcopy(x) for x in (_expense_inbox_root().get('items') or {}).values() if str(x.get('status')) == 'open']
-    rows.sort(key=lambda x: str(x.get('created_at') or ''), reverse=True)
-    return rows[:max(1, int(limit))]
+# [OCH12.35 OWNER] expense_open_rows -> 11_business_finance.py
+_owner_install('finance', 'finance:0080')
 
-def expense_inbox_text() -> str:
-    rows = expense_open_rows(100)
-    lines = ['⚠️ НЕРАЗОБРАННЫЕ РАСХОДЫ', '', f'Открытых отметок: {len(rows)}', '']
-    if not rows:
-        lines.append('Все быстрые отметки разобраны.')
-    for row in rows[:30]:
-        dt = _reminder_parse_dt(row.get('created_at')) if '_reminder_parse_dt' in globals() else None
-        label = dt.strftime('%d.%m %H:%M') if dt else str(row.get('created_at') or '')[:16]
-        lines.append(f"{row.get('id')}. {label} · {row.get('source')}")
-    return '\n'.join(lines)
+# [OCH12.35 OWNER] expense_inbox_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0081')
 
-def _today_finance_total() -> float:
-    total = 0.0
-    day = today_key()
-    for _cid, store in (data.get('chats', {}) or {}).items():
-        if not isinstance(store, dict):
-            continue
-        for rec in (store.get('daily_records', {}) or {}).get(day, []) or []:
-            try:
-                amount = float(rec.get('amount', 0) or 0)
-                if amount < 0:
-                    total += abs(amount)
-            except Exception:
-                pass
-    return total
+# [OCH12.35 OWNER] _today_finance_total -> 11_business_finance.py
+_owner_install('finance', 'finance:0082')
 
 def evening_reconciliation_enabled() -> bool:
     return bool(_expense_inbox_root().get('evening_enabled', True))
@@ -3836,35 +2984,11 @@ def _evening_reconciliation_tick():
 def _evening_reconciliation_loop():
     return _evening_reconciliation_tick()
 
-def finance_cache_invalidate(chat_id: int | None=None, reason: str=''):
-    with _FINANCE_CACHE_LOCK:
-        if chat_id is None:
-            _FINANCE_VIEW_CACHE.clear()
-        else:
-            cid = int(chat_id)
-            for key in list(_FINANCE_VIEW_CACHE.keys()):
-                if isinstance(key, tuple) and cid in key:
-                    _FINANCE_VIEW_CACHE.pop(key, None)
-    try:
-        if reason:
-            bot_journal('finance_cache_invalidated', chat_id, reason)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] finance_cache_invalidate -> 11_business_finance.py
+_owner_install('finance', 'finance:0083')
 
-def finance_cache_get(key, builder, ttl: float=20.0):
-    now_m = time.monotonic()
-    with _FINANCE_CACHE_LOCK:
-        row = _FINANCE_VIEW_CACHE.get(key)
-        if row and now_m - float(row.get('created') or 0) <= float(ttl):
-            return copy.deepcopy(row.get('value'))
-    value = builder()
-    with _FINANCE_CACHE_LOCK:
-        _FINANCE_VIEW_CACHE[key] = {'created': now_m, 'value': copy.deepcopy(value)}
-        if len(_FINANCE_VIEW_CACHE) > 400:
-            oldest = sorted(_FINANCE_VIEW_CACHE.items(), key=lambda x: float((x[1] or {}).get('created') or 0))[:100]
-            for old_key, _ in oldest:
-                _FINANCE_VIEW_CACHE.pop(old_key, None)
-    return value
+# [OCH12.35 OWNER] finance_cache_get -> 11_business_finance.py
+_owner_install('finance', 'finance:0084')
 _ORIGINAL_MONTH_RECORDS_FOR_CHAT = globals().get('month_records_for_chat')
 if callable(_ORIGINAL_MONTH_RECORDS_FOR_CHAT):
 
@@ -3914,88 +3038,17 @@ def _integrity_compact_record(record: dict | None) -> dict:
     keep = ('id', 'amount', 'note', 'date', 'day', 'timestamp', 'currency', 'source_msg_id', 'operation_key', 'ids')
     return {k: copy.deepcopy(rec.get(k)) for k in keep if k in rec}
 
-def _finance_integrity_upload_anchor(anchor: dict) -> None:
-    tmp = None
-    try:
-        if not globals().get('mega_is_configured') or not mega_is_configured():
-            return
-        remote = f"{str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')}/integrity"
-        mega_ensure_remote_path(remote)
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        name = f"finance_anchor_{int(anchor.get('seq') or 0):08d}_{str(anchor.get('hash') or '')[:12]}.json"
-        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, name)
-        _atomic_json_dump(tmp, {'kind': 'finance_integrity_anchor', 'bot_version': VERSION, **anchor})
-        _mega_run('mega-put', [tmp, remote], check=True, timeout=MEGA_TIMEOUT)
-        bot_journal('finance_integrity_anchor_saved', anchor.get('chat_id'), f"seq={anchor.get('seq')} hash={anchor.get('hash')}")
-    except Exception as exc:
-        log_error(f'finance integrity anchor: {exc}')
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _finance_integrity_upload_anchor -> 11_business_finance.py
+_owner_install('finance', 'finance:0085')
 
-def finance_integrity_append(chat_id: int, action: str, record: dict | None=None, details: dict | None=None) -> str:
-    cid = int(chat_id)
-    with _FINANCE_INTEGRITY_LOCK:
-        root = _integrity_root()
-        tips = root.setdefault('tips', {})
-        prev = str(tips.get(str(cid)) or '')
-        root['event_seq'] = int(root.get('event_seq') or 0) + 1
-        seq = int(root['event_seq'])
-        payload = {'seq': seq, 'chat_id': cid, 'action': str(action), 'record': _integrity_compact_record(record), 'details': _compact_operation_payload(details), 'at': now_local().isoformat(timespec='microseconds'), 'prev': prev}
-        digest = hashlib.sha256((prev + '|' + _integrity_canonical(payload)).encode('utf-8')).hexdigest()
-        event = dict(payload)
-        event['hash'] = digest
-        root.setdefault('events', []).append(event)
-        tips[str(cid)] = digest
-        if len(root['events']) > _FINANCE_INTEGRITY_KEEP:
-            root['events'] = root['events'][-_FINANCE_INTEGRITY_KEEP:]
-        anchor = None
-        if seq % 50 == 0:
-            anchor = {'seq': seq, 'chat_id': cid, 'hash': digest, 'at': payload['at']}
-            root['anchor'] = dict(anchor)
-    _root_save_coalesced('finance_integrity', 1.0)
-    try:
-        ledger_fn = globals().get('constitution_ledger_append')
-        if callable(ledger_fn):
-            ledger_fn(cid, str(action), record, details, digest, seq)
-    except Exception as _constitution_ledger_exc:
-        try:
-            constitution_set_quarantine(f'finance ledger append exception seq={seq}: {_constitution_ledger_exc}')
-        except Exception:
-            pass
-        log_error(f'DATA CONSTITUTION ledger append: {_constitution_ledger_exc}')
-    if anchor:
-        pool = globals().get('GENERAL_TASK_POOL')
-        if pool is not None:
-            pool.submit_unique(f'integrity-anchor:{seq}', _finance_integrity_upload_anchor, anchor)
-    return digest
+# [OCH12.35 OWNER] finance_integrity_append -> 11_business_finance.py
+_owner_install('finance', 'finance:0086')
 
-def finance_integrity_verify(limit: int=5000) -> dict:
-    with _FINANCE_INTEGRITY_LOCK:
-        events = copy.deepcopy((_integrity_root().get('events') or [])[-max(1, int(limit)):])
-    previous_by_chat = {}
-    checked = 0
-    for event in events:
-        cid = str(event.get('chat_id'))
-        prev = str(event.get('prev') or '')
-        expected_prev = previous_by_chat.get(cid)
-        if expected_prev is not None and prev != expected_prev:
-            return {'ok': False, 'checked': checked, 'error': f'разрыв цепочки chat={cid}'}
-        payload = {k: copy.deepcopy(v) for k, v in event.items() if k != 'hash'}
-        digest = hashlib.sha256((prev + '|' + _integrity_canonical(payload)).encode('utf-8')).hexdigest()
-        if digest != str(event.get('hash') or ''):
-            return {'ok': False, 'checked': checked, 'error': f'неверный hash chat={cid}'}
-        previous_by_chat[cid] = digest
-        checked += 1
-    return {'ok': True, 'checked': checked, 'error': ''}
+# [OCH12.35 OWNER] finance_integrity_verify -> 11_business_finance.py
+_owner_install('finance', 'finance:0087')
 
-def finance_integrity_text() -> str:
-    report = finance_integrity_verify()
-    root = _integrity_root()
-    return f"🔗 ЦЕЛОСТНОСТЬ ФИНАНСОВ\n\nСобытий в цепочке: {len(root.get('events') or [])}\nПроверено: {report.get('checked', 0)}\nРезультат: {('✅ цепочка цела' if report.get('ok') else '🔴 обнаружена проблема')}\nПодробности: {report.get('error') or 'нет'}"
+# [OCH12.35 OWNER] finance_integrity_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0088')
 
 def runtime_audit_metrics() -> dict:
     """Compact counters included in diagnostics without serializing large payloads."""
@@ -4026,62 +3079,23 @@ def start_safety_schedulers():
             pass
         DELAYED_SCHEDULER.schedule('expense-evening-reconcile', 5.0, _evening_reconciliation_tick)
 
-def expense_draft_insert_value(draft_id: int) -> str:
-    service = f'(EXPENSEDRAFT|{int(draft_id)}| служебное — можно не трогать)'
-    return service + '\n\n0 продукты описание'
+# [OCH12.35 OWNER] expense_draft_insert_value -> 11_business_finance.py
+_owner_install('finance', 'finance:0089')
 
-def expense_draft_message_keyboard(draft_id: int, viewer_chat_id: int):
-    if not expense_quick_buttons_enabled():
-        return None
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(make_copy_or_inline_button('✍️ Заполнить расход', expense_draft_insert_value(draft_id), viewer_chat_id=viewer_chat_id))
-    kb.row(IB('❌ Это не расход', callback_data=f'expense_draft_dismiss:{int(draft_id)}'))
-    return kb
+# [OCH12.35 OWNER] expense_draft_message_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0090')
 
-def build_expense_inbox_keyboard(viewer_chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    rows = expense_open_rows(30)
-    for row in rows:
-        try:
-            dt = datetime.fromisoformat(str(row.get('created_at') or ''))
-            label = dt.strftime('%d.%m %H:%M')
-        except Exception:
-            label = str(row.get('created_at') or '')[:16]
-        kb.row(IB(f"{row.get('id')}. {label} · заполнить", callback_data=f"expense_draft_open:{row.get('id')}"))
-    kb.row(IB(evening_reconciliation_label(), callback_data='expense_evening_toggle'))
-    kb.row(IB('🌙 Проверить сейчас', callback_data='expense_evening_now'))
-    day = get_chat_store(viewer_chat_id).get('current_view_day') or today_key()
-    kb.row(IB('🔙 Назад в Инфо', callback_data=f'd:{day}:info'))
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{day}:back_main'))
-    return kb
+# [OCH12.35 OWNER] build_expense_inbox_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0091')
 
-def build_expense_draft_text(draft_id: int) -> str:
-    row = (_expense_inbox_root().get('items') or {}).get(str(int(draft_id))) or {}
-    if not row:
-        return '❌ Отметка расхода не найдена.'
-    try:
-        dt = datetime.fromisoformat(str(row.get('created_at') or ''))
-        when = dt.strftime('%d.%m.%Y %H:%M')
-    except Exception:
-        when = str(row.get('created_at') or '—')
-    return f"❓ НЕРАЗОБРАННЫЙ РАСХОД №{draft_id}\n\nВремя: {when}\nЧат: {get_chat_display_name(int(row.get('target_chat_id') or 0))}\nИсточник: {row.get('source') or 'быстрая отметка'}\n\nОткройте исходное сообщение в финансовом чате и нажмите «✍️ Заполнить расход»."
+# [OCH12.35 OWNER] build_expense_draft_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0092')
 
-def build_expense_draft_detail_keyboard(draft_id: int, viewer_chat_id: int):
-    row = (_expense_inbox_root().get('items') or {}).get(str(int(draft_id))) or {}
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    target = int(row.get('target_chat_id') or viewer_chat_id)
-    if target == int(viewer_chat_id):
-        kb.row(make_copy_or_inline_button('✍️ Заполнить здесь', expense_draft_insert_value(draft_id), viewer_chat_id=viewer_chat_id))
-    kb.row(IB('✅ Уже внесено', callback_data=f'expense_draft_resolved:{int(draft_id)}'))
-    kb.row(IB('❌ Это не расход', callback_data=f'expense_draft_dismiss:{int(draft_id)}'))
-    kb.row(IB('⬅️ К неразобранным', callback_data='expense_inbox_open'))
-    return kb
+# [OCH12.35 OWNER] build_expense_draft_detail_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0093')
 
-def _expense_draft_input_predicate(msg) -> bool:
-    try:
-        return getattr(msg, 'content_type', None) == 'text' and bool(re.search('\\(EXPENSEDRAFT\\|\\d+\\|', str(getattr(msg, 'text', '') or '')))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _expense_draft_input_predicate -> 11_business_finance.py
+_owner_install('finance', 'finance:0094')
 
 @bot.message_handler(func=_expense_draft_input_predicate, content_types=['text'])
 def expense_draft_input_message(msg):
@@ -4119,5 +3133,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-
-# v262
+# v266

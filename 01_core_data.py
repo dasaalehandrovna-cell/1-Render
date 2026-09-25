@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 00_core.py ---
 import os
@@ -240,29 +241,8 @@ def _traffic_fmt_bytes(n: int) -> str:
         return f'{n / 1024:.1f} KB'
     return f'{int(n)} B'
 
-def traffic_audit_text(scope: str='month') -> str:
-    b = _traffic_scope_bucket(scope)
-    labels = {'month': 'этот месяц', 'today': 'сегодня', 'process': 'этот процесс', 'all': 'вся сохранённая история'}
-    label = labels.get(str(scope).lower(), str(scope))
-    lines = [f'📶 МАКСИМАЛЬНЫЙ АУДИТ ТРАФИКА — {label}', f"Исходящий (главный ориентир): {_traffic_fmt_bytes(b.get('outbound_bytes', 0))}", f"Входящий: {_traffic_fmt_bytes(b.get('inbound_bytes', 0))}", f"Сетевых вызовов: {b.get('calls', 0)} · ошибок: {b.get('errors', 0)}", '', 'По системам:']
-    rows = sorted((b.get('categories') or {}).items(), key=lambda kv: int((kv[1] or {}).get('outbound_bytes', 0) or 0), reverse=True)
-    names = {'telegram': 'Telegram API', 'mega_put': 'MEGA upload', 'mega_get': 'MEGA download', 'mega_control': 'MEGA служебное', 'google': 'Google API', 'currency': 'Курс USD', 'self_http': 'Self/Render HTTP', 'peer_http': 'Второй Render HTTP', 'other_http': 'Прочий HTTP', 'web_http': 'HTTP responses/webhook'}
-    for cat, row in rows:
-        lines.append(f"• {names.get(cat, cat)}: ↑ {_traffic_fmt_bytes(row.get('outbound_bytes', 0))} · ↓ {_traffic_fmt_bytes(row.get('inbound_bytes', 0))} · {row.get('calls', 0)} выз. · err {row.get('errors', 0)}")
-    ops = sorted((b.get('operations') or {}).items(), key=lambda kv: int((kv[1] or {}).get('outbound_bytes', 0) or 0), reverse=True)
-    if ops:
-        lines += ['', 'ТОП конкретных операций:']
-        for op, row in ops[:10]:
-            lines.append(f"• {op}: ↑ {_traffic_fmt_bytes(row.get('outbound_bytes', 0))} · {row.get('calls', 0)} выз.")
-    hours = sorted((b.get('hours') or {}).items(), key=lambda kv: str(kv[0]), reverse=True)
-    if hours:
-        lines += ['', 'Последние часы (↑ исходящий):']
-        for hour, row in hours[:8]:
-            top = sorted((row.get('categories') or {}).items(), key=lambda kv: int((kv[1] or {}).get('outbound_bytes', 0) or 0), reverse=True)
-            culprit = top[0][0] + ' ' + _traffic_fmt_bytes((top[0][1] or {}).get('outbound_bytes', 0)) if top else '—'
-            lines.append(f"• {str(hour)[5:].replace('T', ' ')}: {_traffic_fmt_bytes(row.get('outbound_bytes', 0))} · {culprit}")
-    lines += ['', '🧾 Сводка также пишется в обычные Render Logs при каждом checkpoint — без отдельного сетевого запроса.', 'ℹ️ Бот считает прикладные байты. Панель Render может быть выше из-за TLS/TCP/HTTP overhead и платформенного учёта.']
-    return '\n'.join(lines)[:3900]
+# [OCH12.35 COMPAT] legacy traffic_audit_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0001')
 _TRAFFIC_AUDIT_LAST_RENDER_LOG_OUTBOUND = 0
 
 def traffic_audit_render_log_summary(reason: str='periodic') -> str:
@@ -345,39 +325,8 @@ def _traffic_request_fallback_size(url: str, kwargs: dict) -> int:
         pass
     return n
 
-def _traffic_classify_http(url: str, method: str) -> tuple[str, str]:
-    try:
-        u = urllib.parse.urlsplit(str(url or ''))
-        host = (u.hostname or '').casefold()
-        path = u.path or '/'
-        last = path.rstrip('/').split('/')[-1] or '/'
-    except Exception:
-        host = ''
-        last = '/'
-    if host.endswith('api.telegram.org'):
-        return ('telegram', f'telegram:{last}')
-    if 'googleapis.com' in host or host.endswith('google.com'):
-        return ('google', f'google:{method.upper()}:{host}:{last}')
-    render_host = str(os.getenv('RENDER_EXTERNAL_HOSTNAME', '') or '').casefold()
-    if render_host and host == render_host:
-        return ('self_http', f'self:{method.upper()}:{last}')
-    peer_url = str(os.getenv('PEER_KEEPALIVE_URL', '') or '')
-    try:
-        peer_fn = globals().get('keepalive_peer_target_url')
-        if callable(peer_fn):
-            peer_url = str(peer_fn() or peer_url)
-    except Exception:
-        pass
-    try:
-        peer_host = (urllib.parse.urlsplit(peer_url).hostname or '').casefold() if peer_url else ''
-    except Exception:
-        peer_host = ''
-    if peer_host and host == peer_host:
-        return ('peer_http', f'peer:{method.upper()}:{last}')
-    rate_url = str(globals().get('USD_RATE_URL') or '')
-    if 'dolarapi.com' in host or (rate_url and str(url or '') == rate_url):
-        return ('currency', f'currency:{method.upper()}:{host}')
-    return ('other_http', f"http:{method.upper()}:{host or 'unknown'}:{last}")
+# [OCH12.35 COMPAT] legacy _traffic_classify_http -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0002')
 
 def _install_requests_traffic_audit():
     if not TRAFFIC_AUDIT_ENABLED:
@@ -1986,159 +1935,32 @@ try:
 except Exception:
     FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS = 2.0
 
-def _wait_for_finance_priority_before_forward(kind: str='forward') -> float:
-    """
-    v110: финансовая очередь имеет приоритет над пересылкой.
-    Пересылка не блокирует finance-worker: она только коротко уступает CPU, пока
-    в FINANCE_TASK_POOL есть pending/active работа. Есть жёсткий потолок ожидания,
-    чтобы длинный поток финансов не мог навсегда остановить пересылку.
-    """
-    started = time.monotonic()
-    limit = float(FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS or 0.0)
-    if limit <= 0:
-        return 0.0
-    while True:
-        try:
-            fs = FINANCE_TASK_POOL.stats()
-            busy = int(fs.get('pending', 0) or 0) > 0 or int(fs.get('active', 0) or 0) > 0
-        except Exception:
-            busy = False
-        if not busy:
-            break
-        elapsed = time.monotonic() - started
-        if elapsed >= limit:
-            try:
-                bot_journal('forward_priority_timeout', None, f'kind={kind} waited={elapsed:.3f}s finance still busy', 'WARN')
-            except Exception:
-                pass
-            break
-        time.sleep(0.02)
-    waited = time.monotonic() - started
-    if waited >= 0.05:
-        try:
-            bot_journal('forward_yielded_to_finance', None, f'kind={kind} waited={waited:.3f}s')
-        except Exception:
-            pass
-    return waited
+# [OCH12.35 OWNER] _wait_for_finance_priority_before_forward -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0001')
 
-def _forward_with_finance_priority(source_chat_id: int, msg):
-    _wait_for_finance_priority_before_forward('message')
-    return forward_any_message(source_chat_id, msg)
+# [OCH12.35 OWNER] _forward_with_finance_priority -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0002')
 
-def _forward_edit_with_finance_priority(msg):
-    _wait_for_finance_priority_before_forward('edit')
-    return propagate_edited_to_copies(msg)
+# [OCH12.35 OWNER] _forward_edit_with_finance_priority -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0003')
 
-def _forward_delete_with_finance_priority(source_chat_id: int, source_msg_id: int):
-    _wait_for_finance_priority_before_forward('delete')
-    return delete_forward_copies_for_source(source_chat_id, source_msg_id)
+# [OCH12.35 OWNER] _forward_delete_with_finance_priority -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0004')
 
-def _current_bot_id_for_forwarding() -> int:
-    """Return this bot's Telegram user id without a network call when possible."""
-    try:
-        token = str(globals().get('BOT_TOKEN') or '').strip()
-        head = token.split(':', 1)[0].strip()
-        if head.isdigit():
-            return int(head)
-    except Exception:
-        pass
-    try:
-        me = bot.get_me()
-        return int(getattr(me, 'id', 0) or 0)
-    except Exception:
-        return 0
+# [OCH12.35 OWNER] _current_bot_id_for_forwarding -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0005')
 
-def _forward_anonymous_admin_message(msg) -> bool:
-    """Telegram represents anonymous/send-as-group admins as a bot-like sender.
+# [OCH12.35 OWNER] _forward_anonymous_admin_message -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0006')
 
-    Such messages are human-originated and must be eligible for configured forwarding.
-    """
-    try:
-        sender = getattr(msg, 'from_user', None)
-        if not sender or not bool(getattr(sender, 'is_bot', False)):
-            return False
-        username = str(getattr(sender, 'username', '') or '').lstrip('@').lower()
-        if username == 'groupanonymousbot':
-            return True
-        sender_chat = getattr(msg, 'sender_chat', None)
-        chat = getattr(msg, 'chat', None)
-        if sender_chat is not None and chat is not None:
-            return int(getattr(sender_chat, 'id', 0) or 0) == int(getattr(chat, 'id', 0) or 0) != 0
-    except Exception:
-        pass
-    return False
+# [OCH12.35 OWNER] _forward_sender_skip_reason -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0007')
 
-def _forward_sender_skip_reason(msg) -> str:
-    """R12: accept delivered messages from other bots; skip only this bot itself.
+# [OCH12.35 OWNER] _forward_sender_skip_reason_raw -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0008')
 
-    The self-sender guard prevents forwarding loops. Anonymous/send-as-chat admins and
-    genuine third-party bots are eligible for the same configured forwarding rules as
-    human senders whenever Telegram delivers the update to us.
-    """
-    try:
-        sender = getattr(msg, 'from_user', None)
-        if not sender or not bool(getattr(sender, 'is_bot', False)):
-            return ''
-        sender_id = int(getattr(sender, 'id', 0) or 0)
-        self_id = _current_bot_id_for_forwarding()
-        if self_id and sender_id == self_id:
-            return 'bot_sender'
-        return ''
-    except Exception:
-        return ''
-
-def _forward_sender_skip_reason_raw(raw: dict) -> str:
-    """Raw-payload twin: third-party bots are forwardable; our own bot is not."""
-    if not isinstance(raw, dict):
-        return ''
-    try:
-        sender = raw.get('from') or {}
-        if not isinstance(sender, dict) or not bool(sender.get('is_bot')):
-            return ''
-        sender_id = int(sender.get('id') or 0)
-        self_id = _current_bot_id_for_forwarding()
-        if self_id and sender_id == self_id:
-            return 'bot_sender'
-        return ''
-    except Exception:
-        return ''
-
-def _v177_legacy_0001_schedule_forward_any_message(source_chat_id: int, msg):
-    """Пересылка: порядок по исходному чату сохраняется; finance имеет приоритет.
-
-    v121 keeps an explicit live outcome for the asynchronous worker. This prevents a
-    successful handler from becoming MEGA/failed merely because forwarding was skipped
-    by design or an album was still waiting for its delayed media-group flush.
-    """
-    try:
-        sender_skip_reason = _forward_sender_skip_reason(msg)
-        if sender_skip_reason:
-            _forward_outcome_skip(source_chat_id, msg, sender_skip_reason)
-            return
-        if _forward_anonymous_admin_message(msg):
-            try:
-                bot_journal('anonymous_admin_forward_allowed', int(source_chat_id), f"msg={int(getattr(msg, 'message_id', 0) or 0)} sender_chat={int(getattr(getattr(msg, 'sender_chat', None), 'id', 0) or 0)}")
-            except Exception:
-                pass
-        if getattr(msg, 'edit_date', None):
-            _forward_outcome_skip(source_chat_id, msg, 'edited_source')
-            return
-    except Exception:
-        pass
-    _durable_note_forward_decision(int(source_chat_id), direct=False)
-    try:
-        mid = int(getattr(msg, 'message_id', 0) or 0)
-        if mid:
-            _forward_outcome_update(source_chat_id, mid, state='scheduled')
-    except Exception:
-        pass
-    pipeline = globals().get('schedule_financial_forward_pipeline')
-    if callable(pipeline):
-        pipeline(int(source_chat_id), msg)
-        return
-    if not FIN_FORWARD_TASK_POOL.submit(int(source_chat_id), _forward_with_finance_priority, source_chat_id, msg):
-        log_error(f'FIN-FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}')
-        _forward_with_finance_priority(source_chat_id, msg)
+# [OCH12.35 OWNER] _v177_legacy_0001_schedule_forward_any_message -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0009')
 try:
     _v177_legacy_0001_schedule_forward_any_message.__name__ = 'schedule_forward_any_message'
 except Exception:
@@ -2150,10 +1972,8 @@ def schedule_propagate_edited_to_copies(msg):
         log_error(f'FORWARD EDIT QUEUE FULL, INLINE FALLBACK: {source_chat_id}')
         _forward_edit_with_finance_priority(msg)
 
-def schedule_delete_forward_copies_for_source(source_chat_id: int, source_msg_id: int):
-    if not FORWARD_TASK_POOL.submit(int(source_chat_id), _forward_delete_with_finance_priority, source_chat_id, source_msg_id):
-        log_error(f'FORWARD DELETE QUEUE FULL, INLINE FALLBACK: {source_chat_id}')
-        _forward_delete_with_finance_priority(source_chat_id, source_msg_id)
+# [OCH12.35 OWNER] schedule_delete_forward_copies_for_source -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0010')
 BOT_TOKEN = os.getenv('B_T', '').strip()
 OWNER_ID = os.getenv('ID', '').strip()
 RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', '').strip()
@@ -2173,10 +1993,10 @@ BACKUP_CHAT_ID = os.getenv('BACKUP_CHAT_ID', '').strip()
 if not BOT_TOKEN:
     raise RuntimeError('B_T is not set')
 RELEASE_SERIES = 'выс'
-RELEASE_NUMBER = 262
+RELEASE_NUMBER = 264
 VERSION = f'{RELEASE_SERIES}-{RELEASE_NUMBER}'
 BOT_FILE_NAME = os.path.basename(__file__) if '__file__' in globals() else 'bot_v130_modular_split.py'
-BOT_DISPLAY_NAME = 'очнись_12.31'
+BOT_DISPLAY_NAME = 'очнись_12.35'
 
 def _current_source_path() -> str:
     """Single-file path in legacy mode; reconstructed full source in modular mode."""
@@ -2314,53 +2134,20 @@ _FORWARD_OUTCOME_LOCK = threading.RLock()
 _FORWARD_OUTCOMES = {}
 _FORWARD_OUTCOME_MAX = 800
 
-def _forward_outcome_key(source_chat_id: int, source_msg_id: int):
-    return (int(source_chat_id), int(source_msg_id))
+# [OCH12.35 OWNER] _forward_outcome_key -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0011')
 
-def _forward_outcome_prune_locked():
-    if len(_FORWARD_OUTCOMES) <= _FORWARD_OUTCOME_MAX:
-        return
-    ordered = sorted(_FORWARD_OUTCOMES.items(), key=lambda kv: float((kv[1] or {}).get('updated_at', 0.0) or 0.0))
-    for key, _item in ordered[:max(1, len(ordered) - _FORWARD_OUTCOME_MAX)]:
-        _FORWARD_OUTCOMES.pop(key, None)
+# [OCH12.35 OWNER] _forward_outcome_prune_locked -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0012')
 
-def _forward_outcome_update(source_chat_id: int, source_msg_id: int, state: str | None=None, dst_chat_id: int | None=None, dst_state: str | None=None, dst_msg_id: int | None=None, error: str=''):
-    try:
-        key = _forward_outcome_key(source_chat_id, source_msg_id)
-        with _FORWARD_OUTCOME_LOCK:
-            item = _FORWARD_OUTCOMES.setdefault(key, {'state': '', 'targets': {}, 'updated_at': time.time()})
-            if state:
-                item['state'] = str(state)
-            if dst_chat_id is not None:
-                dst = int(dst_chat_id)
-                target = item.setdefault('targets', {}).setdefault(dst, {})
-                if dst_state:
-                    target['state'] = str(dst_state)
-                if dst_msg_id:
-                    target['dst_msg_id'] = int(dst_msg_id)
-                if error:
-                    target['error'] = str(error)[:500]
-            item['updated_at'] = time.time()
-            _forward_outcome_prune_locked()
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _forward_outcome_update -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0013')
 
-def _forward_outcome_snapshot(source_chat_id: int, source_msg_id: int) -> dict:
-    try:
-        key = _forward_outcome_key(source_chat_id, source_msg_id)
-        with _FORWARD_OUTCOME_LOCK:
-            return copy.deepcopy(_FORWARD_OUTCOMES.get(key) or {})
-    except Exception:
-        return {}
+# [OCH12.35 OWNER] _forward_outcome_snapshot -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0014')
 
-def _forward_outcome_skip(source_chat_id: int, msg, reason: str):
-    try:
-        mid = int(getattr(msg, 'message_id', 0) or 0)
-        if mid:
-            _forward_outcome_update(source_chat_id, mid, state=f'skip:{reason}')
-            bot_journal('forward_not_expected', source_chat_id, f'msg={mid} reason={reason}')
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _forward_outcome_skip -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0015')
 _forward_state_timer = None
 _owner_json_restore_prompts = {}
 _owner_json_restore_prompt_lock = threading.RLock()
@@ -3853,30 +3640,25 @@ def toggle_buttons_current_window(chat_id: int | None=None) -> bool:
 def buttons_current_window_label(chat_id: int | None=None) -> str:
     return '✅ В текущем окне' if buttons_current_window_enabled(chat_id) else '⬜ В текущем окне'
 
-def forward_menu_new_style_enabled(chat_id: int | None=None) -> bool:
-    return bool(_owner_setting_value('forward_menu_new_style', False, chat_id))
+# [OCH12.35 OWNER] forward_menu_new_style_enabled -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0016')
 
-def _v177_legacy_0004_set_forward_menu_new_style_enabled(enabled: bool, chat_id: int | None=None):
-    try:
-        _set_owner_setting_value('forward_menu_new_style', bool(enabled), chat_id)
-    except Exception as e:
-        log_error(f'set_forward_menu_new_style_enabled: {e}')
+# [OCH12.35 OWNER] _v177_legacy_0004_set_forward_menu_new_style_enabled -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0017')
 try:
     _v177_legacy_0004_set_forward_menu_new_style_enabled.__name__ = 'set_forward_menu_new_style_enabled'
 except Exception:
     pass
 
-def _v177_legacy_0005_toggle_forward_menu_new_style(chat_id: int | None=None) -> bool:
-    new_value = not forward_menu_new_style_enabled(chat_id)
-    set_forward_menu_new_style_enabled(new_value, chat_id)
-    return new_value
+# [OCH12.35 OWNER] _v177_legacy_0005_toggle_forward_menu_new_style -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0018')
 try:
     _v177_legacy_0005_toggle_forward_menu_new_style.__name__ = 'toggle_forward_menu_new_style'
 except Exception:
     pass
 
-def forward_menu_style_label(chat_id: int | None=None) -> str:
-    return '🧩 Пересылка: по-новому' if forward_menu_new_style_enabled(chat_id) else '🔁 Пересылка: обычно'
+# [OCH12.35 OWNER] forward_menu_style_label -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0019')
 
 def icon_button_mode_enabled(chat_id: int | None=None) -> bool:
     if chat_id is None:
@@ -3902,36 +3684,17 @@ def toggle_icon_button_mode(chat_id: int | None=None) -> bool:
 def icon_button_mode_label(chat_id: int | None=None) -> str:
     return '🔣 Кнопки: значки' if icon_button_mode_enabled(chat_id) else '🔤 Кнопки: текст'
 
-def total_secret_mask_enabled(chat_id: int | None=None) -> bool:
-    try:
-        if chat_id is not None:
-            scoped = owner_scoped_settings(int(chat_id))
-            if 'total_secret_mask_enabled' in scoped:
-                return bool(scoped.get('total_secret_mask_enabled'))
-        gs = (data or {}).setdefault('_global_settings', {})
-        return bool(gs.get('total_secret_mask_enabled', False))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] total_secret_mask_enabled -> 18_business_secret.py
+_owner_install('secret', 'secret:0001')
 
-def set_total_secret_mask_enabled(enabled: bool, chat_id: int | None=None):
-    try:
-        if chat_id is not None:
-            owner_scoped_settings(int(chat_id))['total_secret_mask_enabled'] = bool(enabled)
-            save_data(data, chat_ids=[int(chat_id)])
-            schedule_config_backup_for_chats(int(chat_id), delay=0.3)
-        else:
-            data.setdefault('_global_settings', {})['total_secret_mask_enabled'] = bool(enabled)
-            save_data(data)
-    except Exception as e:
-        log_error(f'set_total_secret_mask_enabled: {e}')
+# [OCH12.35 OWNER] set_total_secret_mask_enabled -> 18_business_secret.py
+_owner_install('secret', 'secret:0002')
 
-def toggle_total_secret_mask(chat_id: int | None=None) -> bool:
-    new_value = not total_secret_mask_enabled(chat_id)
-    set_total_secret_mask_enabled(new_value, chat_id)
-    return new_value
+# [OCH12.35 OWNER] toggle_total_secret_mask -> 18_business_secret.py
+_owner_install('secret', 'secret:0003')
 
-def total_secret_mask_label(chat_id: int | None=None) -> str:
-    return '✅ 🪷 Маска: ВКЛ' if total_secret_mask_enabled(chat_id) else '⬜ 🪷 Маска: ВЫКЛ'
+# [OCH12.35 OWNER] total_secret_mask_label -> 18_business_secret.py
+_owner_install('secret', 'secret:0004')
 
 def verbose_telegram_journal_enabled() -> bool:
     """Успешные Telegram API-вызовы очень шумные. Отдельный opt-in даже при полном журнале."""
@@ -4298,130 +4061,11 @@ def _v222_restore_evict_cold_now() -> dict:
         pass
     return out
 
-def journal_flush_to_mega(force: bool=False) -> bool:
-    """v208: durable full diagnostic journal as batched gzip chunks; never one network call per row."""
-    if restore_quiet_active_v222():
-        return True
-    global _JOURNAL_DURABLE_SEQ
-    if not BOT_JOURNAL_DURABLE_ENABLED:
-        return False
-    if not journal_compact_remote_enabled():
-        fn = globals().get('journal_flush_critical_to_mega')
-        return bool(fn(force)) if callable(fn) else True
-    if not globals().get('mega_is_configured') or not mega_is_configured():
-        return False
-    with _JOURNAL_DURABLE_LOCK:
-        if not _JOURNAL_DURABLE_BUFFER:
-            return True
-        if not force and len(_JOURNAL_DURABLE_BUFFER) < BOT_JOURNAL_DURABLE_FLUSH_ROWS:
-            return False
-        rows = list(_JOURNAL_DURABLE_BUFFER)
-        _JOURNAL_DURABLE_BUFFER.clear()
-        _JOURNAL_DURABLE_SEQ += 1
-        seq = _JOURNAL_DURABLE_SEQ
-    tmp = None
-    try:
-        remote_dir = _journal_durable_remote_dir()
-        mega_ensure_remote_path(remote_dir)
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        stamp = now_local().strftime('%Y%m%d_%H%M%S_%f') if 'now_local' in globals() else datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        inst = mega_safe_name(str(os.getenv('RENDER_INSTANCE_ID', 'local') or 'local')[-18:], 'instance')
-        name = f'journal_{stamp}_{inst}_{seq:06d}.json.gz'
-        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, name)
-        payload = {'kind': 'telegram_bot_journal_chunk', 'schema_version': 3, 'compression': 'gzip', 'bot_version': globals().get('VERSION', ''), 'created_at': _journal_ts(), 'render_instance_id': str(os.getenv('RENDER_INSTANCE_ID', '') or ''), 'render_git_commit': str(os.getenv('RENDER_GIT_COMMIT', '') or ''), 'row_count': len(rows), 'rows': rows}
-        raw_bytes, packed_bytes = _journal_write_gzip_payload(tmp, payload)
-        _mega_run('mega-put', [tmp, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        _JOURNAL_DURABLE_STATS['uploaded_chunks'] += 1
-        _JOURNAL_DURABLE_STATS['uploaded_rows'] += len(rows)
-        _JOURNAL_DURABLE_STATS['uploaded_payload_bytes'] += int(packed_bytes)
-        _JOURNAL_DURABLE_STATS['raw_estimated_bytes'] += int(raw_bytes)
-        _JOURNAL_DURABLE_STATS['last_upload_at'] = _journal_ts()
-        _JOURNAL_DURABLE_STATS['last_upload_file'] = name
-        _JOURNAL_DURABLE_STATS['last_error'] = ''
-        if _JOURNAL_DURABLE_STATS['uploaded_chunks'] % 50 == 0:
-            try:
-                _mega_prune_remote_history(remote_dir, 'journal_*.json.gz', BOT_JOURNAL_DURABLE_REMOTE_KEEP)
-            except Exception:
-                pass
-        return True
-    except Exception as e:
-        _JOURNAL_DURABLE_STATS['upload_errors'] += 1
-        _JOURNAL_DURABLE_STATS['last_error'] = str(e)[:500]
-        with _JOURNAL_DURABLE_LOCK:
-            _JOURNAL_DURABLE_BUFFER[0:0] = rows
-            if len(_JOURNAL_DURABLE_BUFFER) > 5000:
-                del _JOURNAL_DURABLE_BUFFER[:-5000]
-        return False
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] journal_flush_to_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0001')
 
-def journal_flush_critical_to_mega(force: bool=False) -> bool:
-    """Persist only ERROR/CRITICAL/lifecycle rows when routine MEGA journal is disabled."""
-    if restore_quiet_active_v222():
-        return True
-    if not BOT_CRITICAL_JOURNAL_DURABLE_ENABLED or not mega_is_configured():
-        return True
-    rows = []
-    try:
-        with _JOURNAL_DURABLE_LOCK:
-            rows = [dict(r) for r in _JOURNAL_DURABLE_BUFFER if bool((r or {}).get('critical_remote'))]
-        if not rows:
-            return True
-        remote_dir = _journal_durable_remote_dir()
-        mega_ensure_remote_path(remote_dir)
-        global _JOURNAL_DURABLE_SEQ
-        with _JOURNAL_DURABLE_LOCK:
-            _JOURNAL_DURABLE_SEQ += 1
-            seq = _JOURNAL_DURABLE_SEQ
-        stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
-        inst = mega_safe_name(_runtime_instance_id() if '_runtime_instance_id' in globals() else str(os.getpid()), 'instance')
-        name = f'journal_critical_{stamp}_{inst}_{seq:06d}.json.gz'
-        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, name)
-        critical_rows = rows[-100:]
-        try:
-            with bot_journal_lock:
-                recent_context = [dict(r) for r in list(BOT_ACTION_LOG)[-60:]]
-        except Exception:
-            recent_context = []
-        try:
-            with globals().get('_RUNTIME_LOCK', threading.RLock()):
-                runtime_context = [dict(r) for r in list(globals().get('_RUNTIME_EVENTS') or [])[-30:]]
-                runtime_state = dict(globals().get('_RUNTIME_STATE') or {})
-        except Exception:
-            runtime_context = []
-            runtime_state = {}
-        payload = {'kind': 'telegram_bot_critical_journal_chunk', 'schema_version': 2, 'bot_version': globals().get('VERSION', ''), 'created_at': _journal_ts(), 'render_instance_id': str(os.getenv('RENDER_INSTANCE_ID', '') or ''), 'render_git_commit': str(os.getenv('RENDER_GIT_COMMIT', '') or ''), 'rows': critical_rows, 'recent_journal_context': recent_context, 'runtime_events': runtime_context, 'runtime_state': {k: runtime_state.get(k) for k in ('phase', 'ready', 'last_event', 'last_event_at', 'last_error', 'started_at', 'last_webhook_at', 'shutdown_started_at', 'shutdown_finished_at', 'shutdown_signal', 'fatal_main_exception', 'fatal_thread_exception')}}
-        _raw_bytes, _packed_bytes = _journal_write_gzip_payload(tmp, payload)
-        _mega_run('mega-put', [tmp, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        keys = {_journal_row_key(r) for r in rows}
-        with _JOURNAL_DURABLE_LOCK:
-            _JOURNAL_DURABLE_BUFFER[:] = [r for r in _JOURNAL_DURABLE_BUFFER if _journal_row_key(r) not in keys]
-        _JOURNAL_DURABLE_STATS['uploaded_chunks'] += 1
-        _JOURNAL_DURABLE_STATS['uploaded_rows'] += len(critical_rows)
-        _JOURNAL_DURABLE_STATS['uploaded_payload_bytes'] += int(_packed_bytes)
-        _JOURNAL_DURABLE_STATS['raw_estimated_bytes'] += int(_raw_bytes)
-        _JOURNAL_DURABLE_STATS['last_upload_at'] = _journal_ts()
-        _JOURNAL_DURABLE_STATS['last_upload_file'] = name
-        if _JOURNAL_DURABLE_STATS['uploaded_chunks'] % 25 == 0:
-            try:
-                _mega_prune_remote_history(remote_dir, 'journal_critical_*.json.gz', 400)
-            except Exception:
-                pass
-        return True
-    except Exception as exc:
-        _JOURNAL_DURABLE_STATS['upload_errors'] += 1
-        _JOURNAL_DURABLE_STATS['last_error'] = str(exc)[:700]
-        return False
-    finally:
-        try:
-            if 'tmp' in locals() and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] journal_flush_critical_to_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0002')
 
 def _journal_durable_tick():
     try:
@@ -4447,59 +4091,11 @@ def journal_start_durable_loop():
     except Exception:
         pass
 
-def _journal_read_mega_rows(limit: int=20000) -> list[dict]:
-    """Читает последние durable journal chunks из MEGA, newest-first files -> chronological rows."""
-    if not BOT_JOURNAL_DURABLE_ENABLED or not globals().get('mega_is_configured') or (not mega_is_configured()):
-        return []
-    remote_dir = _journal_durable_remote_dir()
-    try:
-        estimated_files = max(3, int(max(1, int(limit)) / max(1, BOT_JOURNAL_DURABLE_FLUSH_ROWS)) + 3)
-        files = _mega_find_remote_files(remote_dir, 'journal_*', min(BOT_JOURNAL_DURABLE_RESTORE_FILES, estimated_files))
-    except Exception:
-        return []
-    chunks = []
-    total = 0
-    for remote in files:
-        local = None
-        try:
-            local = _mega_download_remote_path(remote)
-            rows = _journal_load_chunk_rows(local) if local else []
-            if rows:
-                chunks.append(rows)
-                total += len(rows)
-                if total >= int(limit):
-                    break
-        except Exception:
-            continue
-        finally:
-            try:
-                if local:
-                    shutil.rmtree(os.path.dirname(local), ignore_errors=True)
-            except Exception:
-                pass
-    merged = []
-    for rows in reversed(chunks):
-        merged.extend(rows)
-    return _journal_merge_rows(merged, limit=limit)
+# [OCH12.35 OWNER] _journal_read_mega_rows -> 17_integration_mega.py
+_owner_install('mega', 'mega:0003')
 
-def journal_restore_from_mega(limit: int=200) -> dict:
-    """BOOT: restores only a small recent tail. Full history stays in MEGA and is streamed on export."""
-    remote_rows = _journal_read_mega_rows(limit)
-    local_rows = _journal_read_file_rows(limit)
-    merged = _journal_merge_rows(remote_rows, local_rows, limit=limit)
-    if remote_rows:
-        try:
-            with bot_journal_lock:
-                BOT_ACTION_LOG.clear()
-                BOT_ACTION_LOG.extend(merged[-BOT_JOURNAL_MAX:])
-            with open(BOT_JOURNAL_FILE, 'w', encoding='utf-8') as f:
-                for row in merged:
-                    f.write(json.dumps(row, ensure_ascii=False) + '\n')
-        except Exception as e:
-            _JOURNAL_DURABLE_STATS['last_error'] = str(e)[:500]
-    _JOURNAL_DURABLE_STATS['restored_rows'] = len(remote_rows)
-    _JOURNAL_DURABLE_STATS['restored_chunks'] = 0 if not remote_rows else 1
-    return {'remote_rows': len(remote_rows), 'merged_rows': len(merged)}
+# [OCH12.35 OWNER] journal_restore_from_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0004')
 
 def journal_durable_stats() -> dict:
     with _JOURNAL_DURABLE_LOCK:
@@ -4605,58 +4201,8 @@ def _journal_write_export_row(fh, r: dict):
     q = f"Q content={r.get('webhook_pending', 0)}/{r.get('webhook_active', 0)} ui={r.get('ui_pending', 0)}/{r.get('ui_active', 0)} fin={r.get('finance_pending', 0)}/{r.get('finance_active', 0)} fwd={r.get('forward_pending', 0)}/{r.get('forward_active', 0)} delta={r.get('delta_pending', 0)} backup={r.get('backup_pending', 0)}"
     fh.write(f"{r.get('ts', '')} | {r.get('level', '')} | {r.get('action', '')} | chat={r.get('chat_name') or r.get('chat_id')} | thread={r.get('thread', '')} | phase={r.get('runtime_phase', '')} ready={r.get('runtime_ready', '')} | {q} | {r.get('detail', '')}\n")
 
-def _journal_stream_mega_rows_to_file(fh, limit: int=3000, bot_version_filter: str | None=None, since_ts: str | None=None) -> int:
-    """Stream durable journal chunks without loading the whole history into RAM.
-
-    bot_version_filter is exact for v124+ rows. since_ts is a compatibility fallback for
-    older rows that did not yet carry bot_version. Existing full-journal callers use no filter.
-    """
-    if not BOT_JOURNAL_DURABLE_ENABLED or not mega_is_configured():
-        return 0
-    remote_dir = _journal_durable_remote_dir()
-    max_files = min(BOT_JOURNAL_DURABLE_RESTORE_FILES, max(8, int(max(1, limit) / max(1, BOT_JOURNAL_DURABLE_FLUSH_ROWS)) + 16))
-    try:
-        files = _mega_find_remote_files(remote_dir, 'journal_*', max_files)
-    except Exception:
-        return 0
-    count = 0
-    seen = set()
-    wanted_version = str(bot_version_filter or '').strip()
-    since_ts = str(since_ts or '').strip()
-    for remote in reversed(files):
-        local = None
-        try:
-            local = _mega_download_remote_path(remote)
-            rows = _journal_load_chunk_rows(local) if local else []
-            if not rows:
-                continue
-            for r in rows:
-                if not isinstance(r, dict):
-                    continue
-                if wanted_version:
-                    row_version = str(r.get('bot_version') or '').strip()
-                    if row_version:
-                        if row_version != wanted_version:
-                            continue
-                    elif since_ts and str(r.get('ts') or '') < since_ts:
-                        continue
-                key = _journal_row_key(r)
-                if key in seen:
-                    continue
-                seen.add(key)
-                _journal_write_export_row(fh, r)
-                count += 1
-                if count >= int(limit):
-                    return count
-        except Exception as e:
-            fh.write(f'[journal chunk read error] {remote}: {e}\n')
-        finally:
-            try:
-                if local:
-                    shutil.rmtree(os.path.dirname(local), ignore_errors=True)
-            except Exception:
-                pass
-    return count
+# [OCH12.35 OWNER] _journal_stream_mega_rows_to_file -> 17_integration_mega.py
+_owner_install('mega', 'mega:0005')
 _INTERACTIVE_FILE_JOB_KEY = 'interactive-file-global'
 _FILE_JOB_LOCK = threading.RLock()
 _FILE_JOB_STATE = {}
@@ -5140,58 +4686,20 @@ def send_current_bot_source_to_owner(chat_id: int):
         send_and_auto_delete(int(chat_id), f'⏳ {info}. Новая копия в очередь не добавлена.', 10)
     return bool(ok)
 
-def archive_current_bot_source_to_mega() -> bool:
-    """One immutable name per VERSION+commit, so the running source survives later deploys."""
-    if not mega_is_configured():
-        return False
-    path = _current_source_path()
-    if not os.path.exists(path):
-        return False
-    commit = re.sub('[^0-9A-Za-z]+', '', str(os.getenv('RENDER_GIT_COMMIT', '') or ''))[:16] or 'no_commit'
-    safe_ver = re.sub('[^0-9A-Za-z_\\-]+', '_', str(VERSION))[:90]
-    remote_name = f'{safe_ver}__{commit}.py'
-    ok = mega_put_replace(path, BOT_SOURCE_ARCHIVE_DIR, remote_name, archive_previous=False)
-    try:
-        bot_journal('bot_source_archive', None, f'ok={ok} file={remote_name}')
-    except Exception:
-        pass
-    return bool(ok)
+# [OCH12.35 OWNER] archive_current_bot_source_to_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0006')
 
-def _secret_notes_list() -> list:
-    try:
-        arr = data.setdefault('_secret_notes', [])
-        if not isinstance(arr, list):
-            data['_secret_notes'] = []
-            arr = data['_secret_notes']
-        return arr
-    except Exception:
-        return []
+# [OCH12.35 OWNER] _secret_notes_list -> 18_business_secret.py
+_owner_install('secret', 'secret:0005')
 
-def _secret_notes_local_path() -> str:
-    try:
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        return os.path.join(MEGA_LOCAL_TMP_DIR, 'secret_notes_owner.json')
-    except Exception:
-        return 'secret_notes_owner.json'
+# [OCH12.35 OWNER] _secret_notes_local_path -> 18_business_secret.py
+_owner_install('secret', 'secret:0006')
 
-def _save_secret_notes_plain_to_file() -> str | None:
-    try:
-        payload = {'kind': 'owner_secret_notes_plain_text', 'version': VERSION, 'created_at': now_local().isoformat(timespec='seconds'), 'warning': 'plain text, not encrypted', 'notes': _secret_notes_list()}
-        path = _secret_notes_local_path()
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        return path
-    except Exception as e:
-        log_error(f'_save_secret_notes_plain_to_file: {e}')
-        return None
+# [OCH12.35 OWNER] _save_secret_notes_plain_to_file -> 18_business_secret.py
+_owner_install('secret', 'secret:0007')
 
-def upload_secret_notes_to_mega() -> bool:
-    """Совместимость: секреты О9 теперь идут в единый файл чата владельца."""
-    try:
-        return bool(OWNER_ID and upload_chat_secrets_to_mega(int(OWNER_ID)))
-    except Exception as e:
-        log_error(f'upload_secret_notes_to_mega: {e}')
-        return False
+# [OCH12.35 OWNER] upload_secret_notes_to_mega -> 18_business_secret.py
+_owner_install('secret', 'secret:0008')
 
 def _is_o9_owner_call(call) -> bool:
     try:
@@ -5213,64 +4721,24 @@ def _o9_action_scheduler_key(key) -> str:
     except Exception:
         return f'o9-action:{str(key)}'
 
-def _cancel_o9_secret_timer(key):
-    try:
-        _o9_secret_action_timers.pop(key, None)
-        DELAYED_SCHEDULER.cancel(_o9_action_scheduler_key(key))
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _cancel_o9_secret_timer -> 18_business_secret.py
+_owner_install('secret', 'secret:0009')
 
 def _format_mmss(seconds: int) -> str:
     seconds = max(0, int(seconds))
     return f'{seconds // 60:02d}:{seconds % 60:02d}'
 
-def _secret_wait_keyboard(chat_id: int, remaining: int=O9_SECRET_WAIT_SECONDS):
-    kb = types.InlineKeyboardMarkup()
-    store = get_chat_store(chat_id)
-    kb.row(IB(f'❌ Закрыть {_format_mmss(remaining)}', callback_data='secret_cancel'), IB('⬅️ Назад осн. окно', callback_data=f"d:{store.get('current_view_day', today_key())}:back_main"))
-    return kb
+# [OCH12.35 OWNER] _secret_wait_keyboard -> 18_business_secret.py
+_owner_install('secret', 'secret:0010')
 
-def _secret_wait_prompt_text(remaining: int | None=None) -> str:
-    tail = ''
-    if remaining is not None:
-        tail = f'\n\n⏳ Осталось: {_format_mmss(remaining)}'
-    return wm_common('🔐 Секретные данные\n\nОтправь одним сообщением текст, который нужно сохранить.\nБот удалит твоё сообщение после сохранения.\n\nВажно: сейчас хранение обычным текстом, без шифрования.' + tail, 9)
+# [OCH12.35 OWNER] _secret_wait_prompt_text -> 18_business_secret.py
+_owner_install('secret', 'secret:0011')
 
-def _cancel_o9_secret_wait_timer(chat_id: int):
-    key = int(chat_id)
-    with _o9_secret_click_lock:
-        item = _o9_secret_wait_timers.get(key)
-        if isinstance(item, dict):
-            item['cancelled'] = True
-        _o9_secret_wait_timers.pop(key, None)
-    try:
-        DELAYED_SCHEDULER.cancel(f'o9-secret-wait:{key}')
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _cancel_o9_secret_wait_timer -> 18_business_secret.py
+_owner_install('secret', 'secret:0012')
 
-def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay: int=O9_SECRET_WAIT_SECONDS):
-    """Автоотмена ожидания секрета без частого редактирования таймера."""
-    key = int(chat_id)
-    with _o9_secret_click_lock:
-        prev = _o9_secret_wait_timers.get(key)
-        if isinstance(prev, dict):
-            prev['cancelled'] = True
-        generation = int(time.time() * 1000)
-        token = {'generation': generation, 'cancelled': False}
-        _o9_secret_wait_timers[key] = token
-
-    def _job():
-        try:
-            with _o9_secret_click_lock:
-                current = _o9_secret_wait_timers.get(key)
-                if current is not token or token.get('cancelled'):
-                    return
-                _o9_secret_wait_timers.pop(key, None)
-            _clear_secret_wait(chat_id, delete_prompt=True)
-            send_and_auto_delete(chat_id, '⌛ Время принятия секретных данных истекло.', 8)
-        except Exception as e:
-            log_error(f'schedule_o9_secret_wait_timeout({chat_id},{prompt_message_id}): {e}')
-    DELAYED_SCHEDULER.schedule(f'o9-secret-wait:{key}', int(delay), _job)
+# [OCH12.35 OWNER] schedule_o9_secret_wait_timeout -> 18_business_secret.py
+_owner_install('secret', 'secret:0013')
 
 def _o9_delayed_close(chat_id: int, message_id: int, key):
     try:
@@ -5333,162 +4801,23 @@ def _o9_delayed_back_main(chat_id: int, message_id: int, day_key: str, key):
     except Exception as e:
         log_error(f'_o9_delayed_back_main: {e}')
 
-def _start_secret_wait(chat_id: int, message_id: int | None=None):
-    try:
-        store = get_chat_store(chat_id)
-        store['secret_wait'] = {'type': 'secret_note_add', 'started_at': now_local().isoformat(timespec='seconds'), 'window_msg_id': int(message_id or 0)}
-        save_data(data)
-        kb = _secret_wait_keyboard(chat_id, O9_SECRET_WAIT_SECONDS)
-        text = _secret_wait_prompt_text(O9_SECRET_WAIT_SECONDS)
-        if message_id:
-            try:
-                bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
-                store['secret_wait']['prompt_msg_id'] = int(message_id)
-                save_data(data)
-                schedule_o9_secret_wait_timeout(chat_id, int(message_id), O9_SECRET_WAIT_SECONDS)
-                return
-            except Exception:
-                pass
-        sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=kb, purpose='secret_prompt')
-        store['secret_wait']['prompt_msg_id'] = sent.message_id
-        save_data(data)
-        schedule_o9_secret_wait_timeout(chat_id, sent.message_id, O9_SECRET_WAIT_SECONDS)
-    except Exception as e:
-        log_error(f'_start_secret_wait({chat_id}): {e}')
+# [OCH12.35 OWNER] _start_secret_wait -> 18_business_secret.py
+_owner_install('secret', 'secret:0014')
 
-def _format_secret_notes_text() -> str:
-    notes = _secret_notes_list()
-    if not notes:
-        return '🔐 Секретные данные\n\nПока пусто.'
-    lines = ['🔐 Секретные данные', '']
-    for i, item in enumerate(notes, start=1):
-        ts = str((item or {}).get('ts') or '')
-        body = str((item or {}).get('text') or '')
-        lines.append(f'{i}. {ts}\n{body}')
-        lines.append('')
-    text = '\n'.join(lines).strip()
-    if len(text) > 3900:
-        text = text[-3900:]
-        text = '🔐 Секретные данные (последняя часть)\n\n' + text
-    return text
+# [OCH12.35 OWNER] _format_secret_notes_text -> 18_business_secret.py
+_owner_install('secret', 'secret:0015')
 
-def _send_secret_notes_to_owner(chat_id: int, message_id: int | None=None):
-    try:
-        open_secret_day_window(chat_id, chat_id, message_id=message_id)
-    except Exception as e:
-        log_error(f'_send_secret_notes_to_owner({chat_id}): {e}')
+# [OCH12.35 OWNER] _send_secret_notes_to_owner -> 18_business_secret.py
+_owner_install('secret', 'secret:0016')
 
-def _clear_secret_wait(chat_id: int, delete_prompt: bool=False):
-    try:
-        _cancel_o9_secret_wait_timer(chat_id)
-        store = get_chat_store(chat_id)
-        wait = store.get('secret_wait') or {}
-        msg_id = int(wait.get('prompt_msg_id') or wait.get('window_msg_id') or 0)
-        store['secret_wait'] = None
-        save_data(data)
-        if delete_prompt and msg_id:
-            try:
-                bot.delete_message(chat_id, msg_id)
-            except Exception:
-                pass
-            try:
-                _clear_stored_window(chat_id, 'info_msg_id', msg_id)
-            except Exception:
-                pass
-    except Exception as e:
-        log_error(f'_clear_secret_wait({chat_id}): {e}')
+# [OCH12.35 OWNER] _clear_secret_wait -> 18_business_secret.py
+_owner_install('secret', 'secret:0017')
 
-def handle_secret_note_message(msg) -> bool:
-    """Сохраняет секретное сообщение владельца и удаляет исходный текст."""
-    try:
-        if getattr(msg, 'content_type', None) != 'text':
-            return False
-        chat_id = int(msg.chat.id)
-        if not is_owner_chat(chat_id):
-            return False
-        store = get_chat_store(chat_id)
-        wait = store.get('secret_wait')
-        if not wait or wait.get('type') != 'secret_note_add':
-            return False
-        text = (msg.text or '').strip()
-        if not text:
-            return True
-        save_secret_message(chat_id, msg, cleaned_text=text)
-        delete_secret_source_message(msg)
-        _clear_secret_wait(chat_id, delete_prompt=True)
-        status = '✅ Секрет сохранён в единый файл чата и поставлен в очередь MEGA.'
-        sent = _tg_call_retry(bot.send_message, chat_id, status, purpose='secret_saved_notice')
-        try:
-            delete_message_later(chat_id, sent.message_id, 12)
-        except Exception:
-            pass
-        return True
-    except Exception as e:
-        log_error(f'handle_secret_note_message: {e}')
-        return True
+# [OCH12.35 OWNER] handle_secret_note_message -> 18_business_secret.py
+_owner_install('secret', 'secret:0018')
 
-def _v177_legacy_0020_handle_o9_secret_triple_click(call, data_str: str) -> bool:
-    """Перехватывает О9: Закрыть ×3 = ввод секрета, Назад ×3 = показать секреты."""
-    try:
-        if not _is_o9_owner_call(call):
-            return False
-        chat_id = int(call.message.chat.id)
-        msg_id = int(call.message.message_id)
-        kind = None
-        day_key = get_chat_store(chat_id).get('current_view_day', today_key())
-        if data_str == 'info_close':
-            kind = 'close'
-        elif str(data_str or '').startswith('d:'):
-            parts = str(data_str).split(':', 2)
-            action = parts[2] if len(parts) >= 3 else ''
-            if action == 'back_main':
-                kind = 'back'
-                day_key = parts[1] or day_key
-        if not kind:
-            return False
-        key = (chat_id, msg_id, kind)
-        now_ts = time.time()
-        with _o9_secret_click_lock:
-            item = _o9_secret_clicks.get(key) or {'count': 0, 'ts': 0}
-            if now_ts - float(item.get('ts', 0) or 0) > O9_SECRET_CLICK_WINDOW_SECONDS:
-                item = {'count': 0, 'ts': 0}
-            item['count'] = int(item.get('count', 0) or 0) + 1
-            item['ts'] = now_ts
-            _o9_secret_clicks[key] = item
-            _cancel_o9_secret_timer(key)
-            count = int(item['count'])
-            if count < 3:
-                scheduler_key = _o9_action_scheduler_key(key)
-                if kind == 'close':
-                    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, O9_SECRET_CLICK_WINDOW_SECONDS + 0.2, _o9_delayed_close, chat_id, msg_id, key)
-                else:
-                    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, O9_SECRET_CLICK_WINDOW_SECONDS + 0.2, _o9_delayed_back_main, chat_id, msg_id, day_key, key)
-                _o9_secret_action_timers[key] = deadline
-        if count >= 3:
-            _cancel_o9_secret_timer(key)
-            with _o9_secret_click_lock:
-                _o9_secret_clicks.pop(key, None)
-            if kind == 'close':
-                _start_secret_wait(chat_id, msg_id)
-                try:
-                    bot.answer_callback_query(call.id, '🔐 Секретные данные')
-                except Exception:
-                    pass
-            else:
-                _send_secret_notes_to_owner(chat_id, msg_id)
-                try:
-                    bot.answer_callback_query(call.id, '🔐 Отправил секретные данные')
-                except Exception:
-                    pass
-            return True
-        try:
-            bot.answer_callback_query(call.id, f'Секрет: {count}/3', show_alert=False)
-        except Exception:
-            pass
-        return True
-    except Exception as e:
-        log_error(f'handle_o9_secret_triple_click: {e}')
-        return False
+# [OCH12.35 OWNER] _v177_legacy_0020_handle_o9_secret_triple_click -> 18_business_secret.py
+_owner_install('secret', 'secret:0019')
 try:
     _v177_legacy_0020_handle_o9_secret_triple_click.__name__ = 'handle_o9_secret_triple_click'
 except Exception:
@@ -5821,17 +5150,8 @@ _careful_restore_lock = threading.RLock()
 def _careful_restore_scheduler_key(chat_id: int) -> str:
     return f'careful-restore:{int(chat_id)}'
 
-def is_forwarded_telegram_message(msg) -> bool:
-    """True only for Telegram-forwarded input; ordinary fresh finance text is untouched."""
-    if msg is None:
-        return False
-    for attr in ('forward_origin', 'forward_date', 'forward_from', 'forward_from_chat', 'forward_sender_name'):
-        try:
-            if getattr(msg, attr, None):
-                return True
-        except Exception:
-            pass
-    return False
+# [OCH12.35 OWNER] is_forwarded_telegram_message -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0020')
 
 def _careful_restore_expire(chat_id: int, expected_deadline: float | None=None) -> bool:
     chat_id = int(chat_id)
@@ -6099,51 +5419,23 @@ def day_key_from_message(msg=None) -> str:
         pass
     return today_key()
 
-def finance_day_start_5am_enabled(chat_id: int | None=None) -> bool:
-    """Режим финансовых суток хранится отдельно в owner scope."""
-    return bool(_owner_setting_value('finance_day_start_5am', False, chat_id))
+# [OCH12.35 OWNER] finance_day_start_5am_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0001')
 
-def toggle_finance_day_start_5am(chat_id: int | None=None) -> bool:
-    new_value = not finance_day_start_5am_enabled(chat_id)
-    _set_owner_setting_value('finance_day_start_5am', new_value, chat_id)
-    return new_value
+# [OCH12.35 OWNER] toggle_finance_day_start_5am -> 11_business_finance.py
+_owner_install('finance', 'finance:0002')
 
-def finance_day_key_from_datetime(dt: datetime, chat_id: int | None=None) -> str:
-    try:
-        if finance_day_start_5am_enabled(chat_id):
-            dt = dt - timedelta(hours=5)
-        else:
-            try:
-                minute = int(_owner_setting_value('finance_day_start_minute', 5, chat_id) or 5)
-            except Exception:
-                minute = 5
-            dt = dt - timedelta(minutes=max(0, min(59, minute)))
-        return dt.strftime('%Y-%m-%d')
-    except Exception:
-        return today_key()
+# [OCH12.35 OWNER] finance_day_key_from_datetime -> 11_business_finance.py
+_owner_install('finance', 'finance:0003')
 
-def finance_day_key_from_message(msg=None) -> str:
-    try:
-        if msg and getattr(msg, 'date', None):
-            dt = datetime.fromtimestamp(int(msg.date), tz=get_tz())
-        else:
-            dt = now_local()
-        cid = getattr(getattr(msg, 'chat', None), 'id', None) if msg is not None else current_state_chat_id()
-        return finance_day_key_from_datetime(dt, cid)
-    except Exception:
-        return day_key_from_message(msg)
+# [OCH12.35 OWNER] finance_day_key_from_message -> 11_business_finance.py
+_owner_install('finance', 'finance:0004')
 
-def finance_today_key(chat_id: int | None=None) -> str:
-    return finance_day_key_from_datetime(now_local(), chat_id if chat_id is not None else current_state_chat_id())
+# [OCH12.35 OWNER] finance_today_key -> 11_business_finance.py
+_owner_install('finance', 'finance:0005')
 
-def finance_day_start_label(chat_id: int | None=None) -> str:
-    if finance_day_start_5am_enabled(chat_id):
-        return '05:00'
-    try:
-        minute = int(_owner_setting_value('finance_day_start_minute', 5, chat_id) or 5)
-    except Exception:
-        minute = 5
-    return f'00:{max(0, min(59, minute)):02d}'
+# [OCH12.35 OWNER] finance_day_start_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0006')
 RU_MONTH_NAMES = ('Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь')
 
 def russian_month_name(month: int) -> str:
@@ -6416,528 +5708,164 @@ def _chat_username_from_message(msg):
         pass
     return None
 
-def format_finance_mode_label(chat_id: int) -> str:
-    return '✅ ВКЛ' if is_finance_mode(chat_id) else '⬜ ВЫКЛ'
+# [OCH12.35 OWNER] format_finance_mode_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0007')
 
-def info_finance_toggle_label(chat_id: int) -> str:
-    return '✅ Фин режим ВКЛ' if is_finance_mode(chat_id) else '⬜ Фин режим ВЫКЛ'
+# [OCH12.35 OWNER] info_finance_toggle_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0008')
 
-def is_quick_balance_enabled(chat_id: int) -> bool:
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    return bool(settings.get('quick_balance_enabled', False))
+# [OCH12.35 OWNER] is_quick_balance_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0009')
 
-def get_quick_balance_behavior(chat_id: int) -> str:
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    behavior = (settings.get('quick_balance_behavior') or 'normal').strip().lower()
-    if behavior in {'normal', 'mini', 'open', 'first'}:
-        return behavior
-    return 'normal'
+# [OCH12.35 OWNER] get_quick_balance_behavior -> 11_business_finance.py
+_owner_install('finance', 'finance:0010')
 
-def _infer_legacy_finance_window_mode(chat_id: int) -> str:
-    """Migration from v107: hidden-only means no visible auto-window; otherwise preserve old visible mode."""
-    try:
-        if not is_finance_mode(chat_id):
-            return 'off'
-        if is_quick_balance_enabled(chat_id):
-            behavior = get_quick_balance_behavior(chat_id)
-            if behavior in {'open', 'first'}:
-                return behavior
-        if is_hidden_finance_mode(chat_id):
-            return 'off'
-        return 'normal'
-    except Exception:
-        return 'off'
+# [OCH12.35 OWNER] _infer_legacy_finance_window_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0011')
 
-def _finance_window_state(chat_id: int) -> dict:
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    state = store.get('finance_window_state')
-    if not isinstance(state, dict):
-        try:
-            active = dict((data.get('active_messages', {}) or {}).get(str(chat_id), {}) or {})
-        except Exception:
-            active = {}
-        mode = _infer_legacy_finance_window_mode(chat_id)
-        state = {'mode': mode, 'main_windows': {str(k): int(v) for k, v in active.items() if v}, 'balance_panel_id': int(store.get('balance_panel_id')) if store.get('balance_panel_id') else None, 'balance_panel_mode': str(store.get('balance_panel_mode') or 'mini'), 'current_view_day': str(store.get('current_view_day') or today_key()), 'auto_reopen_on_boot': bool(mode != 'off' and (active or store.get('balance_panel_id') or (not is_hidden_finance_mode(chat_id)))), 'updated_at': now_local().isoformat(timespec='seconds')}
-        store['finance_window_state'] = state
-    state.setdefault('mode', _infer_legacy_finance_window_mode(chat_id))
-    if state.get('mode') not in {'off', 'normal', 'open', 'first'}:
-        state['mode'] = 'off'
-    state.setdefault('main_windows', {})
-    state.setdefault('balance_panel_id', None)
-    state.setdefault('balance_panel_mode', 'mini')
-    state.setdefault('current_view_day', str(store.get('current_view_day') or today_key()))
-    state.setdefault('auto_reopen_on_boot', bool(state.get('mode') != 'off'))
-    state.setdefault('updated_at', now_local().isoformat(timespec='seconds'))
-    return state
+# [OCH12.35 OWNER] _finance_window_state -> 11_business_finance.py
+_owner_install('finance', 'finance:0012')
 
-def finance_window_mode(chat_id: int) -> str:
-    if not is_finance_mode(chat_id):
-        return 'off'
-    try:
-        return str(_finance_window_state(chat_id).get('mode') or 'off')
-    except Exception:
-        return 'off'
+# [OCH12.35 OWNER] finance_window_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0013')
 
-def finance_window_mode_enabled(chat_id: int, mode: str | None=None) -> bool:
-    current = finance_window_mode(chat_id)
-    if mode is None:
-        return current in {'normal', 'open', 'first'}
-    return current == str(mode)
+# [OCH12.35 OWNER] finance_window_mode_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0014')
 
-def _sync_finance_window_state_from_runtime(chat_id: int, *, schedule_delta: bool=False):
-    """Compact UI state intentionally survives deploy without putting full open_window_registry into delta."""
-    try:
-        chat_id = int(chat_id)
-        store = get_chat_store(chat_id)
-        state = _finance_window_state(chat_id)
-        try:
-            active = dict((data.get('active_messages', {}) or {}).get(str(chat_id), {}) or {})
-        except Exception:
-            active = {}
-        state['main_windows'] = {str(k): int(v) for k, v in active.items() if v}
-        state['balance_panel_id'] = int(store.get('balance_panel_id')) if store.get('balance_panel_id') else None
-        state['balance_panel_mode'] = str(store.get('balance_panel_mode') or state.get('balance_panel_mode') or 'mini')
-        state['current_view_day'] = str(store.get('current_view_day') or state.get('current_view_day') or today_key())
-        state['updated_at'] = now_local().isoformat(timespec='seconds')
-        store['finance_window_state'] = state
-        save_data(data, chat_ids=[chat_id])
-        if schedule_delta and mega_is_configured() and (not RESTORE_GUARD_ACTIVE):
-            schedule_quick_backup(chat_id, 0.5)
-    except Exception as e:
-        log_error(f'_sync_finance_window_state_from_runtime({chat_id}): {e}')
+# [OCH12.35 OWNER] _sync_finance_window_state_from_runtime -> 11_business_finance.py
+_owner_install('finance', 'finance:0015')
 
-def restore_finance_window_runtime_state():
-    """Rehydrate volatile Telegram message ids from compact chat metadata after MEGA/global+delta restore."""
-    try:
-        for cid_s, store in (data.get('chats', {}) or {}).items():
-            try:
-                cid = int(cid_s)
-            except Exception:
-                continue
-            state = store.get('finance_window_state')
-            if not isinstance(state, dict):
-                _finance_window_state(cid)
-                state = store.get('finance_window_state') or {}
-            mode = str(state.get('mode') or 'off')
-            settings = store.setdefault('settings', {})
-            if mode == 'normal':
-                settings['quick_balance_enabled'] = False
-                settings['quick_balance_behavior'] = 'normal'
-                settings['quick_balance_user_selected'] = True
-            elif mode in {'open', 'first'}:
-                settings['quick_balance_enabled'] = True
-                settings['quick_balance_behavior'] = mode
-                settings['quick_balance_user_selected'] = True
-            else:
-                settings['quick_balance_enabled'] = False
-                settings['quick_balance_behavior'] = 'normal'
-                settings['quick_balance_user_selected'] = True
-            main_windows = {str(k): int(v) for k, v in (state.get('main_windows') or {}).items() if v}
-            selected_day = str(state.get('current_view_day') or store.get('current_view_day') or today_key())[:10]
-            selected_mid = int(main_windows.get(selected_day) or 0)
-            if not selected_mid and main_windows:
-                try:
-                    selected_day, selected_mid = list(main_windows.items())[-1]
-                    selected_day = str(selected_day)[:10]
-                    selected_mid = int(selected_mid)
-                except Exception:
-                    selected_mid = 0
-            data.setdefault('active_messages', {})[str(cid)] = {selected_day: selected_mid} if selected_mid else {}
-            store['primary_main_window_id'] = selected_mid or None
-            store['primary_main_window_day'] = selected_day
-            store['current_view_day'] = selected_day
-            state['main_windows'] = {selected_day: selected_mid} if selected_mid else {}
-            state['current_view_day'] = selected_day
-            store['balance_panel_id'] = int(state.get('balance_panel_id')) if state.get('balance_panel_id') else None
-            store['balance_panel_mode'] = str(state.get('balance_panel_mode') or 'mini')
-    except Exception as e:
-        log_error(f'restore_finance_window_runtime_state: {e}')
+# [OCH12.35 OWNER] restore_finance_window_runtime_state -> 11_business_finance.py
+_owner_install('finance', 'finance:0016')
 
-def _persist_finance_window_mode_critical(chat_id: int) -> bool:
-    """Persist window choice + callback idempotency marker before a critical callback may be acknowledged."""
-    try:
-        chat_id = int(chat_id)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=False)
-        if mega_is_configured() and (not RESTORE_GUARD_ACTIVE):
-            ctx = _current_telegram_update_context()
-            update_id = ctx.get('update_id')
-            if update_id is not None and str(ctx.get('update_type') or '') == 'callback_query':
-                mark_durable_update_processed(update_id, chat_id, 'callback_query')
-            return bool(persist_critical_delta_now(chat_id))
-    except Exception as e:
-        log_error(f'_persist_finance_window_mode_critical({chat_id}): {e}')
-    return False
+# [OCH12.35 OWNER] _persist_finance_window_mode_critical -> 11_business_finance.py
+_owner_install('finance', 'finance:0017')
 
-def set_finance_window_mode(chat_id: int, mode: str, *, persist_now: bool=False):
-    chat_id = int(chat_id)
-    mode = str(mode or 'off').lower().strip()
-    if mode not in {'off', 'normal', 'open', 'first'}:
-        mode = 'off'
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    state = _finance_window_state(chat_id)
-    state['mode'] = mode
-    state['auto_reopen_on_boot'] = bool(mode != 'off')
-    state['updated_at'] = now_local().isoformat(timespec='seconds')
-    if mode == 'normal':
-        settings['quick_balance_enabled'] = False
-        settings['quick_balance_behavior'] = 'normal'
-        settings['quick_balance_user_selected'] = True
-    elif mode in {'open', 'first'}:
-        settings['quick_balance_enabled'] = True
-        settings['quick_balance_behavior'] = mode
-        settings['quick_balance_user_selected'] = True
-    else:
-        settings['quick_balance_enabled'] = False
-        settings['quick_balance_behavior'] = 'normal'
-        settings['quick_balance_user_selected'] = True
-    store['finance_window_state'] = state
-    save_data(data, chat_ids=[chat_id])
-    if persist_now:
-        _persist_finance_window_mode_critical(chat_id)
-    else:
-        schedule_config_backup_for_chats(chat_id)
+# [OCH12.35 OWNER] set_finance_window_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0018')
 
-def _v177_legacy_0025_delete_auto_finance_windows_for_chat(chat_id: int, *, persist_now: bool=False) -> int:
-    """Delete only automatic finance windows controlled by the three F39 modes, not manual reports/F91/category views."""
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    ids = set()
-    try:
-        ids.update((int(v) for v in (get_or_create_active_windows(chat_id) or {}).values() if v))
-    except Exception:
-        pass
-    try:
-        if store.get('balance_panel_id'):
-            ids.add(int(store.get('balance_panel_id')))
-    except Exception:
-        pass
-    removed = 0
-    for mid in sorted(ids):
-        try:
-            bot.delete_message(chat_id, mid)
-            removed += 1
-        except Exception:
-            pass
-        try:
-            unregister_open_window(chat_id, mid)
-        except Exception:
-            pass
-    data.setdefault('active_messages', {})[str(chat_id)] = {}
-    store['balance_panel_id'] = None
-    store['balance_panel_mode'] = 'mini'
-    store['main_window_msg_count'] = 0
-    store['balance_panel_msg_count'] = 0
-    state = _finance_window_state(chat_id)
-    state['main_windows'] = {}
-    state['balance_panel_id'] = None
-    state['balance_panel_mode'] = 'mini'
-    state['auto_reopen_on_boot'] = False if finance_window_mode(chat_id) == 'off' else state.get('auto_reopen_on_boot', True)
-    state['updated_at'] = now_local().isoformat(timespec='seconds')
-    save_data(data, chat_ids=[chat_id])
-    if persist_now:
-        _persist_finance_window_mode_critical(chat_id)
-    else:
-        try:
-            schedule_quick_backup(chat_id, 0.5)
-        except Exception:
-            pass
-    return removed
+# [OCH12.35 OWNER] _v177_legacy_0025_delete_auto_finance_windows_for_chat -> 11_business_finance.py
+_owner_install('finance', 'finance:0019')
 try:
     _v177_legacy_0025_delete_auto_finance_windows_for_chat.__name__ = 'delete_auto_finance_windows_for_chat'
 except Exception:
     pass
 
-def set_quick_balance_behavior(chat_id: int, behavior: str):
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    behavior = str(behavior or 'normal').strip().lower()
-    if behavior not in {'normal', 'mini', 'open', 'first'}:
-        behavior = 'normal'
-    settings['quick_balance_behavior'] = behavior
-    settings['quick_balance_user_selected'] = True
-    save_data(data)
-    schedule_config_backup_for_chats(chat_id)
-    if behavior == 'first':
-        schedule_quick_balance_first_recreate(chat_id)
+# [OCH12.35 OWNER] set_quick_balance_behavior -> 11_business_finance.py
+_owner_install('finance', 'finance:0020')
 
-def set_quick_balance_enabled(chat_id: int, enabled: bool):
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    enabled = bool(enabled)
-    settings['quick_balance_enabled'] = enabled
-    if enabled:
-        set_finance_mode(chat_id, True)
-        if store.get('balance_panel_mode') not in {'mini', 'open'}:
-            store['balance_panel_mode'] = 'mini'
-        save_data(data)
-        schedule_config_backup_for_chats(chat_id)
-        schedule_balance_panel_refresh(chat_id, 0.1)
-        return
-    panel_id = store.get('balance_panel_id')
-    if panel_id:
-        try:
-            bot.delete_message(chat_id, panel_id)
-        except Exception:
-            pass
-    store['balance_panel_id'] = None
-    store['balance_panel_mode'] = 'normal'
-    settings['quick_balance_behavior'] = 'normal'
-    save_data(data)
-    schedule_config_backup_for_chats(chat_id)
+# [OCH12.35 OWNER] set_quick_balance_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0021')
 
-def is_hidden_finance_mode(chat_id: int) -> bool:
-    try:
-        store = get_chat_store(chat_id)
-        return bool(store.setdefault('settings', {}).get('hidden_finance', False))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] is_hidden_finance_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0022')
 
-def is_finance_output_suppressed(chat_id: int) -> bool:
-    """Скрытый финрежим: учёт остаётся, но в самом чате ничего финансового не выводим."""
-    try:
-        return bool(is_hidden_finance_mode(chat_id) and (not is_owner_chat(chat_id)))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] is_finance_output_suppressed -> 11_business_finance.py
+_owner_install('finance', 'finance:0023')
 
-def mega_backup_priority_enabled(chat_id: int | None=None) -> bool:
-    """Приоритет MEGA — настройка owner scope; без контекста сохраняется legacy fallback."""
-    return bool(_owner_setting_value('mega_backup_priority', False, chat_id))
+# [OCH12.35 OWNER] mega_backup_priority_enabled -> 17_integration_mega.py
+_owner_install('mega', 'mega:0007')
 
-def set_mega_backup_priority_enabled(enabled: bool, chat_id: int | None=None):
-    _set_owner_setting_value('mega_backup_priority', bool(enabled), chat_id)
-    if mega_is_configured():
-        _schedule_global_mega_snapshot(1.0)
+# [OCH12.35 OWNER] set_mega_backup_priority_enabled -> 17_integration_mega.py
+_owner_install('mega', 'mega:0008')
 
-def toggle_mega_backup_priority(chat_id: int | None=None) -> bool:
-    new_value = not mega_backup_priority_enabled(chat_id)
-    set_mega_backup_priority_enabled(new_value, chat_id)
-    return new_value
+# [OCH12.35 OWNER] toggle_mega_backup_priority -> 17_integration_mega.py
+_owner_install('mega', 'mega:0009')
 
-def mega_backup_priority_label(chat_id: int | None=None) -> str:
-    return '☁️ Сразу в MEGA' if mega_backup_priority_enabled(chat_id) else '🕓 MEGA как обычно'
+# [OCH12.35 OWNER] mega_backup_priority_label -> 17_integration_mega.py
+_owner_install('mega', 'mega:0010')
 
-def _v177_legacy_0026_backup_excel_all_enabled() -> bool:
-    try:
-        return bool((data or {}).setdefault('_global_settings', {}).get('backup_excel_all_enabled', True))
-    except Exception:
-        return True
+# [OCH12.35 OWNER] _v177_legacy_0026_backup_excel_all_enabled -> 16_integration_excel.py
+_owner_install('excel', 'excel:0001')
 try:
     _v177_legacy_0026_backup_excel_all_enabled.__name__ = 'backup_excel_all_enabled'
 except Exception:
     pass
 
-def _v177_legacy_0027_set_backup_excel_all_enabled(enabled: bool):
-    data.setdefault('_global_settings', {})['backup_excel_all_enabled'] = bool(enabled)
-    save_data(data, full=True)
+# [OCH12.35 OWNER] _v177_legacy_0027_set_backup_excel_all_enabled -> 16_integration_excel.py
+_owner_install('excel', 'excel:0002')
 try:
     _v177_legacy_0027_set_backup_excel_all_enabled.__name__ = 'set_backup_excel_all_enabled'
 except Exception:
     pass
 
-def toggle_backup_excel_all_enabled() -> bool:
-    new_value = not backup_excel_all_enabled()
-    set_backup_excel_all_enabled(new_value)
-    return new_value
+# [OCH12.35 OWNER] toggle_backup_excel_all_enabled -> 16_integration_excel.py
+_owner_install('excel', 'excel:0003')
 
-def backup_excel_all_label() -> str:
-    return '✅ ВКЛ' if backup_excel_all_enabled() else '⬜ ВЫКЛ'
+# [OCH12.35 OWNER] backup_excel_all_label -> 16_integration_excel.py
+_owner_install('excel', 'excel:0004')
 
-def _normalize_excel_table_style(value) -> str:
-    raw = str(value or '').strip().lower()
-    aliases = {'new': 'new_notes', 'notes': 'new_notes', 'note': 'new_notes', 'comments': 'new_comments', 'comment': 'new_comments', 'plain': 'new_plain', 'new_plain': 'new_plain', 'google': 'google_notes', 'sheets': 'google_notes', 'google_sheets': 'google_notes', 'google_notes': 'google_notes'}
-    mode = aliases.get(raw, raw)
-    return mode if mode in {'old', 'new_plain', 'new_comments', 'new_notes', 'google_notes'} else ''
+# [OCH12.35 OWNER] _normalize_excel_table_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0005')
 
-def _v177_legacy_0028_excel_interface_mode(chat_id: int | None=None) -> str:
-    """INFO switch: old interface (v136 chooser) or new checkbox recipe."""
-    gs = data.setdefault('_global_settings', {})
-    mode = str(gs.get('excel_interface_mode') or 'old').strip().lower()
-    if mode not in {'old', 'new'}:
-        mode = 'old'
-        gs['excel_interface_mode'] = mode
-    return mode
+# [OCH12.35 OWNER] _v177_legacy_0028_excel_interface_mode -> 16_integration_excel.py
+_owner_install('excel', 'excel:0006')
 try:
     _v177_legacy_0028_excel_interface_mode.__name__ = 'excel_interface_mode'
 except Exception:
     pass
 
-def _v177_legacy_0029_set_excel_interface_mode(mode: str) -> str:
-    mode = 'new' if str(mode or '').strip().lower() == 'new' else 'old'
-    data.setdefault('_global_settings', {})['excel_interface_mode'] = mode
-    save_data(data, root_only=True)
-    try:
-        if OWNER_ID:
-            schedule_config_backup_for_chats(int(OWNER_ID), delay=1.0)
-    except Exception:
-        pass
-    return mode
+# [OCH12.35 OWNER] _v177_legacy_0029_set_excel_interface_mode -> 16_integration_excel.py
+_owner_install('excel', 'excel:0007')
 try:
     _v177_legacy_0029_set_excel_interface_mode.__name__ = 'set_excel_interface_mode'
 except Exception:
     pass
 
-def toggle_excel_interface_mode(chat_id: int | None=None) -> str:
-    return set_excel_interface_mode('new' if excel_interface_mode(chat_id) == 'old' else 'old')
+# [OCH12.35 OWNER] toggle_excel_interface_mode -> 16_integration_excel.py
+_owner_install('excel', 'excel:0008')
 
-def _v177_legacy_0030_excel_new_export_options() -> dict:
-    gs = data.setdefault('_global_settings', {})
-    raw = gs.get('excel_new_export_options')
-    if not isinstance(raw, dict):
-        raw = {}
-    options = {'old_table': bool(raw.get('old_table', False)), 'comments': bool(raw.get('comments', False)), 'notes': bool(raw.get('notes', True)), 'description_column': bool(raw.get('description_column', False))}
-    if options['old_table']:
-        options.update({'comments': False, 'notes': False, 'description_column': True})
-    elif options['comments'] and options['notes']:
-        options['comments'] = False
-    gs['excel_new_export_options'] = dict(options)
-    return options
+# [OCH12.35 OWNER] _v177_legacy_0030_excel_new_export_options -> 16_integration_excel.py
+_owner_install('excel', 'excel:0009')
 try:
     _v177_legacy_0030_excel_new_export_options.__name__ = 'excel_new_export_options'
 except Exception:
     pass
 
-def _v177_legacy_0031_toggle_excel_new_export_option(option: str) -> dict:
-    option = str(option or '').strip().lower()
-    options = excel_new_export_options()
-    if option == 'old_table':
-        enabled = not options['old_table']
-        options['old_table'] = enabled
-        if enabled:
-            options.update({'comments': False, 'notes': False, 'description_column': True})
-    elif option == 'comments':
-        enabled = not options['comments']
-        options.update({'old_table': False, 'comments': enabled})
-        if enabled:
-            options['notes'] = False
-    elif option == 'notes':
-        enabled = not options['notes']
-        options.update({'old_table': False, 'notes': enabled})
-        if enabled:
-            options['comments'] = False
-    elif option == 'description_column':
-        enabled = not options['description_column']
-        options['description_column'] = enabled
-        if not enabled:
-            options['old_table'] = False
-    data.setdefault('_global_settings', {})['excel_new_export_options'] = dict(options)
-    save_data(data, root_only=True)
-    try:
-        if OWNER_ID:
-            schedule_config_backup_for_chats(int(OWNER_ID), delay=1.0)
-    except Exception:
-        pass
-    return dict(options)
+# [OCH12.35 OWNER] _v177_legacy_0031_toggle_excel_new_export_option -> 16_integration_excel.py
+_owner_install('excel', 'excel:0010')
 try:
     _v177_legacy_0031_toggle_excel_new_export_option.__name__ = 'toggle_excel_new_export_option'
 except Exception:
     pass
 
-def normalize_excel_export_options(value: dict | None=None) -> dict:
-    src = dict(value or excel_new_export_options())
-    out = {'old_table': bool(src.get('old_table', False)), 'comments': bool(src.get('comments', False)), 'notes': bool(src.get('notes', False)), 'description_column': bool(src.get('description_column', False))}
-    if out['old_table']:
-        out.update({'comments': False, 'notes': False, 'description_column': True})
-    elif out['comments'] and out['notes']:
-        out['comments'] = False
-    return out
+# [OCH12.35 OWNER] normalize_excel_export_options -> 16_integration_excel.py
+_owner_install('excel', 'excel:0011')
 
-def excel_export_options_style(options: dict | None=None) -> str:
-    opts = normalize_excel_export_options(options)
-    if opts['old_table']:
-        return 'old'
-    if opts['comments']:
-        return 'new_comments'
-    if opts['notes']:
-        return 'new_notes'
-    return 'new_plain'
+# [OCH12.35 OWNER] excel_export_options_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0012')
 
-def _v177_legacy_0032_excel_table_style(chat_id: int) -> str:
-    gs = data.setdefault('_global_settings', {})
-    mode = _normalize_excel_table_style(gs.get('excel_table_style_global'))
-    if not mode:
-        candidates = [gs.get('excel_table_style')]
-        try:
-            if OWNER_ID:
-                candidates.append(get_chat_store(int(OWNER_ID)).setdefault('settings', {}).get('excel_table_style'))
-        except Exception:
-            pass
-        try:
-            candidates.append(get_chat_store(int(chat_id)).setdefault('settings', {}).get('excel_table_style'))
-        except Exception:
-            pass
-        mode = next((_normalize_excel_table_style(v) for v in candidates if _normalize_excel_table_style(v)), 'new_notes')
-        gs['excel_table_style_global'] = mode
-        gs['excel_table_style'] = mode
-    return mode
+# [OCH12.35 OWNER] _v177_legacy_0032_excel_table_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0013')
 try:
     _v177_legacy_0032_excel_table_style.__name__ = 'excel_table_style'
 except Exception:
     pass
 
-def _v177_legacy_0033_set_excel_table_style(chat_id: int, mode: str) -> str:
-    chat_id = int(chat_id)
-    mode = _normalize_excel_table_style(mode) or 'new_notes'
-    gs = data.setdefault('_global_settings', {})
-    gs['excel_table_style_global'] = mode
-    gs['excel_table_style'] = mode
-    touched = []
-    for cid in (chat_id, int(OWNER_ID or 0)):
-        if not cid or cid in touched:
-            continue
-        try:
-            get_chat_store(cid).setdefault('settings', {})['excel_table_style'] = mode
-            touched.append(cid)
-        except Exception:
-            pass
-    save_data(data, chat_ids=touched or None, root_only=not bool(touched))
-    try:
-        schedule_config_backup_for_chats(*(touched or [chat_id]), delay=1.0)
-    except Exception:
-        pass
-    return mode
+# [OCH12.35 OWNER] _v177_legacy_0033_set_excel_table_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0014')
 try:
     _v177_legacy_0033_set_excel_table_style.__name__ = 'set_excel_table_style'
 except Exception:
     pass
 
-def toggle_excel_table_style(chat_id: int) -> str:
-    order = ['old', 'new_comments', 'new_notes', 'google_notes']
-    current = excel_table_style(chat_id)
-    try:
-        next_mode = order[(order.index(current) + 1) % len(order)]
-    except Exception:
-        next_mode = 'new_notes'
-    return set_excel_table_style(chat_id, next_mode)
+# [OCH12.35 OWNER] toggle_excel_table_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0015')
 
-def excel_table_style_caption(chat_id: int) -> str:
-    if excel_interface_mode(chat_id) == 'new':
-        return 'ПО-НОВОМУ'
-    return 'ПО-СТАРОМУ'
+# [OCH12.35 OWNER] excel_table_style_caption -> 16_integration_excel.py
+_owner_install('excel', 'excel:0016')
 
-def excel_annotation_mode(chat_id: int) -> str | None:
-    mode = excel_table_style(chat_id)
-    if mode == 'new_comments':
-        return 'comments'
-    if mode in {'new_notes', 'google_notes'}:
-        return 'notes'
-    return None
+# [OCH12.35 OWNER] excel_annotation_mode -> 16_integration_excel.py
+_owner_install('excel', 'excel:0017')
 
-def excel_table_style_label(chat_id: int) -> str:
-    return '📊 Excel: по новому' if excel_interface_mode(chat_id) == 'new' else '📊 Excel: по старому'
+# [OCH12.35 OWNER] excel_table_style_label -> 16_integration_excel.py
+_owner_install('excel', 'excel:0018')
 
-def build_excel_style_text(chat_id: int) -> str:
-    return wm_owner(f'📊 Excel\\n\\nКнопка в INFO теперь только переключает интерфейс экспорта.\\n• По старому — меню выбора формата v136.\\n• По новому — настройки с галочками в Ф179/Ф181.\\n\\nСейчас: {excel_table_style_caption(chat_id)}', 9)
+# [OCH12.35 OWNER] build_excel_style_text -> 16_integration_excel.py
+_owner_install('excel', 'excel:0019')
 
-def build_excel_style_keyboard(chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB(excel_table_style_label(chat_id), callback_data='excel_style_toggle'))
-    kb.row(IB('🔙 Назад в Инфо', callback_data='journal_back'))
-    return kb
+# [OCH12.35 OWNER] build_excel_style_keyboard -> 16_integration_excel.py
+_owner_install('excel', 'excel:0020')
 
 def _backup_target_all_state(target: str) -> tuple[int, int]:
     ids = [int(cid) for cid, _ in _collect_backup_menu_items()]
@@ -6994,8 +5922,8 @@ def is_backup_to_chat_enabled(chat_id: int) -> bool:
 def is_backup_to_channel_enabled(chat_id: int) -> bool:
     return is_backup_target_enabled(chat_id, 'channel')
 
-def is_backup_to_mega_enabled(chat_id: int) -> bool:
-    return is_backup_target_enabled(chat_id, 'mega')
+# [OCH12.35 OWNER] is_backup_to_mega_enabled -> 17_integration_mega.py
+_owner_install('mega', 'mega:0011')
 
 def is_auto_backup_enabled(chat_id: int) -> bool:
     """Legacy master: True если включён хотя бы один тип авто-бэкапа."""
@@ -7907,42 +6835,14 @@ def build_removed_chats_menu(day_key: str | None=None):
     kb.row(IB('🔙 Назад', callback_data='fw_back_src' if day_key is None else f'd:{day_key}:forward_menu'))
     return kb
 
-def set_hidden_finance_mode(chat_id: int, enabled: bool):
-    """v108: hidden finance is independent from the three automatic finance-window modes."""
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    settings['hidden_finance'] = bool(enabled)
-    if enabled:
-        set_finance_mode(chat_id, True)
-    save_data(data, chat_ids=[chat_id])
-    schedule_config_backup_for_chats(chat_id)
+# [OCH12.35 OWNER] set_hidden_finance_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0024')
 
-def force_recreate_balance_panel(chat_id: int):
-    """Пересоздаёт быстрый остаток, чтобы он снова стал последним окном в чате."""
-    if finance_window_mode(chat_id) not in {'open', 'first'}:
-        return
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
-    store = get_chat_store(chat_id)
-    panel_id = store.get('balance_panel_id')
-    if panel_id:
-        try:
-            bot.delete_message(chat_id, int(panel_id))
-        except Exception:
-            pass
-    store['balance_panel_id'] = None
-    store['balance_panel_mode'] = 'mini'
-    store['balance_panel_msg_count'] = 0
-    save_data(data)
-    send_minimized_balance_panel(chat_id)
+# [OCH12.35 OWNER] force_recreate_balance_panel -> 11_business_finance.py
+_owner_install('finance', 'finance:0025')
 
-def is_normal_finance_window_mode(chat_id: int) -> bool:
-    """Как обычно: отдельный выбранный режим; hidden finance does not disable it."""
-    try:
-        return bool(is_finance_mode(chat_id) and finance_window_mode(chat_id) == 'normal')
-    except Exception:
-        return False
+# [OCH12.35 OWNER] is_normal_finance_window_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0026')
 
 
 def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float=4.0):
@@ -7969,73 +6869,18 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float=4.0):
 
 
 
-def bump_quick_balance_recreate_counter(chat_id: int, count: int=1):
-    """R48: visual counters are RAM-only; never persist the whole chat per message."""
-    try:
-        if not is_finance_mode(chat_id) or finance_window_mode(chat_id) == 'off':
-            return
-        if is_normal_finance_window_mode(chat_id):
-            store = get_chat_store(chat_id)
-            cur = int(store.get('main_window_msg_count', 0) or 0) + int(count or 1)
-            store['main_window_msg_count'] = cur
-            if cur >= 10:
-                schedule_main_window_recreate_after_quiet(chat_id, delay=4.0)
-            return
-        if not is_quick_balance_enabled(chat_id):
-            return
-        if get_quick_balance_behavior(chat_id) == 'first':
-            schedule_quick_balance_first_recreate(chat_id)
-        store = get_chat_store(chat_id)
-        cur = int(store.get('balance_panel_msg_count', 0) or 0) + int(count or 1)
-        store['balance_panel_msg_count'] = cur
-        if cur >= 3:
-            schedule_quick_balance_recreate_after_quiet(chat_id, delay=4.0)
-    except Exception as e:
-        log_error(f'bump_quick_balance_recreate_counter({get_chat_display_name(chat_id)}): {e}')
+# [OCH12.35 OWNER] bump_quick_balance_recreate_counter -> 11_business_finance.py
+_owner_install('finance', 'finance:0027')
 
 
 
-def schedule_quick_balance_first_recreate(chat_id: int, delay: float=60.0):
-    try: chat_id = int(chat_id)
-    except Exception: return
-    if finance_window_mode(chat_id) != 'first' or not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id) or get_quick_balance_behavior(chat_id) != 'first': return
-    def _job():
-        try:
-            with locked_chat(chat_id):
-                allowed = bool(finance_window_mode(chat_id) == 'first' and is_finance_mode(chat_id) and is_quick_balance_enabled(chat_id) and get_quick_balance_behavior(chat_id) == 'first')
-            if allowed:
-                force_recreate_balance_panel(chat_id)
-        except Exception as e:
-            log_error(f'schedule_quick_balance_first_recreate({chat_id}): {e}')
-    scheduler_key = f'quick-balance-first:{chat_id}'
-    with timer_lock:
-        DELAYED_SCHEDULER.cancel(scheduler_key)
-        deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
-        _balance_panel_first_timers[chat_id] = deadline
+# [OCH12.35 OWNER] schedule_quick_balance_first_recreate -> 11_business_finance.py
+_owner_install('finance', 'finance:0028')
 
 
 
-def schedule_quick_balance_recreate_after_quiet(chat_id: int, delay: float=4.0):
-    try: chat_id = int(chat_id)
-    except Exception: return
-    if finance_window_mode(chat_id) not in {'open', 'first'} or not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id): return
-    def _job():
-        try:
-            should = False
-            with locked_chat(chat_id):
-                store = get_chat_store(chat_id)
-                if int(store.get('balance_panel_msg_count', 0) or 0) >= 3:
-                    store['balance_panel_msg_count'] = 0
-                    should = True
-            if should:
-                force_recreate_balance_panel(chat_id)
-        except Exception as e:
-            log_error(f'schedule_quick_balance_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}')
-    scheduler_key = f'quick-balance-recreate:{chat_id}'
-    with timer_lock:
-        DELAYED_SCHEDULER.cancel(scheduler_key)
-        deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
-        _balance_panel_recreate_timers[chat_id] = deadline
+# [OCH12.35 OWNER] schedule_quick_balance_recreate_after_quiet -> 11_business_finance.py
+_owner_install('finance', 'finance:0029')
 
 
 def _set_panel_open_state(chat_id: int, message_id: int):
@@ -8713,37 +7558,11 @@ def schedule_command_delete(msg):
     except Exception:
         pass
 
-def guard_non_owner_finance_for_command(msg, allowed_commands=None) -> bool:
-    allowed = {c.lower().lstrip('/') for c in allowed_commands or []}
-    chat_id = msg.chat.id
-    if is_owner_chat(chat_id):
-        return False
-    if is_finance_output_suppressed(chat_id):
-        return True
-    text = (getattr(msg, 'text', None) or '').strip().lower()
-    cmd = text.split()[0].split('@')[0].lstrip('/') if text else ''
-    if cmd in allowed:
-        return False
-    if not is_finance_mode(chat_id):
-        send_and_auto_delete(chat_id, '⚙️ Для этого включите финансовый режим командой /ok', HELPER_DELETE_DELAY)
-        return True
-    return False
+# [OCH12.35 OWNER] guard_non_owner_finance_for_command -> 11_business_finance.py
+_owner_install('finance', 'finance:0030')
 
-def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
-    if is_owner_chat(chat_id):
-        return False
-    if is_finance_output_suppressed(chat_id):
-        if finance_window_mode(chat_id) in {'normal', 'open', 'first'}:
-            return False
-        return True
-    if is_finance_mode(chat_id):
-        return False
-    if data_str in {'info_close', 'main_articles_toggle', 'main_financial_values_toggle'}:
-        return False
-    if data_str.startswith('d:') and data_str.endswith(':info'):
-        return False
-    send_and_auto_delete(chat_id, '⚙️ Для этого включите финансовый режим командой /ok', HELPER_DELETE_DELAY)
-    return True
+# [OCH12.35 OWNER] guard_non_owner_finance_for_callback -> 11_business_finance.py
+_owner_install('finance', 'finance:0031')
 
 def add_buttons_in_rows(kb, buttons, per_row: int=3):
     for i in range(0, len(buttons), per_row):
@@ -8912,123 +7731,24 @@ def _direction_state_label(enabled: bool, left: str, arrow: str, right: str) -> 
     icon = '✅' if enabled else '⬜'
     return f'{icon} {left} {arrow} {right}'
 
-def _forward_arrow_icon(ab_on: bool, ba_on: bool) -> str:
-    if ab_on and ba_on:
-        return '🔄'
-    if ab_on:
-        return '⏩️'
-    if ba_on:
-        return '⏪️'
-    return '⬜'
+# [OCH12.35 OWNER] _forward_arrow_icon -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0021')
 
-def _forward_fin_icon(ab_fin: bool, ba_fin: bool) -> str:
-    if ab_fin and ba_fin:
-        return '💰🔄'
-    if ab_fin:
-        return '💰▶️'
-    if ba_fin:
-        return '💰◀️'
-    return '⬜'
+# [OCH12.35 OWNER] _forward_fin_icon -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0022')
 
-def _v177_legacy_0060_build_forward_status_lines() -> list[str]:
-    """Статус В22: короткая схема связей.
-    Всегда показываем Чат A первым:
-    Чат A -(⏩️/⏪️/🔄/⬜)-(💰▶️/💰◀️/💰🔄/⬜)-Чат B
-    """
-    lines = []
-    fr = data.get('forward_rules', {}) or {}
-    ff = data.get('forward_finance', {}) or {}
-    seen_pairs = set()
-
-    def _sorted_pair(a: int, b: int):
-        name_a = get_chat_display_name(a).lower()
-        name_b = get_chat_display_name(b).lower()
-        if (name_a, a) <= (name_b, b):
-            return (a, b)
-        return (b, a)
-    all_pairs = set()
-    for src, dsts in fr.items():
-        try:
-            src_id = int(src)
-        except Exception:
-            continue
-        for dst in (dsts or {}).keys():
-            try:
-                dst_id = int(dst)
-            except Exception:
-                continue
-            all_pairs.add(_sorted_pair(src_id, dst_id))
-    for a_id, b_id in sorted(all_pairs, key=lambda p: (get_chat_display_name(p[0]).lower(), get_chat_display_name(p[1]).lower())):
-        pair_key = (a_id, b_id)
-        if pair_key in seen_pairs:
-            continue
-        seen_pairs.add(pair_key)
-        ab_on = str(b_id) in (fr.get(str(a_id), {}) or {})
-        ba_on = str(a_id) in (fr.get(str(b_id), {}) or {})
-        if not (ab_on or ba_on):
-            continue
-        ab_fin = bool((ff.get(str(a_id), {}) or {}).get(str(b_id), False))
-        ba_fin = bool((ff.get(str(b_id), {}) or {}).get(str(a_id), False))
-        name_a = chat_button_title(a_id)
-        name_b = chat_button_title(b_id)
-        lines.append(f'• {name_a} -({_forward_arrow_icon(ab_on, ba_on)})-({_forward_fin_icon(ab_fin, ba_fin)})-{name_b}')
-    if not lines:
-        lines.append('• Связи пересылки не настроены')
-    return lines
+# [OCH12.35 OWNER] _v177_legacy_0060_build_forward_status_lines -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0023')
 try:
     _v177_legacy_0060_build_forward_status_lines.__name__ = 'build_forward_status_lines'
 except Exception:
     pass
 
-def build_forward_status_text(title: str | None=None) -> str:
-    lines = []
-    if title:
-        lines.append(title)
-        lines.append('')
-    if title and 'Пересылка' in str(title):
-        lines.append('Шаги: 1) выберите чат A → 2) выберите чат B → 3) включите 📨 пересылку и 💰 финучёт пересылки по нужным направлениям.')
-        lines.append('')
-    lines.append('Текущие связи:')
-    lines.extend(build_forward_status_lines())
-    # R70: visual rules are not enough.  Show whether the production resolver
-    # would actually route messages now (mode/status/tenant/suspension included).
-    try:
-        pair_fn = globals().get('collect_forward_pairs_for_menu')
-        resolver = globals().get('resolve_forward_targets')
-        pairs = list(pair_fn() or []) if callable(pair_fn) else []
-        blocked=[]; active=0
-        if callable(resolver):
-            for a,b in pairs:
-                ab = int(b) in {int(x) for x in (resolver(int(a)) or [])}
-                ba = int(a) in {int(x) for x in (resolver(int(b)) or [])}
-                active += int(ab) + int(ba)
-                if not ab and not ba:
-                    blocked.append((int(a),int(b)))
-        if pairs:
-            lines.append('')
-            lines.append(f'Runtime-маршруты: ✅ {active} направлений · ⚠️ полностью заблокированных пар {len(blocked)}')
-            for a,b in blocked[:6]:
-                lines.append(f'⚠️ {chat_button_title(a)} ↔ {chat_button_title(b)}: правило есть, но resolve_forward_targets() сейчас не даёт маршрут')
-            if len(blocked)>6:
-                lines.append(f'…ещё {len(blocked)-6}')
-    except Exception:
-        pass
-    return '\n'.join(lines)
+# [OCH12.35 OWNER] build_forward_status_text -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0024')
 
-def _find_forward_origin_by_copied_message(chat_id: int, msg_id: int):
-    """
-    Ищет origin (source_chat_id, source_msg_id) по копии сообщения в конкретном чате.
-    Нужно для правильного reply, когда пользователь отвечает на сообщение,
-    которое бот ранее переслал из другого чата.
-    """
-    try:
-        for (src_chat_id, src_msg_id), pairs in forward_map.items():
-            for pair_chat_id, pair_msg_id in pairs:
-                if int(pair_chat_id) == int(chat_id) and int(pair_msg_id) == int(msg_id):
-                    return (int(src_chat_id), int(src_msg_id))
-    except Exception:
-        pass
-    return (None, None)
+# [OCH12.35 OWNER] _find_forward_origin_by_copied_message -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0025')
 
 def resolve_reply_target_message_id(source_chat_id: int, reply_to_message_id: int | None, dst_chat_id: int):
     """
@@ -9148,75 +7868,8 @@ def _tg_first_chat_id(args, kwargs):
         return args[0]
     return None
 
-def _tg_call_retry(func, *args, attempts: int=7, purpose: str='telegram', **kwargs):
-    """
-    Telegram API wrapper: если Telegram вернул 429, ждём retry_after и повторяем.
-    Это нужно, чтобы пересылка не терялась, а доставлялась позже.
-    """
-    last_err = None
-    _r52_tg_call_started=time.monotonic()
-    try: r52_diag('TG_CALL_ENTER', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempts=attempts, chat=_tg_first_chat_id(args,kwargs))
-    except Exception: pass
-    for attempt in range(1, int(attempts) + 1):
-        try:
-            chat_id = _tg_first_chat_id(args, kwargs)
-            try: r52_diag('TG_CALL_ATTEMPT', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempt=attempt, attempts=attempts, chat=chat_id)
-            except Exception: pass
-            _telegram_rate_limit_global()
-            if chat_id is not None:
-                ui_gap = effective_fast_telegram_gap() if _is_fast_ui_purpose(purpose) else 0.35
-                _telegram_rate_limit_chat(chat_id, min_gap=ui_gap)
-            try:
-                if verbose_telegram_journal_enabled() and (not _is_fast_ui_purpose(purpose)):
-                    bot_journal('telegram_api_call', chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
-            except Exception:
-                pass
-            try:
-                for _obj in list(args) + list(kwargs.values()):
-                    if hasattr(_obj, 'seek'):
-                        try:
-                            _obj.seek(0)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            try:
-                _telegram_guard_local.in_retry = True
-                _res = func(*args, **kwargs)
-            finally:
-                _telegram_guard_local.in_retry = False
-            # R48: success is a pure transport hot path. Incoming updates and explicit
-            # probes refresh lifecycle; every send/edit must not acquire data_lock.
-            try: r52_diag('TG_CALL_OK', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempt=attempt, chat=chat_id, elapsed=time.monotonic()-_r52_tg_call_started)
-            except Exception: pass
-            return _res
-        except TypeError:
-            raise
-        except Exception as e:
-            last_err = e
-            try: r52_diag('TG_CALL_ERROR', purpose=purpose, func=getattr(func,'__name__',str(func))[:120], attempt=attempt, chat=locals().get('chat_id'), elapsed=time.monotonic()-_r52_tg_call_started, error=f'{type(e).__name__}:{str(e)[:1000]}')
-            except Exception: pass
-            retry_after = _telegram_retry_after_seconds(e)
-            if retry_after is None:
-                try:
-                    chat_id_for_mark = _tg_first_chat_id(args, kwargs)
-                    if chat_id_for_mark is not None and _is_bot_removed_error(e):
-                        set_chat_bot_removed(int(chat_id_for_mark), True, str(e)[:240])
-                except Exception:
-                    pass
-                raise
-            wait = _telegram_register_429_cooldown(e, extra=0.35)
-            log_info(f'[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait:.2f}s, error={str(e)[:220]}')
-            try:
-                bot_journal('telegram_429_retry', chat_id if 'chat_id' in locals() else None, f'{purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}', 'WARN')
-            except Exception:
-                pass
-            if _is_fast_ui_purpose(purpose):
-                raise e
-            if attempt >= int(attempts):
-                break
-            time.sleep(wait)
-    raise last_err
+# [OCH12.35 COMPAT] legacy _tg_call_retry -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0003')
 
 
 # R37: Guard legacy direct bot.* calls too. Older modules contain direct Telegram calls
@@ -9288,11 +7941,8 @@ def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwar
                 continue
     return _tg_call_retry(send_func, *args, purpose='send', **kwargs)
 
-def build_balance_panel_keyboard(chat_id: int):
-    kb = types.InlineKeyboardMarkup()
-    bal = get_chat_store(chat_id).get('balance', 0)
-    kb.row(IB(f'🏦 Остаток: {format_chat_amount(chat_id, bal, True)}', callback_data='bp:open'))
-    return kb
+# [OCH12.35 OWNER] build_balance_panel_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0032')
 
 def _cancel_timer(timer_map: dict, key, scheduler_key: str | None=None):
     timer_map.pop(key, None)
@@ -9302,158 +7952,27 @@ def _cancel_timer(timer_map: dict, key, scheduler_key: str | None=None):
         except Exception:
             pass
 
-def collapse_balance_panel(chat_id: int):
-    store = get_chat_store(chat_id)
-    panel_id = store.get('balance_panel_id')
-    if not panel_id:
-        return
-    try:
-        bot.edit_message_text('📌 Быстрый остаток', chat_id=chat_id, message_id=panel_id, reply_markup=build_balance_panel_keyboard(chat_id))
-        store['balance_panel_mode'] = 'mini'
-        save_data(data)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-    except Exception as e:
-        err = str(e).lower()
-        if 'message is not modified' not in err:
-            log_error(f'collapse_balance_panel({chat_id}): {e}')
+# [OCH12.35 OWNER] collapse_balance_panel -> 11_business_finance.py
+_owner_install('finance', 'finance:0033')
 
-def schedule_balance_panel_collapse(chat_id: int, delay: float | None=None):
-    if delay is None:
-        delay = internal_timer_seconds('balance_collapse', BALANCE_PANEL_COLLAPSE_DELAY)
+# [OCH12.35 OWNER] schedule_balance_panel_collapse -> 11_business_finance.py
+_owner_install('finance', 'finance:0034')
 
-    def _job():
-        try:
-            collapse_balance_panel(chat_id)
-        except Exception as e:
-            log_error(f'schedule_balance_panel_collapse({chat_id}): {e}')
-    store = get_chat_store(chat_id)
-    key = store.get('balance_panel_id') or chat_id
-    scheduler_key = f'balance-panel-collapse:{int(chat_id)}:{int(key)}'
-    _cancel_timer(_balance_panel_collapse_timers, key, scheduler_key)
-    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
-    _balance_panel_collapse_timers[key] = deadline
+# [OCH12.35 OWNER] send_minimized_balance_panel -> 11_business_finance.py
+_owner_install('finance', 'finance:0035')
 
-def send_minimized_balance_panel(chat_id: int):
-    if finance_window_mode(chat_id) not in {'open', 'first'}:
-        return
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
-    store = get_chat_store(chat_id)
-    panel_id = store.get('balance_panel_id')
-    if panel_id:
-        try:
-            bot.edit_message_text('📌 Быстрый остаток', chat_id=chat_id, message_id=panel_id, reply_markup=build_balance_panel_keyboard(chat_id))
-            store['balance_panel_mode'] = 'mini'
-            save_data(data)
-            _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-            return
-        except Exception as e:
-            err = str(e).lower()
-            if 'message is not modified' in err:
-                store['balance_panel_mode'] = 'mini'
-                save_data(data)
-                _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-                return
-            log_error(f'send_minimized_balance_panel edit({chat_id}): {e}')
-            try:
-                bot.delete_message(chat_id, panel_id)
-            except Exception:
-                pass
-            store['balance_panel_id'] = None
-    try:
-        sent = bot.send_message(chat_id, '📌 Быстрый остаток', reply_markup=build_balance_panel_keyboard(chat_id))
-        store['balance_panel_id'] = sent.message_id
-        store['balance_panel_mode'] = 'mini'
-        save_data(data)
-        _finance_window_state(chat_id)['auto_reopen_on_boot'] = True
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-    except Exception as e:
-        log_error(f'send_minimized_balance_panel({chat_id}): {e}')
-
-def _v177_legacy_0062_refresh_balance_panel_now(chat_id: int):
-    if finance_window_mode(chat_id) not in {'open', 'first'}:
-        return
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
-    store = get_chat_store(chat_id)
-    panel_id = store.get('balance_panel_id')
-    if not panel_id:
-        send_minimized_balance_panel(chat_id)
-        return
-    mode = store.get('balance_panel_mode') or 'mini'
-    try:
-        if mode == 'open':
-            day_key = store.get('current_view_day', today_key())
-            txt, _ = render_day_window(chat_id, day_key)
-            bot.edit_message_text(txt, chat_id=chat_id, message_id=panel_id, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode='HTML')
-            _set_panel_open_state(chat_id, panel_id)
-        else:
-            bot.edit_message_text('📌 Быстрый остаток', chat_id=chat_id, message_id=panel_id, reply_markup=build_balance_panel_keyboard(chat_id))
-    except Exception as e:
-        err = str(e).lower()
-        if 'message is not modified' in err:
-            if mode == 'open':
-                schedule_balance_panel_collapse(chat_id)
-            return
-        if 'message to edit not found' in err or 'message_id_invalid' in err:
-            try:
-                bot_journal('balance_panel_stale_recreate_v238', chat_id, f'old_mid={panel_id}', 'WARN')
-            except Exception:
-                pass
-        else:
-            log_error(f'refresh_balance_panel_now({chat_id}): {e}')
-        store['balance_panel_id'] = None
-        store['balance_panel_mode'] = 'mini'
-        save_data(data)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-        send_minimized_balance_panel(chat_id)
+# [OCH12.35 OWNER] _v177_legacy_0062_refresh_balance_panel_now -> 11_business_finance.py
+_owner_install('finance', 'finance:0036')
 try:
     _v177_legacy_0062_refresh_balance_panel_now.__name__ = 'refresh_balance_panel_now'
 except Exception:
     pass
 
-def schedule_balance_panel_refresh(chat_id: int, delay: float | None=None):
-    if delay is None:
-        delay = internal_timer_seconds('main_window_refresh', BALANCE_PANEL_REFRESH_DELAY)
-    if finance_window_mode(chat_id) not in {'open', 'first'}:
-        return
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
+# [OCH12.35 OWNER] schedule_balance_panel_refresh -> 11_business_finance.py
+_owner_install('finance', 'finance:0037')
 
-    def _job():
-        try:
-            store = get_chat_store(chat_id)
-            if store.get('balance_panel_id'):
-                refresh_balance_panel_now(chat_id)
-            else:
-                send_minimized_balance_panel(chat_id)
-        except Exception as e:
-            log_error(f'schedule_balance_panel_refresh({chat_id}): {e}')
-    scheduler_key = f'balance-panel-refresh:{int(chat_id)}'
-    _cancel_timer(_balance_panel_refresh_timers, chat_id, scheduler_key)
-    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
-    _balance_panel_refresh_timers[chat_id] = deadline
-
-def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | None=None):
-    if finance_window_mode(chat_id) not in {'open', 'first'}:
-        return
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
-    store = get_chat_store(chat_id)
-    day_key = day_key or store.get('current_view_day', today_key())
-    store['current_view_day'] = day_key
-    try:
-        txt, _ = render_day_window(chat_id, day_key)
-        bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode='HTML')
-        set_active_window_id(chat_id, day_key, message_id)
-        _set_panel_open_state(chat_id, message_id)
-    except Exception as e:
-        err = str(e).lower()
-        if 'message is not modified' in err:
-            set_active_window_id(chat_id, day_key, message_id)
-            _set_panel_open_state(chat_id, message_id)
-            return
-        log_error(f'open_balance_panel_in_message({chat_id},{message_id}): {e}')
+# [OCH12.35 OWNER] open_balance_panel_in_message -> 11_business_finance.py
+_owner_install('finance', 'finance:0038')
 
 def build_day_report_lines(chat_id: int) -> list[str]:
     store = get_chat_store(chat_id)
@@ -10105,56 +8624,20 @@ except Exception:
     pass
 
 # --- ИСТОЧНИК: 10_mega_runtime.py ---
-def mega_is_configured(control_plane: bool=False) -> bool:
-    recovery = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)) or bool(control_plane)
-    if not recovery:
-        contour_fn = globals().get('mega_contour_enabled_v234')
-        if callable(contour_fn):
-            try:
-                if not contour_fn():
-                    return False
-            except Exception:
-                return False
-        else:
-            raw = str(os.getenv('MEGA_CONTOUR_ENABLED', '0') or '0').strip().casefold()
-            if raw not in {'1', 'true', 'yes', 'on', 'вкл'}:
-                return False
-    gate = globals().get('external_access_allowed_v233')
-    gate_category = 'mega_control' if control_plane else 'mega'
-    if callable(gate) and (not gate(gate_category)):
-        return False
-    # OCH12.22: MEGA_ENABLED controls normal/background runtime only.
-    # Explicit control-plane recovery is allowed whenever credentials/root exist.
-    enabled_for_call = True if control_plane else bool(MEGA_ENABLED)
-    return bool(enabled_for_call and MEGA_EMAIL and MEGA_PASSWORD and str(MEGA_BACKUP_DIR or '').strip('/'))
+# [OCH12.35 OWNER] mega_is_configured -> 17_integration_mega.py
+_owner_install('mega', 'mega:0012')
 
-def mega_remote_file_path(filename: str=None) -> str:
-    filename = filename or MEGA_LATEST_GLOBAL_NAME
-    return MEGA_BACKUP_DIR.rstrip('/') + '/' + filename
+# [OCH12.35 OWNER] mega_remote_file_path -> 17_integration_mega.py
+_owner_install('mega', 'mega:0013')
 
-def _mega_required_commands():
-    return ['mega-login', 'mega-whoami', 'mega-mkdir', 'mega-put', 'mega-get', 'mega-rm', 'mega-mv', 'mega-find']
+# [OCH12.35 OWNER] _mega_required_commands -> 17_integration_mega.py
+_owner_install('mega', 'mega:0014')
 
-def mega_missing_commands():
-    return [cmd for cmd in _mega_required_commands() if shutil.which(cmd) is None]
+# [OCH12.35 OWNER] mega_missing_commands -> 17_integration_mega.py
+_owner_install('mega', 'mega:0015')
 
-def _mega_memory_safe_args(cmd: str, args) -> list[str]:
-    """Return diagnostic-only MEGAcmd arguments with credentials removed."""
-    values = list(args or [])[:3]
-    if str(cmd or '').lower() == 'mega-login':
-        return ['<redacted-email>', '<redacted-secret>'][:len(values)]
-    protected = {str(globals().get('MEGA_EMAIL') or ''), str(globals().get('MEGA_PASSWORD') or ''), str(os.getenv('BOT_TOKEN') or ''), str(os.getenv('TELEGRAM_BOT_TOKEN') or '')}
-    protected.discard('')
-    out = []
-    for index, value in enumerate(values):
-        text = str(value)
-        if text in protected:
-            out.append('<redacted>')
-        elif index == 0:
-            out.append(os.path.basename(text)[:120])
-        else:
-            out.append(text[:80])
-    return out
+# [OCH12.35 OWNER] _mega_memory_safe_args -> 17_integration_mega.py
+_owner_install('mega', 'mega:0016')
 _V178_MEGA_PRIORITY_CV = threading.Condition(threading.RLock())
 _V178_MEGA_PRIORITY_WAITING = {0: 0, 1: 0, 2: 0, 3: 0}
 _V178_MEGA_PRIORITY_ACTIVE = False
@@ -10162,331 +8645,48 @@ _MEGA_TRAFFIC_LOCK = threading.RLock()
 _MEGA_TRAFFIC_STARTED_AT = time.time()
 _MEGA_TRAFFIC_STATS = {'put_bytes': 0, 'put_count': 0, 'by_category': {}}
 
-def _mega_traffic_category(remote: str, local: str='') -> str:
-    text = (str(remote or '') + ' ' + str(local or '')).casefold()
-    if '/tasks/' in text:
-        return 'critical_tasks'
-    if '/deltas/' in text or 'delta_' in text:
-        return 'deltas'
-    if '/ledger/' in text:
-        return 'constitution_ledger'
-    if '/database/generations' in text or ('generation_' in text and '.sqlite' in text):
-        return 'sqlite_generation'
-    if '/database/' in text or 'bot_state' in text or '.sqlite' in text:
-        return 'sqlite_database'
-    if '/runtime/' in text or 'runtime_' in text:
-        return 'runtime_diagnostics'
-    if 'journal_' in text or '/journal' in text:
-        return 'journal'
-    if '/monthly/' in text:
-        return 'chat_monthly'
-    if '/chats/' in text or 'latest_chat_' in text:
-        return 'chat_backup'
-    if 'botsource' in text or 'bot_source' in text or str(local or '').endswith('.py'):
-        return 'source_archive'
-    return 'other'
+# [OCH12.35 OWNER] _mega_traffic_category -> 17_integration_mega.py
+_owner_install('mega', 'mega:0017')
 
-def _mega_traffic_record_put(local_path: str, remote: str) -> None:
-    try:
-        size = int(os.path.getsize(local_path)) if local_path and os.path.isfile(local_path) else 0
-    except Exception:
-        size = 0
-    category = _mega_traffic_category(remote, local_path)
-    with _MEGA_TRAFFIC_LOCK:
-        _MEGA_TRAFFIC_STATS['put_bytes'] = int(_MEGA_TRAFFIC_STATS.get('put_bytes', 0) or 0) + size
-        _MEGA_TRAFFIC_STATS['put_count'] = int(_MEGA_TRAFFIC_STATS.get('put_count', 0) or 0) + 1
-        by = _MEGA_TRAFFIC_STATS.setdefault('by_category', {})
-        row = by.setdefault(category, {'bytes': 0, 'count': 0})
-        row['bytes'] = int(row.get('bytes', 0) or 0) + size
-        row['count'] = int(row.get('count', 0) or 0) + 1
-    try:
-        traffic_audit_record('mega_put', f'mega-put:{category}', size + 256, 0, False)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _mega_traffic_record_put -> 17_integration_mega.py
+_owner_install('mega', 'mega:0018')
 
-def _mega_traffic_download_size(args) -> int:
-    try:
-        if len(args or []) < 2:
-            return 0
-        remote = str(args[0] or '')
-        target = str(args[-1] or '')
-        if os.path.isfile(target):
-            return int(os.path.getsize(target))
-        if os.path.isdir(target):
-            candidate = os.path.join(target, os.path.basename(remote.rstrip('/')))
-            if os.path.isfile(candidate):
-                return int(os.path.getsize(candidate))
-    except Exception:
-        pass
-    return 0
+# [OCH12.35 OWNER] _mega_traffic_download_size -> 17_integration_mega.py
+_owner_install('mega', 'mega:0019')
 
-def mega_traffic_stats() -> dict:
-    with _MEGA_TRAFFIC_LOCK:
-        out = {'started_at': _MEGA_TRAFFIC_STARTED_AT, 'put_bytes': int(_MEGA_TRAFFIC_STATS.get('put_bytes', 0) or 0), 'put_count': int(_MEGA_TRAFFIC_STATS.get('put_count', 0) or 0), 'by_category': {k: dict(v) for k, v in (_MEGA_TRAFFIC_STATS.get('by_category') or {}).items()}}
-    return out
+# [OCH12.35 OWNER] mega_traffic_stats -> 17_integration_mega.py
+_owner_install('mega', 'mega:0020')
 
-def mega_traffic_stats_text(compact: bool=False) -> str:
-    s = mega_traffic_stats()
-    total = float(s.get('put_bytes', 0) or 0) / (1024.0 * 1024.0)
-    rows = sorted((s.get('by_category') or {}).items(), key=lambda kv: int((kv[1] or {}).get('bytes', 0) or 0), reverse=True)
-    if compact:
-        top = ', '.join((f"{k}={float(v.get('bytes', 0) or 0) / (1024 * 1024):.2f}MB" for k, v in rows[:5])) or 'пока 0'
-        return f"MEGA upload этого процесса: {total:.2f} MB / {s.get('put_count', 0)} put; {top}"
-    lines = [f"☁️ MEGA upload этого процесса: {total:.2f} MB / {s.get('put_count', 0)} put"]
-    for k, v in rows:
-        lines.append(f"• {k}: {float(v.get('bytes', 0) or 0) / (1024 * 1024):.2f} MB / {v.get('count', 0)}")
-    return '\n'.join(lines)
+# [OCH12.35 OWNER] mega_traffic_stats_text -> 17_integration_mega.py
+_owner_install('mega', 'mega:0021')
 
-def _v178_mega_priority(cmd: str, args) -> int:
-    text = ' '.join((str(x or '') for x in args or [])).casefold()
-    if any((x in text for x in ('/tasks/pending', '/ledger/finance'))):
-        return 0
-    if any((x in text for x in ('/tasks/running', '/tasks/done', '/tasks/failed', '/deltas/'))):
-        return 1
-    if any((x in text for x in ('/database/', 'generation_', 'current_manifest', 'sqlite', '/chats/', '/global', 'backup'))):
-        return 2
-    if any((x in text for x in ('/runtime/journal', '/runtime', 'journal_', 'runtime_slot_'))):
-        return 3
-    if str(cmd or '') in {'mega-find', 'mega-whoami', 'mega-mkdir'}:
-        return 2
-    return 1
+# [OCH12.35 OWNER] _v178_mega_priority -> 17_integration_mega.py
+_owner_install('mega', 'mega:0022')
 
-def _v178_mega_gate_enter(priority: int) -> None:
-    global _V178_MEGA_PRIORITY_ACTIVE
-    priority = max(0, min(3, int(priority)))
-    with _V178_MEGA_PRIORITY_CV:
-        _V178_MEGA_PRIORITY_WAITING[priority] += 1
-        try:
-            while _V178_MEGA_PRIORITY_ACTIVE or any((_V178_MEGA_PRIORITY_WAITING[p] > 0 for p in range(priority))):
-                _V178_MEGA_PRIORITY_CV.wait(timeout=0.5)
-            _V178_MEGA_PRIORITY_ACTIVE = True
-        finally:
-            _V178_MEGA_PRIORITY_WAITING[priority] = max(0, _V178_MEGA_PRIORITY_WAITING[priority] - 1)
+# [OCH12.35 OWNER] _v178_mega_gate_enter -> 17_integration_mega.py
+_owner_install('mega', 'mega:0023')
 
-def _v178_mega_gate_exit() -> None:
-    global _V178_MEGA_PRIORITY_ACTIVE
-    with _V178_MEGA_PRIORITY_CV:
-        _V178_MEGA_PRIORITY_ACTIVE = False
-        _V178_MEGA_PRIORITY_CV.notify_all()
+# [OCH12.35 OWNER] _v178_mega_gate_exit -> 17_integration_mega.py
+_owner_install('mega', 'mega:0024')
 
-def _mega_exec_raw(cmd: str, args=None, timeout: int | None=None, check: bool=True, control_plane: bool=False):
-    """One MEGAcmd command at a time; canonical 12.26 durability uses control-plane access.
-
-    MEGA_ENABLED remains OFF for legacy/background writers.  The one canonical
-    generation/tail transaction temporarily raises _V240_RECOVERY_AUTHORITY_ACTIVE,
-    which is treated exactly like an explicit control-plane call here.
-    """
-    control_plane = bool(control_plane or globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
-    gate = globals().get('external_access_allowed_v233')
-    gate_category = 'mega_control' if bool(control_plane) else 'mega'
-    if callable(gate) and (not gate(gate_category)):
-        try:
-            logger_fn = globals().get('external_block_log_v233')
-            if callable(logger_fn):
-                logger_fn(gate_category, str(cmd or ''))
-        except Exception:
-            pass
-        raise RuntimeError(f"external_local_only_v233:{gate_category}:{str(cmd or '')}")
-    args = list(args or [])
-    exe = shutil.which(cmd)
-    if not exe:
-        raise RuntimeError(f'MEGAcmd command not found: {cmd}')
-
-    def _execute_once():
-        mem_ctx = globals().get('memory_operation')
-
-        def _run_command():
-            parallel_exec = globals().get('mega_parallel_execute_v240')
-            if callable(parallel_exec):
-                try:
-                    return parallel_exec(exe, cmd, args, timeout or MEGA_TIMEOUT)
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError(f'{cmd} timeout after {timeout or MEGA_TIMEOUT}s')
-            priority = _v178_mega_priority(cmd, args)
-            _v178_mega_gate_enter(priority)
-            try:
-                with MEGA_COMMAND_LOCK:
-                    try:
-                        return subprocess.run([exe] + args, capture_output=True, text=True, timeout=timeout or MEGA_TIMEOUT)
-                    except subprocess.TimeoutExpired:
-                        raise RuntimeError(f'{cmd} timeout after {timeout or MEGA_TIMEOUT}s')
-            finally:
-                _v178_mega_gate_exit()
-        if callable(mem_ctx):
-            safe_args = _mega_memory_safe_args(cmd, args)
-            with mem_ctx(f'mega:{cmd}', {'args': safe_args}, heavy=cmd in {'mega-find', 'mega-get', 'mega-put'}, quiet=True):
-                res = _run_command()
-        else:
-            res = _run_command()
-        if res.returncode != 0 and str(cmd or '') == 'mega-put' and (len(args) >= 2):
-            text = ((res.stderr or '') + '\n' + (res.stdout or '')).casefold()
-            if "couldn't find destination folder" in text or 'could not find destination folder' in text or ('destination folder' in text and 'find' in text):
-                healer = globals().get('_v190_recreate_remote_path_uncached')
-                if callable(healer):
-                    try:
-                        if healer(str(args[-1] or '')):
-                            res = _run_command()
-                    except Exception as heal_exc:
-                        try:
-                            log_error(f'[MEGA ROOT SELF-HEAL] {heal_exc}')
-                        except Exception:
-                            pass
-        if check and res.returncode != 0:
-            out = (res.stdout or '').strip()
-            err = (res.stderr or '').strip()
-            msg = (err or out or f'returncode={res.returncode}')[:800]
-            raise RuntimeError(f'{cmd} failed: {msg}')
-        _audit_error = bool(res.returncode != 0)
-        if _audit_error and str(cmd or '') == 'mega-mkdir':
-            try:
-                _mkdir_text = ((res.stderr or '') + '\n' + (res.stdout or '')).casefold()
-                if 'already exists' in _mkdir_text or 'exists' in _mkdir_text:
-                    _audit_error = False
-            except Exception:
-                pass
-        if res.returncode == 0 and str(cmd or '') == 'mega-put' and (len(args) >= 2):
-            try:
-                _mega_traffic_record_put(str(args[0] or ''), str(args[-1] or ''))
-            except Exception:
-                pass
-        elif str(cmd or '') == 'mega-get':
-            try:
-                inbound = _mega_traffic_download_size(args) if res.returncode == 0 else 0
-                _remote = str(args[0] or '') if args else ''
-                _local = str(args[-1] or '') if args else ''
-                _cat = _mega_traffic_category(_remote, _local)
-                traffic_audit_record('mega_get', f'mega-get:{_cat}', 256 + sum((len(str(x or '')) for x in args)), inbound, _audit_error)
-            except Exception:
-                pass
-        else:
-            try:
-                inbound = len(((res.stdout or '') + (res.stderr or '')).encode('utf-8', errors='ignore'))
-                _probe = ' '.join((str(x or '') for x in args))
-                _cat = _mega_traffic_category(_probe, '')
-                traffic_audit_record('mega_control', f'mega:{cmd}:{_cat}', 192 + sum((len(str(x or '')) for x in args)), inbound, _audit_error)
-            except Exception:
-                pass
-        return res
-    guard = globals().get('guarded_external_call')
-    if callable(guard):
-        return guard(f'mega:{cmd}', _execute_once, attempts=2, base_delay=0.6)
-    return _execute_once()
+# [OCH12.35 OWNER] _mega_exec_raw -> 17_integration_mega.py
+_owner_install('mega', 'mega:0025')
 # FINALIZED: public _mega_run is defined once in 73_state_export_runtime.py.
 TRAFFIC_AUDIT_REMOTE_DIR = MEGA_BACKUP_DIR.rstrip('/') + '/runtime/traffic_audit'
 TRAFFIC_AUDIT_REMOTE_NAME = 'latest_traffic_audit.json.gz'
 
-def traffic_audit_checkpoint_to_mega(reason: str='periodic') -> bool:
-    if restore_quiet_active_v222():
-        return True
-    if not TRAFFIC_AUDIT_ENABLED or not mega_is_configured():
-        return True
-    tmp = ''
-    try:
-        snap = traffic_audit_snapshot()
-        snap['kind'] = 'telegram_bot_traffic_audit'
-        snap['bot_version'] = str(globals().get('VERSION') or '')
-        snap['reason'] = str(reason or 'periodic')[:80]
-        try:
-            with _RUNTIME_LOCK:
-                rs = dict(_RUNTIME_STATE)
-            snap['runtime_summary'] = {'phase': rs.get('phase'), 'ready': bool(rs.get('ready')), 'last_event': rs.get('last_event'), 'last_error': rs.get('last_error'), 'started_at': rs.get('started_at'), 'last_webhook_at': rs.get('last_webhook_at')}
-            snap['runtime_summary']['recent_events'] = [dict(x) for x in list(globals().get('_RUNTIME_EVENTS') or [])[-12:]]
-            mem = _runtime_memory_stats() if '_runtime_memory_stats' in globals() else {}
-            snap['runtime_summary']['memory'] = {k: mem.get(k) for k in ('rss_mb', 'peak_rss_mb', 'container_current_mb', 'container_peak_mb', 'limit_mb', 'cgroup_events')}
-        except Exception:
-            pass
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, 'traffic_audit_checkpoint.json.gz')
-        raw = json.dumps(snap, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
-        with gzip.open(tmp, 'wb', compresslevel=6) as fh:
-            fh.write(raw)
-        ok = bool(mega_put_replace(tmp, TRAFFIC_AUDIT_REMOTE_DIR, TRAFFIC_AUDIT_REMOTE_NAME, archive_previous=False))
-        try:
-            fn = globals().get('traffic_audit_render_log_summary')
-            if callable(fn):
-                fn(str(reason or 'periodic'))
-        except Exception:
-            pass
-        return ok
-    except Exception as exc:
-        try:
-            log_error(f'traffic audit checkpoint: {exc}')
-        except Exception:
-            pass
-        return False
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] traffic_audit_checkpoint_to_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0026')
 
-def traffic_audit_restore_from_mega() -> bool:
-    if not TRAFFIC_AUDIT_ENABLED or not mega_is_configured():
-        return False
-    folder = ''
-    try:
-        rows = _mega_find_remote_files(TRAFFIC_AUDIT_REMOTE_DIR, TRAFFIC_AUDIT_REMOTE_NAME, 5)
-        if not rows:
-            rows = _mega_find_remote_files(TRAFFIC_AUDIT_REMOTE_DIR, 'latest_traffic_audit.json', 5)
-        if not rows:
-            return False
-        remote = rows[0]
-        folder = tempfile.mkdtemp(prefix='traffic_audit_restore_')
-        res = _mega_run('mega-get', [remote, folder], check=False, timeout=60)
-        if res.returncode != 0:
-            return False
-        local = os.path.join(folder, os.path.basename(remote))
-        if not os.path.isfile(local):
-            cand = list(Path(folder).glob('*.json*'))
-            local = str(cand[0]) if cand else ''
-        if not local or not os.path.isfile(local):
-            return False
-        if str(local).endswith('.gz'):
-            with gzip.open(local, 'rt', encoding='utf-8') as fh:
-                payload = json.load(fh)
-        else:
-            payload = json.loads(Path(local).read_text(encoding='utf-8'))
-        ok = bool(traffic_audit_load_baseline(payload))
-        if ok:
-            try:
-                fn = globals().get('traffic_audit_render_log_summary')
-                if callable(fn):
-                    fn('restored_baseline')
-            except Exception:
-                pass
-        return ok
-    except Exception as exc:
-        try:
-            log_error(f'traffic audit restore: {exc}')
-        except Exception:
-            pass
-        return False
-    finally:
-        try:
-            if folder:
-                shutil.rmtree(folder, ignore_errors=True)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] traffic_audit_restore_from_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0027')
 _V178_MEGA_CACHE_LOCK = threading.RLock()
 _V178_MEGA_SESSION_OK_UNTIL = 0.0
 _V178_MEGA_SESSION_TTL_SECONDS = max(60.0, min(1800.0, float(os.getenv('MEGA_SESSION_CACHE_SECONDS', '300') or '300')))
 _V178_MEGA_KNOWN_DIRS = set()
 
-def _v190_invalidate_mega_path_cache(remote_dir: str | None=None) -> None:
-    """Forget a remote path and its descendants after an external rename/delete."""
-    target = str(remote_dir or '').rstrip('/')
-    with _V178_MEGA_CACHE_LOCK:
-        if not target:
-            _V178_MEGA_KNOWN_DIRS.clear()
-        else:
-            for item in list(_V178_MEGA_KNOWN_DIRS):
-                if item == target or item.startswith(target + '/') or target.startswith(item + '/'):
-                    _V178_MEGA_KNOWN_DIRS.discard(item)
-    try:
-        globals()['_mega_task_dirs_ready'] = False
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v190_invalidate_mega_path_cache -> 17_integration_mega.py
+_owner_install('mega', 'mega:0028')
 
 def _v190_schedule_root_reseed() -> None:
     """After an externally deleted/renamed canonical root, seed a new full DB snapshot ASAP.
@@ -10553,331 +8753,53 @@ def _v190_recreate_remote_path_uncached(remote_dir: str) -> bool:
         _v190_schedule_root_reseed()
     return True
 
-def mega_login_if_needed(control_plane: bool=False) -> bool:
-    """Check the MEGA session at most once per TTL instead of before every command chain."""
-    global _V178_MEGA_SESSION_OK_UNTIL
-    if not mega_is_configured(control_plane=control_plane):
-        return False
-    now_m = time.monotonic()
-    with _V178_MEGA_CACHE_LOCK:
-        if now_m < float(_V178_MEGA_SESSION_OK_UNTIL or 0.0):
-            return True
-    missing = mega_missing_commands()
-    if missing:
-        raise RuntimeError('MEGAcmd не установлен или команды не в PATH: ' + ', '.join(missing))
-    try:
-        # v250: on a fresh Render container there is usually no MEGAcmd session yet.
-        # Do not spend up to 30s proving that before the real login.  This shorter
-        # probe is used only by the control plane; normal MEGA operations keep their
-        # original reliability timeouts.
-        if control_plane:
-            try:
-                whoami_timeout = max(3, min(12, int(os.getenv('MEGA_CONTROL_WHOAMI_TIMEOUT', '6') or '6')))
-            except Exception:
-                whoami_timeout = 6
-        else:
-            whoami_timeout = 30
-        res = _mega_run('mega-whoami', [], check=False, timeout=whoami_timeout, control_plane=control_plane)
-        text = ((res.stdout or '') + '\n' + (res.stderr or '')).lower()
-        if res.returncode == 0 and (MEGA_EMAIL.lower() in text or 'account e-mail' in text or 'email' in text):
-            with _V178_MEGA_CACHE_LOCK:
-                _V178_MEGA_SESSION_OK_UNTIL = time.monotonic() + _V178_MEGA_SESSION_TTL_SECONDS
-            return True
-    except Exception:
-        pass
-    res = _mega_run('mega-login', [MEGA_EMAIL, MEGA_PASSWORD], check=False, timeout=MEGA_TIMEOUT, control_plane=control_plane)
-    if res.returncode != 0:
-        msg = ((res.stderr or '') or (res.stdout or '') or 'login failed')[:500]
-        raise RuntimeError(f'mega-login failed: {msg}')
-    with _V178_MEGA_CACHE_LOCK:
-        _V178_MEGA_SESSION_OK_UNTIL = time.monotonic() + _V178_MEGA_SESSION_TTL_SECONDS
-    return True
+# [OCH12.35 OWNER] mega_login_if_needed -> 17_integration_mega.py
+_owner_install('mega', 'mega:0029')
 
-def _v178_mega_ensure_cached_path(remote_dir: str, force: bool=False) -> bool:
-    if not mega_login_if_needed():
-        return False
-    remote_dir = (remote_dir or MEGA_BACKUP_DIR).strip() or MEGA_BACKUP_DIR
-    if force:
-        return _v190_recreate_remote_path_uncached(remote_dir)
-    parts = [p for p in remote_dir.strip('/').split('/') if p]
-    current = ''
-    for part in parts:
-        current += '/' + part
-        with _V178_MEGA_CACHE_LOCK:
-            if current in _V178_MEGA_KNOWN_DIRS:
-                continue
-        res = _mega_run('mega-mkdir', [current], check=False, timeout=30)
-        text = ((res.stderr or '') + '\n' + (res.stdout or '')).casefold()
-        if res.returncode != 0 and 'already exists' not in text and ('exists' not in text):
-            return False
-        with _V178_MEGA_CACHE_LOCK:
-            _V178_MEGA_KNOWN_DIRS.add(current)
-    return True
+# [OCH12.35 OWNER] _v178_mega_ensure_cached_path -> 17_integration_mega.py
+_owner_install('mega', 'mega:0030')
 
-def mega_ensure_remote_dir(force: bool=False) -> bool:
-    return _v178_mega_ensure_cached_path(MEGA_BACKUP_DIR, force=force)
+# [OCH12.35 OWNER] mega_ensure_remote_dir -> 17_integration_mega.py
+_owner_install('mega', 'mega:0031')
 
-def mega_ensure_remote_path(remote_dir: str, force: bool=False) -> bool:
-    """Create a path cheaply; force=True ignores stale runtime cache."""
-    return _v178_mega_ensure_cached_path(remote_dir, force=force)
+# [OCH12.35 OWNER] mega_ensure_remote_path -> 17_integration_mega.py
+_owner_install('mega', 'mega:0032')
 
-def mega_safe_name(value, fallback: str='chat') -> str:
-    """Безопасное имя файла/папки для MEGA: имя чата + без мусора."""
-    try:
-        value = str(value or '').strip()
-    except Exception:
-        value = ''
-    if not value:
-        value = fallback
-    value = value.replace(' ', '_')
-    value = re.sub('[^0-9A-Za-zА-Яа-я_@.\\-]+', '', value)
-    value = value.strip('._-')
-    return (value or fallback)[:80]
+# [OCH12.35 OWNER] mega_safe_name -> 17_integration_mega.py
+_owner_install('mega', 'mega:0033')
 
-def mega_chat_slug(chat_id: int) -> str:
-    try:
-        name = get_chat_display_name(chat_id)
-    except Exception:
-        name = f'chat_{chat_id}'
-    safe = mega_safe_name(name, f'chat_{chat_id}')
-    return f'{safe}_{chat_id}'
+# [OCH12.35 OWNER] mega_chat_slug -> 17_integration_mega.py
+_owner_install('mega', 'mega:0034')
 
-def mega_remote_chat_dir(chat_id: int) -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_CHAT_BACKUP_DIR}/{mega_chat_slug(chat_id)}"
+# [OCH12.35 OWNER] mega_remote_chat_dir -> 17_integration_mega.py
+_owner_install('mega', 'mega:0035')
 
-def mega_remote_month_dir(month_key: str) -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_MONTHLY_BACKUP_DIR}/{month_key}"
+# [OCH12.35 OWNER] mega_remote_month_dir -> 17_integration_mega.py
+_owner_install('mega', 'mega:0036')
 
-def _copy_file_for_mega(src_path: str, dst_name: str) -> str | None:
-    """Потоковая копия во временный файл для MEGA без чтения всего файла в RAM."""
-    try:
-        if not src_path or not os.path.exists(src_path):
-            return None
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        dst_path = os.path.join(MEGA_LOCAL_TMP_DIR, dst_name)
-        with open(src_path, 'rb') as src, open(dst_path, 'wb') as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
-        return dst_path
-    except Exception as e:
-        log_error(f'_copy_file_for_mega({src_path},{dst_name}): {e}')
-        return None
+# [OCH12.35 OWNER] _copy_file_for_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0037')
 
-def _mega_remote_missing_error(raw: str) -> bool:
-    txt = str(raw or '').casefold()
-    return any((x in txt for x in ("couldn't find", 'not found', 'no such file', 'does not exist')))
+# [OCH12.35 OWNER] _mega_remote_missing_error -> 17_integration_mega.py
+_owner_install('mega', 'mega:0038')
 
-def _mega_find_remote_files(remote_dir: str, pattern: str, limit: int | None=None) -> list[str]:
-    """Список удалённых файлов MEGA. Имена v90 содержат sortable timestamp."""
-    if not mega_is_configured() or shutil.which('mega-find') is None:
-        return []
-    try:
-        res = _mega_run('mega-find', [str(remote_dir), f'--pattern={pattern}', '--type=f'], check=False, timeout=60)
-        rows = sorted({x.strip() for x in (res.stdout or '').splitlines() if x.strip()}, reverse=True)
-        return rows[:int(limit)] if limit else rows
-    except Exception as e:
-        log_error(f'_mega_find_remote_files({remote_dir},{pattern}): {e}')
-        return []
+# [OCH12.35 OWNER] _mega_find_remote_files -> 17_integration_mega.py
+_owner_install('mega', 'mega:0039')
 
-def _mega_prune_remote_history(remote_dir: str, pattern: str, keep: int) -> int:
-    """12.26: database backup history is append-only; legacy non-database paths may prune."""
-    if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'} and '/database/' in ('/' + str(remote_dir or '').strip('/') + '/'):
-        return 0
-    rows = _mega_find_remote_files(remote_dir, pattern)
-    removed = 0
-    for remote_path in rows[max(1, int(keep)):]:
-        try:
-            res = _mega_run('mega-rm', [remote_path], check=False, timeout=30)
-            if res.returncode == 0:
-                removed += 1
-        except Exception:
-            pass
-    return removed
+# [OCH12.35 OWNER] _mega_prune_remote_history -> 17_integration_mega.py
+_owner_install('mega', 'mega:0040')
 
-def _mega_prune_remote_history_bounded(remote_dir: str, pattern: str, keep: int, max_remove: int=50) -> int:
-    """12.26: never delete canonical database history; legacy diagnostic paths stay bounded."""
-    if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'} and '/database/' in ('/' + str(remote_dir or '').strip('/') + '/'):
-        return 0
-    rows = _mega_find_remote_files(remote_dir, pattern)
-    removed = 0
-    for remote_path in rows[max(1, int(keep)):max(1, int(keep)) + max(1, int(max_remove))]:
-        try:
-            res = _mega_run('mega-rm', [remote_path], check=False, timeout=30)
-            if res.returncode == 0:
-                removed += 1
-        except Exception:
-            pass
-    return removed
+# [OCH12.35 OWNER] _mega_prune_remote_history_bounded -> 17_integration_mega.py
+_owner_install('mega', 'mega:0041')
 
-def mega_diagnostic_node_housekeeping(max_remove: int=50) -> dict:
-    """Keep diagnostics useful while preventing thousands of tiny MEGA nodes.
+# [OCH12.35 OWNER] mega_diagnostic_node_housekeeping -> 17_integration_mega.py
+_owner_install('mega', 'mega:0042')
 
-    MEGAcmd builds a local cache of the account tree on a fresh filesystem.  Old
-    per-chunk journal nodes make that first account sync progressively slower even
-    though their payload is tiny.  Cleanup runs only after READY and is bounded.
-    """
-    result = {'journal_removed': 0, 'critical_removed': 0}
-    if not mega_is_configured():
-        return result
-    try:
-        result['journal_removed'] = _mega_prune_remote_history_bounded(_journal_durable_remote_dir(), 'journal_*.json.gz', int(BOT_JOURNAL_DURABLE_REMOTE_KEEP), max_remove)
-    except Exception as exc:
-        result['journal_error'] = str(exc)[:240]
-    try:
-        critical_dir = _journal_durable_remote_dir()
-        result['critical_removed'] = _mega_prune_remote_history_bounded(critical_dir, 'journal_critical_*.json.gz', 240, max_remove)
-    except Exception as exc:
-        result['critical_error'] = str(exc)[:240]
-    try:
-        if result.get('journal_removed') or result.get('critical_removed'):
-            bot_journal('mega_node_housekeeping_v211', None, json.dumps(result, ensure_ascii=False, separators=(',', ':')))
-    except Exception:
-        pass
-    return result
+# [OCH12.35 OWNER] _mega_promote_remote_candidate -> 17_integration_mega.py
+_owner_install('mega', 'mega:0043')
 
-def _mega_promote_remote_candidate(remote_candidate: str, remote_final: str, *, history_dir: str | None=None, archive_name: str | None=None) -> bool:
-    """Safely promote a candidate using only MEGAcmd operations it handles reliably.
-
-    MEGAcmd `mv` can rename when destination does not exist and can move into an
-    existing folder.  Some installed builds reject a single move that both crosses
-    folders and renames (the v113 `must be a valid folder` spam).  Therefore we:
-      1) rename old final inside its current folder;
-      2) rename candidate -> final inside that same folder;
-      3) only then move the archived old file into the existing history folder.
-
-    If candidate promotion fails, best-effort rollback restores the old final.
-    """
-    final_parent = remote_final.rsplit('/', 1)[0] or '/'
-    final_name = remote_final.rsplit('/', 1)[-1]
-    candidate_parent = remote_candidate.rsplit('/', 1)[0] or '/'
-    if candidate_parent.rstrip('/') != final_parent.rstrip('/'):
-        raise RuntimeError('candidate and final must be in the same MEGA folder')
-    mega_ensure_remote_path(final_parent)
-    stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
-    if archive_name:
-        safe_archive_name = os.path.basename(str(archive_name))
-    else:
-        stem, ext = os.path.splitext(final_name)
-        safe_archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
-    remote_old_temp = final_parent.rstrip('/') + '/' + safe_archive_name
-    old_moved = False
-    mv_old = _mega_run('mega-mv', [remote_final, remote_old_temp], check=False, timeout=60)
-    if mv_old.returncode == 0:
-        old_moved = True
-    else:
-        err = (mv_old.stderr or mv_old.stdout or '')[:500]
-        if not _mega_remote_missing_error(err):
-            log_error(f'[MEGA PROMOTE] cannot stage previous {remote_final}: {err}')
-            return False
-    mv_new = None
-    err = ''
-    for _attempt in range(3):
-        mv_new = _mega_run('mega-mv', [remote_candidate, remote_final], check=False, timeout=60)
-        if mv_new.returncode == 0:
-            break
-        err = (mv_new.stderr or mv_new.stdout or '')[:500]
-        if _attempt < 2 and _mega_remote_missing_error(err):
-            time.sleep(0.25 * (_attempt + 1))
-            continue
-        break
-    if mv_new is None or mv_new.returncode != 0:
-        if old_moved:
-            _mega_run('mega-mv', [remote_old_temp, remote_final], check=False, timeout=60)
-        log_error(f'[MEGA PROMOTE] candidate activation failed {remote_candidate} -> {remote_final}: {err}')
-        return False
-    if old_moved:
-        if history_dir:
-            try:
-                mega_ensure_remote_path(history_dir)
-                moved = _mega_run('mega-mv', [remote_old_temp, history_dir], check=False, timeout=60)
-                if moved.returncode != 0:
-                    err = (moved.stderr or moved.stdout or '')[:500]
-                    log_error(f'[MEGA PROMOTE] history move deferred for {remote_old_temp}: {err}')
-            except Exception as e:
-                log_error(f'[MEGA PROMOTE] history move deferred for {remote_old_temp}: {e}')
-        else:
-            _no_delete = str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'}
-            _canonical_db = '/database/' in ('/' + str(remote_final or '').strip('/') + '/')
-            if _no_delete and _canonical_db:
-                try:
-                    _history = final_parent.rstrip('/') + '/history'
-                    mega_ensure_remote_path(_history)
-                    moved = _mega_run('mega-mv', [remote_old_temp, _history], check=False, timeout=60)
-                    if moved.returncode != 0:
-                        log_error(f'[MEGA PROMOTE] 12.26 history move deferred for {remote_old_temp}')
-                except Exception as e:
-                    log_error(f'[MEGA PROMOTE] 12.26 history move deferred: {e}')
-            else:
-                _mega_run('mega-rm', [remote_old_temp], check=False, timeout=30)
-    return True
-
-def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None=None, *, archive_previous: bool=True) -> bool:
-    """Safely update a MEGA file without rm->put and without cross-folder rename.
-
-    Heartbeat callers may set archive_previous=False: runtime_latest then keeps no
-    30-second history copies because immutable runtime events already have /events.
-    """
-    if not mega_is_configured() or not local_path or (not os.path.exists(local_path)):
-        return False
-    candidate_local = None
-    _txn_lock = None
-    try:
-        _resolver = globals().get('_v240_lane_and_resource')
-        _locker = globals().get('_v240_resource_lock')
-        if callable(_resolver) and callable(_locker):
-            try:
-                _final_hint = remote_dir.rstrip('/') + '/' + str(remote_name or os.path.basename(local_path))
-                _lane, _resource, _pri = _resolver('mega-put', [local_path, _final_hint])
-                _txn_lock = _locker(_resource)
-                _txn_lock.acquire()
-            except Exception:
-                _txn_lock = None
-        mega_ensure_remote_path(remote_dir)
-        final_name = str(remote_name or os.path.basename(local_path))
-        stem, ext = os.path.splitext(final_name)
-        stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
-        candidate_name = f"candidate_{mega_safe_name(stem, 'file')}_{stamp}{ext or '.json'}"
-        candidate_local = _copy_file_for_mega(local_path, candidate_name)
-        if not candidate_local:
-            return False
-        _mega_run('mega-put', [candidate_local, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        remote_candidate = remote_dir.rstrip('/') + '/' + candidate_name
-        remote_file = remote_dir.rstrip('/') + '/' + final_name
-        history_dir = None
-        archive_name = None
-        if archive_previous:
-            history_dir = remote_dir.rstrip('/') + '/history'
-            mega_ensure_remote_path(history_dir)
-            archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
-        ok = _mega_promote_remote_candidate(remote_candidate, remote_file, history_dir=history_dir, archive_name=archive_name)
-        if not ok:
-            try:
-                if str(os.getenv('OCH1226_MEGA_NO_DELETE', '1') or '1').strip().lower() in {'1','true','yes','on'} and '/database/' in ('/' + str(remote_file).strip('/') + '/'):
-                    failed_dir = remote_dir.rstrip('/') + '/failed'
-                    mega_ensure_remote_path(failed_dir)
-                    _mega_run('mega-mv', [remote_candidate, failed_dir], check=False, timeout=60)
-            except Exception:
-                pass
-            return False
-        if archive_previous and history_dir:
-            try:
-                _mega_prune_remote_history(history_dir, f"{mega_safe_name(stem, 'file')}__*{ext or '.json'}", MEGA_FILE_HISTORY_KEEP)
-            except Exception:
-                pass
-        return True
-    except Exception as e:
-        log_error(f'[MEGA SAFE REPLACE ERROR] {local_path} -> {remote_dir}: {e}')
-        return False
-    finally:
-        try:
-            if candidate_local and os.path.exists(candidate_local):
-                os.remove(candidate_local)
-        except Exception:
-            pass
-        try:
-            if _txn_lock is not None:
-                _txn_lock.release()
-        except Exception:
-            pass
+# [OCH12.35 OWNER] mega_put_replace -> 17_integration_mega.py
+_owner_install('mega', 'mega:0044')
 _MEGA_TASK_LOCK = threading.RLock()
 _mega_task_registry = {}
 _mega_task_processing = set()
@@ -10886,69 +8808,35 @@ _mega_task_last_error = ''
 _mega_task_registry_loaded_at = ''
 _mega_task_dirs_ready = False
 
-def _canon_mega_tasks_active__001() -> bool:
-    return bool(MEGA_TASKS_ENABLED and mega_is_configured() and (not RESTORE_GUARD_ACTIVE))
+# [OCH12.35 OWNER] _canon_mega_tasks_active__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0045')
 
-def mega_task_remote_root() -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_TASK_BACKUP_DIR}"
+# [OCH12.35 OWNER] mega_task_remote_root -> 17_integration_mega.py
+_owner_install('mega', 'mega:0046')
 
-def ensure_mega_task_dirs(force: bool=False) -> bool:
-    global _mega_task_dirs_ready
-    if not mega_tasks_active():
-        return False
-    with _MEGA_TASK_LOCK:
-        if _mega_task_dirs_ready and (not force):
-            return True
-    try:
-        mega_ensure_remote_path(mega_task_remote_root())
-        for state in ('pending', 'running', 'done', 'failed'):
-            mega_ensure_remote_path(mega_task_remote_dir(state))
-        with _MEGA_TASK_LOCK:
-            _mega_task_dirs_ready = True
-        return True
-    except Exception as e:
-        log_error(f'ensure_mega_task_dirs: {e}')
-        return False
+# [OCH12.35 OWNER] ensure_mega_task_dirs -> 17_integration_mega.py
+_owner_install('mega', 'mega:0047')
 
-def mega_task_remote_dir(state: str) -> str:
-    state = str(state or 'pending').strip().lower()
-    if state not in {'pending', 'running', 'done', 'failed'}:
-        state = 'pending'
-    return f"{mega_task_remote_root().rstrip('/')}/{state}"
+# [OCH12.35 OWNER] mega_task_remote_dir -> 17_integration_mega.py
+_owner_install('mega', 'mega:0048')
 
-def _mega_task_id(update_id) -> str:
-    try:
-        return str(int(update_id))
-    except Exception:
-        raw = str(update_id or '')
-        return hashlib.sha256(raw.encode('utf-8', errors='ignore')).hexdigest()[:24]
+# [OCH12.35 OWNER] _mega_task_id -> 17_integration_mega.py
+_owner_install('mega', 'mega:0049')
 
-def mega_task_filename(update_id) -> str:
-    return f'task_{_mega_task_id(update_id)}.json'
+# [OCH12.35 OWNER] mega_task_filename -> 17_integration_mega.py
+_owner_install('mega', 'mega:0050')
 
-def mega_task_remote_path(update_id, state: str) -> str:
-    return f"{mega_task_remote_dir(state).rstrip('/')}/{mega_task_filename(update_id)}"
+# [OCH12.35 OWNER] mega_task_remote_path -> 17_integration_mega.py
+_owner_install('mega', 'mega:0051')
 
-def _mega_task_update_registry(update_id, state: str, path: str | None=None):
-    key = _mega_task_id(update_id)
-    with _MEGA_TASK_LOCK:
-        _mega_task_registry[key] = {'state': str(state), 'path': path or mega_task_remote_path(key, state), 'loaded_at': now_local().isoformat(timespec='seconds')}
+# [OCH12.35 OWNER] _mega_task_update_registry -> 17_integration_mega.py
+_owner_install('mega', 'mega:0052')
 
-def _canon_mega_task_known_state__001(update_id) -> str:
-    key = _mega_task_id(update_id)
-    with _MEGA_TASK_LOCK:
-        return str((_mega_task_registry.get(key) or {}).get('state') or '')
+# [OCH12.35 OWNER] _canon_mega_task_known_state__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0053')
 
-def _v177_legacy_0064_mega_task_registry_stats() -> dict:
-    with _MEGA_TASK_LOCK:
-        states = defaultdict(int)
-        for row in _mega_task_registry.values():
-            states[str((row or {}).get('state') or 'unknown')] += 1
-        processing = len(_mega_task_processing)
-        counters = dict(_mega_task_counters)
-        loaded_at = _mega_task_registry_loaded_at
-        last_error = _mega_task_last_error
-    return {'pending': int(states.get('pending', 0)), 'running': int(states.get('running', 0)), 'done': int(states.get('done', 0)), 'failed': int(states.get('failed', 0)), 'processing': processing, 'loaded_at': loaded_at, 'last_error': last_error, **counters}
+# [OCH12.35 OWNER] _v177_legacy_0064_mega_task_registry_stats -> 17_integration_mega.py
+_owner_install('mega', 'mega:0054')
 try:
     _v177_legacy_0064_mega_task_registry_stats.__name__ = 'mega_task_registry_stats'
 except Exception:
@@ -11015,14 +8903,8 @@ def _durable_payload_message(payload: dict):
         return (msg, chat_id, msg_id, group_id)
     return (None, None, None, None)
 
-def _durable_forward_targets(source_chat_id: int | None) -> list[tuple]:
-    if source_chat_id is None:
-        return []
-    try:
-        return list(resolve_forward_targets(int(source_chat_id)) or [])
-    except Exception as e:
-        log_error(f'DURABLE resolve targets {source_chat_id}: {e}')
-        return []
+# [OCH12.35 OWNER] _durable_forward_targets -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0026')
 
 def _durable_record_edit_witness(chat_id: int, rid: int, amount=None, note=None, source_finance_text=None, usd_amount=None, usd_note=None, kind: str='finance') -> dict:
     witness = {'chat_id': int(chat_id), 'rid': int(rid), 'kind': str(kind or 'finance')}
@@ -11038,8 +8920,8 @@ def _durable_record_edit_witness(chat_id: int, rid: int, amount=None, note=None,
         witness['usd_note'] = str(usd_note or '')
     return witness
 
-def _durable_secret_edit_witness(chat_id: int, record_id: int, text: str) -> dict:
-    return {'chat_id': int(chat_id), 'record_id': int(record_id), 'text': str(text or '').strip()}
+# [OCH12.35 OWNER] _durable_secret_edit_witness -> 18_business_secret.py
+_owner_install('secret', 'secret:0020')
 
 def _durable_sanitize_inserted_text_no_network(text: str) -> str:
     """Receipt-time sanitizer: never calls Telegram before the durable task is persisted."""
@@ -11374,77 +9256,14 @@ def _durable_expected_from_task_or_payload(task: dict | None, payload: dict) -> 
         pass
     return _durable_normalize_expected_for_route(payload, _durable_expected_effects(payload))
 
-def _durable_live_forward_outcome(payload: dict) -> dict:
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload or {})
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return {}
-    return _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
+# [OCH12.35 OWNER] _durable_live_forward_outcome -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0027')
 
-def _durable_apply_live_forward_outcome(payload: dict, expected: dict | None) -> dict:
-    """Use only concrete live worker evidence; never guesses a Telegram delivery.
+# [OCH12.35 OWNER] _durable_apply_live_forward_outcome -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0028')
 
-    skip:* means the worker deliberately did not send. delivered carries the Telegram
-    destination message id and can safely rebuild a missing local forward index. Failed or
-    pending targets remain expected and therefore cannot be silently lost.
-    """
-    adjusted = _delta_json_clone(expected or {}) if isinstance(expected, dict) else {}
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload or {})
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return adjusted
-    outcome = _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
-    state = str(outcome.get('state') or '')
-    if state.startswith('skip:') or state == 'no_targets':
-        adjusted['forward_targets'] = []
-        adjusted['forward_suppressed_by_live_outcome'] = state
-        return adjusted
-    targets = outcome.get('targets') or {}
-    terminal = set()
-    for dst_raw, info in list(targets.items()):
-        try:
-            dst = int(dst_raw)
-            info = info or {}
-            target_state = str(info.get('state') or '')
-            if target_state in {'suspended', 'migrated', 'unavailable_terminal'}:
-                terminal.add(dst)
-                continue
-            if target_state != 'delivered':
-                continue
-            dst_msg_id = int(info.get('dst_msg_id') or 0)
-            if not dst_msg_id:
-                continue
-            current = {int(d): int(m) for d, m in get_forward_links(int(source_chat_id), int(source_msg_id))}
-            if int(current.get(dst) or 0) != dst_msg_id:
-                _store_forward_link(int(source_chat_id), int(source_msg_id), dst, dst_msg_id)
-                try:
-                    _persist_forward_index_in_data(data)
-                    save_data(data, root_only=True)
-                except Exception as e:
-                    log_error(f'[FORWARD OUTCOME LINK REPAIR] {source_chat_id}:{source_msg_id}->{dst}:{dst_msg_id}: {e}')
-        except Exception as e:
-            log_error(f'durable live forward outcome repair: {e}')
-    if terminal:
-        adjusted['forward_targets'] = [row for row in adjusted.get('forward_targets') or [] if int((row or {}).get('dst_chat_id') or 0) not in terminal]
-        adjusted['forward_terminal_targets_v199'] = sorted(terminal)
-    return adjusted
-
-def _durable_forward_work_still_pending(payload: dict) -> bool:
-    """True only when this live process has positive evidence that forwarding is not finished yet."""
-    try:
-        raw, source_chat_id, source_msg_id, group_id = _durable_payload_message(payload or {})
-        if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-            return False
-        if group_id and _durable_media_group_in_memory(payload):
-            return True
-        outcome = _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
-        state = str(outcome.get('state') or '')
-        if state in {'scheduled', 'dispatching', 'media_group_pending'}:
-            return True
-        for info in (outcome.get('targets') or {}).values():
-            if str((info or {}).get('state') or '') in {'pending', 'attempted'}:
-                return True
-    except Exception:
-        return False
-    return False
+# [OCH12.35 OWNER] _durable_forward_work_still_pending -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0029')
 
 def _durable_record_matches_witness(rec: dict | None, witness: dict) -> bool:
     if not isinstance(rec, dict):
@@ -11609,49 +9428,14 @@ try:
 except Exception:
     pass
 
-def _durable_forward_effect_complete(payload: dict, expected: dict | None=None) -> bool:
-    """Verify only forwarding effects explicitly expected for this task."""
-    expected = expected if isinstance(expected, dict) else _durable_expected_effects(payload)
-    report = _durable_effect_report(payload, expected)
-    for item in (report.get('missing') or []) + (report.get('ambiguous') or []):
-        if str(item).startswith('forward'):
-            return False
-    return True
+# [OCH12.35 OWNER] _durable_forward_effect_complete -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0030')
 
-def _durable_secret_effect_complete(payload: dict) -> bool:
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return True
-    text = str(raw.get('text') or raw.get('caption') or '')
-    secret_expected = False
-    try:
-        secret_expected = bool(is_total_secret_mode(source_chat_id))
-    except Exception:
-        pass
-    if not secret_expected:
-        try:
-            marked, _cleaned = _extract_secret_codeword(text)
-            secret_expected = bool(marked)
-        except Exception:
-            secret_expected = False
-    if not secret_expected:
-        return True
-    try:
-        return any((int(r.get('source_msg_id') or 0) == int(source_msg_id) for r in _secret_records(source_chat_id) if isinstance(r, dict)))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _durable_secret_effect_complete -> 18_business_secret.py
+_owner_install('secret', 'secret:0021')
 
-def _durable_direct_finance_effect_complete(payload: dict, expected: dict | None=None) -> bool:
-    expected = expected if isinstance(expected, dict) else _durable_expected_effects(payload)
-    if not bool(expected.get('source_finance')):
-        return True
-    _raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if source_chat_id is None or source_msg_id is None:
-        return True
-    try:
-        return find_record_by_message_id(source_chat_id, source_msg_id) is not None
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _durable_direct_finance_effect_complete -> 11_business_finance.py
+_owner_install('finance', 'finance:0039')
 
 def _durable_media_group_in_memory(payload: dict) -> bool:
     _raw, source_chat_id, _source_msg_id, group_id = _durable_payload_message(payload)
@@ -11677,42 +9461,8 @@ def _durable_payload_to_message(payload: dict):
         log_error(f'DURABLE payload->message: {e}')
     return None
 
-def _repair_missing_durable_forward(payload: dict) -> bool:
-    """Best-effort repair of missing forwarding directions without duplicating delivered ones.
-
-    Albums are normally sent together by the 0.8s collector. If that collector vanished because
-    Render deployed, each persisted album part can be resent individually to only the missing
-    destinations. The important invariant is no lost message; already-linked destinations are skipped.
-    """
-    raw, source_chat_id, source_msg_id, group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return True
-    targets = _durable_forward_targets(source_chat_id)
-    if not targets:
-        return True
-    if group_id and _durable_media_group_in_memory(payload):
-        return False
-    links = {}
-    try:
-        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
-    except Exception:
-        links = {}
-    missing = [(int(dst), mode, bool(fin)) for dst, mode, fin in targets if int(dst) not in links]
-    if not missing:
-        return True
-    msg = _durable_payload_to_message(payload)
-    if msg is None:
-        return False
-    all_ok = True
-    for dst_chat_id, _mode, finance_enabled in missing:
-        try:
-            result = _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
-            if not result:
-                all_ok = False
-        except Exception as e:
-            all_ok = False
-            log_error(f'DURABLE FORWARD REPAIR {source_chat_id}:{source_msg_id}->{dst_chat_id}: {e}')
-    return bool(all_ok and _durable_forward_effect_complete(payload))
+# [OCH12.35 OWNER] _repair_missing_durable_forward -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0031')
 
 def _v177_legacy_0069_wait_durable_subtasks(chat_id, timeout: float=20.0, wait_forward: bool=True, payload: dict | None=None, expected: dict | None=None, update_id=None) -> bool:
     """Wait for this exact source message, never for an entire chat queue.
@@ -11770,51 +9520,11 @@ try:
 except Exception:
     pass
 
-def _v230_constitution_finance_wait(payload: dict | None, expected_effects: dict | None=None) -> bool:
-    """True only when a direct expected finance effect is intentionally blocked by constitution quarantine."""
-    if not isinstance(payload, dict):
-        return False
-    try:
-        if not (globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232()):
-            return False
-    except Exception:
-        return False
-    expected = _durable_normalize_expected_for_route(payload, expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload))
-    if not bool(expected.get('source_finance')):
-        return False
-    try:
-        report = _durable_effect_report(payload, expected)
-        missing = [str(x) for x in report.get('missing') or []]
-        ambiguous = [str(x) for x in report.get('ambiguous') or []]
-        return not ambiguous and any((x.startswith('source_finance:') for x in missing))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v230_constitution_finance_wait -> 11_business_finance.py
+_owner_install('finance', 'finance:0040')
 
-def _v230_try_repair_direct_finance_after_quarantine(payload: dict | None, expected_effects: dict | None=None) -> bool:
-    """Replay only idempotent finance witness after quarantine is cleared; never sends Telegram copies."""
-    if not isinstance(payload, dict):
-        return False
-    try:
-        if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
-            return False
-    except Exception:
-        return False
-    expected = _durable_normalize_expected_for_route(payload, expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload))
-    if not bool(expected.get('source_finance')):
-        return False
-    try:
-        report = _durable_effect_report(payload, expected)
-        missing = [str(x) for x in report.get('missing') or []]
-        ambiguous = [str(x) for x in report.get('ambiguous') or []]
-        if ambiguous or not any((x.startswith('source_finance:') for x in missing)):
-            return False
-        return bool(_repair_safe_missing_finance_effects(payload, expected))
-    except Exception as exc:
-        try:
-            log_error(f'v230 direct finance recovery: {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _v230_try_repair_direct_finance_after_quarantine -> 11_business_finance.py
+_owner_install('finance', 'finance:0041')
 
 def finalize_durable_task_after_business(update_id, chat_id, update_type: str='other', payload: dict | None=None, expected_effects: dict | None=None) -> bool:
     """Commit a task only after its explicitly-declared effects are visible.
@@ -11978,69 +9688,11 @@ def _durable_target_specs_for_source(source_chat_id: int) -> list[dict]:
         specs.append({'dst_chat_id': dst, 'mode': str(mode), 'finance_enabled': bool(finance_enabled), 'secret_expected': dst_secret})
     return specs
 
-def _durable_note_forward_decision(source_chat_id: int, direct: bool=False):
-    """Record the ACTUAL handler decision, not the potential configuration.
+# [OCH12.35 OWNER] _durable_note_forward_decision -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0032')
 
-    This stays in the current update thread only.  The finalizer uses it after the handler
-    returns, so a text consumed by SECRET/edit/category/wait state is not falsely marked
-    as three missing forwards merely because forwarding is configured for the chat.
-    """
-    try:
-        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, 'value', None)
-        if not isinstance(ctx, dict):
-            return
-        if ctx.get('chat_id') is not None and int(ctx.get('chat_id')) != int(source_chat_id):
-            return
-        ctx['forward_decision_reached'] = True
-        ctx['forward_direct'] = bool(direct)
-        ctx['actual_forward_targets'] = _durable_target_specs_for_source(int(source_chat_id))
-    except Exception as e:
-        try:
-            log_error(f'durable forward decision note {source_chat_id}: {e}')
-        except Exception:
-            pass
-
-def _durable_note_forward_target_migration(source_chat_id: int, old_chat_id: int, new_chat_id: int):
-    """Keep the live durable witness aligned with Telegram basic-group -> supergroup migration.
-
-    The forwarding worker may discover the new destination only after the handler has already
-    captured its original target list. Without this rewrite the finalizer keeps waiting for the
-    obsolete chat_id and can move a successfully delivered task to MEGA/failed.
-    """
-    try:
-        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, 'value', None)
-        if not isinstance(ctx, dict):
-            return False
-        if ctx.get('chat_id') is not None and int(ctx.get('chat_id')) != int(source_chat_id):
-            return False
-        changed = False
-        specs = ctx.get('actual_forward_targets') or []
-        for spec in specs:
-            if not isinstance(spec, dict):
-                continue
-            try:
-                if int(spec.get('dst_chat_id')) != int(old_chat_id):
-                    continue
-            except Exception:
-                continue
-            spec['dst_chat_id'] = int(new_chat_id)
-            try:
-                spec['secret_expected'] = bool(is_total_secret_mode(int(new_chat_id)))
-            except Exception:
-                pass
-            changed = True
-        if changed:
-            try:
-                bot_journal('durable_forward_target_migrated', int(source_chat_id), f'{int(old_chat_id)}->{int(new_chat_id)}')
-            except Exception:
-                pass
-        return changed
-    except Exception as e:
-        try:
-            log_error(f'durable forward target migration {old_chat_id}->{new_chat_id}: {e}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _durable_note_forward_target_migration -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0033')
 
 def _durable_note_record_edit_witness(witness: dict):
     try:
@@ -12054,55 +9706,17 @@ def _durable_note_record_edit_witness(witness: dict):
     except Exception:
         pass
 
-def _durable_note_secret_edit_witness(witness: dict):
-    try:
-        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, 'value', None)
-        if not isinstance(ctx, dict) or not isinstance(witness, dict):
-            return
-        rows = ctx.setdefault('secret_edits', [])
-        key = (int(witness.get('chat_id')), int(witness.get('record_id')))
-        rows[:] = [r for r in rows if (int(r.get('chat_id')), int(r.get('record_id'))) != key]
-        rows.append(_delta_json_clone(witness))
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _durable_note_secret_edit_witness -> 18_business_secret.py
+_owner_install('secret', 'secret:0022')
 
-def _durable_reminder_witness_hash(witness: dict) -> str:
-    payload = {'reminder_id': int((witness or {}).get('reminder_id') or 0), 'kind': str((witness or {}).get('kind') or ''), 'text': str((witness or {}).get('text') or '').strip(), 'interval_minutes': int((witness or {}).get('interval_minutes') or 0)}
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:24]
+# [OCH12.35 OWNER] _durable_reminder_witness_hash -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0001')
 
-def _durable_reminder_receipt_exists(payload: dict, witness: dict) -> bool:
-    try:
-        update_id = str((payload or {}).get('update_id'))
-        reminder_id = int((witness or {}).get('reminder_id'))
-        kind = str((witness or {}).get('kind') or '')
-        witness_hash = _durable_reminder_witness_hash(witness)
-        for row in list((data or {}).get('_durable_reminder_edit_receipts', []) or []):
-            if str((row or {}).get('update_id')) == update_id and int((row or {}).get('reminder_id') or 0) == reminder_id and (str((row or {}).get('kind') or '') == kind) and (str((row or {}).get('witness_hash') or '') == witness_hash):
-                return True
-    except Exception:
-        pass
-    return False
+# [OCH12.35 OWNER] _durable_reminder_receipt_exists -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0002')
 
-def _durable_note_reminder_edit_witness(witness: dict):
-    try:
-        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, 'value', None)
-        if not isinstance(ctx, dict) or not isinstance(witness, dict):
-            return
-        rows = ctx.setdefault('reminder_edits', [])
-        key = (int(witness.get('reminder_id')), str(witness.get('kind') or ''))
-        rows[:] = [r for r in rows if (int(r.get('reminder_id')), str(r.get('kind') or '')) != key]
-        exact = _delta_json_clone(witness)
-        rows.append(exact)
-        update_id = ctx.get('update_id')
-        if update_id is not None:
-            receipts = data.setdefault('_durable_reminder_edit_receipts', [])
-            receipt = {'update_id': str(update_id), 'reminder_id': int(witness.get('reminder_id')), 'kind': str(witness.get('kind') or ''), 'witness_hash': _durable_reminder_witness_hash(witness), 'at': now_local().isoformat(timespec='seconds')}
-            receipts[:] = [row for row in receipts if not (str((row or {}).get('update_id')) == receipt['update_id'] and int((row or {}).get('reminder_id') or 0) == receipt['reminder_id'] and (str((row or {}).get('kind') or '') == receipt['kind']))]
-            receipts.append(receipt)
-            if len(receipts) > 300:
-                del receipts[:-300]
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _durable_note_reminder_edit_witness -> 14_business_reminders.py
+_owner_install('reminders', 'reminders:0003')
 
 def _durable_note_source_consumed(reason: str):
     """Tell the durable finalizer that the handler consumed this source before finance/forward routes."""
@@ -12335,398 +9949,42 @@ try:
 except Exception:
     pass
 
-def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type: str='other', reason: str='') -> dict:
-    key = _mega_task_id(update_id)
-    context = {}
-    if chat_id is not None:
-        try:
-            store = get_chat_store(int(chat_id))
-            waits = {str(k): _delta_json_clone(v) for k, v in (store or {}).items() if str(k).endswith('_wait') and bool(v)}
-            if waits:
-                context['wait_states'] = waits
-            if (store or {}).get('current_view_day'):
-                context['current_view_day'] = str(store.get('current_view_day'))
-        except Exception as e:
-            log_error(f'MEGA TASK context capture update={key}: {e}')
-    callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    if callback_target is not None:
-        context['callback_target_chat_id'] = int(callback_target)
-    return {'kind': 'telegram_bot_durable_task', 'schema_version': 5, 'bot_version': VERSION, 'task_id': key, 'update_id': int(update_id) if str(update_id).lstrip('-').isdigit() else str(update_id), 'created_at': now_local().isoformat(timespec='microseconds'), 'chat_id': chat_id, 'update_type': str(update_type or 'other'), 'reason': str(reason or 'critical_update'), 'source_message_id': _durable_payload_message(payload)[2] if isinstance(payload, dict) else None, 'media_group_id': _durable_payload_message(payload)[3] if isinstance(payload, dict) else None, 'content_type': _durable_raw_content_type(_durable_payload_message(payload)[0] if isinstance(payload, dict) else None), 'forward_targets': [{'dst_chat_id': int(dst), 'mode': str(mode), 'finance_enabled': bool(fin)} for dst, mode, fin in _durable_forward_targets(_durable_payload_message(payload)[1] if isinstance(payload, dict) else None)], 'expected_effects': _durable_expected_effects(payload if isinstance(payload, dict) else {}), 'context': context, 'payload': _delta_json_clone(payload or {})}
+# [OCH12.35 OWNER] _build_mega_task_payload -> 17_integration_mega.py
+_owner_install('mega', 'mega:0055')
 
-def restore_mega_task_context(task: dict):
-    """Restore transient input/wait context captured at receipt before replay after deploy.
+# [OCH12.35 OWNER] restore_mega_task_context -> 17_integration_mega.py
+_owner_install('mega', 'mega:0056')
 
-    This is what keeps an article/finance edit answer meaningful even if Render wiped the
-    local SQLite after the prompt was opened but before the answer was processed.
-    """
-    if not isinstance(task, dict):
-        return
-    chat_id = task.get('chat_id')
-    if chat_id is None:
-        return
-    context = task.get('context') or {}
-    waits = context.get('wait_states') or {}
-    changed = False
-    try:
-        store = get_chat_store(int(chat_id))
-        for key, value in waits.items():
-            if str(key).endswith('_wait') and value and (not store.get(str(key))):
-                store[str(key)] = _delta_json_clone(value)
-                changed = True
-        if context.get('current_view_day') and (not store.get('current_view_day')):
-            store['current_view_day'] = str(context.get('current_view_day'))
-            changed = True
-        if changed:
-            save_data(data, chat_ids=[int(chat_id)])
-            bot_journal('mega_task_context_restored', int(chat_id), f"task={task.get('task_id')} waits={list(waits.keys())}")
-    except Exception as e:
-        log_error(f"restore_mega_task_context task={task.get('task_id')}: {e}")
+# [OCH12.35 OWNER] _canon_mega_task_upload_new_pending__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0057')
 
-def _canon_mega_task_upload_new_pending__001(update_id, task_payload: dict) -> bool:
-    """v190 write-before-execute witness: one MEGA put, no candidate+rename round-trip.
+# [OCH12.35 OWNER] _canon_mega_task_move__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0058')
 
-    task_<update_id>.json is unique.  If a retry races with an already uploaded copy,
-    the existing file is accepted.  This keeps strict external durability while removing
-    two foreground MEGA operations from every finance message.
-    """
-    global _mega_task_last_error
-    _timing_started = time.monotonic()
-    if not mega_tasks_active():
-        return False
-    key = _mega_task_id(update_id)
-    try:
-        if 'operation_begin_durable' in globals():
-            operation_begin_durable(key, task_payload)
-            operation_step(operation_for_update(key), 'saved_locally', 'durable payload prepared', persist=False)
-    except Exception as _op_exc:
-        log_error(f'operation ledger begin update={key}: {_op_exc}')
-    known = mega_task_known_state(key)
-    if known in {'pending', 'running', 'done'}:
-        return True
-    local_path = None
-    try:
-        remote_dir = mega_task_remote_dir('pending')
-        if not ensure_mega_task_dirs():
-            raise RuntimeError('MEGA task directories unavailable')
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, mega_task_filename(key))
-        with open(local_path, 'w', encoding='utf-8') as fh:
-            json.dump(task_payload, fh, ensure_ascii=False, separators=(',', ':'), default=str)
-        try:
-            _mega_run('mega-put', [local_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        except Exception:
-            existing = _mega_find_remote_files(remote_dir, mega_task_filename(key), limit=2)
-            if not existing:
-                raise
-        remote_final = mega_task_remote_path(key, 'pending')
-        _mega_task_update_registry(key, 'pending', remote_final)
-        try:
-            if 'operation_step' in globals():
-                operation_step(operation_for_update(key), 'saved_to_mega', remote_final, persist=False)
-        except Exception:
-            pass
-        with _MEGA_TASK_LOCK:
-            _mega_task_counters['persisted'] += 1
-        bot_journal('mega_task_timing', None, f'phase=persist_v190_one_put update={key} elapsed={time.monotonic() - _timing_started:.3f}s')
-        return True
-    except Exception as e:
-        _mega_task_last_error = str(e)[:500]
-        with _MEGA_TASK_LOCK:
-            _mega_task_counters['persist_errors'] += 1
-        log_error(f'[MEGA TASK PERSIST] update={key}: {e}')
-        return False
-    finally:
-        try:
-            if local_path and os.path.exists(local_path):
-                os.remove(local_path)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _canon_mega_task_begin__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0059')
 
-def _canon_mega_task_move__001(update_id, from_state: str, to_state: str) -> bool:
-    global _mega_task_last_error
-    _timing_started = time.monotonic()
-    if not mega_tasks_active():
-        return False
-    key = _mega_task_id(update_id)
-    try:
-        src = mega_task_remote_path(key, from_state)
-        dst_dir = mega_task_remote_dir(to_state)
-        dst = mega_task_remote_path(key, to_state)
-        if not ensure_mega_task_dirs():
-            raise RuntimeError('MEGA task directories unavailable')
-        res = _mega_run('mega-mv', [src, dst], check=False, timeout=60)
-        if res.returncode != 0:
-            err = (res.stderr or res.stdout or '')[:500]
-            if _mega_remote_missing_error(err):
-                try:
-                    mega_ensure_remote_path(dst_dir, force=True)
-                    res = _mega_run('mega-mv', [src, dst], check=False, timeout=60)
-                    err = (res.stderr or res.stdout or '')[:500]
-                except Exception:
-                    pass
-            found = _mega_find_remote_files(dst_dir, mega_task_filename(key), limit=2)
-            if res.returncode != 0 and (not found):
-                raise RuntimeError(err or f'cannot move {src} -> {dst}')
-        _mega_task_update_registry(key, to_state, dst)
-        bot_journal('mega_task_timing', None, f'phase=move update={key} {from_state}->{to_state} elapsed={time.monotonic() - _timing_started:.3f}s')
-        return True
-    except Exception as e:
-        _mega_task_last_error = str(e)[:500]
-        log_error(f'[MEGA TASK MOVE] update={key} {from_state}->{to_state}: {e}')
-        return False
+# [OCH12.35 OWNER] _canon_mega_task_prune_done_async__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0060')
 
-def _canon_mega_task_begin__001(update_id, allow_existing_running: bool=False) -> bool:
-    """Claim a persisted task locally without a foreground MEGA move.
-
-    The remote file intentionally stays in ``pending`` until background verification moves
-    it directly to done/failed.  If Render dies during execution, startup sees ``pending``
-    and safely replays/repairs the idempotent update.
-    """
-    key = _mega_task_id(update_id)
-    success = False
-    with _MEGA_TASK_LOCK:
-        if key in _mega_task_processing:
-            return False
-        state = mega_task_known_state(key)
-        if state == 'done':
-            return False
-        if state == 'running' and (not allow_existing_running):
-            return False
-        if state not in {'pending', 'failed', 'running'}:
-            return False
-        _mega_task_processing.add(key)
-    try:
-        state = mega_task_known_state(key)
-        if state == 'failed':
-            if not _mega_task_move(key, 'failed', 'pending'):
-                return False
-        elif state == 'running' and (not allow_existing_running):
-            return False
-        try:
-            if 'operation_step' in globals():
-                operation_step(operation_for_update(key), 'effect_running', f'state=pending_remote/local_running', persist=False)
-        except Exception:
-            pass
-        success = True
-        return True
-    finally:
-        if not success:
-            with _MEGA_TASK_LOCK:
-                _mega_task_processing.discard(key)
-
-def _canon_mega_task_prune_done_async__001():
-
-    def _job():
-        try:
-            rows = _mega_find_remote_files(mega_task_remote_dir('done'), 'task_*.json')
-            for remote_path in rows[MEGA_TASK_DONE_KEEP:]:
-                _mega_run('mega-rm', [remote_path], check=False, timeout=30)
-                key = os.path.basename(remote_path).removeprefix('task_').removesuffix('.json')
-                with _MEGA_TASK_LOCK:
-                    if mega_task_known_state(key) == 'done':
-                        _mega_task_registry.pop(key, None)
-        except Exception as e:
-            log_error(f'_mega_task_prune_done_async: {e}')
-    BACKUP_TASK_POOL.submit('mega-task-prune', _job)
-
-def _v177_legacy_0071_mega_task_finish(update_id, success: bool, error: str='') -> bool:
-    global _mega_task_last_error
-    _timing_started = time.monotonic()
-    key = _mega_task_id(update_id)
-    target = 'done' if success else 'failed'
-    ok = False
-    for attempt in range(MEGA_TASK_FINALIZE_RETRIES):
-        state = mega_task_known_state(key) or 'running'
-        if state == target:
-            ok = True
-            break
-        if state == 'done' and success:
-            ok = True
-            break
-        if _mega_task_move(key, state if state in {'pending', 'running', 'failed'} else 'running', target):
-            ok = True
-            break
-        if attempt + 1 < MEGA_TASK_FINALIZE_RETRIES:
-            time.sleep(min(1.0, 0.2 * (attempt + 1)))
-    with _MEGA_TASK_LOCK:
-        _mega_task_processing.discard(key)
-        if success:
-            if ok:
-                _mega_task_counters['completed'] += 1
-            else:
-                _mega_task_counters['finalize_errors'] += 1
-        else:
-            _mega_task_counters['failed'] += 1
-    if success and ok:
-        _mega_task_prune_done_async()
-    if not ok:
-        _mega_task_last_error = f'finalize {target} failed for {key}: {error}'[:500]
-    try:
-        if success and ok and ('operation_complete' in globals()):
-            operation_complete(operation_for_update(key), 'durable task completed')
-        elif not success and str(error or '').startswith('needs_review') and ('operation_review' in globals()):
-            operation_review(operation_for_update(key), error)
-        elif not success and 'operation_fail' in globals():
-            operation_fail(operation_for_update(key), error or 'durable task failed')
-    except Exception as _op_exc:
-        log_error(f'operation ledger finish update={key}: {_op_exc}')
-    bot_journal('mega_task_timing', None, f'phase=finish update={key} target={target} ok={ok} elapsed={time.monotonic() - _timing_started:.3f}s')
-    return ok
+# [OCH12.35 OWNER] _v177_legacy_0071_mega_task_finish -> 17_integration_mega.py
+_owner_install('mega', 'mega:0061')
 try:
     _v177_legacy_0071_mega_task_finish.__name__ = 'mega_task_finish'
 except Exception:
     pass
 
-def _canon_mega_task_refresh_registry__001() -> dict:
-    """Load task states from MEGA in one recursive find. Safe to call at startup or manually."""
-    global _mega_task_registry_loaded_at, _mega_task_last_error
-    if not mega_tasks_active():
-        return mega_task_registry_stats()
-    try:
-        root = mega_task_remote_root()
-        if not ensure_mega_task_dirs(force=True):
-            raise RuntimeError('MEGA task directories unavailable')
-        for candidate in _mega_find_remote_files(root, 'candidate_task_*.json', limit=None):
-            name = os.path.basename(candidate)
-            match = re.fullmatch('candidate_task_([A-Za-z0-9_-]+)_\\d{8}_\\d{6}_\\d{6}\\.json', name)
-            if not match:
-                continue
-            key = match.group(1)
-            final = mega_task_remote_path(key, 'pending')
-            existing = _mega_find_remote_files(mega_task_remote_dir('pending'), mega_task_filename(key), limit=1)
-            if existing:
-                _mega_run('mega-rm', [candidate], check=False, timeout=30)
-            else:
-                _mega_run('mega-mv', [candidate, final], check=False, timeout=60)
-        rows = _mega_find_remote_files(root, 'task_*.json', limit=None)
-        new_registry = {}
-        for path in rows:
-            name = os.path.basename(path)
-            match = re.fullmatch('task_([A-Za-z0-9_-]+)\\.json', name)
-            if not match:
-                continue
-            state = ''
-            for candidate in ('pending', 'running', 'done', 'failed'):
-                if f'/{candidate}/' in path.replace('\\', '/'):
-                    state = candidate
-                    break
-            if not state:
-                continue
-            key = match.group(1)
-            rank = {'failed': 1, 'pending': 2, 'running': 3, 'done': 4}
-            old = new_registry.get(key)
-            if old is None or rank[state] >= rank.get(old.get('state'), 0):
-                new_registry[key] = {'state': state, 'path': path, 'loaded_at': now_local().isoformat(timespec='seconds')}
-        with _MEGA_TASK_LOCK:
-            for key, row in _mega_task_registry.items():
-                if key in _mega_task_processing and key not in new_registry:
-                    new_registry[key] = dict(row)
-            _mega_task_registry.clear()
-            _mega_task_registry.update(new_registry)
-            _mega_task_registry_loaded_at = now_local().isoformat(timespec='seconds')
-        return mega_task_registry_stats()
-    except Exception as e:
-        _mega_task_last_error = str(e)[:500]
-        log_error(f'mega_task_refresh_registry: {e}')
-        return mega_task_registry_stats()
+# [OCH12.35 OWNER] _canon_mega_task_refresh_registry__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0062')
 
-def _mega_task_effect_exists(payload: dict, expected_effects: dict | None=None) -> bool:
-    """True only if every explicitly expected effect is already proven."""
-    try:
-        report = _durable_effect_report(payload, expected_effects if isinstance(expected_effects, dict) else None)
-        return bool(report.get('complete'))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _mega_task_effect_exists -> 17_integration_mega.py
+_owner_install('mega', 'mega:0063')
 
-def _repair_safe_missing_forward_secret_effects(payload: dict, expected_effects: dict | None=None) -> bool:
-    """Repair only SECRET metadata for an already-confirmed Telegram copy.
+# [OCH12.35 OWNER] _repair_safe_missing_forward_secret_effects -> 18_business_secret.py
+_owner_install('secret', 'secret:0023')
 
-    No copy_message/forward_message call is made here, so this cannot create a duplicate.
-    """
-    expected = expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload)
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return True
-    try:
-        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
-    except Exception:
-        links = {}
-    msg = None
-    for target in expected.get('forward_targets', []) or []:
-        if not bool(target.get('secret_expected')):
-            continue
-        try:
-            dst = int(target.get('dst_chat_id'))
-            dst_msg_id = int(links.get(dst) or 0)
-        except Exception:
-            continue
-        if not dst_msg_id:
-            continue
-        try:
-            exists = any((isinstance(r, dict) and int(r.get('source_msg_id') or 0) == dst_msg_id and (int(r.get('forward_source_msg_id') or source_msg_id) == int(source_msg_id)) for r in _secret_records(dst)))
-        except Exception:
-            exists = False
-        if exists:
-            continue
-        if msg is None:
-            msg = _durable_payload_to_message(payload)
-        if msg is None:
-            return False
-        try:
-            save_secret_bot_copy(dst, dst_msg_id, msg)
-            try:
-                bot.delete_message(dst, dst_msg_id)
-            except Exception:
-                pass
-            bot_journal('durable_forward_secret_repaired', dst, f'src={source_chat_id}:{source_msg_id} dst_msg={dst_msg_id}')
-        except Exception as e:
-            log_error(f'DURABLE SAFE SECRET REPAIR {source_chat_id}:{source_msg_id}->{dst}:{dst_msg_id}: {e}')
-            return False
-    return True
-
-def _repair_safe_missing_finance_effects(payload: dict, expected_effects: dict | None=None) -> bool:
-    """Repair only finance effects that are intrinsically idempotent in v109.
-
-    Never sends Telegram messages. A forwarded-finance repair is allowed only when the
-    destination Telegram link already exists. Direct finance uses source message_id as its
-    unique operation key, so add_record_to_chat returns the existing record on replay.
-    """
-    expected = _durable_normalize_expected_for_route(payload, expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload))
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return False
-    msg = _durable_payload_to_message(payload)
-    if msg is None:
-        return False
-    if bool(expected.get('source_finance')):
-        try:
-            if find_record_by_message_id(source_chat_id, source_msg_id) is None:
-                handle_finance_text(msg)
-        except Exception as e:
-            log_error(f'DURABLE SAFE DIRECT FINANCE REPAIR {source_chat_id}:{source_msg_id}: {e}')
-    links = {}
-    try:
-        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
-    except Exception:
-        links = {}
-    text = _message_text_for_finance(msg)
-    for target in expected.get('forward_targets', []) or []:
-        if not bool(target.get('finance_expected')):
-            continue
-        try:
-            dst = int(target.get('dst_chat_id'))
-        except Exception:
-            continue
-        dst_msg_id = links.get(dst)
-        if not dst_msg_id:
-            continue
-        try:
-            if find_record_by_message_id(dst, dst_msg_id) is None:
-                owner_id = msg.from_user.id if getattr(msg, 'from_user', None) else 0
-                sync_forwarded_finance_message(dst, dst_msg_id, text, owner_id, source_msg=msg)
-        except Exception as e:
-            log_error(f'DURABLE SAFE FORWARD FINANCE REPAIR {source_chat_id}:{source_msg_id}->{dst}:{dst_msg_id}: {e}')
-    return bool(_durable_effect_report(payload, expected).get('complete'))
+# [OCH12.35 OWNER] _repair_safe_missing_finance_effects -> 11_business_finance.py
+_owner_install('finance', 'finance:0042')
 
 def _v177_legacy_0072_execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str='other'):
     """Single execution path used by live webhook and MEGA startup recovery."""
@@ -12780,103 +10038,11 @@ try:
 except Exception:
     pass
 
-def _mega_task_recover_one(update_id, state: str, remote_path: str):
-    """Recover without replaying uncertain `running` business operations.
+# [OCH12.35 OWNER] _mega_task_recover_one -> 17_integration_mega.py
+_owner_install('mega', 'mega:0064')
 
-    pending = business never started -> may execute once.
-    running = business may have partially/fully executed -> inspect and repair only safe
-    idempotent finance effects; never resend Telegram copies and never rerun callbacks/handlers.
-    """
-    key = _mega_task_id(update_id)
-    if mega_task_known_state(key) == 'done':
-        return
-    if not mega_task_begin(key, allow_existing_running=state == 'running'):
-        return
-    try:
-        path = remote_path
-        if state == 'pending':
-            with _MEGA_TASK_LOCK:
-                path = str((_mega_task_registry.get(key) or {}).get('path') or mega_task_remote_path(key, 'running'))
-        local = _mega_download_remote_path(path)
-        task = _load_json(local, {}) if local else {}
-        payload = (task or {}).get('payload') or {}
-        if not isinstance(payload, dict) or not payload:
-            raise RuntimeError('task payload is empty')
-        restore_mega_task_context(task)
-        chat_id = (task or {}).get('chat_id')
-        update_type = str((task or {}).get('update_type') or 'recovered')
-        expected = _durable_expected_from_task_or_payload(task, payload)
-        if durable_update_processed(key):
-            mega_task_finish(key, True, 'processed_marker_present')
-            with _MEGA_TASK_LOCK:
-                _mega_task_counters['skipped_done'] += 1
-            return
-        if state == 'running':
-            if _v230_constitution_finance_wait(payload, expected):
-                schedule_durable_task_finalize_retry(key, chat_id, update_type, 15.0, payload=payload, expected_effects=expected)
-                try:
-                    bot_journal('mega_task_finance_wait_constitution_v230', chat_id, f'update_id={key}; state=running', 'WARN')
-                except Exception:
-                    pass
-                return
-            if not _mega_task_effect_exists(payload, expected):
-                _repair_safe_missing_finance_effects(payload, expected)
-                _repair_safe_missing_forward_secret_effects(payload, expected)
-            if _mega_task_effect_exists(payload, expected):
-                if finalize_durable_task_after_business(key, chat_id, update_type, payload=payload, expected_effects=expected):
-                    with _MEGA_TASK_LOCK:
-                        _mega_task_counters['skipped_done'] += 1
-                return
-            report = _durable_effect_report(payload, expected)
-            reason = f"needs_review_running: business not replayed; missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}"
-            mega_task_finish(key, False, reason)
-            bot_journal('mega_task_needs_review', chat_id, f'update_id={key} {reason}')
-            try:
-                if OWNER_ID and (not ('safety_profile_new_enabled' in globals() and safety_profile_new_enabled())):
-                    bot.send_message(int(OWNER_ID), f'⚠️ Задача {key} после перезапуска НЕ повторена, чтобы не создать дубль.\n{reason[:850]}')
-            except Exception:
-                pass
-            return
-        execution_ctx = _execute_telegram_payload(payload, key, chat_id, update_type)
-        expected_after = _durable_expected_after_execution(expected, execution_ctx, payload)
-        finalized = finalize_durable_task_after_business(key, chat_id, update_type, payload=payload, expected_effects=expected_after)
-        if not finalized:
-            schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.0, payload=payload, expected_effects=expected_after)
-        with _MEGA_TASK_LOCK:
-            _mega_task_counters['recovered'] += 1
-        bot_journal('mega_task_recovered', chat_id, f'update_id={key} state={state} finalized={finalized}')
-    except Exception as e:
-        mega_task_finish(key, False, str(e))
-        log_error(f'MEGA TASK RECOVERY FAILED update={key}: {e}')
-        try:
-            if OWNER_ID:
-                bot.send_message(int(OWNER_ID), f'⚠️ MEGA-задача {key} не восстановлена автоматически:\n{str(e)[:700]}')
-        except Exception:
-            pass
-
-def _canon_schedule_mega_task_recovery__001(delay: float | None=None):
-    """After data restore, replay pending/uncertain tasks independently of normal bot queues."""
-    if not mega_tasks_active():
-        return
-    delay = MEGA_TASK_RECOVERY_DELAY_SECONDS if delay is None else max(0.1, float(delay))
-
-    def _scan_and_submit():
-        stats = mega_task_refresh_registry()
-        rows = []
-        with _MEGA_TASK_LOCK:
-            for key, row in _mega_task_registry.items():
-                if row.get('state') in {'pending', 'running'}:
-                    rows.append((key, str(row.get('state')), str(row.get('path') or '')))
-        rows = sorted(rows, key=lambda x: int(x[0]) if str(x[0]).isdigit() else str(x[0]))[:MEGA_TASK_RECOVERY_LIMIT]
-        for key, state, path in rows:
-
-            def _job(k=key, st=state, rp=path):
-                _mega_task_recover_one(k, st, rp)
-            if not RECOVERY_TASK_POOL.submit('mega-recover-global', _job):
-                log_error(f'MEGA TASK RECOVERY QUEUE FULL update={key}')
-        log_info(f"[MEGA TASKS] registry pending={stats.get('pending')} running={stats.get('running')} failed={stats.get('failed')} recovery_submitted={len(rows)}")
-    DELAYED_SCHEDULER.cancel('mega-task-startup-recovery')
-    DELAYED_SCHEDULER.schedule('mega-task-startup-recovery', delay, _scan_and_submit)
+# [OCH12.35 OWNER] _canon_schedule_mega_task_recovery__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0065')
 
 def _canon_schedule_safe_failed_task_repairs__001(delay: float=6.0, limit: int=20):
     """Repair FAILED tasks only when completion can be proven without replaying business work.
@@ -13011,66 +10177,11 @@ def _canon_schedule_safe_failed_task_repairs__001(delay: float=6.0, limit: int=2
     DELAYED_SCHEDULER.cancel('mega-task-safe-failed-repair')
     DELAYED_SCHEDULER.schedule('mega-task-safe-failed-repair', max(1.0, float(delay)), _scan)
 
-def mega_task_requeue_failed(limit: int=20) -> int:
-    """Manual owner action only: move a bounded number of failed tasks back to pending."""
-    moved = 0
-    mega_task_refresh_registry()
-    with _MEGA_TASK_LOCK:
-        keys = [k for k, row in _mega_task_registry.items() if row.get('state') == 'failed'][:max(1, int(limit))]
-    for key in keys:
-        if _mega_task_move(key, 'failed', 'pending'):
-            moved += 1
-    if moved:
-        schedule_mega_task_recovery(0.3)
-    return moved
+# [OCH12.35 OWNER] mega_task_requeue_failed -> 17_integration_mega.py
+_owner_install('mega', 'mega:0066')
 
-def schedule_restored_secret_media_recovery(delay: float=60.0):
-    """Resume only missing SECRET media when runtime is idle and memory is safe."""
-
-    def _defer(seconds: float, reason: str):
-        try:
-            bot_journal('secret_media_recovery_deferred_v210', None, reason)
-        except Exception:
-            pass
-        DELAYED_SCHEDULER.cancel('secret-media-startup-recovery')
-        DELAYED_SCHEDULER.schedule('secret-media-startup-recovery', max(30.0, float(seconds)), _job)
-
-    def _interactive_busy() -> bool:
-        for name in ('FAST_UI_TASK_POOL', 'UI_TASK_POOL', 'FINANCE_TASK_POOL', 'FORWARD_TASK_POOL', 'CONTENT_TASK_POOL'):
-            pool = globals().get(name)
-            if pool is None or not hasattr(pool, 'stats'):
-                continue
-            try:
-                st = pool.stats() or {}
-                if int(st.get('active', 0) or 0) > 0 or int(st.get('pending', 0) or 0) > 0:
-                    return True
-            except Exception:
-                continue
-        return False
-
-    def _job():
-        try:
-            pressure_fn = globals().get('_runtime_memory_pressure')
-            pressure = pressure_fn() if callable(pressure_fn) else {}
-            level = str((pressure or {}).get('level') or 'normal')
-            if level in {'high', 'critical', 'emergency'}:
-                _defer(120.0, f'memory={level}')
-                return
-            if _interactive_busy():
-                _defer(45.0, 'interactive queues busy')
-                return
-            for cid in secret_chats():
-                try:
-                    pending_media = any((isinstance(r, dict) and r.get('file_id') and (not r.get('mega_media_path')) for r in _secret_records(cid)))
-                    if pending_media:
-                        if not BACKUP_TASK_POOL.submit(f'secret-media-recover:{cid}', upload_chat_secrets_to_mega, cid):
-                            schedule_secret_mega_upload(cid, BACKUP_BUSY_RETRY_SECONDS)
-                except Exception as e:
-                    log_error(f'SECRET MEDIA RECOVERY chat={cid}: {e}')
-        except Exception as e:
-            log_error(f'schedule_restored_secret_media_recovery: {e}')
-    DELAYED_SCHEDULER.cancel('secret-media-startup-recovery')
-    DELAYED_SCHEDULER.schedule('secret-media-startup-recovery', max(30.0, float(delay)), _job)
+# [OCH12.35 OWNER] schedule_restored_secret_media_recovery -> 18_business_secret.py
+_owner_install('secret', 'secret:0024')
 
 def current_month_key() -> str:
     return now_local().strftime('%Y-%m')
@@ -13086,20 +10197,8 @@ try:
 except Exception:
     pass
 
-def calc_opening_balance_for_month(store: dict, month_key: str, chat_id: int | None=None, currency: str='ars') -> float:
-    """Canonical opening balance before YYYY-MM-01 for the requested currency."""
-    start = f'{month_key}-01'
-    helper = globals().get('_excel_canonical_opening_balance')
-    if callable(helper) and chat_id is not None:
-        return float(helper(int(chat_id), currency, start, 0, False))
-    total = 0.0
-    for r in store.get('records', []) or []:
-        try:
-            if _record_day_key(r) < start:
-                total += float(r.get('amount', 0) or 0)
-        except Exception:
-            pass
-    return float(total)
+# [OCH12.35 OWNER] calc_opening_balance_for_month -> 11_business_finance.py
+_owner_install('finance', 'finance:0043')
 
 def month_records_for_chat(store: dict, month_key: str) -> list[dict]:
     out = []
@@ -13279,47 +10378,11 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None=None) -> 
     _write_excel_by_selected_style(xlsx_path, rows, chat_id, sheet_name='Месяц', category_layout=False)
     return {'json': json_path, 'csv': csv_path, 'xlsx': xlsx_path}
 
-def _canon_mega_upload_chat_backup_bundle__001(chat_id: int, month_key: str | None=None) -> bool:
-    """MEGA-бэкап одного чата: только JSON (latest + месячный JSON)."""
-    if not mega_is_configured():
-        return False
-    if not is_backup_to_mega_enabled(chat_id):
-        return False
-    try:
-        save_chat_json(chat_id)
-        slug = mega_chat_slug(chat_id)
-        remote_chat_dir = mega_remote_chat_dir(chat_id)
-        ok = True
-        ok = mega_put_replace(chat_json_file(chat_id), remote_chat_dir, f'latest_{slug}.json') and ok
-        month_key = month_key or current_month_key()
-        month_files = save_chat_monthly_backup_files(chat_id, month_key)
-        remote_month_dir = mega_remote_month_dir(month_key)
-        json_month_path = month_files.get('json')
-        if json_month_path:
-            ok = mega_put_replace(json_month_path, remote_month_dir, os.path.basename(json_month_path)) and ok
-        if ok:
-            log_info(f'[MEGA] JSON-only chat backup uploaded: {get_chat_display_name(chat_id)} / {month_key}')
-        return ok
-    except Exception as e:
-        log_error(f'[MEGA CHAT BACKUP ERROR] {chat_id}: {e}')
-        return False
+# [OCH12.35 OWNER] _canon_mega_upload_chat_backup_bundle__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0067')
 
-def _canon_mega_upload_chat_latest_json_only__001(chat_id: int) -> bool:
-    """Быстрый MEGA JSON без Excel/CSV и месячного пакета."""
-    if not is_backup_to_mega_enabled(chat_id) or not mega_is_configured():
-        return False
-    try:
-        local_path = chat_json_file(chat_id)
-        if not os.path.exists(local_path):
-            local_path = save_chat_json_only(chat_id)
-        if not local_path:
-            return False
-        slug = mega_chat_slug(chat_id)
-        remote_chat_dir = mega_remote_chat_dir(chat_id)
-        return bool(mega_put_replace(local_path, remote_chat_dir, f'latest_{slug}.json'))
-    except Exception as e:
-        log_error(f'mega_upload_chat_latest_json_only({chat_id}): {e}')
-        return False
+# [OCH12.35 OWNER] _canon_mega_upload_chat_latest_json_only__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0068')
 
 def _canon_schedule_config_backup_for_chats__001(*chat_ids, delay: float=3.0):
     """После изменения настроек/пересылки обновляем JSON/канал/MEGA с мягким debounce.
@@ -13372,11 +10435,11 @@ _DELTA_ROOT_MAP_KEYS = {'forward_index', 'forward_rules', 'forward_finance', 'fi
 _DELTA_GLOBAL_SETTINGS_EXCLUDE = {'version_mode_snapshots', '_window_tz_v160', '_window_marker_catalog_v160', 'finance_integrity_v141', 'operation_ledger_v141'}
 _DELTA_CHAT_SETTINGS_EXCLUDE = {'gomonk_rebalance_history_v150', 'gomonk_rebalance_history_v151'}
 
-def mega_delta_remote_root() -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_DELTA_BACKUP_DIR}"
+# [OCH12.35 OWNER] mega_delta_remote_root -> 17_integration_mega.py
+_owner_install('mega', 'mega:0069')
 
-def mega_delta_remote_day_dir(day_key: str | None=None) -> str:
-    return mega_delta_remote_root().rstrip('/') + '/' + str(day_key or today_key())
+# [OCH12.35 OWNER] mega_delta_remote_day_dir -> 17_integration_mega.py
+_owner_install('mega', 'mega:0070')
 
 def _delta_json_clone(value):
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
@@ -13926,41 +10989,8 @@ def _canon_delta_remote_candidates_after__001(created_at: str, limit: int | None
         selected.append(path)
     return selected[:int(limit or MEGA_DELTA_RESTORE_LIMIT)]
 
-def merge_global_snapshot_with_mega_deltas(local_global_path: str) -> tuple[str, int]:
-    """Скачивает и применяет immutable delta, созданные после full snapshot."""
-    base = _load_json(local_global_path, {}) or {}
-    if not _global_payload_is_structurally_valid(base):
-        return (local_global_path, 0)
-    created_at = str((base.get('_universal_backup') or {}).get('created_at') or (base.get('_backup_meta') or {}).get('created_at') or '')
-    remote_rows = _delta_remote_candidates_after(created_at)
-    applied = 0
-    local_map = {}
-    cleanup_dirs = []
-    try:
-        local_map, cleanup_dirs = _v177_download_remote_json_batch(remote_rows)
-        for remote_path in remote_rows:
-            local_delta = local_map.get(remote_path)
-            if not local_delta:
-                continue
-            delta = _load_json(local_delta, {}) or {}
-            if delta.get('kind') != 'telegram_finance_bot_delta':
-                continue
-            if _parse_iso_timestamp(delta.get('created_at')) <= _parse_iso_timestamp(created_at):
-                continue
-            _apply_delta_payload_to_state(base, delta)
-            applied += 1
-    finally:
-        for folder in sorted(set(cleanup_dirs), key=len, reverse=True):
-            try:
-                shutil.rmtree(folder, ignore_errors=True)
-            except Exception:
-                pass
-    if not applied:
-        return (local_global_path, 0)
-    merged = os.path.join(MEGA_LOCAL_TMP_DIR, f'merged_global_with_{applied}_deltas.json')
-    _save_json(merged, base)
-    log_info(f'[MEGA RESTORE] merged full snapshot + {applied} delta files')
-    return (merged, applied)
+# [OCH12.35 OWNER] merge_global_snapshot_with_mega_deltas -> 17_integration_mega.py
+_owner_install('mega', 'mega:0071')
 
 def _canon_prune_delta_files_after_full_snapshot__001():
     """v190 bounded delta retention.
@@ -14109,29 +11139,8 @@ def set_restore_guard_manual_override(enabled: bool):
 def restore_guard_status_text() -> str:
     return f"🛡 Restore guard: {('✅ ВКЛ' if RESTORE_GUARD_ACTIVE else '⬜ ВЫКЛ')}\nРучное отключение: {('✅ ВКЛ' if restore_guard_manual_override_enabled() else '⬜ ВЫКЛ')}\nПричина: {RESTORE_GUARD_REASON or '-'}\nАвтобэкапы: {('заблокированы' if RESTORE_GUARD_ACTIVE else 'разрешены')}\nMEGA настроена: {('ДА' if mega_is_configured() else 'НЕТ')}"
 
-def disable_restore_guard_and_enable_mega_backups() -> int:
-    """Явное решение владельца: снять аварийный guard и включить MEGA auto-backup во всех известных чатах."""
-    set_restore_guard_manual_override(True)
-    _clear_restore_guard()
-    count = 0
-    for cid in collect_all_known_chat_ids(include_owner=True):
-        try:
-            settings = _ensure_backup_settings(int(cid))
-            settings['auto_backup_to_mega_enabled'] = True
-            settings['auto_backup_enabled'] = True
-            count += 1
-        except Exception:
-            pass
-    try:
-        save_data(data, full=True)
-    except Exception as e:
-        log_error(f'disable_restore_guard_and_enable_mega_backups save: {e}')
-    for cid in collect_all_known_chat_ids(include_owner=True):
-        try:
-            schedule_backup_flush(int(cid), delay=BACKUP_MIN_DELAY_SECONDS)
-        except Exception:
-            pass
-    return count
+# [OCH12.35 OWNER] disable_restore_guard_and_enable_mega_backups -> 17_integration_mega.py
+_owner_install('mega', 'mega:0072')
 
 def _set_restore_guard(reason: str):
     global RESTORE_GUARD_ACTIVE, RESTORE_GUARD_REASON
@@ -14149,59 +11158,20 @@ def _clear_restore_guard():
     RESTORE_GUARD_ACTIVE = False
     RESTORE_GUARD_REASON = ''
 
-def mega_history_remote_dir() -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_HISTORY_BACKUP_DIR}"
+# [OCH12.35 OWNER] mega_history_remote_dir -> 17_integration_mega.py
+_owner_install('mega', 'mega:0073')
 
-def mega_download_global_named(remote_name: str) -> str | None:
-    if not mega_is_configured():
-        return None
-    try:
-        mega_login_if_needed()
-        restore_dir = tempfile.mkdtemp(prefix='mega_restore_')
-        remote_file = mega_remote_file_path(remote_name)
-        _mega_run('mega-get', [remote_file, restore_dir], check=True, timeout=MEGA_TIMEOUT)
-        local_path = os.path.join(restore_dir, os.path.basename(remote_name))
-        if not os.path.exists(local_path):
-            for name in os.listdir(restore_dir):
-                if name.lower().endswith('.json'):
-                    local_path = os.path.join(restore_dir, name)
-                    break
-        return local_path if os.path.exists(local_path) else None
-    except Exception as e:
-        log_error(f'[MEGA RESTORE DOWNLOAD ERROR] {remote_name}: {e}')
-        return None
+# [OCH12.35 OWNER] mega_download_global_named -> 17_integration_mega.py
+_owner_install('mega', 'mega:0074')
 
-def mega_download_latest_global_backup() -> str | None:
-    return mega_download_global_named(MEGA_LATEST_GLOBAL_NAME)
+# [OCH12.35 OWNER] mega_download_latest_global_backup -> 17_integration_mega.py
+_owner_install('mega', 'mega:0075')
 
-def _mega_history_candidates(limit: int=20) -> list[str]:
-    """Возвращает последние immutable global snapshots из MEGA history."""
-    exe = shutil.which('mega-find')
-    if not exe or not mega_is_configured():
-        return []
-    try:
-        mega_ensure_remote_path(mega_history_remote_dir())
-        res = _mega_run('mega-find', [mega_history_remote_dir(), '--pattern=global_*.json', '--type=f'], check=False, timeout=60)
-        rows = [x.strip() for x in (res.stdout or '').splitlines() if x.strip().lower().endswith('.json')]
-        return sorted(set(rows), reverse=True)[:max(1, int(limit))]
-    except Exception as e:
-        log_error(f'_mega_history_candidates: {e}')
-        return []
+# [OCH12.35 OWNER] _mega_history_candidates -> 17_integration_mega.py
+_owner_install('mega', 'mega:0076')
 
-def _mega_download_remote_path(remote_path: str) -> str | None:
-    try:
-        restore_dir = tempfile.mkdtemp(prefix='mega_history_restore_')
-        _mega_run('mega-get', [remote_path, restore_dir], check=True, timeout=MEGA_TIMEOUT)
-        base = os.path.basename(remote_path.rstrip('/'))
-        local = os.path.join(restore_dir, base)
-        if os.path.exists(local):
-            return local
-        for name in os.listdir(restore_dir):
-            if name.lower().endswith('.json'):
-                return os.path.join(restore_dir, name)
-    except Exception as e:
-        log_error(f'_mega_download_remote_path({remote_path}): {e}')
-    return None
+# [OCH12.35 OWNER] _mega_download_remote_path -> 17_integration_mega.py
+_owner_install('mega', 'mega:0077')
 try:
     GRACEFUL_SHUTDOWN_SECONDS = max(5.0, min(240.0, float(os.getenv('GRACEFUL_SHUTDOWN_SECONDS', '25') or '25')))
 except Exception:
@@ -15078,19 +12048,8 @@ def runtime_mark_webhook(payload: dict | None=None, blocked: str=''):
             except Exception:
                 pass
 
-def _runtime_watcher_should_yield_to_critical_mega() -> bool:
-    """Watcher is diagnostic and must never intentionally compete with business persistence."""
-    try:
-        for pool in (DELTA_TASK_POOL, BACKUP_TASK_POOL):
-            st = pool.stats() or {}
-            if int(st.get('pending', 0) or 0) > 0 or int(st.get('active', 0) or 0) > 0:
-                return True
-        mt = mega_task_registry_stats() or {}
-        if int(mt.get('processing', 0) or 0) > 0:
-            return True
-    except Exception:
-        return False
-    return False
+# [OCH12.35 OWNER] _runtime_watcher_should_yield_to_critical_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0078')
 
 def _lowram_business_busy() -> bool:
     try:
@@ -15308,60 +12267,8 @@ def _runtime_force_delta_flush() -> bool:
         runtime_event('shutdown_delta_error', str(e), 'ERROR')
         return False
 
-def runtime_graceful_shutdown(signal_name: str='SIGTERM'):
-    with _RUNTIME_LOCK:
-        if _RUNTIME_STATE.get('shutdown_finished_at'):
-            return
-    if not _RUNTIME_SHUTDOWN_LOCK.acquire(blocking=False):
-        return
-    try:
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE['shutting_down'] = True
-            _RUNTIME_STATE['ready'] = False
-            _RUNTIME_STATE['phase'] = 'shutting_down'
-            _RUNTIME_STATE['shutdown_started_at'] = now_local().isoformat(timespec='seconds')
-            _RUNTIME_STATE['shutdown_signal'] = str(signal_name)
-        runtime_event('shutdown_start', f'signal={signal_name}')
-        try:
-            DELAYED_SCHEDULER.cancel('runtime-heartbeat')
-            DELAYED_SCHEDULER.cancel('r68-local-runtime-tick')
-            DELAYED_SCHEDULER.cancel('journal-warm-tail')
-            DELAYED_SCHEDULER.cancel('lowram-idle-sweep')
-        except Exception:
-            pass
-        deadline = time.monotonic() + GRACEFUL_SHUTDOWN_SECONDS
-        drain_ok = False
-        while time.monotonic() < deadline:
-            drain = runtime_queue_drain_status()
-            if int(drain.get('critical_pending', 0) or 0) <= 0:
-                drain_ok = True
-                break
-            time.sleep(0.05)
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE['shutdown_drain_ok'] = bool(drain_ok)
-        runtime_event('shutdown_drain', f'ok={drain_ok}; {runtime_queue_drain_status()}')
-        try:
-            save_data(data, full=True)
-        except Exception as e:
-            runtime_event('shutdown_local_save_error', str(e), 'ERROR')
-        delta_ok = _runtime_force_delta_flush()
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE['shutdown_delta_ok'] = bool(delta_ok)
-            _RUNTIME_STATE['phase'] = 'shutdown_complete'
-            _RUNTIME_STATE['shutdown_finished_at'] = now_local().isoformat(timespec='seconds')
-        runtime_event('shutdown_complete', f'delta_ok={delta_ok}; drain_ok={drain_ok}')
-        try:
-            _r68_write_local_runtime_state('shutdown')
-            _r68_write_local_sqlite_snapshot('shutdown', True)
-        except Exception as e:
-            runtime_event('r68_local_shutdown_snapshot_error', str(e), 'WARN')
-        try:
-            journal_flush_to_mega(True)
-        except Exception:
-            pass
-        runtime_upload_snapshot('shutdown', True)
-    finally:
-        _RUNTIME_SHUTDOWN_LOCK.release()
+# [OCH12.35 COMPAT] legacy runtime_graceful_shutdown -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0004')
 
 def _runtime_signal_handler(signum, frame):
     try:
@@ -15548,231 +12455,11 @@ def _constitution_snapshot_block_notice(reason: str) -> None:
         pass
     log_info(f"[DATA CONSTITUTION] snapshot still blocked: {str(reason or 'quarantine')[:500]}")
 
-def _canon_mega_upload_latest_database_backup__001(force: bool=False) -> bool:
-    """v185 DATA CONSTITUTION snapshot: immutable generation + semantic manifest.
+# [OCH12.35 OWNER] _canon_mega_upload_latest_database_backup__001 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0079')
 
-    Canonical source of truth is current_manifest.json -> immutable generation_*.sqlite3.gz.
-    v203 does not duplicate the large gzip into a legacy mirror unless explicitly enabled.
-    """
-    if not mega_is_configured():
-        return False
-    if not force:
-        _gate = globals().get('v239_external_durable_write_allowed')
-        if callable(_gate):
-            _ok, _why = _gate()
-            if not _ok:
-                _constitution_snapshot_block_notice(str(_why))
-                return False
-        own_quarantine = bool(globals().get('DATA_CONSTITUTION_QUARANTINE', False))
-        if own_quarantine:
-            recover_fn = globals().get('constitution_try_auto_clear_quarantine')
-            recovered = bool(recover_fn()) if callable(recover_fn) else False
-            if not recovered:
-                _constitution_snapshot_block_notice(globals().get('DATA_CONSTITUTION_REASON', '') or RESTORE_GUARD_REASON or 'quarantine')
-                return False
-        if RESTORE_GUARD_ACTIVE:
-            _constitution_snapshot_block_notice(RESTORE_GUARD_REASON)
-            return False
-        if globals().get('constitution_quarantine_active') and constitution_quarantine_active():
-            _constitution_snapshot_block_notice(globals().get('DATA_CONSTITUTION_REASON', '') or 'quarantine')
-            return False
-    with MEGA_GLOBAL_BACKUP_LOCK:
-        workdir = tempfile.mkdtemp(prefix='lowram_db_snapshot_')
-        try:
-            with _delta_state_lock:
-                capture_generation = int(_delta_generation)
-            raw = os.path.join(workdir, 'bot_state.sqlite3')
-            gz = os.path.join(workdir, f"candidate_bot_state_{now_local().strftime('%Y%m%d_%H%M%S_%f')}.sqlite3.gz")
-            # R48: flush/snapshot own their locks; never hold data_lock through SQLite backup.
-            _lowram_flush_all_hot(evict=False)
-            created_at = now_local().isoformat(timespec='seconds')
-            legacy_mirror_enabled = bool(_env_bool('MEGA_LEGACY_DB_MIRROR_ENABLED', '0'))
-            SQLITE.set_meta('db_snapshot', 'main', {'created_at': created_at, 'bot_version': VERSION, 'schema': 3, 'data_constitution': 2, 'fast_boot_mirror': int(legacy_mirror_enabled)})
-            try:
-                semantic_fn = globals().get('constitution_semantic_manifest_from_live')
-                if callable(semantic_fn):
-                    embedded = semantic_fn() or {}
-                    embedded['snapshot_created_at'] = created_at
-                    SQLITE.set_meta('data_constitution_snapshot', 'main', embedded)
-            except Exception as _embed_exc:
-                log_error(f'[DATA CONSTITUTION EMBED] {_embed_exc}')
-            SQLITE.backup_to(raw)
-            _lowram_gzip_file(raw, gz)
-            preflight = globals().get('config_guard_snapshot_preflight_v234')
-            if callable(preflight):
-                cfg_ok, cfg_detail = preflight(raw)
-                if not cfg_ok:
-                    raise RuntimeError('transient config snapshot mismatch: ' + str(cfg_detail))
-            publish = globals().get('constitution_publish_sqlite_generation')
-            if not callable(publish):
-                raise RuntimeError('DATA CONSTITUTION publisher unavailable')
-            manifest = publish(raw, gz, created_at)
-            initialize_delta_baseline(data)
-            global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
-            with _delta_state_lock:
-                newer = int(_delta_generation) > int(capture_generation)
-                _global_snapshot_pending = bool(newer)
-                _global_snapshot_last_success_monotonic = time.monotonic()
-                _global_snapshot_last_success_at = created_at
-            DELAYED_SCHEDULER.cancel('mega-global-max-v90')
-            DELAYED_SCHEDULER.cancel('mega-global-quiet-v90')
-            if newer:
-                _mark_global_snapshot_pending()
-            try:
-                history = lowram_database_remote_dir().rstrip('/') + '/history'
-                _mega_prune_remote_history(history, 'bot_state_*.sqlite3.gz', max(12, int(LOWRAM_DB_HISTORY_KEEP)))
-            except Exception:
-                pass
-            try:
-                _prune_delta_files_after_full_snapshot()
-            except Exception:
-                pass
-            with _LOWRAM_LOCK:
-                _LOWRAM_STATS['db_snapshots'] += 1
-                _LOWRAM_STATS['last_snapshot_at'] = created_at
-            log_info(f"[DATA CONSTITUTION SNAPSHOT] active={manifest.get('generation')} records={manifest.get('total_records')} bytes={os.path.getsize(gz)}")
-            return True
-        except Exception as e:
-            with _LOWRAM_LOCK:
-                _LOWRAM_STATS['db_snapshot_errors'] += 1
-                _LOWRAM_STATS['last_error'] = str(e)[:300]
-            if str(e).startswith('transient snapshot mismatch:'):
-                try:
-                    runtime_event('data_constitution_snapshot_retry', str(e)[:700], 'WARN')
-                except Exception:
-                    pass
-                log_info(f'[DATA CONSTITUTION SNAPSHOT RETRY] {e}')
-            else:
-                log_error(f'[MEGA DB SNAPSHOT ERROR] {e}')
-            return False
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-            try:
-                import gc
-                gc.collect()
-            except Exception:
-                pass
-
-def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud(force: bool=False) -> tuple[bool, str]:
-    """Restore canonical generation first; fallback to legacy latest mirror.
-
-    v241: ``force=True`` is reserved for an explicit owner recovery command.  It
-    bypasses only the same-instance "local is newer" shortcut; checksum, SQLite
-    integrity and Data Constitution validation remain mandatory.
-    """
-    global _LOWRAM_DB_RESTORED_THIS_BOOT, _LOWRAM_DB_RESTORE_DETAIL
-    if not (LOWRAM_ENABLED and mega_is_configured()):
-        return (False, 'LOWRAM/MEGA unavailable')
-    workdir = tempfile.mkdtemp(prefix='lowram_db_restore_')
-    try:
-        mega_login_if_needed()
-        try:
-            mega_ensure_remote_dir()
-        except Exception:
-            pass
-        gz = None
-        active_manifest = None
-        source = ''
-        resolver = globals().get('constitution_download_best_boot_generation_v235') or globals().get('constitution_download_active_generation')
-        if callable(resolver):
-            try:
-                gz, active_manifest, source = resolver(workdir)
-            except Exception as exc:
-                log_error(f'[DATA CONSTITUTION RESTORE] generation resolver: {exc}')
-        if not gz:
-            remote = lowram_database_remote_latest()
-            res = _mega_run('mega-get', [remote, workdir], check=False, timeout=MEGA_TIMEOUT)
-            if res.returncode == 0:
-                candidates = list(Path(workdir).rglob(LOWRAM_DB_LATEST_NAME))
-                if candidates:
-                    gz = str(candidates[0])
-                    source = 'legacy protected latest mirror'
-        if not gz:
-            return (False, 'MEGA SQLite snapshot/generation not found yet')
-        raw = os.path.join(workdir, 'restored.sqlite3')
-        _lowram_gunzip_file(gz, raw)
-        test = sqlite3.connect(raw)
-        remote_created = ''
-        try:
-            row = test.execute('PRAGMA quick_check').fetchone()
-            if not row or str(row[0]).lower() != 'ok':
-                raise RuntimeError(f'SQLite quick_check failed: {row}')
-            try:
-                mrow = test.execute("SELECT v FROM meta WHERE kind='db_snapshot' AND k='main'").fetchone()
-                if mrow:
-                    remote_created = str((json.loads(mrow[0]) or {}).get('created_at') or '')
-            except Exception:
-                remote_created = ''
-            embedded_manifest = {}
-            try:
-                erow = test.execute("SELECT v FROM meta WHERE kind='data_constitution_snapshot' AND k='main'").fetchone()
-                embedded_manifest = json.loads(erow[0]) if erow and erow[0] else {}
-                if not isinstance(embedded_manifest, dict):
-                    embedded_manifest = {}
-            except Exception:
-                embedded_manifest = {}
-        finally:
-            test.close()
-        if active_manifest and str(active_manifest.get('sqlite_sha256') or ''):
-            with open(raw, 'rb') as _fh:
-                _actual_sha = hashlib.sha256(_fh.read()).hexdigest()
-            if _actual_sha != str(active_manifest.get('sqlite_sha256') or ''):
-                raise RuntimeError(f"active generation checksum mismatch: {_actual_sha[:12]} != {str(active_manifest.get('sqlite_sha256') or '')[:12]}")
-        semantic_fn = globals().get('constitution_semantic_manifest_from_sqlite')
-        if callable(semantic_fn):
-            semantic = semantic_fn(raw)
-            if embedded_manifest:
-                if int(semantic.get('total_records') or 0) != int(embedded_manifest.get('total_records') or 0):
-                    raise RuntimeError(f"embedded semantic mismatch: records {semantic.get('total_records')} != {embedded_manifest.get('total_records')}")
-                for _cid, _old in (embedded_manifest.get('chats') or {}).items():
-                    _new = (semantic.get('chats') or {}).get(str(_cid)) or {}
-                    if int((_new or {}).get('record_count') or 0) != int((_old or {}).get('record_count') or 0):
-                        raise RuntimeError(f"embedded semantic mismatch chat {_cid}: {(_new or {}).get('record_count')} != {(_old or {}).get('record_count')}")
-                if int(semantic.get('integrity_seq') or 0) != int(embedded_manifest.get('integrity_seq') or 0):
-                    raise RuntimeError(f"embedded integrity mismatch: {semantic.get('integrity_seq')} != {embedded_manifest.get('integrity_seq')}")
-            if active_manifest:
-                if int(semantic.get('total_records') or 0) != int(active_manifest.get('total_records') or 0):
-                    raise RuntimeError(f"active generation semantic mismatch: records {semantic.get('total_records')} != manifest {active_manifest.get('total_records')}")
-                for cid, old in (active_manifest.get('chats') or {}).items():
-                    got = (semantic.get('chats') or {}).get(str(cid)) or {}
-                    if int(got.get('record_count') or 0) != int((old or {}).get('record_count') or 0):
-                        raise RuntimeError(f"active generation semantic mismatch chat={cid}: {got.get('record_count')} != {(old or {}).get('record_count')}")
-        local_root = SQLITE.load_root() or {}
-        local_saved = str((local_root.get('_state_meta') or {}).get('last_saved_at') or '') if isinstance(local_root, dict) else ''
-        local_has_state = bool(SQLITE.load_chats()) or SQLITE.cold_count() > 0
-        if not force and local_has_state and (_parse_iso_timestamp(local_saved) > _parse_iso_timestamp(remote_created) + 1):
-            _LOWRAM_DB_RESTORED_THIS_BOOT = True
-            _LOWRAM_DB_RESTORE_DETAIL = f"kept fresher local ({local_saved}) over cloud ({remote_created or 'unknown'})"
-            with _LOWRAM_LOCK:
-                _LOWRAM_STATS['last_restore_at'] = now_local().isoformat(timespec='seconds')
-            log_info(f'[MEGA DB RESTORE] {_LOWRAM_DB_RESTORE_DETAIL}')
-            return (True, _LOWRAM_DB_RESTORE_DETAIL)
-        SQLITE.replace_database(raw)
-        if active_manifest:
-            try:
-                SQLITE.set_meta('boot_restore_binding_v240', 'selected', {'generation': str(active_manifest.get('generation') or ''), 'storage_lineage_v239': str(active_manifest.get('storage_lineage_v239') or ''), 'config_generation_v240': int(active_manifest.get('config_generation_v240') or 0), 'config_hash_v240': str(active_manifest.get('config_hash_v240') or ''), 'config_lineage_v240': str(active_manifest.get('config_lineage_v240') or active_manifest.get('storage_lineage_v239') or '')})
-            except Exception:
-                pass
-        meta = SQLITE.get_meta('db_snapshot', 'main', {}) or {}
-        _LOWRAM_DB_RESTORED_THIS_BOOT = True
-        _LOWRAM_DB_RESTORE_DETAIL = str(meta.get('created_at') or remote_created or 'unknown')
-        with _LOWRAM_LOCK:
-            _LOWRAM_STATS['db_restores'] += 1
-            _LOWRAM_STATS['last_restore_at'] = now_local().isoformat(timespec='seconds')
-        log_info(f'[DATA CONSTITUTION RESTORE] restored {source}; created_at={_LOWRAM_DB_RESTORE_DETAIL}')
-        return (True, f'{source}: SQLite snapshot {_LOWRAM_DB_RESTORE_DETAIL}')
-    except Exception as e:
-        with _LOWRAM_LOCK:
-            _LOWRAM_STATS['last_error'] = str(e)[:300]
-        try:
-            if 'constitution_set_quarantine' in globals():
-                constitution_set_quarantine(f'restore failed: {e}')
-        except Exception:
-            pass
-        log_error(f'[MEGA DB RESTORE ERROR] {e}')
-        return (False, str(e)[:300])
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+# [OCH12.35 OWNER] _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud -> 17_integration_mega.py
+_owner_install('mega', 'mega:0080')
 try:
     _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud.__name__ = 'mega_restore_sqlite_snapshot_from_cloud'
 except Exception:
@@ -15932,73 +12619,8 @@ def _canon_lowram_apply_deltas_after_db_snapshot__001() -> int:
         log_info(f'[MEGA DB RESTORE] applied {applied} compact deltas after SQLite snapshot in {time.monotonic() - started:.1f}s')
     return applied
 
-def mega_upload_latest_global_backup(force: bool=False) -> bool:
-    """v114: automatic full snapshot is the SQLite working DB; legacy global JSON is optional."""
-    if LOWRAM_ENABLED and (not LOWRAM_LEGACY_GLOBAL_JSON):
-        return mega_upload_latest_database_backup(force=force)
-    if not mega_is_configured():
-        return False
-    if RESTORE_GUARD_ACTIVE and (not force):
-        log_error(f'[MEGA BACKUP BLOCKED BY RESTORE GUARD] {RESTORE_GUARD_REASON}')
-        return False
-    with MEGA_GLOBAL_BACKUP_LOCK:
-        candidate_path = None
-        try:
-            with _delta_state_lock:
-                snapshot_capture_generation = int(_delta_generation)
-            os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-            stamp = now_local().strftime('%Y%m%d_%H%M%S_%f')
-            candidate_name = f'candidate_global_{stamp}.json'
-            candidate_path = os.path.join(MEGA_LOCAL_TMP_DIR, candidate_name)
-            save_global_backup_snapshot(candidate_path)
-            candidate_payload = _load_json(candidate_path, {}) or {}
-            candidate_stats = _global_payload_stats(candidate_payload, candidate_path)
-            current_path = mega_download_latest_global_backup()
-            current_payload = _load_json(current_path, {}) if current_path else {}
-            current_stats = _global_payload_stats(current_payload, current_path) if _global_payload_is_structurally_valid(current_payload) else None
-            rejection = '' if force else _global_candidate_rejection(candidate_stats, current_stats)
-            if rejection:
-                _set_restore_guard('dangerous MEGA overwrite prevented: ' + rejection)
-                log_error(f'[MEGA GLOBAL REJECTED] candidate={candidate_stats} current={current_stats}')
-                return False
-            mega_ensure_remote_path(MEGA_BACKUP_DIR)
-            mega_ensure_remote_path(mega_history_remote_dir())
-            _mega_run('mega-put', [candidate_path, MEGA_BACKUP_DIR], check=True, timeout=MEGA_TIMEOUT)
-            remote_candidate = MEGA_BACKUP_DIR.rstrip('/') + '/' + candidate_name
-            remote_latest = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
-            archive_name = None
-            if current_path and current_stats:
-                old_stamp = re.sub('[^0-9]', '', current_stats.get('created_at', ''))[:14] or stamp
-                archive_name = f"global_{old_stamp}_{current_stats.get('record_count', 0)}r_{stamp}.json"
-            if not _mega_promote_remote_candidate(remote_candidate, remote_latest, history_dir=mega_history_remote_dir() if archive_name else None, archive_name=archive_name):
-                raise RuntimeError('cannot activate latest_global.json in MEGA')
-            initialize_delta_baseline(candidate_payload)
-            global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
-            with _delta_state_lock:
-                newer_changes_exist = int(_delta_generation) > int(snapshot_capture_generation)
-                _global_snapshot_pending = bool(newer_changes_exist)
-                _global_snapshot_last_success_monotonic = time.monotonic()
-                _global_snapshot_last_success_at = now_local().isoformat(timespec='seconds')
-            DELAYED_SCHEDULER.cancel('mega-global-max-v90')
-            DELAYED_SCHEDULER.cancel('mega-global-quiet-v90')
-            if newer_changes_exist:
-                _mark_global_snapshot_pending()
-            try:
-                _mega_prune_remote_history(mega_history_remote_dir(), 'global_*.json', MEGA_GLOBAL_HISTORY_KEEP)
-                _prune_delta_files_after_full_snapshot()
-            except Exception:
-                pass
-            log_info(f'[MEGA] guarded latest uploaded: {remote_latest}; stats={candidate_stats}')
-            return True
-        except Exception as e:
-            log_error(f'[MEGA BACKUP ERROR] {e}')
-            return False
-        finally:
-            try:
-                import gc
-                gc.collect()
-            except Exception:
-                pass
+# [OCH12.35 OWNER] mega_upload_latest_global_backup -> 17_integration_mega.py
+_owner_install('mega', 'mega:0081')
 
 def is_data_effectively_empty_for_restore(d: dict) -> bool:
     """True, если база похожа на пустую после нового deploy/restart Render."""
@@ -16064,171 +12686,27 @@ def _local_restore_stats(d: dict) -> dict:
         recs = sec = None
     return {'chat_count': len(chats), 'nonempty_chats': nonempty, 'record_count': records, 'secret_count': secrets, 'forward_rules_count': sum((len(v or {}) for v in ((d or {}).get('forward_rules', {}) or {}).values())), 'forward_index_count': len((d or {}).get('forward_index', {}) or {}), 'last_saved_at': str(((d or {}).get('_state_meta') or {}).get('last_saved_at') or '')}
 
-def _mega_discover_global_candidates(limit: int=60) -> list[str]:
-    """Ищет полноценные global JSON во всём каталоге MEGA, а не только exact latest/history.
+# [OCH12.35 OWNER] _mega_discover_global_candidates -> 17_integration_mega.py
+_owner_install('mega', 'mega:0082')
 
-    Это восстанавливает ситуацию, когда latest_global.json был временно перемещён в history,
-    остался candidate_global_*.json после прерванной ротации или файл лежит глубже в каталоге.
-    """
-    if not mega_is_configured() or shutil.which('mega-find') is None:
-        return []
-    rows = []
-    try:
-        mega_login_if_needed()
-        for pattern in (MEGA_LATEST_GLOBAL_NAME, 'global_*.json', 'candidate_global_*.json', '*global*.json'):
-            res = _mega_run('mega-find', [MEGA_BACKUP_DIR, f'--pattern={pattern}', '--type=f'], check=False, timeout=90)
-            rows.extend((x.strip() for x in (res.stdout or '').splitlines() if x.strip().lower().endswith('.json')))
-    except Exception as e:
-        log_error(f'_mega_discover_global_candidates: {e}')
-    latest_path = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
-    uniq = []
-    seen = set()
-    for path in [latest_path] + sorted(set(rows), reverse=True):
-        if path and path not in seen:
-            seen.add(path)
-            uniq.append(path)
-    return uniq[:max(1, int(limit))]
+# [OCH12.35 OWNER] _mega_select_best_global_candidate -> 17_integration_mega.py
+_owner_install('mega', 'mega:0083')
 
-def _mega_select_best_global_candidate(limit: int=60) -> tuple[str | None, dict, str]:
-    """Скачивает доступные global snapshots и выбирает лучший валидный полный снимок."""
-    best_path = None
-    best_stats = {}
-    best_label = ''
-    candidates = _mega_discover_global_candidates(limit=limit)
-    direct_latest = mega_download_latest_global_backup()
-    local_candidates = []
-    if direct_latest:
-        local_candidates.append(('latest', direct_latest))
-    for remote_path in candidates:
-        if remote_path == mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME) and direct_latest:
-            continue
-        local_candidates.append((remote_path, None))
-    for label, local_path in local_candidates:
-        try:
-            if local_path is None:
-                local_path = _mega_download_remote_path(label)
-            if not local_path:
-                continue
-            payload = _load_json(local_path, {}) or {}
-            if not _global_payload_is_structurally_valid(payload):
-                log_error(f'[MEGA RESTORE] invalid global candidate: {label}')
-                continue
-            stats = _global_payload_stats(payload, local_path)
-            if stats.get('record_count', 0) == 0 and (not ALLOW_EMPTY_MEGA_RESTORE):
-                continue
-            score = (_parse_iso_timestamp(stats.get('created_at')), int(stats.get('record_count', 0) or 0), int(stats.get('chat_count', 0) or 0), int(stats.get('size_bytes', 0) or 0))
-            best_score = (_parse_iso_timestamp(best_stats.get('created_at')), int(best_stats.get('record_count', 0) or 0), int(best_stats.get('chat_count', 0) or 0), int(best_stats.get('size_bytes', 0) or 0)) if best_stats else (-1, -1, -1, -1)
-            if score > best_score:
-                best_path, best_stats, best_label = (local_path, stats, label)
-        except Exception as e:
-            log_error(f'[MEGA RESTORE] candidate scan error {label}: {e}')
-    return (best_path, best_stats, best_label)
+# [OCH12.35 OWNER] _mega_select_best_global_candidate_with_retry -> 17_integration_mega.py
+_owner_install('mega', 'mega:0084')
 
-def _mega_select_best_global_candidate_with_retry(limit: int=80) -> tuple[str | None, dict, str]:
-    """Повторяет поиск full snapshot после холодного deploy, прежде чем включать guard."""
-    last = (None, {}, '')
-    for attempt in range(1, int(MEGA_RESTORE_DISCOVERY_RETRIES) + 1):
-        try:
-            last = _mega_select_best_global_candidate(limit=limit)
-            if last[0]:
-                if attempt > 1:
-                    log_info(f'[MEGA RESTORE] global snapshot found on retry {attempt}: {last[2]}')
-                return last
-        except Exception as e:
-            log_error(f'[MEGA RESTORE] discovery attempt {attempt}/{MEGA_RESTORE_DISCOVERY_RETRIES}: {e}')
-        if attempt < int(MEGA_RESTORE_DISCOVERY_RETRIES):
-            delay = float(MEGA_RESTORE_DISCOVERY_RETRY_SECONDS) * attempt
-            log_info(f'[MEGA RESTORE] snapshot not available yet; retry in {delay:g}s ({attempt}/{MEGA_RESTORE_DISCOVERY_RETRIES})')
-            time.sleep(delay)
-    return last
-
-def _v177_legacy_0086_mega_restore_full_from_cloud(force: bool=False) -> tuple[bool, str]:
-    """Полное восстановление из лучшего global snapshot + всех последующих delta.
-
-    Восстанавливает весь state целиком: chats, records, settings, owners, forwarding,
-    forward_index, secret_messages и прочие поля универсального backup.
-    """
-    global data
-    if not mega_is_configured():
-        return (False, 'MEGA не настроена')
-    local_empty = is_data_effectively_empty_for_restore(data)
-    local_stats = _local_restore_stats(data)
-    base_path, base_stats, label = _mega_select_best_global_candidate_with_retry(limit=80)
-    if not base_path:
-        if local_empty:
-            _set_restore_guard('local database is empty; no valid full global snapshot found in MEGA')
-        return (False, 'В MEGA не найден валидный полный global JSON')
-    try:
-        merged_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(base_path)
-        remote_payload = _load_json(merged_path, {}) or {}
-        if not _global_payload_is_structurally_valid(remote_payload):
-            return (False, 'Найденный global JSON повреждён после объединения delta')
-        remote_stats = _global_payload_stats(remote_payload, merged_path)
-        remote_stats['applied_deltas'] = applied_delta_count
-        remote_created = str(remote_stats.get('created_at') or '')
-        local_saved = str(local_stats.get('last_saved_at') or '')
-        remote_newer = _parse_iso_timestamp(remote_created) > _parse_iso_timestamp(local_saved) + 1
-        materially_richer = int(remote_stats.get('record_count', 0) or 0) > int(local_stats.get('record_count', 0) or 0) or int(remote_stats.get('chat_count', 0) or 0) > int(local_stats.get('chat_count', 0) or 0)
-        local_suspicious = local_empty or (int(local_stats.get('record_count', 0) or 0) == 0 and int(remote_stats.get('record_count', 0) or 0) > 0) or (int(local_stats.get('chat_count', 0) or 0) <= 1 and int(remote_stats.get('chat_count', 0) or 0) > 1)
-        if not force and (not (local_suspicious or remote_newer or materially_richer)):
-            _clear_restore_guard()
-            return (False, f'Локальная база не хуже MEGA; восстановление не требуется. local={local_stats}, mega={remote_stats}')
-        restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
-        restore_from_json(restore_chat_id, merged_path)
-        _restore_runtime_state_from_data(data)
-        initialize_delta_baseline(data)
-        _clear_restore_guard()
-        msg = f"Полное восстановление OK из {label or 'MEGA'}: чатов={remote_stats.get('chat_count', 0)}, записей={remote_stats.get('record_count', 0)}, delta={applied_delta_count}"
-        log_info('[MEGA RESTORE FULL] ' + msg)
-        return (True, msg)
-    except Exception as e:
-        log_error(f'[MEGA RESTORE FULL ERROR] {e}')
-        if local_empty:
-            _set_restore_guard('MEGA full restore failed: ' + str(e)[:500])
-        return (False, 'Ошибка полного восстановления: ' + str(e)[:500])
+# [OCH12.35 OWNER] _v177_legacy_0086_mega_restore_full_from_cloud -> 17_integration_mega.py
+_owner_install('mega', 'mega:0085')
 try:
     _v177_legacy_0086_mega_restore_full_from_cloud.__name__ = 'mega_restore_full_from_cloud'
 except Exception:
     pass
 
-def mega_autorestore_if_needed() -> bool:
-    """Надёжное авто-восстановление: всегда проверяет MEGA и умеет восстановить частичную/старую SQLite."""
-    global data
-    if not MEGA_AUTORESTORE or not mega_is_configured():
-        if is_data_effectively_empty_for_restore(data):
-            _set_restore_guard('local database is empty and MEGA autorestore is unavailable')
-        return False
-    ok, detail = mega_restore_full_from_cloud(force=False)
-    log_info(f'[MEGA AUTORESTORE] ok={ok}; {detail}')
-    return bool(ok)
+# [OCH12.35 OWNER] mega_autorestore_if_needed -> 17_integration_mega.py
+_owner_install('mega', 'mega:0086')
 
-def mega_status_text() -> str:
-    lines = ['☁️ MEGA.nz / MEGAcmd']
-    lines.append(f"MEGA_ENABLED: {('✅ ВКЛ' if MEGA_ENABLED else '⬜ ВЫКЛ')}")
-    lines.append(f"MEGA_AUTORESTORE: {('✅ ВКЛ' if MEGA_AUTORESTORE else '⬜ ВЫКЛ')}")
-    lines.append(f"RESTORE_GUARD: {('✅ ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else '⬜ ВЫКЛ')}")
-    lines.append(f'MEGA_HISTORY_DIR: {mega_history_remote_dir()}')
-    lines.append(f'MEGA_DELTA_DIR: {mega_delta_remote_root()}')
-    lines.append(f'Delta delay: {(MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS):g} сек')
-    lines.append(f'SQLite SYSTEM generation: каждые {system_snapshot_hours_v242()} ч. при изменениях; /restore и ручной backup — сразу.')
-    lines.append(f"MEGA_EMAIL: {('есть' if MEGA_EMAIL else 'нет')}")
-    lines.append(f'MEGA_BACKUP_DIR: {MEGA_BACKUP_DIR}')
-    lines.append(f'MEGA_CHAT_BACKUP_DIR: {MEGA_CHAT_BACKUP_DIR}')
-    lines.append(f'MEGA_MONTHLY_BACKUP_DIR: {MEGA_MONTHLY_BACKUP_DIR}')
-    missing = mega_missing_commands()
-    lines.append(f"MEGAcmd: {('OK' if not missing else 'нет команд: ' + ', '.join(missing))}")
-    if mega_is_configured() and (not missing):
-        try:
-            mega_login_if_needed()
-            res = _mega_run('mega-whoami', [], check=False, timeout=30)
-            txt = ((res.stdout or '') + (res.stderr or '')).strip()
-            if txt:
-                lines.append('whoami: ' + txt[:300])
-            else:
-                lines.append('whoami: OK')
-        except Exception as e:
-            lines.append('whoami/login: ERROR — ' + str(e)[:300])
-    return '\n'.join(lines)
+# [OCH12.35 OWNER] mega_status_text -> 17_integration_mega.py
+_owner_install('mega', 'mega:0087')
 
 def _load_csv_meta():
     try:
@@ -16525,67 +13003,8 @@ except Exception:
     pass
 
 
-def save_data(d, chat_ids=None, full: bool=False, root_only: bool=False):
-    """R48 persistence: snapshot under short RAM locks; SQLite only after unlock."""
-    ids = set()
-    with data_lock:
-        d.setdefault('_state_meta', {})['last_saved_at'] = now_local().isoformat(timespec='seconds')
-        d['_state_meta']['bot_version'] = VERSION
-        d['finance_active_chats'] = {str(cid): True for cid in list(finance_active_chats)}
-        d['backup_flags'] = {'drive': bool(backup_flags.get('drive', True)), 'channel': bool(backup_flags.get('channel', True))}
-        try:
-            _persist_forward_index_in_data(d)
-        except Exception as e:
-            log_error(f'save_data forward_index: {e}')
-        root_payload = copy.deepcopy(_sqlite_pack_root(d))
-        if chat_ids is not None:
-            source_ids = chat_ids if isinstance(chat_ids, (list, tuple, set)) else [chat_ids]
-            for cid in source_ids:
-                try: ids.add(int(cid))
-                except Exception: pass
-        elif not full:
-            cid = current_state_chat_id()
-            if cid is not None:
-                try: ids.add(int(cid))
-                except Exception: pass
-        all_chat_ids = []
-        if full or not ids:
-            for cid_s in list((d.get('chats', {}) or {}).keys()):
-                try: all_chat_ids.append(int(cid_s))
-                except Exception: pass
-    SQLITE.save_root(root_payload)
-    if root_only:
-        return
-    target_ids = sorted(ids if (ids and not full) else set(all_chat_ids))
-    bundles=[]
-    for cid in target_ids:
-        try:
-            with locked_chat(cid):
-                store = ((d.get('chats', {}) or {}).get(str(cid)))
-                if not isinstance(store, dict):
-                    continue
-                if LOWRAM_ENABLED:
-                    meta, cold = _lowram_flush_chat(cid, store, evict=False)
-                else:
-                    meta, cold = copy.deepcopy(dict(store)), {}
-                bundles.append((cid, meta, cold))
-        except Exception as exc:
-            log_error(f'save_data snapshot chat={cid}: {exc}')
-            if ids and not full:
-                raise
-    total=0
-    for cid, meta, cold in bundles:
-        total += int(SQLITE.save_chat_bundle(cid, meta, cold) or 0)
-    if total:
-        with _LOWRAM_LOCK:
-            _LOWRAM_STATS['cold_saves'] += total
-    try:
-        fn = globals().get('config_guard_note_after_save_v234')
-        if callable(fn):
-            fn('save_data')
-    except Exception as exc:
-        try: log_error(f'config guard save hook v234: {exc}')
-        except Exception: pass
+# [OCH12.35 COMPAT] legacy save_data -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0005')
 
 
 def chat_json_file(chat_id: int) -> str:
@@ -16594,8 +13013,8 @@ def chat_json_file(chat_id: int) -> str:
 def chat_csv_file(chat_id: int) -> str:
     return f'data_{chat_id}.csv'
 
-def chat_xlsx_file(chat_id: int) -> str:
-    return f'data_{chat_id}.xlsx'
+# [OCH12.35 OWNER] chat_xlsx_file -> 16_integration_excel.py
+_owner_install('excel', 'excel:0021')
 
 def chat_meta_file(chat_id: int) -> str:
     return f'csv_meta_{chat_id}.json'
@@ -16712,256 +13131,47 @@ def normalize_known_chats_for_owner(*, persist: bool=True) -> int:
         log_error(f'normalize_known_chats_for_owner: {e}')
         return 0
 
-def _v177_legacy_0088_collect_forward_menu_chats() -> dict:
-    """
-    Собирает список чатов для меню пересылки:
-    1) из known_chats владельца
-    2) из data["chats"] как резерв
-    """
-    result = {}
-    if OWNER_ID:
-        try:
-            owner_store = get_chat_store(int(OWNER_ID))
-            known = owner_store.get('known_chats', {}) or {}
-            for cid, info in known.items():
-                result[str(cid)] = {'title': info.get('title') or f'Чат {cid}', 'username': info.get('username'), 'type': info.get('type')}
-        except Exception as e:
-            log_error(f'collect_forward_menu_chats known_chats: {e}')
-    try:
-        for cid, store in (data.get('chats', {}) or {}).items():
-            if OWNER_ID and str(cid) == str(OWNER_ID):
-                continue
-            info = store.get('info', {}) or {}
-            prev = result.get(str(cid), {})
-            result[str(cid)] = {'title': info.get('title') or prev.get('title') or f'Чат {cid}', 'username': info.get('username') or prev.get('username'), 'type': info.get('type') or prev.get('type')}
-    except Exception as e:
-        log_error(f'collect_forward_menu_chats data.chats: {e}')
-    deduped = {}
-    seen = set()
-    for cid, info in sorted(result.items(), key=lambda kv: (str((kv[1] or {}).get('title') or '').lower(), str(kv[0]))):
-        try:
-            key = _chat_identity_key(int(cid), info if isinstance(info, dict) else {})
-        except Exception:
-            key = 'id:' + str(cid)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped[str(cid)] = info
-    return deduped
+# [OCH12.35 OWNER] _v177_legacy_0088_collect_forward_menu_chats -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0034')
 try:
     _v177_legacy_0088_collect_forward_menu_chats.__name__ = 'collect_forward_menu_chats'
 except Exception:
     pass
 
-def _xlsx_col_name(n: int) -> str:
-    """1 -> A, 27 -> AA."""
-    out = ''
-    n = int(n)
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        out = chr(65 + rem) + out
-    return out or 'A'
+# [OCH12.35 OWNER] _xlsx_col_name -> 16_integration_excel.py
+_owner_install('excel', 'excel:0022')
 
-def _xlsx_xml_escape(value) -> str:
-    text = '' if value is None else str(value)
-    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+# [OCH12.35 OWNER] _xlsx_xml_escape -> 16_integration_excel.py
+_owner_install('excel', 'excel:0023')
 
-def _xlsx_cell_xml(row_idx: int, col_idx: int, value, style: int | None=None) -> str:
-    ref = f'{_xlsx_col_name(col_idx)}{row_idx}'
-    s_attr = f' s="{int(style)}"' if style is not None else ''
-    if isinstance(value, dict) and value.get('formula'):
-        formula = _xlsx_xml_escape(str(value.get('formula') or '').lstrip('='))
-        cached = value.get('value', 0)
-        try:
-            cached = float(cached)
-            if cached.is_integer():
-                cached = int(cached)
-        except Exception:
-            cached = 0
-        return f'<c r="{ref}"{s_attr}><f>{formula}</f><v>{cached}</v></c>'
-    if isinstance(value, (int, float)) and (not isinstance(value, bool)):
-        return f'<c r="{ref}"{s_attr}><v>{value}</v></c>'
-    return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(value)}</t></is></c>'
+# [OCH12.35 OWNER] _xlsx_cell_xml -> 16_integration_excel.py
+_owner_install('excel', 'excel:0024')
 
-def _v177_legacy_0089_write_simple_xlsx(path: str, rows: list[list], sheet_name: str='Данные') -> None:
-    """Минимальный XLSX; sheet XML пишется потоково во временный файл."""
-    rows = rows or [['date', 'amount', 'note']]
-    workbook_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n<sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>\n<calcPr calcId="191029" fullCalcOnLoad="1" forceFullCalc="1"/>\n</workbook>'
-    rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>\n</Relationships>'
-    workbook_rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>\n<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>\n</Relationships>'
-    content_types_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n<Default Extension="xml" ContentType="application/xml"/>\n<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>\n<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>\n</Types>'
-    styles_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\n<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>\n<fills count="1"><fill><patternFill patternType="none"/></fill></fills>\n<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>\n<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>\n<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>\n<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>\n</styleSheet>'
-    sheet_tmp = None
-    try:
-        fd, sheet_tmp = tempfile.mkstemp(prefix='xlsx_sheet_', suffix='.xml', dir=MEGA_LOCAL_TMP_DIR if os.path.isdir(MEGA_LOCAL_TMP_DIR) else None)
-        os.close(fd)
-        with open(sheet_tmp, 'w', encoding='utf-8', newline='') as sheet:
-            sheet.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n')
-            sheet.write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n')
-            sheet.write('<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>\n')
-            sheet.write('<cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="42" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="10" width="18" customWidth="1"/></cols>\n<sheetData>')
-            for r_idx, row in enumerate(rows, start=1):
-                sheet.write(f'<row r="{r_idx}">')
-                for c_idx, value in enumerate(row, start=1):
-                    sheet.write(_xlsx_cell_xml(r_idx, c_idx, value, style=1 if r_idx == 1 else None))
-                sheet.write('</row>')
-            sheet.write('</sheetData>\n</worksheet>')
-        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-            z.writestr('[Content_Types].xml', content_types_xml)
-            z.writestr('_rels/.rels', rels_xml)
-            z.writestr('xl/workbook.xml', workbook_xml)
-            z.writestr('xl/_rels/workbook.xml.rels', workbook_rels_xml)
-            z.write(sheet_tmp, 'xl/worksheets/sheet1.xml')
-            z.writestr('xl/styles.xml', styles_xml)
-    finally:
-        try:
-            if sheet_tmp and os.path.exists(sheet_tmp):
-                os.remove(sheet_tmp)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _v177_legacy_0089_write_simple_xlsx -> 16_integration_excel.py
+_owner_install('excel', 'excel:0025')
 try:
     _v177_legacy_0089_write_simple_xlsx.__name__ = '_write_simple_xlsx'
 except Exception:
     pass
 
-def _xlsx_income_expense_values(amount):
-    """Возвращает (приход, расход) для Excel: сумма разбита по двум колонкам."""
-    try:
-        v = float(amount or 0)
-    except Exception:
-        v = 0.0
-    if v >= 0:
-        income = int(v) if float(v).is_integer() else v
-        return (income, '')
-    expense = abs(v)
-    expense = int(expense) if float(expense).is_integer() else expense
-    return ('', expense)
+# [OCH12.35 OWNER] _xlsx_income_expense_values -> 16_integration_excel.py
+_owner_install('excel', 'excel:0026')
 
-def _xlsx_record_row(date_value, amount, note):
-    income, expense = _xlsx_income_expense_values(amount)
-    return [date_value, note or '', income, expense]
+# [OCH12.35 OWNER] _xlsx_record_row -> 16_integration_excel.py
+_owner_install('excel', 'excel:0027')
 
-def _opening_balance_before_exact(store: dict, start_day: str, start_rid: int | None=0) -> float:
-    """One opening-balance bridge for every legacy Excel/table caller.
+# [OCH12.35 OWNER] _opening_balance_before_exact -> 11_business_finance.py
+_owner_install('finance', 'finance:0044')
 
-    After 73_state_export_runtime is loaded this resolves the canonical ARS/USD
-    projection; before that it keeps the old lossless bootstrap behaviour.
-    """
-    cid_resolver = globals().get('_excel_chat_id_for_store')
-    canonical = globals().get('_excel_canonical_opening_balance')
-    if callable(cid_resolver) and callable(canonical):
-        try:
-            cid = cid_resolver(store)
-            if cid is not None:
-                try:
-                    currency = 'usd' if financial_view_is_usd(store) else 'ars'
-                except Exception:
-                    currency = 'ars'
-                return float(canonical(int(cid), currency, str(start_day or '')[:10], int(start_rid or 0), bool(start_rid)))
-        except Exception:
-            pass
-    start_day = str(start_day or '')[:10]
-    try:
-        start_rid = int(start_rid or 0)
-    except Exception:
-        start_rid = 0
-    total = 0.0
-    records = sorted((store or {}).get('records', []) or [], key=record_sort_key)
-    for rec in records:
-        if not financial_view_record_visible(store, rec):
-            continue
-        day_key = _record_day_key(rec)
-        if day_key < start_day:
-            total += financial_view_amount(store, rec)
-            continue
-        if day_key > start_day:
-            break
-        if not start_rid:
-            break
-        if _record_int_id(rec) == start_rid:
-            break
-        total += financial_view_amount(store, rec)
-    return float(total)
-
-def _v177_legacy_0090_xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None=None) -> list[list]:
-    """Add opening balance, period totals and real closing cash balance to 4-column XLSX."""
-    src = [list(r or []) for r in rows or []]
-    if not src:
-        src = [['Дата', 'Описание', 'Приход', 'Расход']]
-    header = src[0]
-    body = src[1:]
-    opening = float(opening_balance or 0.0)
-    income_total = 0.0
-    expense_total = 0.0
-    for row in body:
-        try:
-            val = row[2] if len(row) > 2 else ''
-            if _excel_nonempty(val) and (not isinstance(val, dict)):
-                income_total += float(val)
-        except Exception:
-            pass
-        try:
-            val = row[3] if len(row) > 3 else ''
-            if _excel_nonempty(val) and (not isinstance(val, dict)):
-                expense_total += float(val)
-        except Exception:
-            pass
-    out = [header, ['', 'Остаток с прошлого раза', opening, ''], []]
-    data_start_row = 4
-    out.extend(body)
-    data_end_row = max(data_start_row, len(out))
-    out.append([])
-    income_row = len(out) + 1
-    out.append(['', 'Приход за период', {'formula': f'SUM(C{data_start_row}:C{data_end_row})', 'value': income_total}, ''])
-    expense_row = len(out) + 1
-    out.append(['', 'Расход за период', '', {'formula': f'SUM(D{data_start_row}:D{data_end_row})', 'value': expense_total}])
-    closing = opening + income_total - expense_total
-    out.append(['', 'Остаток на руках', {'formula': f'C2+C{income_row}-D{expense_row}', 'value': closing}, ''])
-    return out
+# [OCH12.35 OWNER] _v177_legacy_0090_xlsx_simple_rows_with_balances -> 16_integration_excel.py
+_owner_install('excel', 'excel:0028')
 try:
     _v177_legacy_0090_xlsx_simple_rows_with_balances.__name__ = '_xlsx_simple_rows_with_balances'
 except Exception:
     pass
 
-def _v177_legacy_0093_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None=None) -> tuple[list[list], dict[tuple[int, int], str]]:
-    """3-column Excel: Date / Income / Expense; description lives only in Comment/Note."""
-    opening = float(opening_balance or 0.0)
-    rows = [['Дата', 'Приход', 'Расход'], ['Остаток с прошлого раза', opening, ''], []]
-    annotations: dict[tuple[int, int], str] = {}
-    income_total = 0.0
-    expense_total = 0.0
-    prev_day = None
-    for date_value, amount_value, note_value in raw_rows or []:
-        if prev_day is not None and str(date_value) != str(prev_day):
-            rows.append([])
-        prev_day = date_value
-        try:
-            amount = parse_csv_amount(amount_value)
-        except Exception:
-            try:
-                amount = float(amount_value or 0)
-            except Exception:
-                amount = 0.0
-        income, expense = _xlsx_income_expense_values(amount)
-        rows.append([date_value, income, expense])
-        row_idx = len(rows)
-        note = str(note_value or '').strip()
-        if note:
-            annotations[row_idx, 2 if _excel_nonempty(income) else 3] = note
-        if amount >= 0:
-            income_total += amount
-        else:
-            expense_total += abs(amount)
-    data_start_row = 4
-    data_end_row = max(data_start_row, len(rows))
-    rows.append([])
-    income_row = len(rows) + 1
-    rows.append(['Приход за период', {'formula': f'SUM(B{data_start_row}:B{data_end_row})', 'value': income_total}, ''])
-    expense_row = len(rows) + 1
-    rows.append(['Расход за период', '', {'formula': f'SUM(C{data_start_row}:C{data_end_row})', 'value': expense_total}])
-    closing = opening + income_total - expense_total
-    rows.append(['Остаток на руках', {'formula': f'B2+B{income_row}-C{expense_row}', 'value': closing}, ''])
-    return (rows, annotations)
+# [OCH12.35 OWNER] _v177_legacy_0093_compact_simple_excel_rows_and_annotations -> 16_integration_excel.py
+_owner_install('excel', 'excel:0029')
 try:
     _v177_legacy_0093_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
 except Exception:
@@ -16993,332 +13203,50 @@ except Exception:
     pass
 TABL_LSX_CATEGORIES = ['Продукты', 'Хоз общ', 'Авто и (бус)', 'прочие', 'орг. техника', 'Еда доп и ШБ', 'Связь', 'переводы', 'Проживание', 'Хоз за ашр', 'аптечка']
 
-def _tabl_lsx_category(note: str) -> str:
-    text = str(note or '').casefold()
-    checks = [('Еда доп и ШБ', ('шб', 'шамп', 'мыло', 'зуб', 'паста', 'гигиен')), ('Продукты', ('продукт', 'еда', 'хлеб', 'мол', 'фрукт', 'овощ', 'банан', 'лук', 'масло', 'йогурт', 'кофе', 'чай', 'курица', 'мясо')), ('Хоз общ', ('хоз', 'салф', 'порош', 'клей', 'краск', 'саморез', 'инструмент', 'батарей', 'розет', 'шнур', 'пульт', 'ключ')), ('Авто и (бус)', ('авто', 'бенз', 'соляр', 'заправ', 'машин', 'шина', 'масло авто', 'пикап', 'бус')), ('орг. техника', ('орг', 'двд', 'dvd', 'переходник', 'блок питание', 'провод', 'кабель', 'монитор', 'паяль', 'заряд', 'науш', 'мыш', 'принтер')), ('Связь', ('тел', 'связ', 'пополнение', 'сим', 'интернет')), ('переводы', ('перевод', 'вестерн', 'western', 'банковский', 'mercado', 'меркадо')), ('Проживание', ('прож', 'аренд', 'квар', 'отель', 'дом')), ('Хоз за ашр', ('ашр', 'ашрам')), ('аптечка', ('аптеч', 'аптек', 'лекар', 'ибуп', 'витамин', 'стоматолог'))]
-    for name, words in checks:
-        if any((w in text for w in words)):
-            return name
-    return 'прочие'
+# [OCH12.35 OWNER] _tabl_lsx_category -> 16_integration_excel.py
+_owner_install('excel', 'excel:0030')
 
-def _tabl_lsx_weeks(reference_day: str | None=None, count: int=4) -> list[tuple[str, str]]:
-    ref = reference_day or today_key()
-    start_key = week_start_thursday(ref)
-    start = datetime.strptime(start_key, '%Y-%m-%d').date()
-    weeks = []
-    first = start - timedelta(days=7 * (int(count) - 1))
-    for i in range(int(count)):
-        s = first + timedelta(days=7 * i)
-        e = s + timedelta(days=6)
-        weeks.append((s.strftime('%Y-%m-%d'), e.strftime('%Y-%m-%d')))
-    return weeks
+# [OCH12.35 OWNER] _tabl_lsx_weeks -> 16_integration_excel.py
+_owner_install('excel', 'excel:0031')
 
-def _tabl_lsx_opening_balance(store: dict, start_key: str, chat_id: int | None=None) -> float:
-    helper = globals().get('_excel_canonical_opening_balance')
-    if callable(helper) and chat_id is not None:
-        return float(helper(int(chat_id), 'ars', str(start_key)[:10], 0, False))
-    total = 0.0
-    for r in store.get('records', []) or []:
-        try:
-            if _record_day_key(r) < start_key:
-                total += float(r.get('amount', 0) or 0)
-        except Exception:
-            pass
-    return float(total)
+# [OCH12.35 OWNER] _tabl_lsx_opening_balance -> 16_integration_excel.py
+_owner_install('excel', 'excel:0032')
 
-def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int=0) -> str:
-    if value is None:
-        value = ''
-    ref = f'{_xlsx_col_name(col_idx)}{row_idx}'
-    s_attr = f' s="{int(style)}"' if int(style or 0) else ''
-    if isinstance(value, dict) and value.get('formula'):
-        formula = _xlsx_xml_escape(str(value.get('formula') or '').lstrip('='))
-        cached = value.get('value', 0)
-        try:
-            cached = float(cached)
-            cached = int(cached) if cached.is_integer() else cached
-        except Exception:
-            cached = 0
-        return f'<c r="{ref}"{s_attr}><f>{formula}</f><v>{cached}</v></c>'
-    if isinstance(value, (int, float)) and (not isinstance(value, bool)):
-        return f'<c r="{ref}"{s_attr}><v>{float(value):.2f}</v></c>'
-    text = str(value)
-    return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(text)}</t></is></c>'
+# [OCH12.35 OWNER] _xlsx_cell_xml2 -> 16_integration_excel.py
+_owner_install('excel', 'excel:0033')
 
-def _v177_legacy_0098_write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str='4 недели', comments: dict | None=None, freeze_rows: int=3, widths: list[float] | None=None, annotation_mode: str | None='notes') -> None:
-    """Minimal XLSX writer with two genuinely different annotation types.
-
-    annotation_mode="notes"    -> classic Excel Notes (legacy comments XML + VML ObjectType=Note)
-    annotation_mode="comments" -> modern threaded Excel Comments (threadedComments + person)
-    annotation_mode=None        -> no annotations
-    """
-    comments = comments or {}
-    annotation_mode = str(annotation_mode or '').strip().lower() or None
-    if annotation_mode not in {None, 'notes', 'comments'}:
-        annotation_mode = 'notes'
-    if not comments:
-        annotation_mode = None
-    max_cols = max((len(r) for r in rows), default=1)
-    widths = list(widths or [13, 16, 28] + [20] * max(0, max_cols - 3))
-    if len(widths) < max_cols:
-        widths.extend([18] * (max_cols - len(widths)))
-    freeze_rows = max(0, int(freeze_rows or 0))
-    cols_xml = ''.join((f'<col min="{i}" max="{i}" width="{min(widths[i - 1] if i - 1 < len(widths) else 18, 34)}" customWidth="1"/>' for i in range(1, max_cols + 1)))
-    legacy_drawing = '<legacyDrawing r:id="rId2"/>' if annotation_mode == 'notes' else ''
-    workbook_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n<sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>\n<calcPr calcId="191029" fullCalcOnLoad="1" forceFullCalc="1"/>\n</workbook>'
-    rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>\n</Relationships>'
-    person_rel = ''
-    if annotation_mode == 'comments':
-        person_rel = '\n<Relationship Id="rId3" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/>'
-    workbook_rels_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>\n<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>{person_rel}\n</Relationships>'
-    category_colors = ['FFC6EFCE', 'FFDDEBF7', 'FFFCE4D6', 'FFE4DFEC', 'FFFFF2CC', 'FFD9EAD3', 'FFCFE2F3', 'FFF4CCCC', 'FFD0E0E3', 'FFEAD1DC', 'FFD9D2E9']
-    extra_fills = ''.join((f'<fill><patternFill patternType="solid"><fgColor rgb="{rgb}"/></patternFill></fill>' for rgb in category_colors))
-    header_xfs = ''.join((f'<xf numFmtId="0" fontId="1" fillId="{7 + i}" borderId="1" xfId="0" applyFill="1" applyFont="1"/>' for i in range(len(category_colors))))
-    data_xfs = ''.join((f'<xf numFmtId="0" fontId="0" fillId="{7 + i}" borderId="1" xfId="0" applyFill="1"/>' for i in range(len(category_colors))))
-    styles_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\n<fonts count="3"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font></fonts>\n<fills count="18"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF00E000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFF9999"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EAD3"/></patternFill></fill>{extra_fills}</fills>\n<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>\n<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>\n<cellXfs count="30"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFill="1" applyFont="1"/>{header_xfs}{data_xfs}</cellXfs>\n<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>\n</styleSheet>'
-    content_types_extra = ''
-    sheet_rels_xml = None
-    notes_xml = None
-    vml_xml = None
-    threaded_xml = None
-    persons_xml = None
-    if annotation_mode == 'notes':
-        content_types_extra = '<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n<Override PartName="/xl/comments1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>'
-        comment_nodes = []
-        shapes = []
-        for idx, ((row_idx, col_idx), text) in enumerate(sorted(comments.items()), start=1):
-            ref = f'{_xlsx_col_name(int(col_idx))}{int(row_idx)}'
-            safe_text = _xlsx_xml_escape(str(text or ''))
-            comment_nodes.append(f'<comment ref="{ref}" authorId="0"><text><t xml:space="preserve">{safe_text}</t></text></comment>')
-            shapes.append(f'<v:shape id="_x0000_s{1024 + idx}" type="#_x0000_t202" style="position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:144pt;height:79.5pt;z-index:{idx};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">\n<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"/></v:textbox>\n<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{max(0, int(col_idx) - 1)}, 15, {max(0, int(row_idx) - 1)}, 2, {int(col_idx) + 2}, 15, {int(row_idx) + 4}, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{max(0, int(row_idx) - 1)}</x:Row><x:Column>{max(0, int(col_idx) - 1)}</x:Column></x:ClientData></v:shape>')
-        notes_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author></author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>"""
-        vml_xml = f"""<?xml version="1.0" encoding="UTF-8"?>\n<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">\n<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>{''.join(shapes)}</xml>"""
-        sheet_rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>\n<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>\n</Relationships>'
-    elif annotation_mode == 'comments':
-        content_types_extra = '<Override PartName="/xl/threadedComments/threadedComment1.xml" ContentType="application/vnd.ms-excel.threadedcomments+xml"/>\n<Override PartName="/xl/persons/person.xml" ContentType="application/vnd.ms-excel.person+xml"/>'
-        person_id = '{7C441D5B-9D3A-4B84-95C4-5BCE02D746A1}'
-        comment_nodes = []
-        comment_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-        for row_idx, col_idx in sorted(comments.keys()):
-            ref = f'{_xlsx_col_name(int(col_idx))}{int(row_idx)}'
-            safe_text = _xlsx_xml_escape(str(comments[row_idx, col_idx] or ''))
-            comment_nodes.append(f'<threadedComment ref="{ref}" dT="{comment_time}" personId="{person_id}"><text>{safe_text}</text></threadedComment>')
-        threaded_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">{''.join(comment_nodes)}</ThreadedComments>"""
-        persons_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<personList xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/person"><person displayName="Telegram Finance Bot" id="{person_id}" userId="telegram-finance-bot" providerId="None"/></personList>'
-        sheet_rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/>\n</Relationships>'
-    content_types_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n<Default Extension="xml" ContentType="application/xml"/>{content_types_extra}\n<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>\n<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>\n</Types>'
-    sheet_tmp = None
-    try:
-        temp_dir = MEGA_LOCAL_TMP_DIR if os.path.isdir(MEGA_LOCAL_TMP_DIR) else None
-        fd, sheet_tmp = tempfile.mkstemp(prefix='xlsx_sheet_', suffix='.xml', dir=temp_dir)
-        os.close(fd)
-        with open(sheet_tmp, 'w', encoding='utf-8', newline='') as sheet:
-            sheet.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n')
-            sheet.write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n')
-            pane = f'<pane ySplit="{freeze_rows}" topLeftCell="A{freeze_rows + 1}" activePane="bottomLeft" state="frozen"/>' if freeze_rows else ''
-            sheet.write(f'<sheetViews><sheetView workbookViewId="0">{pane}</sheetView></sheetViews>\n')
-            sheet.write(f'<cols>{cols_xml}</cols>\n<sheetData>')
-            for r_idx, row in enumerate(rows, start=1):
-                st_row = styles[r_idx - 1] if r_idx - 1 < len(styles) else []
-                height = ' ht="22" customHeight="1"' if r_idx <= max(1, freeze_rows) else ''
-                sheet.write(f'<row r="{r_idx}"{height}>')
-                for c_idx in range(1, max_cols + 1):
-                    value = row[c_idx - 1] if c_idx - 1 < len(row) else ''
-                    style = st_row[c_idx - 1] if c_idx - 1 < len(st_row) else 0
-                    sheet.write(_xlsx_cell_xml2(r_idx, c_idx, value, style=style))
-                sheet.write('</row>')
-            sheet.write(f'</sheetData>{legacy_drawing}\n</worksheet>')
-        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-            z.writestr('[Content_Types].xml', content_types_xml)
-            z.writestr('_rels/.rels', rels_xml)
-            z.writestr('xl/workbook.xml', workbook_xml)
-            z.writestr('xl/_rels/workbook.xml.rels', workbook_rels_xml)
-            z.write(sheet_tmp, 'xl/worksheets/sheet1.xml')
-            z.writestr('xl/styles.xml', styles_xml)
-            if sheet_rels_xml:
-                z.writestr('xl/worksheets/_rels/sheet1.xml.rels', sheet_rels_xml)
-            if annotation_mode == 'notes':
-                z.writestr('xl/comments1.xml', notes_xml)
-                z.writestr('xl/drawings/vmlDrawing1.vml', vml_xml)
-            elif annotation_mode == 'comments':
-                z.writestr('xl/threadedComments/threadedComment1.xml', threaded_xml)
-                z.writestr('xl/persons/person.xml', persons_xml)
-    finally:
-        try:
-            if sheet_tmp and os.path.exists(sheet_tmp):
-                os.remove(sheet_tmp)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _v177_legacy_0098_write_tabl_lsx_xlsx -> 16_integration_excel.py
+_owner_install('excel', 'excel:0034')
 try:
     _v177_legacy_0098_write_tabl_lsx_xlsx.__name__ = '_write_tabl_lsx_xlsx'
 except Exception:
     pass
 
-def _validate_xlsx_annotation_package(path: str, annotation_mode: str | None) -> None:
-    """Fail closed if Notes and Comments OOXML parts ever get mixed.
+# [OCH12.35 OWNER] _validate_xlsx_annotation_package -> 16_integration_excel.py
+_owner_install('excel', 'excel:0035')
 
-    Excel Notes are the legacy comments1.xml + VML note shapes. Modern Excel
-    Comments are threadedComments + persons. In notes mode the threaded parts
-    must be completely absent.
-    """
-    mode = str(annotation_mode or '').strip().lower() or None
-    if mode not in {None, 'notes', 'comments'}:
-        return
-    with zipfile.ZipFile(path, 'r') as z:
-        names = set(z.namelist())
-        legacy_xml = z.read('xl/comments1.xml').decode('utf-8', 'replace') if 'xl/comments1.xml' in names else ''
-        vml_text = z.read('xl/drawings/vmlDrawing1.vml').decode('utf-8', 'replace') if 'xl/drawings/vmlDrawing1.vml' in names else ''
-    has_legacy_notes = 'xl/comments1.xml' in names and 'xl/drawings/vmlDrawing1.vml' in names
-    has_threaded_comments = 'xl/threadedComments/threadedComment1.xml' in names or 'xl/persons/person.xml' in names
-    if mode == 'notes':
-        if has_threaded_comments:
-            raise RuntimeError('XLSX notes mode contains threaded Comments parts')
-        if has_legacy_notes:
-            if 'ObjectType="Note"' not in vml_text:
-                raise RuntimeError('XLSX notes VML does not declare ObjectType=Note')
-            if 'Telegram Finance Bot' in legacy_xml:
-                raise RuntimeError('XLSX notes mode must not carry a comment author')
-            if '<comment ' in legacy_xml and (not re.search('<comment\\b[^>]*>.*?<t(?:\\s[^>]*)?>(?!\\s*</t>).*?</t>', legacy_xml, flags=re.S)):
-                raise RuntimeError('XLSX notes mode contains empty note bodies')
-    if mode == 'comments' and has_legacy_notes:
-        raise RuntimeError('XLSX comments mode contains legacy Notes parts')
+# [OCH12.35 OWNER] _excel_nonempty -> 16_integration_excel.py
+_owner_install('excel', 'excel:0036')
 
-def _excel_nonempty(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    return True
+# [OCH12.35 OWNER] _excel_category_color_index -> 16_integration_excel.py
+_owner_install('excel', 'excel:0037')
 
-def _excel_category_color_index(note: str) -> int:
-    try:
-        category = _tabl_lsx_category(note)
-        return TABL_LSX_CATEGORIES.index(category) if category in TABL_LSX_CATEGORIES else TABL_LSX_CATEGORIES.index('прочие')
-    except Exception:
-        return 0
-
-def _v177_legacy_0099_modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern 4-column/backup Excel: colored amounts + annotations on expenses."""
-    max_cols = max((len(r) for r in rows), default=4)
-    styles = []
-    comments = {}
-    header_row = 1
-    data_started = False
-    for r_idx, row in enumerate(rows, start=1):
-        row = list(row or [])
-        normalized0 = str(row[0] if row else '').strip().casefold()
-        normalized1 = str(row[1] if len(row) > 1 else '').strip().casefold()
-        is_header = normalized0 in {'дата', 'date'} and normalized1 in {'описание', 'description', 'amount'}
-        if is_header:
-            header_row = r_idx
-            data_started = True
-            styles.append([2] * max_cols)
-            continue
-        st = [4] * max_cols if any((_excel_nonempty(v) for v in row)) else [0] * max_cols
-        if not data_started:
-            if r_idx == 1 and any((_excel_nonempty(v) for v in row)):
-                st = [1] + [4] * max(0, max_cols - 1)
-            styles.append(st)
-            continue
-        note = str(row[1] if len(row) > 1 else '').strip()
-        note_key = note.casefold()
-        if note_key in {'остаток с прошлого раза', 'остаток на руках'}:
-            styles.append([6] * max_cols)
-            continue
-        if note_key in {'приход за период', 'расход за период'}:
-            styles.append([5] * max_cols)
-            continue
-        income = row[2] if len(row) > 2 else ''
-        expense = row[3] if len(row) > 3 else ''
-        if _excel_nonempty(income) and len(st) > 2:
-            st[2] = 7
-        if _excel_nonempty(expense) and len(st) > 3:
-            cat_idx = _excel_category_color_index(note)
-            st[3] = 19 + cat_idx
-            if note:
-                comments[r_idx, 4] = note
-        styles.append(st)
-    widths = [13, 38, 15, 15] + [14] * max(0, max_cols - 4)
-    return (styles, comments, header_row, widths)
+# [OCH12.35 OWNER] _v177_legacy_0099_modern_simple_excel_styles_comments -> 16_integration_excel.py
+_owner_install('excel', 'excel:0038')
 try:
     _v177_legacy_0099_modern_simple_excel_styles_comments.__name__ = '_modern_simple_excel_styles_comments'
 except Exception:
     pass
 
-def _v177_legacy_0100_modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern 3-column Excel without Description column; annotations are on amount cells."""
-    max_cols = max((len(r) for r in rows), default=3)
-    styles = []
-    for r_idx, row in enumerate(rows or [], start=1):
-        row = list(row or [])
-        first = str(row[0] if row else '').strip().casefold()
-        is_header = first in {'дата', 'date'}
-        if is_header:
-            styles.append([2] * max_cols)
-            continue
-        if not any((_excel_nonempty(v) for v in row)):
-            styles.append([0] * max_cols)
-            continue
-        if first in {'остаток с прошлого раза', 'остаток на руках'}:
-            styles.append([6] * max_cols)
-            continue
-        if first in {'приход за период', 'расход за период'}:
-            styles.append([5] * max_cols)
-            continue
-        st = [4] * max_cols
-        if len(row) > 1 and _excel_nonempty(row[1]):
-            st[1] = 7
-        if len(row) > 2 and _excel_nonempty(row[2]):
-            note = str((annotations or {}).get((r_idx, 3)) or '')
-            st[2] = 19 + _excel_category_color_index(note)
-        styles.append(st)
-    return (styles, dict(annotations or {}), 1, [22, 16, 16])
+# [OCH12.35 OWNER] _v177_legacy_0100_modern_compact_excel_styles_comments -> 16_integration_excel.py
+_owner_install('excel', 'excel:0039')
 try:
     _v177_legacy_0100_modern_compact_excel_styles_comments.__name__ = '_modern_compact_excel_styles_comments'
 except Exception:
     pass
 
-def _v177_legacy_0101_modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern category/stat Excel: each expense column gets its own fill and annotation."""
-    max_cols = max((len(r) for r in rows), default=4)
-    styles = []
-    comments = {}
-    header_row = 1
-    header_found = False
-    for r_idx, row in enumerate(rows, start=1):
-        row = list(row or [])
-        first = str(row[0] if row else '').strip().casefold()
-        second = str(row[1] if len(row) > 1 else '').strip().casefold()
-        is_header = first in {'дата', 'date'} and second in {'описание', 'description', 'приход/выдача'}
-        if is_header:
-            header_row = r_idx
-            header_found = True
-            st = [2] * min(3, max_cols) + [8 + (c - 3) % len(TABL_LSX_CATEGORIES) for c in range(3, max_cols)]
-            styles.append(st)
-            continue
-        if not any((_excel_nonempty(v) for v in row)):
-            styles.append([0] * max_cols)
-            continue
-        label = second
-        if label in {'сумма по статьям', 'расход'}:
-            styles.append([5] * max_cols)
-            continue
-        if label in {'приход', 'остаток с прошлого раза', 'остаток на руках', 'на руках:'}:
-            styles.append([6] * max_cols)
-            continue
-        st = [4] * max_cols
-        note = str(row[1] if len(row) > 1 else '').strip()
-        if header_found:
-            if len(row) > 2 and _excel_nonempty(row[2]):
-                st[2] = 7
-            for c in range(3, max_cols):
-                if c < len(row) and _excel_nonempty(row[c]):
-                    st[c] = 19 + (c - 3) % len(TABL_LSX_CATEGORIES)
-                    if note:
-                        comments[r_idx, c + 1] = note
-        styles.append(st)
-    widths = [13, 36, 15] + [18] * max(0, max_cols - 3)
-    return (styles, comments, header_row, widths)
+# [OCH12.35 OWNER] _v177_legacy_0101_modern_category_excel_styles_comments -> 16_integration_excel.py
+_owner_install('excel', 'excel:0040')
 try:
     _v177_legacy_0101_modern_category_excel_styles_comments.__name__ = '_modern_category_excel_styles_comments'
 except Exception:
@@ -17354,308 +13282,27 @@ try:
 except Exception:
     pass
 
-def _v177_legacy_0104_category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, int], str]:
-    """Return the exact expense cells that must carry an annotation in category Excel.
-
-    This mirrors _modern_category_excel_styles_comments(). Summary / balance rows
-    intentionally do not receive expense notes, even if they contain category totals.
-    """
-    expected: dict[tuple[int, int], str] = {}
-    header_found = False
-    skip_labels = {'сумма по статьям', 'расход', 'приход', 'остаток с прошлого раза', 'остаток на руках', 'на руках:'}
-    for r_idx, row in enumerate(rows or [], start=1):
-        row = list(row or [])
-        first = str(row[0] if row else '').strip().casefold()
-        second = str(row[1] if len(row) > 1 else '').strip().casefold()
-        is_header = first in {'дата', 'date'} and second in {'описание', 'description', 'приход/выдача'}
-        if is_header:
-            header_found = True
-            continue
-        if not header_found or not any((_excel_nonempty(v) for v in row)):
-            continue
-        if second in skip_labels:
-            continue
-        note_text = str(row[1] if len(row) > 1 else '').strip()
-        if not note_text:
-            continue
-        for c in range(3, len(row)):
-            if _excel_nonempty(row[c]):
-                expected[r_idx, c + 1] = note_text
-    return expected
+# [OCH12.35 OWNER] _v177_legacy_0104_category_excel_expected_annotations -> 16_integration_excel.py
+_owner_install('excel', 'excel:0041')
 try:
     _v177_legacy_0104_category_excel_expected_annotations.__name__ = '_category_excel_expected_annotations'
 except Exception:
     pass
 
-def _validate_xlsx_expected_notes(path: str, expected: dict[tuple[int, int], str]) -> None:
-    """Verify that every intended Excel Note cell contains the exact description text.
+# [OCH12.35 OWNER] _validate_xlsx_expected_notes -> 16_integration_excel.py
+_owner_install('excel', 'excel:0042')
 
-    This checks the generated XLSX package itself, not only the in-memory mapping.
-    """
-    if not expected:
-        return
-    import xml.etree.ElementTree as ET
-    with zipfile.ZipFile(path, 'r') as z:
-        names = set(z.namelist())
-        if 'xl/comments1.xml' not in names:
-            raise RuntimeError('Excel статьи: файл не содержит xl/comments1.xml для Примечаний')
-        raw = z.read('xl/comments1.xml')
-    root = ET.fromstring(raw)
-    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-    actual: dict[str, str] = {}
-    for node in root.findall('.//m:comment', ns):
-        ref = str(node.attrib.get('ref') or '')
-        text = ''.join(node.itertext()).strip()
-        if ref:
-            actual[ref] = text
-    missing = []
-    wrong = []
-    for (row_idx, col_idx), text in expected.items():
-        ref = f'{_xlsx_col_name(int(col_idx))}{int(row_idx)}'
-        if ref not in actual:
-            missing.append(ref)
-        elif actual.get(ref, '') != str(text).strip():
-            wrong.append(ref)
-    if missing or wrong:
-        raise RuntimeError(f'Excel статьи: повреждены примечания missing={missing[:8]} wrong={wrong[:8]} expected={len(expected)} actual={len(actual)}')
+# [OCH12.35 OWNER] _write_excel_by_selected_style -> 16_integration_excel.py
+_owner_install('excel', 'excel:0043')
 
-def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sheet_name: str='Данные', category_layout: bool=False, mode_override: str | None=None, compact_annotations: dict[tuple[int, int], str] | None=None) -> None:
-    """XLSX writer with per-export style override: OLD / Comments / Notes."""
-    mode = str(mode_override or excel_table_style(int(chat_id)) or 'old').strip().lower()
-    if mode not in {'old', 'new_plain', 'new_comments', 'new_notes', 'google_notes'}:
-        mode = 'old'
-    local_mode = 'new_notes' if mode == 'google_notes' else mode
-    # R16: ALL XLSX files are colored.  'old' now means old layout/annotation
-    # behaviour only; it no longer bypasses the canonical vys-262 palette.
-    if category_layout == 'category_compact':
-        styles, annotations, freeze_rows, widths = _modern_category_no_description_styles_comments(rows, compact_annotations or {})
-    elif category_layout:
-        styles, annotations, freeze_rows, widths = _modern_category_excel_styles_comments(rows)
-    elif compact_annotations is not None:
-        styles, annotations, freeze_rows, widths = _modern_compact_excel_styles_comments(rows, compact_annotations)
-    else:
-        styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
-    annotation_mode = None if local_mode in {'old', 'new_plain'} else 'comments' if local_mode == 'new_comments' else 'notes'
-    if annotation_mode is None:
-        annotations = {}
-    expected_annotations: dict[tuple[int, int], str] = {}
-    if annotation_mode == 'notes':
-        if category_layout == 'category_compact':
-            expected_annotations = {k: str(v).strip() for k, v in (compact_annotations or {}).items() if str(v or '').strip()}
-        elif category_layout:
-            expected_annotations = _category_excel_expected_annotations(rows)
-        elif compact_annotations is not None:
-            expected_annotations = {k: str(v).strip() for k, v in compact_annotations.items() if str(v or '').strip()}
-        if expected_annotations:
-            annotations = dict(expected_annotations)
-    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name=sheet_name, comments=annotations, freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode)
-    _validate_xlsx_annotation_package(path, annotation_mode)
-    if expected_annotations:
-        _validate_xlsx_expected_notes(path, expected_annotations)
+# [OCH12.35 OWNER] create_tabl_lsx_file -> 16_integration_excel.py
+_owner_install('excel', 'excel:0044')
 
-def create_tabl_lsx_file(chat_id: int, reference_day: str | None=None) -> str:
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    modern_excel = excel_table_style(chat_id) != 'old'
-    weeks = _tabl_lsx_weeks(reference_day or today_key(), 4)
-    cols = ['Дата', 'Приход/выдача', 'Откуда/кому'] + TABL_LSX_CATEGORIES
-    rows, styles = ([], [])
-    comments = {}
-    title = f'сегодня {fmt_date_ddmmyy(today_key())} — {get_chat_display_name(chat_id)}'
-    rows.append([title])
-    styles.append([1] + [0] * (len(cols) - 1))
-    rows.append(['Таблица за последние 4 недели: четверг–среда'])
-    styles.append([1] + [0] * (len(cols) - 1))
-    rows.append([])
-    styles.append([])
-    daily = {}
-    range_builder = globals().get('_excel_canonical_records_for_range')
-    if callable(range_builder) and weeks:
-        canonical_rows = range_builder(chat_id, 'ars', weeks[0][0], weeks[-1][1])
-        for _rec in canonical_rows or []:
-            _dk = str(globals().get('_v151_day_key', _record_day_key)(_rec))[:10]
-            daily.setdefault(_dk, []).append(_rec)
-    else:
-        daily = store.get('daily_records', {}) or {}
-    for start_key, end_key in weeks:
-        rows.append(['Неделя', f'{fmt_date_ddmmyy(start_key)} — {fmt_date_ddmmyy(end_key)}'])
-        styles.append([3, 3] + [3] * (len(cols) - 2))
-        rows.append(cols)
-        styles.append([2, 2, 2] + [8 + i for i in range(len(TABL_LSX_CATEGORIES))] if modern_excel else [2] * len(cols))
-        opening = _tabl_lsx_opening_balance(store, start_key, chat_id=chat_id)
-        rows.append([fmt_date_ddmmyy(start_key), int(round(opening)), 'Остаток с прошлого раза'] + [''] * len(TABL_LSX_CATEGORIES))
-        styles.append([7, 7, 7] + [4] * len(TABL_LSX_CATEGORIES))
-        income_total = 0.0
-        expense_total = 0.0
-        cat_totals = {cat: 0.0 for cat in TABL_LSX_CATEGORIES}
-        week_canonical_records = []
-        start_dt = datetime.strptime(start_key, '%Y-%m-%d').date()
-        for offset in range(7):
-            dk = (start_dt + timedelta(days=offset)).strftime('%Y-%m-%d')
-            recs = sorted(daily.get(dk, []) or [], key=record_sort_key)
-            if not recs:
-                rows.append([fmt_date_ddmmyy(dk)] + [''] * (len(cols) - 1))
-                styles.append([3] + [4] * (len(cols) - 1))
-                continue
-            first_for_day = True
-            for rec in recs:
-                week_canonical_records.append(rec)
-                try:
-                    amount = float(rec.get('_v151_amount', rec.get('amount', 0)) or 0)
-                except Exception:
-                    amount = 0.0
-                note = str(rec.get('_v151_note', rec.get('note') or '') or '').strip()
-                row = [fmt_date_ddmmyy(dk) if first_for_day else '', '', ''] + [''] * len(TABL_LSX_CATEGORIES)
-                row_styles = [3 if row[0] else 4, 4, 4] + [4] * len(TABL_LSX_CATEGORIES)
-                first_for_day = False
-                if amount >= 0:
-                    income_total += amount
-                    row[1] = int(round(amount))
-                    row[2] = note
-                else:
-                    value = abs(amount)
-                    expense_total += value
-                    cat = None
-                    try:
-                        resolved = resolve_expense_category_for_record(rec, store)
-                        resolved_cf = str(resolved or '').strip().casefold()
-                        for _cat_name in TABL_LSX_CATEGORIES:
-                            if str(_cat_name).strip().casefold() == resolved_cf:
-                                cat = _cat_name
-                                break
-                    except Exception:
-                        cat = None
-                    if not cat:
-                        cat = _tabl_lsx_category(note)
-                    cat_idx = TABL_LSX_CATEGORIES.index(cat)
-                    cat_totals[cat] = cat_totals.get(cat, 0.0) + value
-                    col_idx = 3 + cat_idx
-                    if modern_excel:
-                        row[col_idx] = int(value) if float(value).is_integer() else value
-                        row_styles[col_idx] = 19 + cat_idx
-                        if note:
-                            comments[len(rows) + 1, col_idx + 1] = note
-                    else:
-                        shown = fmt_num_plain(value)
-                        row[col_idx] = (shown + (' ' + note if note else '')).strip()
-                rows.append(row)
-                styles.append(row_styles)
-        total_row = ['Итог:', int(round(income_total)), ''] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else '' for cat in TABL_LSX_CATEGORIES]
-        rows.append(total_row)
-        styles.append([5] * len(cols))
-        rows.append(['расход:', int(round(expense_total))] + [''] * (len(cols) - 2))
-        styles.append([5] * len(cols))
-        _v150_week_closing = float(opening + income_total - expense_total)
-        rows.append(['Остаток на руках', int(round(_v150_week_closing))] + [''] * (len(cols) - 2))
-        styles.append([6] * len(cols))
-        _v150_week_reserve = float(_v150_export_reserve(chat_id)) if '_v150_export_reserve' in globals() else 0.0
-        rows.append(['Гомонковые', int(round(_v150_week_reserve)) if float(_v150_week_reserve).is_integer() else _v150_week_reserve] + [''] * (len(cols) - 2))
-        styles.append([6] * len(cols))
-        _v150_week_turnover = _v150_week_closing - _v150_week_reserve
-        rows.append(['Остаток в обороте', int(round(_v150_week_turnover)) if float(_v150_week_turnover).is_integer() else _v150_week_turnover] + [''] * (len(cols) - 2))
-        styles.append([6] * len(cols))
-        rows.append([])
-        styles.append([])
-        _v150_products_total = float(cat_totals.get('Продукты', 0.0) or 0.0)
-        _v150_food_metric_value = 0.0
-        try:
-            if callable(globals().get('_v151_food_metric')):
-                _v150_products_total, _v150_food_metric_value, _v194_days, _v194_rate = _v151_food_metric(int(chat_id), week_canonical_records, start_key, end_key)
-            elif '_v150_food_per_person' in globals():
-                _v150_food_metric_value = _v150_food_per_person(_v150_products_total)
-        except Exception:
-            _v150_food_metric_value = 0.0
-        rows.append(['Расход еды на человека в сутки', _v150_food_metric_value] + [''] * (len(cols) - 2))
-        styles.append([5] * len(cols))
-        rows.append([])
-        styles.append([])
-    os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-    start_all, end_all = (weeks[0][0], weeks[-1][1])
-    mode_tag = excel_table_style(chat_id)
-    fname = f"tabl_lsx_{mode_tag}_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
-    path = os.path.join(MEGA_LOCAL_TMP_DIR, fname)
-    annotation_mode = excel_annotation_mode(chat_id)
-    try:
-        usd_builder = globals().get('_v151_simple_table')
-        usd_enabled = globals().get('excel_usd_table_enabled')
-        ctx_local = globals().get('_V151_EXPORT_LOCAL')
-        if callable(usd_builder) and (not callable(usd_enabled) or bool(usd_enabled(int(chat_id)))) and (ctx_local is not None):
-            prev_ctx = getattr(ctx_local, 'value', None)
-            try:
-                ctx_local.value = {'kind': 'exact', 'target_chat_id': int(chat_id), 'start_key': str(start_all), 'start_rid': 0, 'end_key': str(end_all), 'end_rid': 0, 'file_type': 'xlsx'}
-                usd_rows, _usd_notes = usd_builder(int(chat_id), 'usd', compact=False)
-            finally:
-                ctx_local.value = prev_ctx
-            if usd_rows:
-                offset = len(rows) + 2
-                rows.extend([[], []])
-                styles.extend([[], []])
-                shifter = globals().get('_v193_shift_formula_rows')
-                shifted_usd = shifter(usd_rows, offset) if callable(shifter) else usd_rows
-                if modern_excel and callable(globals().get('_modern_simple_excel_styles_comments')):
-                    usd_styles, usd_comments, _freeze, _widths = _modern_simple_excel_styles_comments(shifted_usd)
-                    styles.extend(usd_styles)
-                    for (rr, cc), text in (usd_comments or {}).items():
-                        comments[int(rr) + offset, int(cc)] = text
-                else:
-                    styles.extend([[4] * len(r or []) for r in shifted_usd])
-                rows.extend(shifted_usd)
-                validator = globals().get('_v193_validate_currency_formula_domains')
-                if callable(validator):
-                    validator(rows)
-    except Exception as _v192_usd_exc:
-        try:
-            log_error(f'tabl_lsx USD append({chat_id}): {_v192_usd_exc}')
-        except Exception:
-            pass
-    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name='4 недели', comments=comments if modern_excel else None, annotation_mode=annotation_mode)
-    if modern_excel:
-        _validate_xlsx_annotation_package(path, annotation_mode)
-    return path
+# [OCH12.35 OWNER] send_tabl_lsx_for_chat -> 16_integration_excel.py
+_owner_install('excel', 'excel:0045')
 
-def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
-    path = None
-    try:
-        _file_job_progress('собираю Excel', force=True)
-        path = create_tabl_lsx_file(target_chat_id, today_key())
-        _file_job_progress('отправляю Excel в Telegram', force=True)
-        display = os.path.basename(path)
-        fobj = file_bytesio_named(path, display)
-        if not fobj:
-            raise RuntimeError('Excel создан, но не удалось открыть файл для отправки в Telegram')
-        _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=f'📊 Таблица LSX ({excel_table_style_caption(target_chat_id)}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}', timeout=120, purpose='tabl_lsx_send_document')
-        return True
-    except Exception as e:
-        log_error(f'send_tabl_lsx_for_chat({target_chat_id}): {e}')
-        send_and_auto_delete(recipient_chat_id, '❌ Не удалось создать /tabl_lsx.', 15)
-        return False
-    finally:
-        if path:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
-def save_chat_xlsx(chat_id: int, path: str | None=None, store: dict | None=None) -> str | None:
-    """Создаёт Excel .xlsx для чата; date в формате DD:MM:YY."""
-    try:
-        store = store or data.get('chats', {}).get(str(chat_id)) or get_chat_store(chat_id)
-        path = path or chat_xlsx_file(chat_id)
-        rows = [['Дата', 'Описание', 'Приход', 'Расход']]
-        daily = store.get('daily_records', {}) or {}
-        for dk in sorted(daily.keys()):
-            recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
-            for r in recs_sorted:
-                rows.append(_xlsx_record_row(fmt_date_table(dk), r.get('amount', 0), r.get('note', '')))
-        rows = insert_blank_rows_between_days(rows, header_rows=1)
-        first_key = sorted(daily.keys())[0] if daily else today_key()
-        opening = _opening_balance_before_exact(store, first_key, 0)
-        rows = _xlsx_simple_rows_with_balances(rows, opening, chat_id)
-        _write_excel_by_selected_style(path, rows, chat_id, sheet_name='Данные', category_layout=False)
-        return path
-    except Exception as e:
-        log_error(f'save_chat_xlsx({get_chat_display_name(chat_id)}): {e}')
-        return None
+# [OCH12.35 OWNER] save_chat_xlsx -> 16_integration_excel.py
+_owner_install('excel', 'excel:0046')
 
 def snapshot_chat_store(chat_id: int) -> dict:
     """Стабильный снимок одного чата для файлового бэкапа."""
@@ -17830,60 +13477,8 @@ def _v184_settings_scope_ok(chat_id: int, candidate: dict, platform_owner: bool=
         return False
     return True
 
-def restore_forward_edges_exact(root_key: str, chat_id: int, outgoing: dict, incoming: dict) -> dict:
-    """STRICT restore of forwarding edges belonging to one chat, without merge or per-edge side effects."""
-    if root_key not in {'forward_rules', 'forward_finance'}:
-        raise ValueError(f'Unsupported forwarding root: {root_key}')
-    cid = str(int(chat_id))
-    outgoing = outgoing if isinstance(outgoing, dict) else {}
-    incoming = incoming if isinstance(incoming, dict) else {}
-    lock = globals().get('_V166_FORWARD_STATE_LOCK')
-
-    def _apply():
-        root = data.setdefault(root_key, {})
-        if not isinstance(root, dict):
-            root = {}
-            data[root_key] = root
-        root.pop(cid, None)
-        for src in list(root.keys()):
-            row = root.get(src)
-            if not isinstance(row, dict):
-                continue
-            row.pop(cid, None)
-            if not row:
-                root.pop(src, None)
-        if outgoing:
-            root[cid] = _v184_copy(outgoing)
-        for src, value in incoming.items():
-            ss = str(src)
-            if ss == cid:
-                if cid not in root and outgoing:
-                    root[cid] = _v184_copy(outgoing)
-                continue
-            root.setdefault(ss, {})[cid] = _v184_copy(value)
-    if lock is not None:
-        with data_lock, lock:
-            _apply()
-    else:
-        with data_lock:
-            _apply()
-    try:
-        order = data.get('forward_pair_order')
-        if isinstance(order, list):
-            kept = []
-            for key in order:
-                try:
-                    a, b = str(key).split(':', 1)
-                except Exception:
-                    kept.append(key)
-                    continue
-                if a == cid or b == cid:
-                    continue
-                kept.append(key)
-            data['forward_pair_order'] = kept
-    except Exception:
-        pass
-    return {'root': root_key, 'chat_id': int(chat_id), 'outgoing': len(outgoing), 'incoming': len(incoming)}
+# [OCH12.35 OWNER] restore_forward_edges_exact -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0035')
 
 def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, platform_owner: bool=False) -> dict:
     """Strict file restore for chat settings. Current live settings/forward edges never fill gaps."""
@@ -18413,98 +14008,22 @@ def parse_amount(raw: str) -> float:
         is_negative = True
     return -value if is_negative else value
 
-def note_has_income_marker(note: str) -> bool:
-    """True, если текст явно говорит о приходе денег.
-    Учитывает «приход» в любом регистре, но не срабатывает на «не приход», «без прихода», «нет прихода».
-    """
-    t = re.sub('\\s+', ' ', str(note or '').casefold()).strip()
-    if not t:
-        return False
-    negative_patterns = ('(?:^|\\s)не\\s+приход', '(?:^|\\s)без\\s+приход', '(?:^|\\s)нет\\s+приход', '(?:^|\\s)ne\\s+prihod', '(?:^|\\s)bez\\s+prihod', '(?:^|\\s)net\\s+prihod')
-    if any((re.search(pat, t, re.I) for pat in negative_patterns)):
-        return False
-    income_patterns = ('приход', 'prihod', 'prixod', 'обмен', 'возврат', 'сдача')
-    return any((re.search(pat, t, re.I) for pat in income_patterns))
+# [OCH12.35 OWNER] note_has_income_marker -> 11_business_finance.py
+_owner_install('finance', 'finance:0045')
 USD_EXPLICIT_AFTER_RE = re.compile("(?P<sign>[+\\-–]?)\\s*(?P<num>\\d[\\d\\s.,_'’]*?)(?P<mult>[kк])?\\s*(?P<cur>usd|usд|усд|\\$)", re.I)
 USD_EXPLICIT_PREFIX_RE = re.compile("\\$\\s*(?P<sign>[+\\-–]?)\\s*(?P<num>\\d[\\d\\s.,_'’]*?)(?P<mult>[kк])?(?=\\s|$)", re.I)
 USD_COMPACT_K_RE = re.compile('(?P<sign>[+\\-–]?)\\s*(?P<num>\\d+(?:[.,]\\d+)?)\\s*(?P<plus_after>\\+)?\\s*[kк]\\b', re.I)
 USD_EXCHANGE_RE = re.compile('обмен|exchange|change', re.I)
 USD_PESO_RE = re.compile('песс?о|peso|ars|арс', re.I)
 
-def _parse_usd_number_parts(sign: str, num: str, mult: str='') -> float:
-    raw = str(num or '').strip()
-    if not raw:
-        raise ValueError('empty usd amount')
-    value = abs(float(parse_amount('+' + raw)))
-    if str(mult or '').strip().casefold() in {'k', 'к'}:
-        value *= 1000.0
-    if str(sign or '').strip() in {'-', '–'}:
-        return -value
-    if str(sign or '').strip() == '+':
-        return value
-    return -value
+# [OCH12.35 OWNER] _parse_usd_number_parts -> 11_business_finance.py
+_owner_install('finance', 'finance:0046')
 
-def extract_usd_transaction(text: str) -> dict | None:
-    """Извлекает отдельное движение USD из пользовательской строки.
+# [OCH12.35 OWNER] extract_usd_transaction -> 11_business_finance.py
+_owner_install('finance', 'finance:0047')
 
-    Правила v93:
-    - явные USD/УСД/$: плюс = приход, минус/без знака = расход;
-    - «обмен ... песо/ARS» с компактным 1к/2к = расход USD;
-    - «+1к от ...» = приход USD;
-    - «И 5+к» = приход 5000 USD.
-    Возвращает span USD-фрагмента, чтобы ARS-часть можно было разобрать отдельно.
-    """
-    raw = str(text or '')
-    if not raw.strip():
-        return None
-    candidates = []
-    for rx in (USD_EXPLICIT_AFTER_RE, USD_EXPLICIT_PREFIX_RE):
-        for m in rx.finditer(raw):
-            try:
-                amount = _parse_usd_number_parts(m.group('sign'), m.group('num'), m.group('mult'))
-            except Exception:
-                continue
-            if not str(m.group('sign') or '').strip():
-                low = raw.casefold()
-                if ('приход' in low or 'prihod' in low) and (not USD_EXCHANGE_RE.search(low)):
-                    amount = abs(amount)
-            candidates.append({'amount': float(amount), 'span': m.span(), 'explicit': True, 'token': m.group(0)})
-    if candidates:
-        candidates.sort(key=lambda x: x['span'][0])
-        info = candidates[0]
-        info['note'] = re.sub('\\s+', ' ', raw).strip().lower()
-        return info
-    low = raw.casefold()
-    k_matches = list(USD_COMPACT_K_RE.finditer(raw))
-    if not k_matches:
-        return None
-    for m in k_matches:
-        before = low[max(0, m.start() - 6):m.start()]
-        if m.group('plus_after') and re.search('(?:^|\\s)и\\s*$', before):
-            value = abs(_parse_usd_number_parts('+', m.group('num'), 'к'))
-            return {'amount': value, 'span': m.span(), 'explicit': False, 'token': m.group(0), 'note': re.sub('\\s+', ' ', raw).strip().lower()}
-    if USD_EXCHANGE_RE.search(low) and (USD_PESO_RE.search(low) or len(num_re.findall(raw)) >= 2):
-        exchange_pos = USD_EXCHANGE_RE.search(low).start()
-        m = min(k_matches, key=lambda x: abs(x.start() - exchange_pos))
-        value = abs(_parse_usd_number_parts('+', m.group('num'), 'к'))
-        return {'amount': -value, 'span': m.span(), 'explicit': False, 'token': m.group(0), 'note': re.sub('\\s+', ' ', raw).strip().lower()}
-    for m in k_matches:
-        if str(m.group('sign') or '').strip() == '+' and (re.search('\\bот\\b', low) or 'приход' in low):
-            value = abs(_parse_usd_number_parts('+', m.group('num'), 'к'))
-            return {'amount': value, 'span': m.span(), 'explicit': False, 'token': m.group(0), 'note': re.sub('\\s+', ' ', raw).strip().lower()}
-    return None
-
-def _remove_usd_fragment_for_ars(text: str, usd_info: dict | None) -> str:
-    raw = str(text or '')
-    if not usd_info or not usd_info.get('span'):
-        return raw
-    try:
-        start, end = usd_info['span']
-        rest = (raw[:int(start)] + ' ' + raw[int(end):]).strip()
-    except Exception:
-        rest = raw
-    rest = re.sub("(?i)\\bпо\\s*[+\\-–]?\\s*\\d[\\d\\s.,_'’]*", ' ', rest)
-    return re.sub('\\s+', ' ', rest).strip()
+# [OCH12.35 OWNER] _remove_usd_fragment_for_ars -> 11_business_finance.py
+_owner_install('finance', 'finance:0048')
 
 def parse_financial_components(text: str) -> dict:
     """Разбирает одну строку одновременно на ARS и отдельное движение USD."""
@@ -18529,15 +14048,8 @@ def parse_financial_components(text: str) -> dict:
         usd_note = ''
     return {'amount': float(ars_amount or 0.0), 'note': ars_note if ars_amount is not None else re.sub('\\s+', ' ', raw).strip().lower(), 'usd_amount': float(usd.get('amount', 0.0) or 0.0), 'usd_note': usd_note, 'usd_only': bool(usd_only), 'source_finance_text': raw}
 
-def parse_usd_edit_value(text: str):
-    """Редактирование уже найденной USD-записи: число без знака = расход, + = приход."""
-    m = num_re.search(str(text or ''))
-    if not m:
-        raise ValueError('no usd number')
-    amount = parse_amount(m.group(0))
-    note = (str(text or '')[:m.start()] + ' ' + str(text or '')[m.end():]).strip()
-    note = re.sub('\\s+', ' ', note).lower()
-    return (float(amount), note)
+# [OCH12.35 OWNER] parse_usd_edit_value -> 11_business_finance.py
+_owner_install('finance', 'finance:0049')
 
 def split_amount_and_note(text: str):
     """
@@ -18637,71 +14149,24 @@ def make_custom_category_slug(name: str, existing=None) -> str:
         i += 1
     return f'{slug}_{i}'
 
-def get_expense_category_order_slugs(store: dict | None=None) -> list[str]:
-    """Стабильный порядок статей сверху вниз; пользователь может менять его в v91."""
-    items = list(_base_category_items(store)) + list(_custom_category_list(store))
-    available = [str(item.get('slug') or '') for item in items if str(item.get('slug') or '')]
-    try:
-        settings = (store or {}).setdefault('settings', {})
-        saved = [str(x) for x in settings.get('expense_category_order_slugs') or [] if str(x)]
-    except Exception:
-        saved = []
-    result = [slug for slug in saved if slug in available]
-    result.extend((slug for slug in available if slug not in result))
-    return result
+# [OCH12.35 OWNER] get_expense_category_order_slugs -> 11_business_finance.py
+_owner_install('finance', 'finance:0050')
 
-def get_expense_category_order(store: dict | None=None) -> list[str]:
-    by_slug = {}
-    for item in list(_base_category_items(store)) + list(_custom_category_list(store)):
-        slug = str(item.get('slug') or '')
-        if slug:
-            by_slug[slug] = item.get('name')
-    return [by_slug[slug] for slug in get_expense_category_order_slugs(store) if slug in by_slug]
+# [OCH12.35 OWNER] get_expense_category_order -> 11_business_finance.py
+_owner_install('finance', 'finance:0051')
 
-def move_expense_category_order(store: dict, slug: str, direction: str) -> bool:
-    order = get_expense_category_order_slugs(store)
-    slug = str(slug or '')
-    if slug not in order:
-        return False
-    idx = order.index(slug)
-    new_idx = idx - 1 if str(direction).lower() == 'up' else idx + 1
-    if new_idx < 0 or new_idx >= len(order):
-        return False
-    order[idx], order[new_idx] = (order[new_idx], order[idx])
-    store.setdefault('settings', {})['expense_category_order_slugs'] = order
-    return True
+# [OCH12.35 OWNER] move_expense_category_order -> 11_business_finance.py
+_owner_install('finance', 'finance:0052')
 _category_order_selection = {}
 
 def _category_order_selection_key(chat_id: int, params: tuple) -> tuple:
     return (int(chat_id),) + tuple((str(x) for x in params))
 
-def move_expense_category_to_position(store: dict, slug: str, position: int) -> bool:
-    """Вставка статьи в новую позицию со сдвигом промежуточных статей."""
-    order = get_expense_category_order_slugs(store)
-    slug = str(slug or '')
-    if slug not in order or not order:
-        return False
-    try:
-        target_idx = max(0, min(len(order) - 1, int(position) - 1))
-    except Exception:
-        return False
-    old_idx = order.index(slug)
-    if old_idx == target_idx:
-        return True
-    order.pop(old_idx)
-    order.insert(target_idx, slug)
-    store.setdefault('settings', {})['expense_category_order_slugs'] = order
-    return True
+# [OCH12.35 OWNER] move_expense_category_to_position -> 11_business_finance.py
+_owner_install('finance', 'finance:0053')
 
-def get_expense_category_slug(category: str, store: dict | None=None) -> str | None:
-    category = _clean_category_display_name(str(category or '')).upper()
-    for item in _base_category_items(store):
-        if category in {str(item.get('name') or '').upper(), str(item.get('default_name') or '').upper()}:
-            return item.get('slug')
-    for item in _custom_category_list(store):
-        if item['name'] == category:
-            return item['slug']
-    return None
+# [OCH12.35 OWNER] get_expense_category_slug -> 11_business_finance.py
+_owner_install('finance', 'finance:0054')
 
 def get_category_by_slug(slug: str, store: dict | None=None) -> str | None:
     slug = str(slug or '').strip()
@@ -18729,44 +14194,14 @@ def parse_category_definition(text: str):
         raise ValueError('format')
     return (name, keywords)
 
-def add_custom_expense_category(chat_id: int, name: str, keywords: list[str]) -> dict:
-    store = get_chat_store(chat_id)
-    settings = store.setdefault('settings', {})
-    custom = settings.setdefault('expense_categories_custom', [])
-    if not isinstance(custom, list):
-        custom = []
-        settings['expense_categories_custom'] = custom
-    name = str(name or '').strip().upper()
-    keywords = [str(x).strip().lower() for x in keywords or [] if str(x).strip()]
-    for item in custom:
-        if isinstance(item, dict) and str(item.get('name', '')).strip().upper() == name:
-            item['keywords'] = sorted(set((item.get('keywords') or []) + keywords))
-            save_data(data)
-            schedule_config_backup_for_chats(chat_id)
-            bot_journal('category_updated', chat_id, f"{name}: {', '.join(item['keywords'])}")
-            return item
-    item = {'name': name, 'slug': make_custom_category_slug(name, custom), 'keywords': sorted(set(keywords))}
-    custom.append(item)
-    save_data(data)
-    schedule_config_backup_for_chats(chat_id)
-    bot_journal('category_added', chat_id, f"{name}: {', '.join(item['keywords'])}")
-    return item
+# [OCH12.35 OWNER] add_custom_expense_category -> 11_business_finance.py
+_owner_install('finance', 'finance:0055')
 
-def expense_keyword_matches(note: str, keyword: str) -> bool:
-    """Match a configured word/phrase without matching it inside another word."""
-    note = re.sub('\\s+', ' ', str(note or '').casefold()).strip()
-    keyword = re.sub('\\s+', ' ', str(keyword or '').casefold()).strip()
-    if not note or not keyword:
-        return False
-    pattern = '(?<![\\w])' + re.escape(keyword).replace('\\ ', '\\s+') + '(?![\\w])'
-    return bool(re.search(pattern, note, flags=re.UNICODE))
+# [OCH12.35 OWNER] expense_keyword_matches -> 11_business_finance.py
+_owner_install('finance', 'finance:0056')
 
-def financial_view_is_usd(store: dict | None) -> bool:
-    """True when the visible finance shell is switched to 💵 USD operations."""
-    try:
-        return bool((store or {}).setdefault('settings', {}).get('usd_transactions_view', False))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] financial_view_is_usd -> 11_business_finance.py
+_owner_install('finance', 'finance:0057')
 
 def financial_view_amount(store: dict | None, rec: dict | None) -> float:
     try:
@@ -18803,23 +14238,11 @@ def financial_view_records_for_day_store(store: dict | None, day_key: str) -> li
     except Exception:
         return []
 
-def financial_view_total_balance(store: dict | None) -> float:
-    total = 0.0
-    for rec in (store or {}).get('records', []) or []:
-        if not isinstance(rec, dict) or not financial_view_record_visible(store, rec):
-            continue
-        total += financial_view_amount(store, rec)
-    return float(total)
+# [OCH12.35 OWNER] financial_view_total_balance -> 11_business_finance.py
+_owner_install('finance', 'finance:0058')
 
-def financial_view_balance_through_day(store: dict | None, day_key: str) -> float:
-    total = 0.0
-    for rec in sorted((store or {}).get('records', []) or [], key=record_sort_key):
-        dk = _record_day_key(rec)
-        if dk > str(day_key):
-            break
-        if financial_view_record_visible(store, rec):
-            total += financial_view_amount(store, rec)
-    return float(total)
+# [OCH12.35 OWNER] financial_view_balance_through_day -> 11_business_finance.py
+_owner_install('finance', 'finance:0059')
 
 def format_category_view_amount(store: dict | None, amount: float, category_mixed: bool=False) -> str:
     if financial_view_is_usd(store):
@@ -18829,32 +14252,11 @@ def format_category_view_amount(store: dict | None, amount: float, category_mixe
             return '$0'
     return format_category_amount(store or {}, amount, category_mixed)
 
-def resolve_expense_category(note: str, store: dict | None=None):
-    """Определяет статью расхода; всё без совпавших ключей попадает в ПРОЧЕЕ."""
-    for item in _custom_category_list(store):
-        for kw in item.get('keywords', []):
-            if expense_keyword_matches(note, kw):
-                return item.get('name')
-    for item in _base_category_items(store):
-        if item.get('slug') == 'other':
-            continue
-        for kw in item.get('keywords', []):
-            if expense_keyword_matches(note, kw):
-                return item.get('name')
-    other = _base_category_item_by_slug(store, 'other')
-    return (other or {}).get('name') or 'ПРОЧЕЕ'
+# [OCH12.35 OWNER] resolve_expense_category -> 11_business_finance.py
+_owner_install('finance', 'finance:0060')
 
-def resolve_expense_category_for_record(rec: dict, store: dict | None=None):
-    """Учитывает ручной перенос записи из ПРОЧЕЕ в выбранную статью."""
-    try:
-        override_slug = str((rec or {}).get('category_override_slug') or '').strip()
-        if override_slug:
-            category = get_category_by_slug(override_slug, store)
-            if category:
-                return category
-    except Exception:
-        pass
-    return resolve_expense_category((rec or {}).get('note', ''), store)
+# [OCH12.35 OWNER] resolve_expense_category_for_record -> 11_business_finance.py
+_owner_install('finance', 'finance:0061')
 
 def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
     """Считает суммы расходов по статьям (только отрицательные amount) в диапазоне дат включительно."""
@@ -18890,39 +14292,11 @@ def _record_int_id(rec: dict) -> int:
 def sorted_records_for_day(store: dict, day_key: str) -> list:
     return financial_view_records_for_day_store(store, day_key)
 
-def expense_anchor_records_for_day(store: dict, day_key: str) -> list:
-    """Расходные записи дня, которые можно выбрать как точную границу периода."""
-    out = []
-    for rec in sorted_records_for_day(store, day_key):
-        try:
-            if financial_view_amount(store, rec) < 0:
-                out.append(rec)
-        except Exception:
-            continue
-    return out
+# [OCH12.35 OWNER] expense_anchor_records_for_day -> 11_business_finance.py
+_owner_install('finance', 'finance:0062')
 
-def expense_anchor_button_label(rec: dict, store: dict | None=None) -> str:
-    """Короткая, но понятная подпись кнопки точного расхода."""
-    try:
-        raw_amount = financial_view_amount(store, rec)
-        amount = f"{('+' if raw_amount >= 0 else '-')}${fmt_num_plain(abs(raw_amount))}" if financial_view_is_usd(store) else format_store_amount(store or {}, raw_amount, mixed_space=False, ars_plain=False)
-    except Exception:
-        amount = str(financial_view_amount(store, rec))
-    note = _clean_category_display_name(re.sub('\\s+', ' ', financial_view_note(store, rec)).strip())
-    category = _clean_category_display_name(resolve_expense_category(note, store) or '')
-    try:
-        override_slug = str((rec or {}).get('category_override_slug') or '').strip()
-        if override_slug:
-            category = _clean_category_display_name(get_category_by_slug(override_slug, store) or category)
-    except Exception:
-        pass
-    rec_code = financial_view_short_id(store, rec)
-    parts = [rec_code, amount]
-    if note:
-        parts.append(note[:30])
-    if category and category.casefold() not in note.casefold():
-        parts.append(f'[{category[:16]}]')
-    return ' • '.join(parts)[:62]
+# [OCH12.35 OWNER] expense_anchor_button_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0063')
 
 def exact_record_range(store: dict, start_day: str, start_rid: int | None, end_day: str, end_rid: int | None):
     """Записи между двумя точными границами включительно.
@@ -19118,47 +14492,11 @@ def _v207_report_num(value) -> str:
     except Exception:
         return '0'
 
-def _v207_usd_equivalent(value, rate: float) -> str:
-    try:
-        if float(rate or 0) <= 0:
-            return '$—'
-        return f'${_v207_report_num(float(value or 0) / float(rate))}'
-    except Exception:
-        return '$—'
+# [OCH12.35 OWNER] _v207_usd_equivalent -> 11_business_finance.py
+_owner_install('finance', 'finance:0064')
 
-def _v207_usd_range_rows(chat_id: int | None, store: dict, start_day: str, end_day: str):
-    if chat_id:
-        fn = globals().get('_excel_canonical_records_for_range')
-        if callable(fn):
-            try:
-                return list(fn(int(chat_id), 'usd', str(start_day)[:10], str(end_day)[:10]) or [])
-            except Exception:
-                pass
-        fn = globals().get('_v151_all_records')
-        day_fn = globals().get('_v151_day_key')
-        if callable(fn) and callable(day_fn):
-            try:
-                return [r for r in fn(int(chat_id), 'usd') or [] if str(start_day)[:10] <= str(day_fn(r) or '') <= str(end_day)[:10]]
-            except Exception:
-                pass
-    out = []
-    for day_key, rows in ((store or {}).get('daily_records', {}) or {}).items():
-        if not str(start_day)[:10] <= str(day_key) <= str(end_day)[:10]:
-            continue
-        for rec in rows or []:
-            if not isinstance(rec, dict):
-                continue
-            try:
-                amount = float(rec.get('usd_amount', 0) or 0)
-            except Exception:
-                amount = 0.0
-            if abs(amount) <= 1e-12:
-                continue
-            out.append({**rec, '_v151_amount': amount, '_v151_note': str(rec.get('usd_note') or rec.get('note') or '')})
-    try:
-        return sorted(out, key=record_sort_key)
-    except Exception:
-        return out
+# [OCH12.35 OWNER] _v207_usd_range_rows -> 11_business_finance.py
+_owner_install('finance', 'finance:0065')
 
 def summarize_categories_record_range(store: dict, start_day: str, start_rid: int, end_day: str, end_rid: int):
     """F110 exact-period report: opening → income → ARS/USD expenses → closing balances."""
@@ -19527,15 +14865,8 @@ def set_constitution_protection_v232(enabled: bool) -> bool:
         pass
     return bool(enabled)
 
-def constitution_finance_write_blocked_v232() -> bool:
-    """Only a real/manual restore guard may freeze finance; Data Constitution quarantine never does."""
-    try:
-        if not bool(globals().get('RESTORE_GUARD_ACTIVE', False)):
-            return False
-        reason = str(globals().get('RESTORE_GUARD_REASON', '') or '')
-        return not reason.startswith('DATA CONSTITUTION:')
-    except Exception:
-        return False
+# [OCH12.35 OWNER] constitution_finance_write_blocked_v232 -> 11_business_finance.py
+_owner_install('finance', 'finance:0066')
 
 def constitution_continue_work_v232() -> bool:
     """Acknowledge the warning and release only a legacy constitution-owned global restore guard."""
@@ -21008,7 +16339,7 @@ def constitution_status_text() -> str:
     protection = constitution_protection_enabled_v232()
     loss_guard = constitution_loss_guard_enabled_v255()
     own_quarantine = bool(DATA_CONSTITUTION_QUARANTINE)
-    return f"🏛 КОНСТИТУЦИЯ ДАННЫХ · выс-262\nЗащита потери записей: {('✅ ВКЛ' if loss_guard else '⬜ ВЫКЛ')} (по умолчанию ВЫКЛ)\nБазовая целостность: {('✅ ВКЛ' if protection else '⬜ ВЫКЛ')}\nПроверка: {('⚠️ ТРЕБУЕТ ВНИМАНИЯ' if own_quarantine else '✅ НОРМА')}\nФинансовые операции: ✅ НЕ БЛОКИРУЮТСЯ\nCanonical snapshot: {('⛔ не продвигается' if own_quarantine and protection else '✅ разрешён')}\nПричина: {DATA_CONSTITUTION_REASON or DATA_CONSTITUTION_LAST_WARNING_V232 or '—'}\nLive finance records: {live.get('total_records', 0)}\nActive generation records: {active.get('total_records', '—')}\nIntegrity seq: {live.get('integrity_seq', 0)}\nLedger highwater: {live.get('ledger_highwater_seq', 0)}\nActive generation: {active.get('generation', '—')}\nMEGA root: {constitution_root()}"
+    return f"🏛 КОНСТИТУЦИЯ ДАННЫХ · выс-264\nЗащита потери записей: {('✅ ВКЛ' if loss_guard else '⬜ ВЫКЛ')} (по умолчанию ВЫКЛ)\nБазовая целостность: {('✅ ВКЛ' if protection else '⬜ ВЫКЛ')}\nПроверка: {('⚠️ ТРЕБУЕТ ВНИМАНИЯ' if own_quarantine else '✅ НОРМА')}\nФинансовые операции: ✅ НЕ БЛОКИРУЮТСЯ\nCanonical snapshot: {('⛔ не продвигается' if own_quarantine and protection else '✅ разрешён')}\nПричина: {DATA_CONSTITUTION_REASON or DATA_CONSTITUTION_LAST_WARNING_V232 or '—'}\nLive finance records: {live.get('total_records', 0)}\nActive generation records: {active.get('total_records', '—')}\nIntegrity seq: {live.get('integrity_seq', 0)}\nLedger highwater: {live.get('ledger_highwater_seq', 0)}\nActive generation: {active.get('generation', '—')}\nMEGA root: {constitution_root()}"
 
 def constitution_control_keyboard_v232():
     kb = types.InlineKeyboardMarkup()
@@ -21153,35 +16484,8 @@ def _v239_config_guard_sanitize_transient(value, key_hint: str=''):
         out[ks] = _v239_config_guard_sanitize_transient(v, ks)
     return out
 
-def _v234_config_projection_from_payload(payload: dict) -> dict:
-    payload = payload if isinstance(payload, dict) else {}
-    root = {}
-    for key in _V234_ROOT_CONFIG_KEYS:
-        value = payload.get(key)
-        if isinstance(value, (dict, list)) or value is not None:
-            root[key] = _v234_json_clone(value if value is not None else {})
-    gs = payload.get('_global_settings') or {}
-    if isinstance(gs, dict):
-        root['_global_settings'] = {str(k): _v234_json_clone(_v239_config_guard_sanitize_transient(v, str(k))) for k, v in gs.items() if str(k) not in _V234_GLOBAL_SETTINGS_EXCLUDE}
-    chats_out = {}
-    for cid, store in (payload.get('chats') or {}).items():
-        if not isinstance(store, dict):
-            continue
-        settings = store.get('settings') or {}
-        if not isinstance(settings, dict):
-            settings = {}
-        cfg = {str(k): _v234_json_clone(_v239_config_guard_sanitize_transient(v, str(k))) for k, v in settings.items() if str(k) not in _V234_CHAT_SETTINGS_EXCLUDE}
-        row = {'settings': cfg}
-        if isinstance(store.get('info'), dict):
-            row['info'] = _v234_json_clone(store.get('info'))
-        if isinstance(store.get('known_chats'), dict):
-            row['known_chats'] = _v234_json_clone(store.get('known_chats'))
-        if isinstance(store.get('chat_lifecycle_v150'), dict):
-            life = dict(store.get('chat_lifecycle_v150') or {})
-            life.pop('history', None)
-            row['chat_lifecycle_v150'] = _v234_json_clone(life)
-        chats_out[str(cid)] = row
-    return {'root': root, 'chats': chats_out}
+# [OCH12.35 COMPAT] legacy _v234_config_projection_from_payload -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0006')
 
 def config_guard_projection_v234() -> dict:
     with data_lock:
@@ -21809,170 +17113,15 @@ def _och1226_flush_loaded_chat_stores_only() -> int:
     return saved
 
 
-def mega_publish_current_sqlite_v1226(reason: str='scheduled_generation') -> dict:
-    """Low-RAM canonical MEGA generation publisher for the single FAST Render.
-
-    The live SQLite is the persistence authority.  We flush only already-loaded chat
-    objects, use SQLite's backup API, embed/verify the generation manifest, then publish
-    an immutable generation and atomically advance current_manifest.  Crucially this
-    does NOT perform a global full-state serialization, so backup creation never clones every chat
-    and cold ledger into Python RAM.
-    """
-    global _V240_RECOVERY_AUTHORITY_ACTIVE
-    prev = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
-    workdir = tempfile.mkdtemp(prefix='och1226_generation_')
-    try:
-        if not mega_is_configured(control_plane=True):
-            raise RuntimeError('MEGA canonical control plane unavailable')
-        with MEGA_GLOBAL_BACKUP_LOCK:
-            # Persist the global/root configuration without touching every cold chat.
-            # This captures owner settings, routes, reminders/config indexes and other
-            # root state while keeping finance ledgers on their existing SQLite rows.
-            save_data(data, root_only=True)
-            flushed = _och1226_flush_loaded_chat_stores_only()
-            created_at = now_local().isoformat(timespec='microseconds')
-            raw = os.path.join(workdir, 'bot_state.sqlite3')
-            gz = raw + '.gz'
-            SQLITE.backup_to(raw)
-            embedded = _v242_embed_manifest_from_sqlite(raw, created_at, reason)
-            _lowram_gzip_file(raw, gz)
-            manifest = constitution_publish_sqlite_generation(raw, gz, created_at, allow_destructive=False)
-            manifest = dict(manifest or {})
-            _v242_verify_published_generation(manifest)
-            manifest['och1226_loaded_chat_flush_rows'] = int(flushed)
-            manifest['och1226_layout'] = 'current_manifest + immutable generation + database/deltas/current_tail'
-            try:
-                SQLITE.set_meta('mega_storage_v1226', 'last_publish', {
-                    'at': created_at,
-                    'reason': str(reason),
-                    'generation': str(manifest.get('generation') or ''),
-                    'records': int(manifest.get('total_records') or 0),
-                    'flushed_loaded_rows': int(flushed),
-                })
-            except Exception:
-                pass
-            try:
-                runtime_event('mega_generation_publish_v1226', f"reason={reason}; generation={manifest.get('generation')}; records={manifest.get('total_records')}; hot_flush={flushed}")
-            except Exception:
-                pass
-            return manifest
-    finally:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(prev)
-        shutil.rmtree(workdir, ignore_errors=True)
+# [OCH12.35 OWNER] mega_publish_current_sqlite_v1226 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0088')
 
 
-def mega_publish_current_sqlite_v242(reason: str='snapshot', *, manual_restore: bool=False, allow_destructive: bool=False) -> dict:
-    """The single canonical full-SQLite WRITE path for v242 and future compatible code.
+# [OCH12.35 OWNER] mega_publish_current_sqlite_v242 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0089')
 
-    Normal scheduled backups and confirmed /restore use the same capture/publish format.
-    Manual restore rotates lineage and reanchors config first; ordinary snapshots do not.
-    """
-    if not mega_is_configured():
-        raise RuntimeError('MEGA unavailable')
-    previous_recovery = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
-    if manual_restore:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
-    try:
-        if manual_restore:
-            _v239_rotate_storage_lineage('v242:' + str(reason or 'manual_restore'))
-            cfg_fn = globals().get('config_guard_reanchor_after_manual_restore_v241')
-            if callable(cfg_fn):
-                cfg_fn('v242:' + str(reason or 'manual_restore'))
-        else:
-            _v239_storage_lineage(create=True)
-        workdir = tempfile.mkdtemp(prefix='v242_mega_publish_')
-        try:
-            with MEGA_GLOBAL_BACKUP_LOCK:
-                created_at = now_local().isoformat(timespec='microseconds')
-                raw = os.path.join(workdir, 'bot_state.sqlite3')
-                gz = raw + '.gz'
-                # R48: each persistence stage owns its lock; no data_lock across disk I/O.
-                flush_fn = globals().get('_lowram_flush_all_hot')
-                if callable(flush_fn):
-                    flush_fn(evict=False)
-                save_data(data, full=True)
-                SQLITE.backup_to(raw)
-                embedded = _v242_embed_manifest_from_sqlite(raw, created_at, reason)
-                try:
-                    SQLITE.set_meta('data_constitution_snapshot', 'main', dict(embedded, snapshot_created_at=created_at, snapshot_reason_v242=str(reason)))
-                    SQLITE.set_meta('db_snapshot', 'main', {'created_at': created_at, 'bot_version': VERSION, 'schema': 3, 'data_constitution': 2, 'storage_contract': 'v242_simple'})
-                except Exception:
-                    pass
-                _lowram_gzip_file(raw, gz)
-                preflight = globals().get('config_guard_snapshot_preflight_v234')
-                if callable(preflight):
-                    cfg_ok, cfg_detail = preflight(raw)
-                    if not cfg_ok:
-                        raise RuntimeError('config snapshot mismatch: ' + str(cfg_detail))
-                manifest = constitution_publish_sqlite_generation(raw, gz, created_at, allow_destructive=bool(allow_destructive or manual_restore))
-                active = _v242_verify_published_generation(manifest)
-                try:
-                    SQLITE.set_meta('mega_storage_v242', 'last_publish', {'at': created_at, 'reason': str(reason), 'generation': str(active.get('generation') or ''), 'records': int(active.get('total_records') or 0)})
-                except Exception:
-                    pass
-                if manual_restore:
-                    init_delta = globals().get('initialize_delta_baseline')
-                    if callable(init_delta):
-                        init_delta(data)
-                    try:
-                        lock = globals().get('_delta_state_lock')
-                        pending = globals().get('_delta_pending_chats')
-                        gens = globals().get('_delta_chat_generation')
-                        if lock is not None:
-                            with lock:
-                                if hasattr(pending, 'clear'):
-                                    pending.clear()
-                                if hasattr(gens, 'clear'):
-                                    gens.clear()
-                        else:
-                            if hasattr(pending, 'clear'):
-                                pending.clear()
-                            if hasattr(gens, 'clear'):
-                                gens.clear()
-                    except Exception:
-                        pass
-                try:
-                    runtime_event('mega_canonical_publish_v242', f"reason={reason}; generation={active.get('generation')}; records={active.get('total_records')}")
-                except Exception:
-                    pass
-                return active
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-    finally:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = bool(previous_recovery or globals().get('_V241_RESTORE_ACTIVE', False))
-
-def _canon_mega_upload_latest_database_backup__002(force: bool=False) -> bool:
-    """v242 unified scheduled/manual full DB uploader. Deltas remain parallel and separate."""
-    if not mega_is_configured():
-        return False
-    if not force:
-        gate = globals().get('v239_external_durable_write_allowed')
-        if callable(gate):
-            ok, why = gate()
-            if not ok:
-                try:
-                    _constitution_snapshot_block_notice(str(why))
-                except Exception:
-                    pass
-                return False
-        if bool(globals().get('RESTORE_GUARD_ACTIVE', False)):
-            return False
-        if globals().get('constitution_quarantine_active') and constitution_quarantine_active():
-            return False
-    try:
-        mega_publish_current_sqlite_v242('forced_backup' if force else 'scheduled_backup', manual_restore=False, allow_destructive=False)
-        return True
-    except Exception as exc:
-        try:
-            runtime_event('mega_canonical_publish_failed_v242', str(exc)[:700], 'ERROR')
-        except Exception:
-            pass
-        try:
-            log_error(f'[MEGA DB SNAPSHOT ERROR v242] {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _canon_mega_upload_latest_database_backup__002 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0090')
 
 def _v242_direct_generation_fallback(workdir: str, limit: int=24) -> tuple[str | None, dict | None, str]:
     """If current_manifest and/or generation manifests disappeared, read latest immutable generation file directly."""
@@ -22055,5 +17204,4 @@ def config_guard_bind_recovered_state_v242() -> dict:
     except Exception:
         pass
     return cp
-
-# v262
+# v266

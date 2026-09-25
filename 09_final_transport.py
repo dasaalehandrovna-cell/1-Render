@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 85_runtime_control.py ---
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
@@ -1633,33 +1634,8 @@ def _canon_get_registered_open_window__001(chat_id: int, message_id: int):
     _v179_touch_window_registry()
     return _V179_BASE_GET_OPEN_WINDOW(chat_id, message_id)
 
-def _v211_mega_node_housekeeping_job():
-    """Incremental post-READY cleanup; never blocks boot or critical persistence."""
-    delay = 21600.0
-    try:
-        if runtime_is_shutting_down() or not runtime_is_ready():
-            return
-        if _runtime_watcher_should_yield_to_critical_mega():
-            delay = 900.0
-            return
-        fn = globals().get('mega_diagnostic_node_housekeeping')
-        if callable(fn):
-            report = fn(50) or {}
-            removed = int(report.get('journal_removed', 0) or 0) + int(report.get('critical_removed', 0) or 0)
-            delay = 120.0 if removed else 21600.0
-            if removed:
-                runtime_event('mega_node_housekeeping_v211', f'removed={removed}; next={int(delay)}s')
-    except Exception as exc:
-        delay = 1800.0
-        try:
-            runtime_event('mega_node_housekeeping_error_v211', str(exc), 'WARN')
-        except Exception:
-            pass
-    finally:
-        try:
-            DELAYED_SCHEDULER.schedule('mega-node-housekeeping-v211', delay, _v211_mega_node_housekeeping_job)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _v211_mega_node_housekeeping_job -> 17_integration_mega.py
+_owner_install('mega', 'mega:0137')
 
 def _canon_runtime_mark_ready__001(detail: str=''):
     """One FINAL READY path replacing v153/v160/v167/v171/v172/v175 wrapper chain."""
@@ -1931,28 +1907,8 @@ def _v219_annotation_settings() -> dict:
     row.setdefault('iz_mr', True)
     return row
 
-def circle_annotation_button_enabled_v219(kind: str, chat_id: int | None=None) -> bool:
-    key = 'iz_mr' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker'} else 'tz'
-    base = bool(_v219_annotation_settings().get(key, True))
-    if chat_id is None or not base:
-        return base
-    fn = globals().get('annotation_effective_v229')
-    if callable(fn):
-        try:
-            return bool(fn(key, int(chat_id)))
-        except Exception:
-            pass
-    try:
-        cid = int(chat_id)
-        if not _v215_circle_business_chat(cid):
-            return base
-        directive_fn = globals().get('directive_chat_enabled_v223')
-        local_fn = globals().get('directive_annotation_allowed_v223')
-        if callable(directive_fn) and directive_fn(cid) and callable(local_fn):
-            return bool(base and local_fn(cid, key))
-    except Exception:
-        pass
-    return base
+# [OCH12.35 COMPAT] legacy circle_annotation_button_enabled_v219 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0021')
 
 def set_circle_annotation_button_v219(kind: str, enabled: bool) -> bool:
     key = 'iz_mr' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker'} else 'tz'
@@ -2156,15 +2112,8 @@ try:
 except Exception:
     pass
 
-def circle_annotation_global_enabled_v219(kind: str, chat_id: int | None=None) -> bool:
-    key = 'iz_mr' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker'} else 'tz'
-    if chat_id is not None:
-        try:
-            if not _v215_circle_business_chat(int(chat_id)):
-                return True
-        except Exception:
-            return True
-    return bool(_v219_annotation_settings().get(key, True))
+# [OCH12.35 COMPAT] legacy circle_annotation_global_enabled_v219 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0022')
 
 def _v223_directive_admin_text() -> str:
     c1 = list(_v174_circle_ids(1))
@@ -2368,28 +2317,8 @@ try:
 except Exception:
     pass
 
-def annotation_visibility_state_v226(kind: str, chat_id: int) -> dict:
-    cid = int(chat_id)
-    key = 'iz_mr' if str(kind or '').replace('-', '_').casefold() in {'iz_mr', 'izmr', 'marker'} else 'tz'
-    try:
-        global_on = bool(circle_annotation_global_enabled_v219(key, cid))
-    except Exception:
-        global_on = bool(_v219_annotation_settings().get(key, True))
-    try:
-        directive = bool(directive_chat_enabled_v223(cid))
-    except Exception:
-        directive = False
-    local_on = True
-    if directive:
-        try:
-            local_on = bool(directive_annotation_allowed_v223(cid, key))
-        except Exception:
-            local_on = True
-    try:
-        circle = bool(_v215_circle_business_chat(cid))
-    except Exception:
-        circle = False
-    return {'kind': key, 'circle': circle, 'global': global_on, 'directive': directive, 'local': local_on, 'effective': bool(global_on and local_on)}
+# [OCH12.35 COMPAT] legacy annotation_visibility_state_v226 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0023')
 
 def v226_refresh_annotation_markup_all() -> int:
     changed = 0
@@ -2507,7 +2436,7 @@ _V233_INFO_KB_PREV = _v229_build_info_keyboard
 def external_local_only_status_text_v233() -> str:
     active = storage_profile_v237_1() == STORAGE_PROFILE_LOCAL_V237_1
     env_forced = str(os.getenv('RENDER_TELEGRAM_ONLY', '') or '').strip().casefold() in {'1', 'true', 'yes', 'on', 'вкл'}
-    return (f"🏠 ТОЛЬКО RENDER · выс-262\n\nПрофиль: {('✅ АКТИВЕН' if active else '⬜ не выбран')}" + (' · Render ENV' if env_forced else '') + '\n📡 Telegram backup-канал: ⬜ ВЫКЛ\n☁️ MEGA backup: ⬜ ВЫКЛ\n✅ Обычный Telegram API / команды / окна: ВКЛ\n✅ Google / курс валют / пользовательские функции: ВКЛ\n\nНа старте разрешено только чтение источника восстановления. После READY оба remote backup-контура остаются выключены. MEGA storage_control.json используется как маленький служебный маркер выбранного режима.')[:3900]
+    return (f"🏠 ТОЛЬКО RENDER · выс-264\n\nПрофиль: {('✅ АКТИВЕН' if active else '⬜ не выбран')}" + (' · Render ENV' if env_forced else '') + '\n📡 Telegram backup-канал: ⬜ ВЫКЛ\n☁️ MEGA backup: ⬜ ВЫКЛ\n✅ Обычный Telegram API / команды / окна: ВКЛ\n✅ Google / курс валют / пользовательские функции: ВКЛ\n\nНа старте разрешено только чтение источника восстановления. После READY оба remote backup-контура остаются выключены. MEGA storage_control.json используется как маленький служебный маркер выбранного режима.')[:3900]
 
 def external_local_only_keyboard_v233():
     kb = types.InlineKeyboardMarkup()
@@ -2543,7 +2472,7 @@ def _v233_build_info_keyboard(chat_id: int):
 try:
     V196_BRANCH_CATALOG['finance.ars'].update({'rev': 2, 'purpose': 'Принимать/считать ARS; в явном OWNER local-only продолжать работу на SQLite без внешней durability.', 'flow': ['ввод → распознавание', 'record.amount → SQLite', 'normal → MEGA/Constitution witness', 'local-only → SQLite + queued ledger', 'UI']})
     V196_BRANCH_CATALOG['export.google'].update({'rev': 6, 'purpose': 'Google export/catch-up продолжает работать в Только Render; режим блокирует только MEGA backup и Telegram backup-канал.'})
-    V196_BRANCH_CATALOG['ui.info'].update({'rev': 14, 'purpose': 'Owner INFO + diagnostics + взаимоисключающие режимы хранения выс-262.'})
+    V196_BRANCH_CATALOG['ui.info'].update({'rev': 14, 'purpose': 'Owner INFO + diagnostics + взаимоисключающие режимы хранения выс-264.'})
     V196_BRANCH_CATALOG['storage.mega'].update({'rev': 5, 'purpose': 'MEGA durable storage только в MEGA-профиле; в Только Render разрешён лишь control-plane marker/read для выбора восстановления.'})
     V196_BRANCH_CATALOG['storage.constitution'].update({'rev': 5, 'purpose': 'Semantic backup/restore protection + local-only immutable ledger queue/resume sync.'})
 except Exception:
@@ -2603,7 +2532,7 @@ _V237_1_STORAGE_INFO_KB_PREV = _v234_build_info_keyboard
 def storage_profiles_status_text_v237_1() -> str:
     st = storage_profile_status_v237_1()
     p = st.get('profile')
-    return f"🗄 ХРАНИЛИЩЕ / BACKUP · выс-262\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nTelegram backup-канал: {('✅ настроен' if st.get('telegram_available') else '⛔ не настроен')}\nMEGA credentials: {('✅ есть' if st.get('mega_configured') else '⛔ нет/MEGA_ENABLED=0')}\nMEGA active root: {st.get('mega_root') or '—'}\nБыстрый shard save: ~{(MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS):g} сек.\nSYSTEM SQLite generation: каждые {system_snapshot_hours_v242()} ч. при наличии изменений.\n\nПрофили взаимоисключающие: включение одного автоматически отключает два остальных. MEGA использует один канонический root; business shard сохраняются быстро, а полный SQLite generation создаётся редко."[:3900]
+    return f"🗄 ХРАНИЛИЩЕ / BACKUP · выс-264\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nTelegram backup-канал: {('✅ настроен' if st.get('telegram_available') else '⛔ не настроен')}\nMEGA credentials: {('✅ есть' if st.get('mega_configured') else '⛔ нет/MEGA_ENABLED=0')}\nMEGA active root: {st.get('mega_root') or '—'}\nБыстрый shard save: ~{(MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS):g} сек.\nSYSTEM SQLite generation: каждые {system_snapshot_hours_v242()} ч. при наличии изменений.\n\nПрофили взаимоисключающие: включение одного автоматически отключает два остальных. MEGA использует один канонический root; business shard сохраняются быстро, а полный SQLite generation создаётся редко."[:3900]
 
 def storage_profiles_keyboard_v237_1():
     p = storage_profile_v237_1()
@@ -2619,34 +2548,25 @@ def storage_profiles_keyboard_v237_1():
     kb.row(IB('❌ Закрыть', callback_data='info_close'))
     return kb
 
-def secret_storage_status_text_v234() -> str:
-    requested = str(globals().get('secret_storage_backend_v234', lambda: 'telegram')())
-    effective = str(globals().get('secret_storage_effective_backend_v234', lambda: requested)())
-    return f"🔐 SECRET STORAGE · выс-262\n\nПрофиль backup: {storage_profile_v237_1()}\nSECRET выбран: {('☁️ MEGA' if requested == 'mega' else '📡 Telegram')}\nЭффективно: {('☁️ MEGA' if effective == 'mega' else '📡 Telegram')}\n\nПри выборе общего профиля MEGA SECRET автоматически переводится в MEGA; при двух других профилях — в Telegram."[:3900]
+# [OCH12.35 OWNER] secret_storage_status_text_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0129')
 
-def secret_storage_keyboard_v234():
-    kb = types.InlineKeyboardMarkup()
-    req = secret_storage_backend_v234()
-    p = storage_profile_v237_1()
-    kb.row(IB(('✅ ' if req == 'telegram' else '⬜ ') + '📡 Telegram', callback_data='v237:storage:secret_tg'))
-    kb.row(IB(('✅ ' if req == 'mega' else '⬜ ') + '☁️ MEGA', callback_data='v237:storage:secret_mega'))
-    kb.row(IB('🔙 Хранилище', callback_data='v237:storage:open'))
-    kb.row(IB('❌ Закрыть', callback_data='info_close'))
-    return kb
+# [OCH12.35 OWNER] secret_storage_keyboard_v234 -> 18_business_secret.py
+_owner_install('secret', 'secret:0130')
 
 def telegram_durable_status_text_v236() -> str:
     st = telegram_durable_status_v234()
     slots = telegram_stable_slot_status_v236() if telegram_durable_primary_v234() else {'count': 0, 'chat_backup_count': 0, 'durable_count': 0}
-    return f"📡 TELEGRAM DURABLE · выс-262\n\nПрофиль: {('✅ АКТИВЕН' if telegram_durable_primary_v234() else '⬜ ВЫКЛ')}\nКанал: {('✅ настроен' if st.get('configured') else '⛔ нет')}\nHEAD gen: {int(st.get('generation') or 0)} · slots {int(slots.get('count') or 0)}\nФайлы используют постоянные message-slots: create once → edit; после удаления → recreate once → дальше edit."[:3900]
+    return f"📡 TELEGRAM DURABLE · выс-264\n\nПрофиль: {('✅ АКТИВЕН' if telegram_durable_primary_v234() else '⬜ ВЫКЛ')}\nКанал: {('✅ настроен' if st.get('configured') else '⛔ нет')}\nHEAD gen: {int(st.get('generation') or 0)} · slots {int(slots.get('count') or 0)}\nФайлы используют постоянные message-slots: create once → edit; после удаления → recreate once → дальше edit."[:3900]
 
 def telegram_durable_keyboard_v234():
     return storage_profiles_keyboard_v237_1()
 
-def mega_contour_status_text_v234() -> str:
-    return storage_profiles_status_text_v237_1()
+# [OCH12.35 OWNER] mega_contour_status_text_v234 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0138')
 
-def mega_contour_keyboard_v234():
-    return storage_profiles_keyboard_v237_1()
+# [OCH12.35 OWNER] mega_contour_keyboard_v234 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0139')
 
 def _v237_1_storage_build_info_text(chat_id: int, *args, **kwargs) -> str:
     base = str(_V237_1_STORAGE_INFO_TEXT_PREV(int(chat_id), *args, **kwargs))
@@ -2699,7 +2619,7 @@ def _v240_mode_name(mode: str) -> str:
 
 def storage_modes_text_v240() -> str:
     p = storage_profile_v237_1()
-    return f"⚙️ РЕЖИМЫ · выс-262\n\nАктивный режим: {_v240_mode_name(p)}\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nВ «Только Render» работают все обычные функции бота, Google, курс валют, команды, окна и переключатели; отключены только MEGA-хранилище и Telegram backup-канал. После deploy режим берётся из MEGA storage_control.json. Если сохранён Render, источник восстановления выбирается отдельно: сначала полнота snapshot, затем свежесть."[:3900]
+    return f"⚙️ РЕЖИМЫ · выс-264\n\nАктивный режим: {_v240_mode_name(p)}\n\n{('✅' if p == STORAGE_PROFILE_LOCAL_V237_1 else '⬜')} 🏠 Только Render\n{('✅' if p == STORAGE_PROFILE_TELEGRAM_V237_1 else '⬜')} 📡 Telegram durable\n{('✅' if p == STORAGE_PROFILE_MEGA_V237_1 else '⬜')} ☁️ Вернуть Мегу\n\nВ «Только Render» работают все обычные функции бота, Google, курс валют, команды, окна и переключатели; отключены только MEGA-хранилище и Telegram backup-канал. После deploy режим берётся из MEGA storage_control.json. Если сохранён Render, источник восстановления выбирается отдельно: сначала полнота snapshot, затем свежесть."[:3900]
 
 def storage_modes_keyboard_v240():
     p = storage_profile_v237_1()
@@ -2812,63 +2732,12 @@ def _v265_mdb_entry(token: str) -> dict:
         return dict(_V265_MEGA_BROWSER_TOKENS.get(str(token or ''), {}) or {})
 
 
-def _v265_peer_mega_request(path: str) -> dict:
-    base_fn = globals().get('_split_peer_base')
-    headers_fn = globals().get('_split_headers')
-    base = str(base_fn() if callable(base_fn) else '').rstrip('/')
-    if not base or not callable(headers_fn):
-        raise RuntimeError('Render #2 / PEER_SERVICE_URL недоступен')
-    response = requests.get(
-        base + '/internal/r65/mega/list',
-        params={'path': str(path or '/')},
-        headers=headers_fn('vys-262-r65-mega-recovery-browser'),
-        timeout=(5, 90),
-    )
-    try:
-        body = response.json() if response.content else {}
-    except Exception:
-        body = {'error': (response.text or '')[:700]}
-    if not (200 <= response.status_code < 300) or not bool((body or {}).get('ok')):
-        raise RuntimeError(str((body or {}).get('error') or f'HEAVY HTTP {response.status_code}')[:700])
-    return dict(body or {})
+# [OCH12.35 OWNER] _v265_peer_mega_request -> 17_integration_mega.py
+_owner_install('mega', 'mega:0140')
 
 
-def _v265_refresh_mega_browser(path: str='/', page: int=0) -> dict:
-    path = str(path or '/').strip() or '/'
-    with _V265_MEGA_BROWSER_LOCK:
-        _V265_MEGA_BROWSER_STATE['loading'] = True
-        _V265_MEGA_BROWSER_STATE['error'] = ''
-    try:
-        body = _v265_peer_mega_request(path)
-        entries = []
-        for raw in list(body.get('entries') or []):
-            if not isinstance(raw, dict):
-                continue
-            ep = str(raw.get('path') or '').strip()
-            kind = 'dir' if str(raw.get('type') or '') == 'dir' else 'file'
-            if not ep:
-                continue
-            row = {'path': ep, 'kind': kind, 'name': str(raw.get('name') or ep.rsplit('/', 1)[-1] or '/')}
-            row['token'] = _v265_mdb_token(ep, kind)
-            entries.append(row)
-        with _V265_MEGA_BROWSER_LOCK:
-            _V265_MEGA_BROWSER_STATE.update({
-                'path': str(body.get('path') or path),
-                'parent': str(body.get('parent') or '/'),
-                'entries': entries,
-                'page': max(0, int(page or 0)),
-                'error': '',
-                'loaded_at': time.time(),
-                'loading': False,
-                'configured_root': str(body.get('configured_root') or ''),
-                'elapsed_mega': float(body.get('elapsed_mega') or 0.0),
-            })
-        return dict(_V265_MEGA_BROWSER_STATE)
-    except Exception as exc:
-        with _V265_MEGA_BROWSER_LOCK:
-            _V265_MEGA_BROWSER_STATE['loading'] = False
-            _V265_MEGA_BROWSER_STATE['error'] = f'{type(exc).__name__}: {str(exc)[:700]}'
-        raise
+# [OCH12.35 OWNER] _v265_refresh_mega_browser -> 17_integration_mega.py
+_owner_install('mega', 'mega:0141')
 
 
 def _v265_mdb_state(page: int | None=None) -> dict:
@@ -2880,113 +2749,24 @@ def _v265_mdb_state(page: int | None=None) -> dict:
     return row
 
 
-def mega_database_browser_text_v242(page: int | None=None) -> str:
-    st = _v265_mdb_state(page)
-    entries = list(st.get('entries') or [])
-    per = 10
-    pages = max(1, (len(entries) + per - 1) // per)
-    cur = min(max(0, int(st.get('page') or 0)), pages - 1)
-    err = str(st.get('error') or '')
-    status = '⏳ загрузка…' if st.get('loading') else (('⛔ ' + err[:700]) if err else f'✅ {len(entries)} элементов')
-    return (
-        '🗄 БАЗЫ MEGA / ВОССТАНОВЛЕНИЕ · R1\n\n'
-        f"Путь: {st.get('path') or '/'}\n"
-        f"Статус: {status}\n"
-        f"Страница: {cur + 1}/{pages}\n"
-        f"Рабочий root R1: {st.get('configured_root') or '—'}\n\n"
-        'Ручной recovery-browser может просматривать ВСЕ папки аккаунта MEGA. '
-        'Автоматический backup при этом остаётся строго внутри MEGA_BACKUP_DIR.\n\n'
-        'Файл при восстановлении принимается только после SQLite quick_check; текущая база сначала получает pre_restore.'
-    )[:3900]
+# [OCH12.35 OWNER] mega_database_browser_text_v242 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0142')
 
 
-def mega_database_browser_keyboard_v242(page: int | None=None):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    st = _v265_mdb_state(page)
-    entries = list(st.get('entries') or [])
-    per = 10
-    pages = max(1, (len(entries) + per - 1) // per)
-    cur = min(max(0, int(st.get('page') or 0)), pages - 1)
-    for row in entries[cur * per:(cur + 1) * per]:
-        name = str(row.get('name') or '')
-        short = name if len(name) <= 48 else name[:45] + '…'
-        if row.get('kind') == 'dir':
-            kb.row(IB('📁 ' + short, callback_data=f"v242:mdb:dir:{row.get('token')}"))
-        else:
-            kb.row(IB('📄 ' + short, callback_data=f"v242:mdb:pick:{row.get('token')}"))
-    nav = []
-    if cur > 0:
-        nav.append(IB('◀️', callback_data=f'v242:mdb:page:{cur - 1}'))
-    if cur + 1 < pages:
-        nav.append(IB('▶️', callback_data=f'v242:mdb:page:{cur + 1}'))
-    if nav:
-        kb.row(*nav)
-    parent = str(st.get('parent') or '/')
-    path = str(st.get('path') or '/')
-    if path != '/':
-        kb.row(IB('⬆️ Вверх', callback_data=f"v242:mdb:dir:{_v265_mdb_token(parent, 'dir')}"))
-    kb.row(IB('🏠 Корень MEGA', callback_data='v242:mdb:root'), IB('🔄 Обновить', callback_data='v242:mdb:refresh'))
-    kb.row(IB('🔙 Настройки после деплоя', callback_data='v234:config:open'))
-    kb.row(IB('❌ Закрыть', callback_data='info_close'))
-    return kb
+# [OCH12.35 OWNER] mega_database_browser_keyboard_v242 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0143')
 
 
-def mega_database_confirm_text_v242(token: str) -> str:
-    row = _v265_mdb_entry(token)
-    return (
-        '⚠️ ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ MEGA · R1\n\n'
-        f"Файл: {row.get('name') or str(row.get('path') or '').rsplit('/',1)[-1] or 'не найден'}\n"
-        f"Путь: {row.get('path') or '—'}\n\n"
-        'FAST скачает файл из MEGA прямо на R1, проверит gzip/raw SQLite и PRAGMA quick_check. '
-        'Только валидная SQLite полностью заменит рабочую базу без merge. Перед заменой создаётся pre_restore. '
-        'После успеха FAST сразу закрепит FULL snapshot в Redis и поставит compact MEGA checkpoint на R1.'
-    )[:3900]
+# [OCH12.35 OWNER] mega_database_confirm_text_v242 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0144')
 
 
-def mega_database_confirm_keyboard_v242(token: str):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(IB('✅ ПОДТВЕРДИТЬ восстановление', callback_data=f'v242:mdb:confirm:{token}'))
-    kb.row(IB('⬅️ Назад к папке', callback_data='v242:mdb:back'))
-    kb.row(IB('❌ Закрыть', callback_data='info_close'))
-    return kb
+# [OCH12.35 OWNER] mega_database_confirm_keyboard_v242 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0145')
 
 
-def _v265_heavy_download_mega_file(remote: str, workdir: str) -> str:
-    base_fn = globals().get('_split_peer_base')
-    headers_fn = globals().get('_split_headers')
-    base = str(base_fn() if callable(base_fn) else '').rstrip('/')
-    if not base or not callable(headers_fn):
-        raise RuntimeError('Render #2 / PEER_SERVICE_URL недоступен')
-    response = requests.get(
-        base + '/internal/r65/mega/file',
-        params={'path': str(remote or '')},
-        headers=headers_fn('vys-262-r65-mega-recovery-file'),
-        timeout=(8, 360),
-        stream=True,
-    )
-    if not (200 <= response.status_code < 300):
-        try:
-            body = response.json() if response.content else {}
-            detail = str((body or {}).get('error') or '')
-        except Exception:
-            detail = (response.text or '')[:700]
-        raise RuntimeError(f'HEAVY MEGA file HTTP {response.status_code}: {detail[:700]}')
-    name = str(remote or '').rstrip('/').rsplit('/', 1)[-1] or 'mega_restore.bin'
-    safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', name)[-120:] or 'mega_restore.bin'
-    target = os.path.join(str(workdir), safe)
-    size = 0
-    max_bytes = 256 * 1024 * 1024
-    with open(target, 'wb') as fh:
-        for chunk in response.iter_content(1024 * 1024):
-            if not chunk:
-                continue
-            size += len(chunk)
-            if size > max_bytes:
-                raise RuntimeError('Файл MEGA больше recovery-лимита 256 МБ')
-            fh.write(chunk)
-    if size <= 0:
-        raise RuntimeError('HEAVY передал пустой файл')
-    return target
+# [OCH12.35 OWNER] _v265_heavy_download_mega_file -> 17_integration_mega.py
+_owner_install('mega', 'mega:0146')
 
 
 def _v265_mdb_refresh_job(chat_id: int, message_id: int, path: str, page: int=0) -> None:
@@ -5987,38 +5767,12 @@ _FINAL_NATIVE_DELETE = _FINAL_NATIVE_TELEBOT.delete_message
 _FINAL_NATIVE_SEND_DOCUMENT = _FINAL_NATIVE_TELEBOT.send_document
 
 
-def _final_filter_markup(chat_id, reply_markup, stage='final_filter', message_id=None):
-    prepared = reply_markup
-    try:
-        fn = globals().get('v221_final_reply_markup')
-        if callable(fn):
-            prepared = fn(int(chat_id), prepared)
-    except Exception:
-        pass
-    # R75 HARD FENCE: this is deliberately below every legacy/profile/restore/
-    # markup-only path.  No Telegram mutation can bypass the four OFF switches.
-    try:
-        fence = globals().get('_r75_transport_feature_fence')
-        if callable(fence):
-            prepared = fence(prepared, int(chat_id), stage=str(stage or 'final_filter'), message_id=message_id)
-    except Exception:
-        pass
-    return prepared
+# [OCH12.35 COMPAT] legacy _final_filter_markup -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0024')
 
 
-def _final_prepare_markup(chat_id, reply_markup, text='', stage='prepare', message_id=None):
-    prepared = reply_markup
-    try:
-        fn = globals().get('v227_render_effective_contour_markup')
-        if callable(fn):
-            prepared = fn(int(chat_id), prepared, text=str(text or ''))
-        else:
-            fn = globals().get('_v160_augment_markup')
-            if callable(fn):
-                prepared = fn(prepared, str(text or ''), int(chat_id))
-    except Exception:
-        prepared = reply_markup
-    return _final_filter_markup(chat_id, prepared, stage=stage, message_id=message_id)
+# [OCH12.35 COMPAT] legacy _final_prepare_markup -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0025')
 
 
 def _final_record_transport(chat_id, message_id, reply_markup, text='', source_markup=None):
@@ -6740,5 +6494,4 @@ v220_contour_access_callback_final = _v221_contour_access_callback_final
 wait_durable_subtasks = _canon_wait_durable_subtasks__001
 window_diag_fast_ui_apply = _canon_window_diag_fast_ui_apply__001
 window_diag_prepare_fast_ui_payload = _canon_window_diag_prepare_fast_ui_payload__001
-
-# v262
+# v266

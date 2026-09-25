@@ -1,4 +1,4 @@
-"""vys-262 R69 internal runtime configuration.
+"""vys-265 OCH12.34 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-262-och12.31-safe-restore-file-lanes"
+CONFIG_VERSION = "vys-265-och12.34-clean-business-owner-split"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -24,8 +24,14 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "PORT": "5000",
     "BOT_SPLIT_ROLE": "front",
     # OCH12.27: single-Render profile. Render #2 is treated as unavailable.
-    "OCH1224_SINGLE_RENDER": "1",
+    "OCH1224_SINGLE_RENDER": "0",
     "PEER_PING_ENABLED": "0",
+    # OCH12.34: R1 is authoritative and self-sufficient; R2 is only an optional accelerator.
+    "R1234_R2_ACCELERATOR_ONLY": "1",
+    "R1234_R2_FAILOVER_TO_R1": "1",
+    "R1234_R2_HEALTH_TTL_SEC": "45",
+    "R1234_R2_PROBE_CONNECT_SEC": "0.65",
+    "R1234_R2_PROBE_READ_SEC": "1.25",
     "OCH1224_BOOT_REMOTE_PROBES": "0",
     "OCH1224_JOURNAL_LOCAL_ONLY": "1",
     "OCH1224_MEGA_ZERO_RESIDENT": "1",
@@ -388,7 +394,9 @@ def install_internal_runtime_config(role: str) -> Dict[str, str]:
         os.environ["SPLIT_EMERGENCY_MEGA"] = "0"
         os.environ["WORKER_CAPSULE_MEGA_ENABLED"] = "0"
     _init_redis_runtime_default()
-    os.environ["VYS262_INTERNAL_CONFIG_VERSION"] = CONFIG_VERSION
+    os.environ["VYS264_INTERNAL_CONFIG_VERSION"] = CONFIG_VERSION
+    os.environ["VYS263_INTERNAL_CONFIG_VERSION"] = CONFIG_VERSION  # compatibility
+    os.environ["VYS262_INTERNAL_CONFIG_VERSION"] = CONFIG_VERSION  # compatibility for old diagnostics
     return dict(values)
 
 

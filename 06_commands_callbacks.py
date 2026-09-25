@@ -1,34 +1,12 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 80_callback_router.py ---
-def _forward_probe_all_background(owner_chat_id: int, message_id: int):
-    try:
-        ok, bad = probe_all_known_chats()
-        owner_store = get_chat_store(int(OWNER_ID))
-        owner_day_key = owner_store.get('current_view_day', today_key())
-        summary = (data.get('_global_settings', {}) or {}).get('last_chat_probe_summary_v197') or {}
-        checked = int(summary.get('checked') or ok + bad)
-        changed = int(summary.get('changed') or 0)
-        renamed = int(summary.get('renamed') or 0)
-        errors = int(summary.get('errors') or 0)
-        text = build_forward_status_text(f'📡 Полная проверка чатов завершена.\nПроверено: {checked} · доступно: {ok} · нет доступа: {bad} · ошибок API: {errors}\nОбновлено карточек: {changed} · изменено имён: {renamed}\n\nНазвания, username, тип и доступные Telegram-параметры синхронизированы и сохранены.\n\nПересылка:\nВыберите чат A:')
-        fast_ui_edit_message_text(int(owner_chat_id), int(message_id), text, reply_markup=build_forward_source_menu(owner_day_key), purpose='forward_probe_all_done')
-    except Exception as exc:
-        log_error(f'forward_probe_all_background: {exc}')
-        try:
-            send_owner_technical_alert('❌ Проверка чатов завершилась с ошибкой. Смотрите журнал.', 20, source_chat_id=int(owner_chat_id))
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _forward_probe_all_background -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0138')
 
-def _forward_probe_one_background(owner_chat_id: int, message_id: int, target_chat_id: int):
-    try:
-        ok = probe_bot_in_chat(int(target_chat_id))
-        status = '✅ бот снова доступен' if ok else '➖ бот удалён/нет доступа'
-        owner_store = get_chat_store(int(OWNER_ID))
-        owner_day_key = owner_store.get('current_view_day', today_key())
-        fast_ui_edit_message_text(int(owner_chat_id), int(message_id), build_forward_status_text(f'🗑 Удалённые чаты\n{get_chat_display_name(int(target_chat_id))}: {status}'), reply_markup=build_removed_chats_menu(owner_day_key), purpose='forward_probe_one_done')
-    except Exception as exc:
-        log_error(f'forward_probe_one_background({target_chat_id}): {exc}')
+# [OCH12.35 OWNER] _forward_probe_one_background -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0139')
 
 def _chat_description_background(viewer_chat_id: int, message_id: int, target_chat_id: int, origin: str, day_key: str, page: int=0, refresh: bool=False):
     try:
@@ -2814,13 +2792,8 @@ try:
 except Exception:
     pass
 
-def finance_operation_key(chat_id: int, source_msg_id, ledger: str='main') -> str:
-    """Stable idempotency key for a finance effect created from a Telegram message."""
-    try:
-        mid = int(source_msg_id)
-    except Exception:
-        return ''
-    return f"finance:{int(chat_id)}:{str(ledger or 'main')}:{mid}"
+# [OCH12.35 OWNER] finance_operation_key -> 11_business_finance.py
+_owner_install('finance', 'finance:0162')
 
 def find_record_by_operation_key(chat_id: int, operation_key: str):
     if not operation_key:
@@ -2850,124 +2823,8 @@ def _r49_defer_operation_complete(op_id: str, detail: str) -> bool:
         pass
     return False
 
-def _finance_add_record_base(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str='', usd_only: bool=False, source_finance_text: str=''):
-    bot_journal('record_add_start', chat_id, f'amount={amount} note={note}')
-    if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
-        raise RuntimeError('DATA CONSTITUTION: финансовые изменения заблокированы до восстановления целостности')
-    op_id = operation_begin('finance_add', chat_id, target=str(day_key or 'auto'), payload={'amount': amount, 'note': note}, critical=True) if 'operation_begin' in globals() else ''
-    if op_id and 'operation_step' in globals():
-        operation_step(op_id, 'saved_locally', 'intent recorded', persist=False)
-    with locked_chat(chat_id):
-        store = get_chat_store(chat_id)
-        rid = store.get('next_id', 1)
-        if not day_key:
-            day_key = day_key_from_message(source_msg)
-        source_msg_id = getattr(source_msg, 'message_id', None) if source_msg else None
-        source_order_msg_id = getattr(source_msg, 'source_order_msg_id', None) or getattr(source_msg, 'forward_source_msg_id', None) or source_msg_id
-        _op_override = str(getattr(source_msg, 'finance_operation_key_override', '') or '') if source_msg is not None else ''
-        operation_key = _op_override or finance_operation_key(chat_id, source_msg_id, 'main')
-        if operation_key:
-            existing_op = find_record_by_operation_key(int(chat_id), operation_key) if 'find_record_by_operation_key' in globals() else None
-            if isinstance(existing_op, dict):
-                bot_journal('finance_duplicate_operation_blocked_v260', chat_id, f'operation_key={operation_key}')
-                if op_id and 'operation_complete' in globals():
-                    _r49_defer_operation_complete(op_id, 'duplicate blocked by stable operation key; existing record reused')
-                return existing_op
-        if source_msg_id is not None:
-            existing_any = find_record_by_message_id(int(chat_id), int(source_msg_id)) if 'find_record_by_message_id' in globals() else None
-            if isinstance(existing_any, dict):
-                if '_remember_finance_source_identity_v257' in globals():
-                    _remember_finance_source_identity_v257(int(chat_id), existing_any, int(source_msg_id), 'records')
-                bot_journal('finance_duplicate_blocked_v257', chat_id, f'source_msg_id={source_msg_id} operation_key={operation_key}; central=1')
-                if op_id and 'operation_complete' in globals():
-                    _r49_defer_operation_complete(op_id, 'duplicate blocked by stable source identity; existing record reused')
-                return existing_any
-            for existing in store.get('records', []) or []:
-                if not isinstance(existing, dict):
-                    continue
-                if operation_key and str(existing.get('operation_key') or '') == operation_key or int(existing.get('source_msg_id') or 0) == int(source_msg_id):
-                    if operation_key and (not existing.get('operation_key')):
-                        existing['operation_key'] = operation_key
-                    bot_journal('finance_duplicate_blocked', chat_id, f'source_msg_id={source_msg_id} operation_key={operation_key}')
-                    if op_id and 'operation_complete' in globals():
-                        _r49_defer_operation_complete(op_id, 'duplicate blocked; existing record reused')
-                    return existing
-        rec = {'id': rid, 'short_id': '', 'timestamp': message_timestamp_iso(source_msg), 'amount': amount, 'note': note, 'source_msg_id': source_msg_id, 'source_order_msg_id': source_order_msg_id, 'owner': owner, 'msg_id': source_msg_id, 'origin_msg_id': source_msg_id, 'day_key': day_key, 'operation_key': operation_key}
-        if source_msg is not None:
-            for _attr, _field in (('forward_source_chat_id','forward_source_chat_id'), ('forward_source_msg_id','forward_source_msg_id'), ('forward_dst_chat_id','forward_dst_chat_id'), ('forward_dst_msg_id','forward_dst_msg_id')):
-                try:
-                    _v = int(getattr(source_msg, _attr, 0) or 0)
-                    if _v: rec[_field] = _v
-                except Exception:
-                    pass
-            if rec.get('forward_source_chat_id') and rec.get('forward_source_msg_id'):
-                rec['forwarded_by_bot'] = True
-        if usd_amount is not None:
-            rec['usd_amount'] = float(usd_amount or 0)
-            rec['usd_note'] = str(usd_note or note or '')
-            rec['usd_only'] = bool(usd_only)
-        if source_finance_text:
-            rec['source_finance_text'] = str(source_finance_text)
-        # R15 hot path: do not run the historical full-ledger normalizer/dedupe
-        # synchronously for every new message.  Exact-once guards above already protect
-        # this Telegram effect.  Update the two authoritative in-memory indexes
-        # incrementally, commit this chat, and let the debounced finance finalize do the
-        # full normalize/reconcile in FINANCE_TASK_POOL.
-        records = store.setdefault('records', [])
-        _needs_sort = bool(records and record_sort_key(rec) < record_sort_key(records[-1]))
-        records.append(rec)
-        if _needs_sort:
-            try: records.sort(key=record_sort_key)
-            except Exception: pass
-        daily = store.setdefault('daily_records', {})
-        day_rows = daily.setdefault(str(day_key), [])
-        _day_needs_sort = bool(day_rows and record_sort_key(rec) < record_sort_key(day_rows[-1]))
-        day_rows.append(rec)
-        if _day_needs_sort:
-            try: day_rows.sort(key=record_sort_key)
-            except Exception: pass
-        try:
-            store['next_id'] = max(int(store.get('next_id', 1) or 1), int(rid) + 1)
-        except Exception:
-            store['next_id'] = int(rid) + 1
-        try:
-            store['balance'] = float(store.get('balance', 0) or 0) + float(amount or 0)
-        except Exception:
-            store['balance'] = sum((float(r.get('amount', 0) or 0) for r in records if isinstance(r, dict)))
-        store['_finance_hotpath_pending_normalize_r16'] = True
-        store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
-        store.pop('_finance_day_balance_cache_r16', None)
-        if usd_amount is not None and '_usd_balance_cache_r16' in store:
-            try: store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) + float(usd_amount or 0)
-            except Exception: store.pop('_usd_balance_cache_r16', None)
-        # R48: no SQLite/integrity/root persistence while chat_lock is held.
-        try:
-            if 'ensure_finance_record_uid' in globals():
-                ensure_finance_record_uid(int(chat_id), rec)
-        except Exception:
-            pass
-        result_rec = rec
-    # Durable record commit after chat_lock release.
-    try:
-        if 'persist_finance_chat_local_fast' in globals() and not persist_finance_chat_local_fast(int(chat_id)):
-            raise RuntimeError('local SQLite finance persist failed')
-    except Exception as _v168_local_exc:
-        try: log_error(f'R48 record local commit {chat_id}: {_v168_local_exc}')
-        except Exception: pass
-    try:
-        finance_cache_invalidate(chat_id, 'finance_add')
-        finance_integrity_append(chat_id, 'add', result_rec)
-    except Exception as _integrity_exc:
-        log_error(f'finance add integrity: {_integrity_exc}')
-    try:
-        if source_msg_id is not None and '_remember_finance_source_identity_v257' in globals():
-            _remember_finance_source_identity_v257(int(chat_id), result_rec, int(source_msg_id), 'records')
-    except Exception as _v257_idx_exc:
-        try: log_error(f'v257 finance source identity index: {_v257_idx_exc}')
-        except Exception: pass
-    if op_id and 'operation_complete' in globals():
-        operation_complete(op_id, f"record={result_rec.get('id')}")
-    return result_rec
+# [OCH12.35 OWNER] _finance_add_record_base -> 11_business_finance.py
+_owner_install('finance', 'finance:0163')
 
 def delete_record_in_chat(chat_id: int, rid: int):
     if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
@@ -3190,69 +3047,14 @@ try:
 except Exception:
     pass
 
-def is_finance_mode(chat_id):
-    store = get_chat_store(chat_id)
-    return store.get('finance_mode', False)
+# [OCH12.35 OWNER] is_finance_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0164')
 
-def set_finance_mode(chat_id: int, enabled: bool):
-    """v108: finance accounting and visible finance windows are separate states.
+# [OCH12.35 OWNER] set_finance_mode -> 11_business_finance.py
+_owner_install('finance', 'finance:0165')
 
-    A fresh OFF -> ON transition always enables hidden finance and starts with all three
-    automatic window modes OFF.  Visible modes are selected independently in F39.
-    """
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    enabled = bool(enabled)
-    was_enabled = bool(store.get('finance_mode', False))
-    store['finance_mode'] = enabled
-    settings = store.setdefault('settings', {})
-    if enabled:
-        finance_active_chats.add(chat_id)
-        if not was_enabled:
-            settings['hidden_finance'] = True
-            settings['quick_balance_enabled'] = False
-            settings['quick_balance_behavior'] = 'normal'
-            settings['quick_balance_user_selected'] = True
-            state = store.get('finance_window_state')
-            if not isinstance(state, dict):
-                state = {}
-            state.update({'mode': 'off', 'main_windows': {}, 'balance_panel_id': None, 'balance_panel_mode': 'mini', 'current_view_day': str(store.get('current_view_day') or today_key()), 'auto_reopen_on_boot': False, 'updated_at': now_local().isoformat(timespec='seconds')})
-            store['finance_window_state'] = state
-            try:
-                delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-            except Exception:
-                pass
-    else:
-        finance_active_chats.discard(chat_id)
-        settings['hidden_finance'] = False
-        settings['quick_balance_enabled'] = False
-        settings['quick_balance_behavior'] = 'normal'
-        settings['quick_balance_user_selected'] = True
-        state = store.get('finance_window_state')
-        if not isinstance(state, dict):
-            state = {}
-        state.update({'mode': 'off', 'main_windows': {}, 'balance_panel_id': None, 'balance_panel_mode': 'mini', 'auto_reopen_on_boot': False, 'updated_at': now_local().isoformat(timespec='seconds')})
-        store['finance_window_state'] = state
-        try:
-            delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-        except Exception:
-            pass
-    save_data(data, chat_ids=[chat_id])
-    try:
-        schedule_quick_backup(chat_id, 0.5)
-    except Exception:
-        pass
-    schedule_config_backup_for_chats(chat_id)
-
-def require_finance(chat_id: int) -> bool:
-    """
-    Проверка: включён ли финансовый режим.
-    Если нет — показываем подсказку /поехали.
-    """
-    if not is_finance_mode(chat_id):
-        send_and_auto_delete(chat_id, '⚙️ Финансовый режим выключен.\nАктивируйте командой /ok')
-        return False
-    return True
+# [OCH12.35 OWNER] require_finance -> 11_business_finance.py
+_owner_install('finance', 'finance:0166')
 
 def _v177_legacy_0230_refresh_total_message_if_any(chat_id: int):
     """
@@ -4351,165 +4153,17 @@ def _canon_record_day_key__001(rec: dict) -> str:
     rec['day_key'] = today_key()
     return rec['day_key']
 
-def _v258_record_strong_keys(rec: dict, chat_id: int) -> list[str]:
-    """Stable keys that prove two finance rows are the same Telegram effect.
+# [OCH12.35 COMPAT] legacy _v258_record_strong_keys -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0016')
 
-    Deliberately excludes source_order_msg_id: forwarded copies may legitimately
-    share an upstream order id while being different messages in this chat.
-    """
-    out = []
-    try:
-        op = str((rec or {}).get('operation_key') or '').strip()
-        if op and op.startswith(f'finance:{int(chat_id)}:'):
-            out.append('op:' + op)
-    except Exception:
-        pass
-    for key in ('source_msg_id', 'origin_msg_id', 'msg_id'):
-        try:
-            mid = int((rec or {}).get(key) or 0)
-            if mid:
-                out.append(f'msg:{mid}')
-        except Exception:
-            pass
-    return list(dict.fromkeys(out))
+# [OCH12.35 OWNER] _v258_merge_duplicate_finance_records -> 11_business_finance.py
+_owner_install('finance', 'finance:0167')
 
-def _v258_merge_duplicate_finance_records(chat_id: int, records: list[dict]) -> tuple[list[dict], int]:
-    """Collapse historical deploy/edit duplicates without merging real operations.
+# [OCH12.35 COMPAT] legacy normalize_chat_records -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0017')
 
-    Same Telegram message must produce one finance record.  The oldest record id
-    is kept for button/reference stability, while editable finance fields are
-    taken from the newest duplicate (the usual post-deploy edited copy).
-    """
-    cid = int(chat_id)
-    out = []
-    key_to_idx = {}
-    removed = 0
-    editable = ('amount','note','usd_amount','usd_note','usd_only','source_finance_text',
-                'timestamp','day_key','owner','category_override_slug','currency')
-    identity_fill = ('source_msg_id','origin_msg_id','msg_id','source_order_msg_id','operation_key')
-    for raw in records or []:
-        if not isinstance(raw, dict):
-            continue
-        rec = raw
-        keys = _v258_record_strong_keys(rec, cid)
-        matches = sorted({key_to_idx[k] for k in keys if k in key_to_idx})
-        if not matches:
-            idx = len(out)
-            out.append(rec)
-            for k in keys:
-                key_to_idx[k] = idx
-            continue
-        idx = matches[0]
-        base = out[idx]
-        # If older corrupted state already created more than one canonical bucket
-        # that this row bridges, fold those buckets too.
-        for other_idx in reversed(matches[1:]):
-            if other_idx == idx or other_idx >= len(out):
-                continue
-            other = out[other_idx]
-            try:
-                base_id = int(base.get('id') or 0)
-                other_id = int(other.get('id') or 0)
-            except Exception:
-                base_id = other_id = 0
-            newer = other if other_id >= base_id else base
-            for fld in editable:
-                if fld in newer:
-                    base[fld] = newer.get(fld)
-            for fld in identity_fill:
-                if not base.get(fld) and other.get(fld):
-                    base[fld] = other.get(fld)
-            out.pop(other_idx)
-            removed += 1
-            # Rebuild map after structural fold; duplicate migrations are tiny and
-            # correctness is more important than micro-optimizing this path.
-            key_to_idx = {}
-            for oi, rr in enumerate(out):
-                for kk in _v258_record_strong_keys(rr, cid):
-                    key_to_idx[kk] = oi
-            idx = min(idx, len(out)-1)
-            base = out[idx]
-        try:
-            base_id = int(base.get('id') or 0)
-            rec_id = int(rec.get('id') or 0)
-        except Exception:
-            base_id = rec_id = 0
-        newer = rec if rec_id >= base_id else base
-        # Keep the canonical (usually oldest) record id/record_uid, but apply the
-        # newest financial edit so an old dragon/emoji/text variant disappears.
-        for fld in editable:
-            if fld in newer:
-                base[fld] = newer.get(fld)
-        for fld in identity_fill:
-            if not base.get(fld) and rec.get(fld):
-                base[fld] = rec.get(fld)
-        for k in set(keys + _v258_record_strong_keys(base, cid)):
-            key_to_idx[k] = idx
-        removed += 1
-    return out, removed
-
-def normalize_chat_records(chat_id: int) -> None:
-    """
-    v258: records — основной источник, daily_records строится из него.
-    Сортировка стабильная: Telegram date + исходный message_id. Исторические
-    дубли одной Telegram-записи после deploy/edit схлопываются по сильной
-    идентичности, но независимые одинаковые суммы/описания не объединяются.
-    """
-    store = get_chat_store(chat_id)
-    records = store.get('records')
-    daily = store.get('daily_records') or {}
-    if not isinstance(records, list) or not records:
-        rebuilt = []
-        for dk in sorted(daily.keys()):
-            for rec in daily.get(dk, []) or []:
-                if isinstance(rec, dict):
-                    rec.setdefault('day_key', dk)
-                    rebuilt.append(rec)
-        records = rebuilt
-    try:
-        records, _v258_removed = _v258_merge_duplicate_finance_records(int(chat_id), list(records or []))
-    except Exception as _v258_dedupe_exc:
-        _v258_removed = 0
-        try: log_error(f'v258 finance duplicate migration {chat_id}: {_v258_dedupe_exc}')
-        except Exception: pass
-    clean = []
-    for rec in records or []:
-        if not isinstance(rec, dict):
-            continue
-        rec.setdefault('timestamp', now_local().isoformat(timespec='seconds'))
-        rec.setdefault('amount', 0)
-        rec.setdefault('note', '')
-        rec.setdefault('owner', '')
-        rec.setdefault('source_order_msg_id', rec.get('source_msg_id') or rec.get('origin_msg_id') or rec.get('msg_id') or rec.get('id') or 0)
-        _record_day_key(rec)
-        try:
-            if 'ensure_finance_record_uid' in globals():
-                ensure_finance_record_uid(int(chat_id), rec)
-        except Exception:
-            pass
-        clean.append(rec)
-    clean.sort(key=record_sort_key)
-    store['records'] = clean
-    rebuilt_daily = {}
-    for rec in clean:
-        rebuilt_daily.setdefault(_record_day_key(rec), []).append(rec)
-    store['daily_records'] = rebuilt_daily
-    if _v258_removed:
-        try:
-            store['balance'] = sum((float(r.get('amount', 0) or 0) for r in clean))
-            store['next_id'] = max([int(r.get('id', 0) or 0) for r in clean] + [0]) + 1
-            store['_finance_dedupe_v258_removed'] = int(store.get('_finance_dedupe_v258_removed') or 0) + int(_v258_removed)
-            if 'migrate_finance_source_index_v257' in globals():
-                migrate_finance_source_index_v257(int(chat_id))
-            bot_journal('finance_duplicate_collapsed_v258', int(chat_id), f'removed={int(_v258_removed)}')
-        except Exception as _v258_post_exc:
-            try: log_error(f'v258 finance duplicate post-normalize {chat_id}: {_v258_post_exc}')
-            except Exception: pass
-
-def recalc_balance(chat_id: int):
-    normalize_chat_records(chat_id)
-    store = get_chat_store(chat_id)
-    store['balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get('records', [])))
+# [OCH12.35 OWNER] recalc_balance -> 11_business_finance.py
+_owner_install('finance', 'finance:0168')
 
 def rebuild_month_short_ids(chat_id: int):
     """Пересчитывает short_id как месячную нумерацию по стабильной хронологии."""
@@ -4542,37 +4196,8 @@ def rebuild_month_short_ids(chat_id: int):
                 usd_month_counters[month_key] += 1
     store['records'] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, [])]
 
-def calc_day_balance(store: dict, day_key: str) -> float:
-    """R16 fast closing balance: O(1) for the latest day, cached for history."""
-    day_key = str(day_key or '')[:10]
-    daily = store.get('daily_records', {}) or {}
-    if not daily:
-        return 0.0
-    try:
-        latest = max(str(k)[:10] for k in daily.keys())
-        if day_key >= latest:
-            return float(store.get('balance', 0) or 0)
-    except Exception:
-        pass
-    gen = int(store.get('_finance_fast_generation_r16', 0) or 0)
-    cache = store.setdefault('_finance_day_balance_cache_r16', {})
-    cached = cache.get(day_key) if isinstance(cache, dict) else None
-    if isinstance(cached, dict) and int(cached.get('generation', -1)) == gen:
-        try: return float(cached.get('value', 0) or 0)
-        except Exception: pass
-    total = 0.0
-    for dk in sorted(daily.keys()):
-        if str(dk)[:10] > day_key:
-            break
-        for r in daily.get(dk, []) or []:
-            total += float(r.get('amount', 0) or 0)
-    try:
-        cache[day_key] = {'generation': gen, 'value': float(total)}
-        if len(cache) > 64:
-            for key in list(cache)[:-64]: cache.pop(key, None)
-    except Exception:
-        pass
-    return float(total)
+# [OCH12.35 OWNER] calc_day_balance -> 11_business_finance.py
+_owner_install('finance', 'finance:0169')
 
 def rebuild_global_records():
     """Быстрый общий итог без копирования всех записей всех чатов при каждом сообщении."""
@@ -4600,30 +4225,8 @@ _backup_dirty_chats = set()
 _quick_backup_dirty_chats = set()
 _global_mega_timer = None
 
-def collect_finance_chat_ids():
-    ids = set()
-    try:
-        for cid, enabled in (data.get('finance_active_chats', {}) or {}).items():
-            if enabled:
-                ids.add(int(cid))
-    except Exception:
-        pass
-    try:
-        for cid in list(finance_active_chats):
-            ids.add(int(cid))
-    except Exception:
-        pass
-    try:
-        for cid, store in (data.get('chats', {}) or {}).items():
-            try:
-                int_cid = int(cid)
-            except Exception:
-                continue
-            if store.get('finance_mode') or (OWNER_ID and str(int_cid) == str(OWNER_ID)):
-                ids.add(int_cid)
-    except Exception:
-        pass
-    return sorted(ids)
+# [OCH12.35 OWNER] collect_finance_chat_ids -> 11_business_finance.py
+_owner_install('finance', 'finance:0170')
 
 def _canon_schedule_startup_main_windows__001(delay: float=3.0):
     """v108: restore only automatic finance windows that were actually open before deploy."""
@@ -4659,17 +4262,11 @@ def _canon_schedule_startup_main_windows__001(delay: float=3.0):
     except Exception as e:
         log_error(f'schedule_startup_main_windows: {e}')
 
-def schedule_all_finance_backups(delay: float=10.0):
-    for cid in collect_finance_chat_ids():
-        schedule_backup_flush(cid, delay=delay)
+# [OCH12.35 OWNER] schedule_all_finance_backups -> 11_business_finance.py
+_owner_install('finance', 'finance:0171')
 
-def _schedule_global_mega_snapshot(delay: float=30.0):
-    """Совместимость старых вызовов: v90 лишь отмечает pending full snapshot.
-
-    Полный global больше не создаётся через 20–30 секунд после каждого чата.
-    Его запускает общий quiet/max scheduler.
-    """
-    _mark_global_snapshot_pending()
+# [OCH12.35 OWNER] _schedule_global_mega_snapshot -> 17_integration_mega.py
+_owner_install('mega', 'mega:0118')
 
 def _run_quick_chat_backup(chat_id: int):
     """v90 quick backup = маленький immutable delta, а не полная копия чата/global."""
@@ -4783,34 +4380,8 @@ def schedule_quick_backup(chat_id: int, delay: float | None=None):
     DELAYED_SCHEDULER.cancel('mega-delta-batch-v90')
     DELAYED_SCHEDULER.schedule('mega-delta-batch-v90', max(0.5, float(delay)), _fire)
 
-def schedule_full_backup_only(chat_id: int, delay: float=3.0):
-    """Тяжёлый JSON/канал/MEGA-файл чата — отдельно от быстрого delta."""
-    chat_id = int(chat_id)
-    if RESTORE_GUARD_ACTIVE:
-        log_error(f'FULL BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}')
-        return
-    try:
-        delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
-    except Exception:
-        delay = BACKUP_MIN_DELAY_SECONDS
-    due = time.time() + delay
-    expected_epoch = int(globals().get('_V241_STORAGE_EPOCH', 0) or 0)
-    with timer_lock:
-        _backup_dirty_chats.add(chat_id)
-        _backup_timers[chat_id] = due
-
-    def _fire():
-        with timer_lock:
-            _backup_timers.pop(chat_id, None)
-        if expected_epoch != int(globals().get('_V241_STORAGE_EPOCH', 0) or 0) or globals().get('_V241_RESTORE_ACTIVE', False):
-            with timer_lock:
-                _backup_dirty_chats.discard(chat_id)
-            return
-        if not BACKUP_TASK_POOL.submit(f'full:{chat_id}', _run_full_chat_backup, chat_id, expected_epoch):
-            log_error(f'FULL BACKUP QUEUE FULL, RETRY: {chat_id}')
-            schedule_full_backup_only(chat_id, BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.cancel(f'full-backup:{chat_id}')
-    DELAYED_SCHEDULER.schedule(f'full-backup:{chat_id}', delay, _fire)
+# [OCH12.35 COMPAT] legacy schedule_full_backup_only -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0018')
 
 def schedule_backup_flush(chat_id: int, delay: float=3.0):
     """SQLite уже сохранена; delta быстро; тяжёлый файл чата — после экономичного idle debounce."""
@@ -4835,26 +4406,8 @@ def _safe_stabilize(action_name, func):
 
 # R48 FINAL: removed dead legacy owner _v177_legacy_0237_finance_changed_now; final owner is loaded later.
 
-def _v177_legacy_0238_finance_changed(chat_id: int, day_key: str | None=None, reason: str='change', delay: float=0.35):
-    """Debounced универсальный финальный пересчёт для одного чата."""
-    chat_id = int(chat_id)
-    bot_journal('finance_changed_scheduled', chat_id, f'day={day_key} reason={reason} delay={delay}')
-    day_key = day_key or get_chat_store(chat_id).get('current_view_day') or today_key()
-
-    def _job():
-        if not FINANCE_TASK_POOL.submit(chat_id, _finance_changed_now, chat_id, day_key, reason):
-            log_error(f'FINANCE QUEUE FULL, RETRY: {chat_id}')
-            with timer_lock:
-                _finalize_timers[chat_id] = time.time() + 1.0
-            DELAYED_SCHEDULER.schedule(f'finance-finalize:{chat_id}', 1.0, _fire_finance)
-    with timer_lock:
-        _finalize_timers[chat_id] = time.time() + max(0.0, float(delay))
-
-    def _fire_finance():
-        with timer_lock:
-            _finalize_timers.pop(chat_id, None)
-        _job()
-    DELAYED_SCHEDULER.schedule(f'finance-finalize:{chat_id}', delay, _fire_finance)
+# [OCH12.35 OWNER] _v177_legacy_0238_finance_changed -> 11_business_finance.py
+_owner_install('finance', 'finance:0172')
 
 def _v177_legacy_0239_schedule_finalize(chat_id: int, day_key: str, delay: float=0.35):
     """Совместимость со старым кодом: теперь всё идёт через finance_changed()."""
@@ -5195,11 +4748,8 @@ def handle_document(msg):
     except Exception as e:
         log_error(f'handle_document forward failed: {e}')
 
-def cleanup_forward_links(chat_id: int):
-    """
-    Удаляет все связи пересылки для чата из памяти и из сохранённого индекса.
-    """
-    _cleanup_forward_storage_for_chat(chat_id)
+# [OCH12.35 OWNER] cleanup_forward_links -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0140')
 KEEP_ALIVE_SEND_TO_OWNER = False
 KEEPALIVE_CONFIG_KEY = 'keepalive_v205'
 KEEPALIVE_SAFE_INTERVALS = (300, 480, 600, 720, 840)
@@ -5903,96 +5453,8 @@ def cmd_mega_status(msg):
         return
     send_and_auto_delete(chat_id, mega_status_text(), 90)
 
-def run_manual_mega_restore(chat_id: int):
-    """OCH12.31 manual MEGA restore shares the browser's exact-file restore path.
-
-    If the canonical current_manifest names a generation, restore that immutable file
-    without current_tail.  If the manifest is missing/invalid, do not guess which of
-    several generations is authoritative: open the same MEGA browser the owner already
-    uses successfully and let the owner choose the exact point-in-time file.
-    """
-    chat_id = int(chat_id)
-    work = ''
-    try:
-        send_and_auto_delete(chat_id, '☁️ 12.31: читаю canonical current_manifest и восстанавливаю точную generation без current_tail…', 30)
-        token_fn = globals().get('_v265_mdb_token')
-        restore_fn = globals().get('_v242_restore_selected_mega_database')
-        paths_fn = globals().get('_r80_compact_paths')
-        get_exact = globals().get('_r81_mega_get_exact')
-        if not callable(token_fn) or not callable(restore_fn) or not callable(paths_fn) or not callable(get_exact):
-            raise RuntimeError('единый MEGA browser/restore pipeline недоступен')
-        paths = paths_fn() or {}
-        manifest_remote = str(paths.get('latest') or '')
-        remote = ''
-        manifest_detail = ''
-        work = tempfile.mkdtemp(prefix='och1231_manual_manifest_')
-        if manifest_remote:
-            local_manifest, manifest_detail = get_exact(manifest_remote, work, max(120, int(float(globals().get('MEGA_TIMEOUT') or 120))))
-            if local_manifest and os.path.isfile(local_manifest):
-                try:
-                    with open(local_manifest, 'r', encoding='utf-8') as fh:
-                        manifest = json.load(fh) or {}
-                    remote = str(manifest.get('remote_generation') or '').strip()
-                    if not remote:
-                        generation = str(manifest.get('generation') or manifest.get('base_generation') or '').strip()
-                        root = str(globals().get('MEGA_BACKUP_DIR') or '').rstrip('/')
-                        if generation and root:
-                            remote = root + '/database/generations/' + os.path.basename(generation)
-                except Exception as exc:
-                    manifest_detail = f'manifest decode {type(exc).__name__}: {str(exc)[:180]}'
-                    remote = ''
-        if not remote:
-            # Missing/broken manifest is exactly the case where "newest" can be unsafe
-            # (for example an EMPTY_INIT generation may be newer than the wanted DB).
-            # Open the canonical browser rather than silently choosing the wrong file.
-            refresh = globals().get('_v265_refresh_mega_browser')
-            text_fn = globals().get('mega_database_browser_text_v242')
-            kb_fn = globals().get('mega_database_browser_keyboard_v242')
-            generations_dir_fn = globals().get('constitution_generations_dir')
-            if callable(refresh) and callable(text_fn) and callable(kb_fn) and callable(generations_dir_fn):
-                refresh(str(generations_dir_fn()), 0)
-                bot.send_message(chat_id, window_mark(text_fn(0), 'Ф233'), reply_markup=kb_fn(0))
-                send_and_auto_delete(chat_id, '⚠️ current_manifest не дал точную generation. Я не выбираю файл наугад: открыт список database/generations для ручного выбора.', 60)
-                try:
-                    bot_journal('mega_manual_restore_v1231_browser_fallback', chat_id, f'manifest={manifest_remote}; detail={manifest_detail[:240]}', 'WARN')
-                except Exception:
-                    pass
-                return False
-            raise RuntimeError('current_manifest не дал точную generation: ' + str(manifest_detail)[:300])
-        token = str(token_fn(remote, 'file'))
-        rep = restore_fn(token, chat_id) or {}
-        if not bool(rep.get('ok')):
-            raise RuntimeError('единый MEGA restore не подтвердил успех')
-        try:
-            refresh_registered_financial_windows(chat_id)
-        except Exception:
-            pass
-        try:
-            schedule_startup_main_windows(delay=0.5)
-        except Exception:
-            pass
-        checkpoint_note = '✅' if rep.get('checkpoint_ok') else ('—' if rep.get('checkpoint_required') is False else '⛔')
-        name = os.path.basename(remote)
-        send_and_auto_delete(
-            chat_id,
-            f"✅ MEGA → бот восстановлен из {name}. Без current_tail. records={rep.get('source_records')} · новая canonical generation={rep.get('generation') or 'LOCAL-PENDING'} · checkpoint={checkpoint_note}",
-            180,
-        )
-        try:
-            bot_journal('mega_manual_restore_v1231', chat_id, f"source={remote}; exact_generation=1; tail=0; checkpoint_ok={int(bool(rep.get('checkpoint_ok')))}")
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        log_error(f'run_manual_mega_restore: {exc}')
-        send_and_auto_delete(chat_id, '❌ Ошибка ручного восстановления из MEGA: ' + str(exc)[:500], 180)
-        return False
-    finally:
-        if work:
-            try:
-                shutil.rmtree(work, ignore_errors=True)
-            except Exception:
-                pass
+# [OCH12.35 OWNER] run_manual_mega_restore -> 17_integration_mega.py
+_owner_install('mega', 'mega:0119')
 
 
 def run_manual_redis_restore(chat_id: int):
@@ -6023,58 +5485,11 @@ def cmd_mega_restore_now(msg):
     if _restore_pool is None or not _restore_pool.submit(f'manual-mega-restore:{chat_id}', run_manual_mega_restore, chat_id):
         send_and_auto_delete(chat_id, '⛔ Очередь восстановления переполнена. Попробуйте позже.', 20)
 
-def _v243_manual_chat_mega_backup(chat_id: int) -> bool:
-    cid = int(chat_id)
-    try:
-        with state_chat_context(cid):
-            save_data(data, chat_ids=[cid])
-            return bool(mega_upload_chat_backup_bundle(cid, current_month_key()))
-    except Exception as exc:
-        try:
-            log_error(f'manual chat MEGA backup v243 {cid}: {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _v243_manual_chat_mega_backup -> 17_integration_mega.py
+_owner_install('mega', 'mega:0120')
 
-def run_manual_mega_backup_v243(chat_id: int):
-    chat_id = int(chat_id)
-    previous = bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False))
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = True
-    try:
-        send_and_auto_delete(chat_id, '☁️ MEGA backup: фиксирую текущую SQLite как новую generation…', 30)
-        publish = globals().get('mega_publish_current_sqlite_v242')
-        if not callable(publish):
-            raise RuntimeError('canonical MEGA publisher unavailable')
-        active = publish('mega_backup_now_v243', manual_restore=False, allow_destructive=False) or {}
-        generation = str(active.get('generation') or '')
-        records = int(active.get('total_records') or 0)
-        if not generation:
-            raise RuntimeError('generation was not confirmed after upload')
-        heal = globals().get('_v243_mark_runtime_restore_healthy')
-        if callable(heal):
-            heal('mega_backup_now_v243', remote_confirmed=True, generation=generation)
-        queued = 0
-        rejected = 0
-        pool = globals().get('BACKUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        for cid in collect_finance_chat_ids():
-            try:
-                ok = bool(pool and pool.submit(f'manual-mega-chat:{int(cid)}', _v243_manual_chat_mega_backup, int(cid)))
-                if ok:
-                    queued += 1
-                else:
-                    rejected += 1
-            except Exception:
-                rejected += 1
-        send_and_auto_delete(chat_id, f'✅ MEGA backup готов. generation={generation}; записей={records}. Чат-бэкапы параллельно: очередь={queued}, не поставлено={rejected}. Эта generation пригодна для восстановления после следующего deploy.', 120)
-        try:
-            bot_journal('mega_backup_now_v243', chat_id, f'generation={generation}; records={records}; queued={queued}; rejected={rejected}')
-        except Exception:
-            pass
-    except Exception as exc:
-        log_error(f'run_manual_mega_backup_v243: {exc}')
-        send_and_auto_delete(chat_id, '❌ MEGA backup не создан: ' + str(exc)[:500], 120)
-    finally:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE'] = previous
+# [OCH12.35 OWNER] run_manual_mega_backup_v243 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0121')
 
 @bot.message_handler(commands=['mega_backup_now'])
 def cmd_mega_backup_now(msg):
@@ -6290,5 +5705,4 @@ def start_keep_alive_thread():
                 _peer_keep_alive_thread = threading.Thread(target=peer_keep_alive_task, name='peer-keep-alive-watchdog', daemon=True)
                 _peer_keep_alive_thread.start()
         return _keep_alive_thread
-
-# v262
+# v266

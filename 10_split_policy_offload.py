@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 92_v262_linked_finance_speed.py ---
 """v262: one logical finance operation across all edit paths + hot UI path decoupling.
@@ -51,47 +52,12 @@ def _v262_origin_tuple_from_operation(value):
     return (0, 0)
 
 
-def finance_origin_identity_v262(chat_id: int, rec: dict | None, fallback_msg_id: int=0):
-    """Return immutable (source_chat_id, source_message_id, origin_key)."""
-    cid = _v262_int(chat_id)
-    rec = rec if isinstance(rec, dict) else {}
-    src_chat, src_msg = _v262_origin_tuple_from_key(rec.get('finance_origin_key_v262'))
-    if not (src_chat and src_msg):
-        src_chat = _v262_int(rec.get('forward_source_chat_id'))
-        src_msg = _v262_int(rec.get('forward_source_msg_id'))
-    if not (src_chat and src_msg):
-        src_chat, src_msg = _v262_origin_tuple_from_operation(rec.get('operation_key'))
-    if not (src_chat and src_msg):
-        try:
-            ident = globals().get('_forward_copy_record_identity')
-            if callable(ident):
-                is_copy, _dst_mid, rchat, rmsg = ident(cid, rec)
-                if is_copy and rchat and rmsg:
-                    src_chat, src_msg = int(rchat), int(rmsg)
-        except Exception:
-            pass
-    if not src_chat:
-        src_chat = cid
-    if not src_msg:
-        for key in ('source_msg_id', 'origin_msg_id', 'msg_id', 'source_order_msg_id'):
-            src_msg = _v262_int(rec.get(key))
-            if src_msg:
-                break
-    if not src_msg:
-        src_msg = _v262_int(fallback_msg_id)
-    key = f'fin-origin:{int(src_chat)}:{int(src_msg)}' if src_chat and src_msg else ''
-    return (int(src_chat or 0), int(src_msg or 0), key)
+# [OCH12.35 OWNER] finance_origin_identity_v262 -> 11_business_finance.py
+_owner_install('finance', 'finance:0211')
 
 
-def _ensure_finance_origin_key_v262(chat_id: int, rec: dict | None, fallback_msg_id: int=0) -> str:
-    if not isinstance(rec, dict):
-        return ''
-    src_chat, src_msg, key = finance_origin_identity_v262(int(chat_id), rec, fallback_msg_id)
-    if key:
-        rec['finance_origin_key_v262'] = key
-        rec.setdefault('finance_origin_chat_id_v262', int(src_chat))
-        rec.setdefault('finance_origin_msg_id_v262', int(src_msg))
-    return key
+# [OCH12.35 OWNER] _ensure_finance_origin_key_v262 -> 11_business_finance.py
+_owner_install('finance', 'finance:0212')
 
 
 def _v258_record_strong_keys(rec: dict, chat_id: int) -> list[str]:
@@ -152,12 +118,8 @@ def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, sourc
     return rec
 
 
-def _v260_bind_forward_finance_record(rec: dict, source_msg, dst_chat_id: int, dst_msg_id: int) -> dict:
-    if callable(_V262_BASE_BIND_FORWARD):
-        rec = _V262_BASE_BIND_FORWARD(rec, source_msg, int(dst_chat_id), int(dst_msg_id))
-    if isinstance(rec, dict):
-        _ensure_finance_origin_key_v262(int(dst_chat_id), rec, int(dst_msg_id))
-    return rec
+# [OCH12.35 OWNER] _v260_bind_forward_finance_record -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0206')
 
 
 def _v262_records_for_origin(chat_id: int, origin_key: str):
@@ -402,154 +364,8 @@ def _v262_postcommit_linked_edit(origin_chat_id: int, origin_msg_id: int, touche
         _v262_background_repaint_copies(int(origin_chat_id), int(origin_msg_id))
 
 
-def apply_linked_finance_edit_v262(anchor_chat_id: int, anchor_rec: dict, *, update_ars: bool=True, amount=None, note=None, replace_usd: bool=False, usd_amount=None, usd_note=None, usd_only=None, source_text: str | None=None, full_text_replace: bool=False, repaint_copies: bool=True, source_kind: str='edit') -> bool:
-    """Atomically mutate all locally known rows for one Telegram-origin operation.
-
-    Local SQLite is committed before returning. Heavy window repaint, Google/MEGA/delta and
-    copy rendering are allowed to run on the established background paths.
-    """
-    if not isinstance(anchor_rec, dict):
-        return False
-    try:
-        if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
-            return False
-    except Exception:
-        pass
-    anchor_chat_id = int(anchor_chat_id)
-    origin_chat_id, origin_msg_id, origin_key = finance_origin_identity_v262(anchor_chat_id, anchor_rec)
-    if not origin_key:
-        return False
-    op_id = ''
-    try:
-        if callable(globals().get('operation_begin')):
-            op_id = operation_begin('finance_linked_edit_v262', anchor_chat_id, target=origin_key, payload={'source': source_kind, 'update_ars': bool(update_ars), 'replace_usd': bool(replace_usd)}, critical=True)
-    except Exception:
-        op_id = ''
-    touched_days = {}
-    changed_total = 0
-    changed_by_chat = {}
-    with _V262_FINANCE_LINK_LOCK:
-        _ensure_finance_origin_key_v262(anchor_chat_id, anchor_rec)
-        try:
-            source_store = get_chat_store(int(origin_chat_id)) if origin_chat_id and origin_msg_id else {}
-            source_rec = next((r for r in source_store.get('records', []) or [] if isinstance(r, dict) and callable(globals().get('_record_has_message_id')) and _record_has_message_id(r, int(origin_msg_id))), None)
-        except Exception:
-            source_rec = None
-        if not isinstance(source_rec, dict):
-            source_rec = _v262_heal_missing_source(origin_chat_id, origin_msg_id, origin_key, anchor_rec, update_ars=update_ars, amount=amount, note=note, replace_usd=replace_usd, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_text=source_text)
-        locations = _v262_linked_locations(origin_chat_id, origin_msg_id, anchor_chat_id, anchor_rec)
-        target_chats = {int(cid) for cid, _mid in locations if cid}
-        target_chats.add(anchor_chat_id)
-        if origin_chat_id:
-            target_chats.add(int(origin_chat_id))
-        for cid in sorted(target_chats):
-            try:
-                with locked_chat(int(cid)):
-                    _v262_tag_store_origins(int(cid))
-                    rows = _v262_records_for_origin(int(cid), origin_key)
-                    if not rows:
-                        # Exact message fallback keeps old pre-v260 rows editable.
-                        for loc_cid, loc_mid in locations:
-                            if int(loc_cid) != int(cid) or not loc_mid:
-                                continue
-                            rec = find_record_by_message_id(int(cid), int(loc_mid))
-                            if isinstance(rec, dict):
-                                rec['finance_origin_key_v262'] = origin_key
-                                rec['finance_origin_chat_id_v262'] = int(origin_chat_id)
-                                rec['finance_origin_msg_id_v262'] = int(origin_msg_id)
-                                rows = _v262_records_for_origin(int(cid), origin_key)
-                                if rows:
-                                    break
-                    if not rows:
-                        continue
-                    before_primary = None
-                    changed_here = 0
-                    try:
-                        _active_before = sum(float(r.get('amount', 0) or 0) for r in get_chat_store(int(cid)).get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
-                        _usd_before = sum(float(r.get('usd_amount', 0) or 0) for r in get_chat_store(int(cid)).get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
-                    except Exception:
-                        _active_before = 0.0; _usd_before = 0.0
-                    for _ledger, rec in rows:
-                        before = _v262_update_one_record(rec, update_ars=update_ars, amount=amount, note=note, replace_usd=replace_usd, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_text=source_text, full_text_replace=full_text_replace)
-                        _ensure_finance_origin_key_v262(int(cid), rec)
-                        if before != rec:
-                            changed_here += 1
-                            if before_primary is None:
-                                before_primary = before
-                    store = get_chat_store(int(cid))
-                    # Keep daily mirrors/currency mirrors coherent even if they are separate objects.
-                    for daily_key in ('daily_records', 'ars_daily_records', 'usd_daily_records'):
-                        for _dk, arr in (store.get(daily_key, {}) or {}).items():
-                            for rec in arr or []:
-                                if isinstance(rec, dict) and _ensure_finance_origin_key_v262(int(cid), rec) == origin_key:
-                                    _v262_update_one_record(rec, update_ars=update_ars, amount=amount, note=note, replace_usd=replace_usd, usd_amount=usd_amount, usd_note=usd_note, usd_only=usd_only, source_text=source_text, full_text_replace=full_text_replace)
-                    try:
-                        active = _ensure_currency_ledgers(store)
-                        _snapshot_active_currency_ledger(store, active)
-                    except Exception:
-                        pass
-                    # R16: edit only the touched operation. Avoid normalize/sort/short-id rebuild
-                    # and a full balance sum in the Telegram hot transaction.
-                    try:
-                        _active_after = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
-                        store['balance'] = float(store.get('balance', 0) or 0) + (_active_after - _active_before)
-                    except Exception:
-                        pass
-                    store['_finance_hotpath_pending_normalize_r16'] = True
-                    store['_finance_fast_generation_r16'] = int(store.get('_finance_fast_generation_r16', 0) or 0) + 1
-                    store.pop('_finance_day_balance_cache_r16', None)
-                    if replace_usd and '_usd_balance_cache_r16' in store:
-                        try:
-                            _usd_after = sum(float(r.get('usd_amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict) and _ensure_finance_origin_key_v262(int(cid), r) == origin_key)
-                            store['_usd_balance_cache_r16'] = float(store.get('_usd_balance_cache_r16', 0) or 0) + (_usd_after - _usd_before)
-                        except Exception: store.pop('_usd_balance_cache_r16', None)
-                    current = _v262_records_for_origin(int(cid), origin_key)
-                    primary = current[0][1] if current else rows[0][1]
-                    touched_days[int(cid)] = str(primary.get('day_key') or store.get('current_view_day') or today_key())
-                    _r48_primary = copy.deepcopy(primary) if isinstance(primary, dict) else primary
-                    _r48_before_primary = copy.deepcopy(before_primary or {})
-                    _r48_changed_here = int(changed_here or 0)
-                if not persist_finance_chat_local_fast(int(cid)):
-                    raise RuntimeError('local SQLite finance persist failed')
-                if _r48_changed_here:
-                    changed_total += _r48_changed_here
-                    changed_by_chat[int(cid)] = _r48_changed_here
-                    try: finance_cache_invalidate(int(cid), 'linked_edit_v262')
-                    except Exception: pass
-                    try: finance_integrity_append(int(cid), 'edit', _r48_primary, details={'before': _r48_before_primary, 'source': source_kind, 'origin_key': origin_key})
-                    except Exception as exc:
-                        try: log_error(f'v262 finance integrity {cid}: {exc}')
-                        except Exception: pass
-            except Exception as exc:
-                try:
-                    log_error(f'v262 linked edit {origin_key} chat={cid}: {exc}')
-                except Exception:
-                    pass
-                if op_id and callable(globals().get('operation_review')):
-                    try: operation_review(op_id, f'chat={cid}: {exc}')
-                    except Exception: pass
-                return False
-    # No-op is success: repeated Telegram delivery must never create a duplicate.
-    try:
-        bot_journal('finance_linked_edit_v262', anchor_chat_id, f'origin={origin_key}; source={source_kind}; chats={len(touched_days)}; changed={changed_total}; per_chat={changed_by_chat}')
-    except Exception:
-        pass
-    try:
-        pool = globals().get('GENERAL_TASK_POOL') or globals().get('FINANCE_TASK_POOL')
-        key = f'v262-linked-post:{origin_chat_id}:{origin_msg_id}'
-        if pool is not None and hasattr(pool, 'submit'):
-            # Ordered per-origin queue: a fast second edit must not lose its final repaint.
-            pool.submit(key, _v262_postcommit_linked_edit, int(origin_chat_id), int(origin_msg_id), dict(touched_days), bool(repaint_copies))
-        else:
-            _v262_postcommit_linked_edit(int(origin_chat_id), int(origin_msg_id), dict(touched_days), bool(repaint_copies))
-    except Exception:
-        pass
-    if op_id and callable(globals().get('operation_complete')):
-        try:
-            operation_complete(op_id, f'origin={origin_key}; chats={len(touched_days)}; changed={changed_total}')
-        except Exception:
-            pass
-    return True
+# [OCH12.35 OWNER] apply_linked_finance_edit_v262 -> 11_business_finance.py
+_owner_install('finance', 'finance:0213')
 
 
 def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, source_finance_text: str | None=None, source_msg_id: int | None=None) -> bool:
@@ -560,121 +376,20 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
     return apply_linked_finance_edit_v262(int(chat_id), anchor, update_ars=True, amount=float(amount or 0), note=str(note or ''), replace_usd=False, source_text=source_finance_text, full_text_replace=False, repaint_copies=True, source_kind='record_edit')
 
 
-def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -> bool:
-    clean_text = sanitize_telegram_inserted_text(str(new_text or '').strip())
-    try:
-        comp = parse_financial_components(clean_text)
-    except Exception:
-        return False
-    rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
-    if not isinstance(rec, dict):
-        return False
-    try:
-        is_copy, _mid, source_chat_id, source_msg_id = _forward_copy_record_identity(int(chat_id), rec)
-        if not is_copy:
-            return False
-        _hydrate_legacy_forward_copy_metadata(int(chat_id), rec, int(dst_msg_id), source_chat_id, source_msg_id)
-    except Exception:
-        return False
-    ok = apply_linked_finance_edit_v262(int(chat_id), rec, update_ars=True, amount=float(comp.get('amount') or 0), note=str(comp.get('note') or ''), replace_usd=True, usd_amount=comp.get('usd_amount'), usd_note=str(comp.get('usd_note') or ''), usd_only=bool(comp.get('usd_only', False)), source_text=str(comp.get('source_finance_text') or clean_text), full_text_replace=True, repaint_copies=True, source_kind='slash_forward_copy')
-    if ok:
-        try:
-            _durable_note_source_consumed('forward_copy_manual_edit_v262')
-        except Exception:
-            pass
-    return bool(ok)
+# [OCH12.35 OWNER] edit_forward_copy_and_record -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0207')
 
 
-def handle_finance_edit(msg):
-    """Native Telegram long-tap edit uses the same linked-edit transaction."""
-    chat_id = int(msg.chat.id)
-    try:
-        uid = _v262_int(getattr(getattr(msg, 'from_user', None), 'id', 0))
-        if 'v152_chat_permission_allowed' in globals() and '_v152_actor_is_platform_owner' in globals():
-            if not _v152_actor_is_platform_owner(uid) and (not v152_chat_permission_allowed(chat_id, 'finance.edit')):
-                try: send_and_auto_delete(chat_id, '⛔ Редактирование операций запрещено правами этого чата.', 8)
-                except Exception: pass
-                return False
-    except Exception:
-        pass
-    try:
-        if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
-            return True
-    except Exception:
-        pass
-    text = str(getattr(msg, 'text', None) or getattr(msg, 'caption', None) or '').strip()
-    anchor_chat_id = chat_id
-    target = find_record_by_message_id(chat_id, int(msg.message_id)) if callable(globals().get('find_record_by_message_id')) else None
-    if not isinstance(target, dict):
-        try:
-            store = get_chat_store(chat_id)
-            for rec in store.get('records', []) or []:
-                if isinstance(rec, dict) and int(msg.message_id) in {_v262_int(rec.get(k)) for k in ('source_msg_id', 'origin_msg_id', 'msg_id', 'source_order_msg_id')}:
-                    target = rec
-                    break
-        except Exception:
-            pass
-    # OCH12.26: an edited source message may have created finance only in a linked
-    # destination chat.  In that case there is correctly no source-chat record.
-    # Follow the durable forward map and use the destination record as the linked
-    # edit anchor instead of reporting a false "record not found".
-    if not isinstance(target, dict):
-        try:
-            links = list(get_forward_links(int(chat_id), int(msg.message_id)) or []) if callable(globals().get('get_forward_links')) else []
-            for dst_chat_id, dst_msg_id in links:
-                rec = find_record_by_message_id(int(dst_chat_id), int(dst_msg_id)) if callable(globals().get('find_record_by_message_id')) else None
-                if isinstance(rec, dict):
-                    target = rec; anchor_chat_id = int(dst_chat_id)
-                    try: bot_journal('finance_edit_anchor_from_forward_v1225', int(chat_id), f'source={chat_id}:{msg.message_id}; anchor={anchor_chat_id}:{dst_msg_id}')
-                    except Exception: pass
-                    break
-        except Exception:
-            pass
-    if not isinstance(target, dict):
-        try: log_info(f'[EDIT-FIN v262] record not found msg={msg.message_id}')
-        except Exception: pass
-        return False
-    if text and looks_like_amount(text):
-        try:
-            comp = parse_financial_components(text)
-        except Exception:
-            comp = {'amount': 0.0, 'note': 'удалено', 'usd_amount': None, 'usd_note': '', 'usd_only': False, 'source_finance_text': text}
-    else:
-        comp = {'amount': 0.0, 'note': 'удалено', 'usd_amount': None, 'usd_note': '', 'usd_only': False, 'source_finance_text': text}
-    return apply_linked_finance_edit_v262(anchor_chat_id, target, update_ars=True, amount=float(comp.get('amount') or 0), note=str(comp.get('note') or ''), replace_usd=True, usd_amount=comp.get('usd_amount'), usd_note=str(comp.get('usd_note') or ''), usd_only=bool(comp.get('usd_only', False)), source_text=str(comp.get('source_finance_text') or text), full_text_replace=True, repaint_copies=False, source_kind='telegram_native_edit')
+# [OCH12.35 OWNER] handle_finance_edit -> 11_business_finance.py
+_owner_install('finance', 'finance:0214')
 
 
-def _v262_finance_postcommit_job(chat_id: int, day_key: str, reason: str):
-    try:
-        if callable(globals().get('rebuild_global_records')):
-            rebuild_global_records()
-    except Exception:
-        pass
-    try:
-        if callable(globals().get('schedule_financial_window_refresh')):
-            schedule_financial_window_refresh(int(chat_id), str(day_key or ''), reason=str(reason or 'finance_postcommit_v262'))
-    except Exception:
-        pass
-    try:
-        if callable(globals().get('finance_changed')):
-            finance_changed(int(chat_id), str(day_key or ''), reason=str(reason or 'finance_postcommit_v262'), delay=0.05)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _v262_finance_postcommit_job -> 11_business_finance.py
+_owner_install('finance', 'finance:0215')
 
 
-def _v262_schedule_finance_postcommit(chat_id: int, day_key: str, reason: str='finance_postcommit_v262'):
-    cid = int(chat_id); key = f'v262-fin-post:{cid}'
-    try:
-        pool = globals().get('FINANCE_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
-        if pool is not None and hasattr(pool, 'submit') and pool.submit(key, _v262_finance_postcommit_job, cid, str(day_key or ''), str(reason or 'finance_postcommit_v262')):
-            return True
-    except Exception:
-        pass
-    try:
-        DELAYED_SCHEDULER.schedule(key, 0.05, _v262_finance_postcommit_job, cid, str(day_key or ''), str(reason or 'finance_postcommit_v262'))
-        return True
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _v262_schedule_finance_postcommit -> 11_business_finance.py
+_owner_install('finance', 'finance:0216')
 
 
 def _v262_async_chat_persist(chat_id: int):
@@ -704,17 +419,12 @@ def _v262_schedule_transient_chat_persist(chat_id: int):
         _v262_async_chat_persist(cid)
 
 
-def toggle_usd_edit_delete_selection(chat_id: int, day_key: str, rid: int):
-    store = get_chat_store(int(chat_id)); all_sel = store.setdefault('usd_edit_delete_selected', {})
-    selected = {int(x) for x in all_sel.get(str(day_key), []) or []}; rid = int(rid)
-    selected.discard(rid) if rid in selected else selected.add(rid)
-    if selected: all_sel[str(day_key)] = sorted(selected)
-    else: all_sel.pop(str(day_key), None)
+# [OCH12.35 OWNER] toggle_usd_edit_delete_selection -> 11_business_finance.py
+_owner_install('finance', 'finance:0217')
 
 
-def clear_usd_edit_delete_selection(chat_id: int, day_key: str | None=None):
-    all_sel = get_chat_store(int(chat_id)).setdefault('usd_edit_delete_selected', {})
-    all_sel.clear() if day_key is None else all_sel.pop(str(day_key), None)
+# [OCH12.35 OWNER] clear_usd_edit_delete_selection -> 11_business_finance.py
+_owner_install('finance', 'finance:0218')
 
 
 def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
@@ -730,11 +440,8 @@ def clear_edit_delete_selection(chat_id: int, day_key: str | None=None):
     all_sel.clear() if day_key is None else all_sel.pop(str(day_key), None)
 
 
-def set_usd_transactions_view(chat_id: int, enabled: bool):
-    """Display preference: apply instantly, persist chat asynchronously, never config-checkpoint it."""
-    store = get_chat_store(int(chat_id))
-    store.setdefault('settings', {})['usd_transactions_view'] = bool(enabled)
-    _v262_schedule_transient_chat_persist(int(chat_id))
+# [OCH12.35 OWNER] set_usd_transactions_view -> 11_business_finance.py
+_owner_install('finance', 'finance:0219')
 
 
 def _v262_nav_mirror_drain(key):
@@ -864,7 +571,7 @@ try:
     _V262_BASE_STORAGE_MODES_TEXT = globals().get('storage_modes_text_v240')
     if callable(_V262_BASE_STORAGE_MODES_TEXT):
         def storage_modes_text_v240() -> str:
-            return str(_V262_BASE_STORAGE_MODES_TEXT()).replace('РЕЖИМЫ · выс-260', 'РЕЖИМЫ · выс-262')
+            return str(_V262_BASE_STORAGE_MODES_TEXT()).replace('РЕЖИМЫ · выс-260', 'РЕЖИМЫ · выс-264')
 except Exception:
     pass
 
@@ -1049,7 +756,7 @@ def _split_build_delta_v267(reason='change'):
             base_size = _split_os.path.getsize(base)
             new_size = _split_os.path.getsize(current)
             if base_sha == new_sha and base_size == new_size:
-                return {'schema':1,'noop':True,'base_sha256':base_sha,'new_sha256':new_sha,'db_size':new_size,'page_size':page_size,'pages':[], 'state_token':_split_current_state_token_v264(), 'reason':str(reason or '')[:160], 'event_ids':_split_pending_event_ids_v268()}, current, workdir, ''
+                return {'schema':1,'noop':True,'base_sha256':base_sha,'new_sha256':new_sha,'db_size':new_size,'page_size':page_size,'pages':[], 'state_token':_split_current_state_token_v265(), 'reason':str(reason or '')[:160], 'event_ids':_split_pending_event_ids_v268()}, current, workdir, ''
             pages=[]
             page_count=(new_size + page_size - 1)//page_size
             with open(base,'rb') as old, open(current,'rb') as new:
@@ -1058,7 +765,7 @@ def _split_build_delta_v267(reason='change'):
                     nb=new.read(page_size)
                     if ob != nb:
                         pages.append([idx, _split_base64.b64encode(nb).decode('ascii')])
-            payload={'schema':1,'base_sha256':base_sha,'new_sha256':new_sha,'base_size':base_size,'db_size':new_size,'page_size':page_size,'pages':pages,'state_token':_split_current_state_token_v264(),'reason':str(reason or '')[:160],'created_at':_split_time.time(),'event_ids':_split_pending_event_ids_v268()}
+            payload={'schema':1,'base_sha256':base_sha,'new_sha256':new_sha,'base_size':base_size,'db_size':new_size,'page_size':page_size,'pages':pages,'state_token':_split_current_state_token_v265(),'reason':str(reason or '')[:160],'created_at':_split_time.time(),'event_ids':_split_pending_event_ids_v268()}
             raw_json=_split_json.dumps(payload,separators=(',',':')).encode('utf-8')
             compressed=_split_gzip.compress(raw_json, compresslevel=9)
             max_pages=max(8,min(4096,int(_split_os.getenv('SPLIT_DELTA_MAX_PAGES','256') or '256')))
@@ -1082,43 +789,8 @@ def _split_promote_delta_baseline_v267(current_raw):
         _SPLIT_STATE['delta_baseline_sha256']=_split_sha256_file_v267(_SPLIT_DELTA_BASELINE)
         return True
 
-def _split_send_delta_v267(reason='change'):
-    base, secret = _split_peer_base(), _split_secret()
-    if not base or not secret:
-        return False, 'worker URL/secret not configured', False
-    payload,current,workdir,fallback = _split_build_delta_v267(reason)
-    if payload is None:
-        if workdir:
-            _split_shutil.rmtree(workdir, ignore_errors=True)
-        return False, fallback or 'delta unavailable', True
-    try:
-        wire=payload.pop('_wire_gzip', None)
-        if wire is None:
-            wire=_split_gzip.compress(_split_json.dumps(payload,separators=(',',':')).encode('utf-8'),compresslevel=9)
-        r=requests.post(base+'/internal/delta',data=wire,headers={**_split_headers('vys-262-front-delta-r12'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=15)
-        if 200 <= r.status_code < 300:
-            body={}
-            try: body=r.json() if r.content else {}
-            except Exception: body={}
-            status=str(body.get('status') or 'applied')
-            if status in {'applied','up_to_date','noop'}:
-                _split_promote_delta_baseline_v267(current)
-                _SPLIT_STATE['delta_last_ok']=_split_time.time()
-                _SPLIT_STATE['delta_last_error']=''
-                _SPLIT_STATE['delta_last_bytes']=len(wire)
-                _SPLIT_STATE['delta_last_pages']=len(payload.get('pages') or [])
-                _SPLIT_STATE['delta_total_bytes']=int(_SPLIT_STATE.get('delta_total_bytes') or 0)+len(wire)
-                _SPLIT_STATE['delta_total_pages']=int(_SPLIT_STATE.get('delta_total_pages') or 0)+len(payload.get('pages') or [])
-                _split_ack_mirrored_events_v268(payload.get('event_ids') or [])
-                return True,status,False
-        if r.status_code in {409, 412, 422}:
-            return False, f'worker requests full: HTTP {r.status_code} {r.text[:180]}', True
-        return False,f'HTTP {r.status_code}: {r.text[:180]}',False
-    except Exception as exc:
-        return False,f'{type(exc).__name__}: {str(exc)[:180]}',False
-    finally:
-        if workdir:
-            _split_shutil.rmtree(workdir, ignore_errors=True)
+# [OCH12.35 COMPAT] legacy _split_send_delta_v267 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0026')
 
 def _split_env_bool(name, default=True):
     return str(_split_os.getenv(name, "1" if default else "0") or "").strip().lower() in {"1", "true", "yes", "on", "да"}
@@ -1131,8 +803,8 @@ def _split_peer_base():
     return raw
 
 
-def _split_secret():
-    return str(_split_os.getenv("PEER_SHARED_SECRET", "") or "").strip()
+# [OCH12.35 OWNER] _split_secret -> 18_business_secret.py
+_owner_install('secret', 'secret:0131')
 
 
 def _split_headers(agent="vys-262-front-peer"):
@@ -1213,50 +885,11 @@ def _split_event_redis_write_v268(row, state=None, error=''):
     except Exception as exc:
         return False,f'{type(exc).__name__}: {str(exc)[:180]}'
 
-def split_witness_event_v268(update_id, payload, chat_id=None, update_type='other'):
-    """R57: keep Redis completely out of the Telegram hot path.
+# [OCH12.35 COMPAT] legacy split_witness_event_v268 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0027')
 
-    FAST sends the small raw-update witness only to HEAVY. HEAVY owns any optional
-    Redis mirroring/cache work in background. This means turning Redis ON from the
-    Info menu cannot add Redis network latency to a button or message callback.
-    """
-    row=_split_event_row_v268(update_id,payload,chat_id,update_type)
-    base,secret=_split_peer_base(),_split_secret(); detail='worker not configured'
-    if base and secret:
-        try:
-            raw=_split_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str).encode('utf-8')
-            wire=_split_gzip.compress(raw,compresslevel=1)
-            r=requests.post(base+'/internal/event/receipt',data=wire,headers={**_split_headers('vys-262-front-event-r57'),'Content-Type':'application/json','Content-Encoding':'gzip'},timeout=max(0.35,min(2.5,float(_split_os.getenv('SPLIT_EVENT_RECEIPT_TIMEOUT_SEC','1.2') or '1.2'))))
-            if 200 <= r.status_code < 300:
-                _SPLIT_STATE['event_last_receipt_ok']=_split_time.time(); _SPLIT_STATE['event_last_error']=''
-                _SPLIT_STATE['event_received']=int(_SPLIT_STATE.get('event_received') or 0)+1
-                return True
-            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
-        except Exception as exc:
-            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
-    _SPLIT_STATE['event_last_error']=detail[:260]
-    return False
-
-def _split_event_status_send_v268(update_id, chat_id=None, update_type='other', success=True, error=''):
-    """R57: commit witness also goes through HEAVY; FAST never blocks on Redis."""
-    event_id=_split_event_id_v268(update_id)
-    row={'schema':1,'event_id':event_id,'update_id':str(update_id),'chat_id':chat_id,'update_type':str(update_type or 'other')[:40],
-         'state':'committed' if success else 'failed_retry','committed_at':_split_time.time() if success else 0.0,
-         'state_token':_split_current_state_token_v264(),'last_error':str(error or '')[:300]}
-    base,secret=_split_peer_base(),_split_secret(); detail='worker not configured'
-    if base and secret:
-        try:
-            r=requests.post(base+'/internal/event/commit',json=row,headers=_split_headers('vys-262-front-event-commit-r57'),timeout=4)
-            if 200 <= r.status_code < 300:
-                if success:
-                    _SPLIT_STATE['event_last_commit_ok']=_split_time.time(); _SPLIT_STATE['event_committed']=int(_SPLIT_STATE.get('event_committed') or 0)+1
-                _SPLIT_STATE['event_last_error']=''
-                return True
-            detail=f'worker HTTP {r.status_code}: {r.text[:160]}'
-        except Exception as exc:
-            detail=f'worker {type(exc).__name__}: {str(exc)[:160]}'
-    _SPLIT_STATE['event_last_error']=detail[:260]
-    return False
+# [OCH12.35 COMPAT] legacy _split_event_status_send_v268 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0028')
 
 def _split_event_bg_v268(fn,*args):
     key=f'event-r13:{args[0] if args else _split_time.time_ns()}'
@@ -1400,7 +1033,7 @@ def _split_touch_state_revision_r18(reason='update', update_id=None):
             seq = int((_SPLIT_STATE_REV_MEM_R27 or {}).get('seq') or 0) + 1
             payload = {'schema':1, 'seq':seq, 'saved_at':_split_time.time(), 'reason':str(reason or '')[:140],
                        'update_id':str(update_id)[:80] if update_id is not None else '',
-                       'state_token':_split_current_state_token_v264() if '_split_current_state_token_v264' in globals() else ''}
+                       'state_token':_split_current_state_token_v265() if '_split_current_state_token_v265' in globals() else ''}
             _SPLIT_STATE_REV_MEM_R27.clear(); _SPLIT_STATE_REV_MEM_R27.update(payload)
             _SPLIT_STATE_REV_DIRTY_R27 = True
         # R28: do not schedule any SQLite write from a Telegram/user update.
@@ -1412,7 +1045,7 @@ def _split_touch_state_revision_r18(reason='update', update_id=None):
         return {}
 
 
-def _split_mark_state_changed_v264(reason='change'):
+def _split_mark_state_changed_v265(reason='change'):
     global _SPLIT_CHANGE_SEQ, _SPLIT_STATE_TOKEN, _SPLIT_LAST_CHANGE_AT
     with _SPLIT_CHANGE_LOCK:
         _SPLIT_CHANGE_SEQ += 1
@@ -1423,7 +1056,7 @@ def _split_mark_state_changed_v264(reason='change'):
         return _SPLIT_STATE_TOKEN
 
 
-def _split_current_state_token_v264():
+def _split_current_state_token_v265():
     with _SPLIT_CHANGE_LOCK:
         return str(_SPLIT_STATE_TOKEN)
 
@@ -1494,7 +1127,7 @@ def split_front_state_download_v262():
         try: _r27_flush_state_revision()
         except Exception: pass
         _r25_state_started = _split_time.monotonic()
-        snapshot_token = _split_current_state_token_v264()
+        snapshot_token = _split_current_state_token_v265()
         try: log_info(f'SPLITTRACE full_state_start token={snapshot_token[:48]}')
         except Exception: pass
         SQLITE.backup_to(raw)
@@ -1535,7 +1168,7 @@ def split_front_state_hash_v268():
     workdir=None
     try:
         workdir,raw=_split_snapshot_raw_v267('hash')
-        return ({'ok':True,'sha256':_split_sha256_file_v267(raw),'size':_split_os.path.getsize(raw),'state_token':_split_current_state_token_v264(),'version':_SPLIT_FRONT_VERSION},200)
+        return ({'ok':True,'sha256':_split_sha256_file_v267(raw),'size':_split_os.path.getsize(raw),'state_token':_split_current_state_token_v265(),'version':_SPLIT_FRONT_VERSION},200)
     except Exception as exc:
         return ({'ok':False,'error':f'{type(exc).__name__}: {str(exc)[:180]}'},500)
     finally:
@@ -1688,154 +1321,24 @@ def _split_cache_snapshot_to_redis_v266(reason='front_fallback', existing_gz=Non
             _split_shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _r222_schedule_post_restore_mega(reason='restore', delay=150.0, retry=0):
-    sched = globals().get('DELAYED_SCHEDULER')
-    if sched is None:
-        return False
-    try:
-        sched.cancel('r222-post-restore-mega')
-    except Exception:
-        pass
-    try:
-        return bool(sched.schedule('r222-post-restore-mega', max(30.0, float(delay)), _r222_post_restore_mega_checkpoint, str(reason or 'restore'), int(retry or 0)))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _r222_schedule_post_restore_mega -> 17_integration_mega.py
+_owner_install('mega', 'mega:0147')
 
 
-def _r222_post_restore_mega_checkpoint(reason='restore', retry=0):
-    """One deferred MEGA FULL, never concurrent with restore or high RAM."""
-    quiet_fn = globals().get('restore_quiet_active_v222')
-    try:
-        if callable(quiet_fn) and quiet_fn():
-            return _r222_schedule_post_restore_mega(reason, 45.0, int(retry or 0) + 1)
-    except Exception:
-        pass
-    # Only normal runtime MEGA ownership gets an automatic post-restore publish.
-    try:
-        if not (_r80_mega_master_enabled() and _r71_route_is_fast('mega')):
-            return False
-    except Exception:
-        return False
-    allow = globals().get('memory_heavy_allowed')
-    if callable(allow):
-        try:
-            ok, _detail = allow('post-restore-mega-checkpoint')
-            if not ok:
-                return _r222_schedule_post_restore_mega(reason, 60.0, int(retry or 0) + 1)
-        except Exception:
-            pass
-    try:
-        ok, detail = _r80_snapshot_full_compact('post-restore-' + str(reason or 'restore')[:72])
-        try:
-            bot_journal('r222_post_restore_mega_checkpoint', int(OWNER_ID or 0), f'ok={int(bool(ok))}; retry={int(retry or 0)}; {str(detail)[:260]}', 'INFO' if ok else 'WARN')
-        except Exception:
-            pass
-        if not ok and int(retry or 0) < 6:
-            _r222_schedule_post_restore_mega(reason, min(600.0, 60.0 * (2 ** min(3, int(retry or 0)))), int(retry or 0) + 1)
-        return bool(ok)
-    finally:
-        try:
-            DELAYED_SCHEDULER.schedule('r222-release-mega-after-restore', 3.0, _r222_release_mega_after_restore, 0)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _r222_post_restore_mega_checkpoint -> 17_integration_mega.py
+_owner_install('mega', 'mega:0148')
 
 
-def _r222_release_mega_after_restore(retry=0):
-    """Release MEGAcmd immediately after restore work instead of waiting 75s."""
-    try:
-        if _och1210_mega_busy():
-            if int(retry or 0) < 6:
-                DELAYED_SCHEDULER.schedule('r222-release-mega-after-restore', 10.0, _r222_release_mega_after_restore, int(retry or 0) + 1)
-            return False
-        import shutil as _r222_shutil, subprocess as _r222_subprocess
-        exe = _r222_shutil.which('mega-quit')
-        if not exe:
-            return False
-        _r222_subprocess.run([exe], stdout=_r222_subprocess.DEVNULL, stderr=_r222_subprocess.DEVNULL, timeout=6, check=False)
-        gc_fn = globals().get('_memory_gc')
-        if gc_fn is not None and hasattr(gc_fn, 'collect'):
-            gc_fn.collect()
-        trim_fn = globals().get('memory_malloc_trim')
-        if callable(trim_fn):
-            trim_fn()
-        try: bot_journal('r222_mega_released_after_restore', int(OWNER_ID or 0), f'retry={int(retry or 0)}')
-        except Exception: pass
-        return True
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _r222_release_mega_after_restore -> 17_integration_mega.py
+_owner_install('mega', 'mega:0149')
 
 
-def _och1230_manual_restore_mega_reanchor(reason='manual-restore', retry=0):
-    """Publish the manually restored SQLite as the new canonical MEGA state.
-
-    Runs only after the local restore barrier has ended.  It deliberately bypasses the
-    old 150-second restore cooldown/retry fence, but still respects the memory heavy-job
-    gate.  Failure is retried; local SQLite remains authoritative meanwhile.
-    """
-    _split_os.environ['OCH1227_EMPTY_BOOT_MEGA_WRITE_GUARD']='0'
-    _split_os.environ['OCH1230_EMPTY_BOOT_NEEDS_SEED']='0'
-    if not (_r80_mega_master_enabled() and _r71_route_is_fast('mega')):
-        return False
-    try:
-        if bool(globals().get('_V241_RESTORE_ACTIVE',False)):
-            return _och1230_schedule_manual_mega_reanchor(reason, 2.0, retry)
-    except Exception:
-        pass
-    allow=globals().get('memory_heavy_allowed')
-    if callable(allow):
-        try:
-            ok,_detail=allow('manual-restore-mega-reanchor')
-            if not ok:
-                return _och1230_schedule_manual_mega_reanchor(reason, min(60.0,10.0*(int(retry or 0)+1)), retry)
-        except Exception:
-            pass
-    ok,detail=_r80_snapshot_full_compact('manual-restore-reanchor:'+str(reason or '')[:64])
-    if ok:
-        _split_os.environ['OCH1230_MANUAL_REANCHOR_DONE']='1'
-        _split_os.environ['OCH1230_MANUAL_REANCHOR_DETAIL']=str(detail or '')[:420]
-        try:
-            SQLITE.set_meta('restore_control_v240','remote_reanchor_pending',{})
-        except Exception:
-            pass
-        try:
-            bot_journal('och1230_manual_restore_mega_reanchor',int(OWNER_ID or 0),f'ok=1; {str(detail)[:300]}')
-        except Exception:
-            pass
-        try:
-            root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').rstrip('/')
-            generation=str(_R80_MEGA_STATE.get('last_full_generation') or '—')
-            bot.send_message(int(OWNER_ID or 0),
-                f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.31"}: ручное восстановление закреплено в MEGA.\n'
-                f'Generation: {generation}\nManifest: {root}/database/current_manifest.json\nTail: создан заново.')
-        except Exception:
-            pass
-        return True
-    _split_os.environ['OCH1230_MANUAL_REANCHOR_DETAIL']=str(detail or '')[:420]
-    try:
-        bot_journal('och1230_manual_restore_mega_reanchor',int(OWNER_ID or 0),f'ok=0 retry={int(retry or 0)}; {str(detail)[:300]}','WARN')
-    except Exception:
-        pass
-    if int(retry or 0)<6:
-        return _och1230_schedule_manual_mega_reanchor(reason,min(180.0,15.0*(2**min(3,int(retry or 0)))),int(retry or 0)+1)
-    return False
+# [OCH12.35 OWNER] _och1230_manual_restore_mega_reanchor -> 17_integration_mega.py
+_owner_install('mega', 'mega:0150')
 
 
-def _och1230_schedule_manual_mega_reanchor(reason='manual-restore', delay=2.0, retry=0):
-    sched=globals().get('DELAYED_SCHEDULER')
-    if sched is None:
-        try:
-            _split_threading.Thread(target=_och1230_manual_restore_mega_reanchor,args=(reason,retry),daemon=True,name='och1230-manual-mega-reanchor').start()
-            return True
-        except Exception:
-            return False
-    try:
-        sched.cancel('och1230-manual-mega-reanchor')
-    except Exception:
-        pass
-    try:
-        return bool(sched.schedule('och1230-manual-mega-reanchor',max(1.0,float(delay)),_och1230_manual_restore_mega_reanchor,str(reason or 'manual-restore'),int(retry or 0)))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _och1230_schedule_manual_mega_reanchor -> 17_integration_mega.py
+_owner_install('mega', 'mega:0151')
 
 
 def r64_publish_restore_snapshot_v271(reason='restore'):
@@ -1962,19 +1465,8 @@ def _split_peer_loop():
         _split_time.sleep(max(30, min(1800, interval)))
 
 
-def _split_request_worker_full_sync_r18(reason='need_full'):
-    """Queue a full rebase on HEAVY; FAST never waits for snapshot/MEGA work."""
-    base, secret = _split_peer_base(), _split_secret()
-    if not base or not secret:
-        return False, 'worker URL/secret not configured'
-    try:
-        body = {'type':'sync_state', 'reason':str(reason or 'need_full')[:160], 'state_token':_split_current_state_token_v264()}
-        r = requests.post(base + '/internal/job', json=body, headers=_split_headers('vys-262-front-r18-rebase'), timeout=2.5)
-        if 200 <= r.status_code < 300:
-            return True, f'worker full rebase queued HTTP {r.status_code}'
-        return False, f'worker full rebase HTTP {r.status_code}: {r.text[:160]}'
-    except Exception as exc:
-        return False, f'{type(exc).__name__}: {str(exc)[:160]}'
+# [OCH12.35 COMPAT] legacy _split_request_worker_full_sync_r18 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0029')
 
 
 def _split_request_sync_now(reason='change'):
@@ -2023,67 +1515,12 @@ def _split_sync_timer_fire():
             _SPLIT_SYNC_FIRST_DIRTY_AT = 0.0
 
 
-def _split_inside_telegram_update_v264():
+def _split_inside_telegram_update_v265():
     return bool(getattr(_SPLIT_UPDATE_CONTEXT, 'active', False))
 
 
-def split_schedule_worker_sync_v262(reason='change', delay=None):
-    """Coalesced state handoff; Telegram never waits for MEGA or snapshot transfer."""
-    global _SPLIT_SYNC_TIMER, _SPLIT_SYNC_DUE_AT, _SPLIT_SYNC_FIRST_DIRTY_AT
-    if not _split_env_bool('SPLIT_WORKER_SYNC_ENABLED', True):
-        return False
-    # One Telegram update may call save_data/config/finance hooks many times. R4
-    # could arm the worker while the handler was still executing, then arm it again
-    # at the post-update continuity checkpoint. Defer all those requests and emit
-    # exactly one notification after the update completes.
-    if _split_inside_telegram_update_v264():
-        _SPLIT_STATE['sync_pending'] = True
-        _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
-        return True
-    try:
-        wait = float(delay if delay is not None else _split_os.getenv('SPLIT_STATE_SYNC_DELAY_SEC', '8') or '8')
-    except Exception:
-        wait = 1.5
-    try:
-        min_interval = float(_split_os.getenv('SPLIT_STATE_SYNC_MIN_INTERVAL_SEC', '30') or '30')
-    except Exception:
-        min_interval = 12.0
-    wait = max(0.08, min(30.0, wait))
-    min_interval = max(0.2, min(120.0, min_interval))
-    # R15: RAW events are already remotely witnessed.  State mirroring may therefore
-    # debounce short finance bursts instead of snapshotting/gzipping on every message.
-    _reason_l = str(reason or '').lower()
-    if 'finance' in _reason_l or 'critical' in _reason_l or 'event_commit' in _reason_l:
-        wait = max(wait, 0.8)
-        min_interval = max(min_interval, 1.5)
-    now = _split_time.time()
-    last = float(_SPLIT_STATE.get('sync_last_attempt') or 0.0)
-    with _SPLIT_SYNC_LOCK:
-        if _SPLIT_SYNC_FIRST_DIRTY_AT <= 0.0:
-            _SPLIT_SYNC_FIRST_DIRTY_AT = now
-        first_dirty = _SPLIT_SYNC_FIRST_DIRTY_AT
-    try:
-        max_latency = max(1.0, min(12.0, float(_split_os.getenv('SPLIT_SYNC_MAX_LATENCY_SEC','60') or '60')))
-    except Exception:
-        max_latency = 3.0
-    due = max(now + wait, last + min_interval if last else now + wait)
-    due = min(due, first_dirty + max_latency)
-    due = max(now + 0.05, due)
-    _SPLIT_STATE['sync_pending'] = True
-    _SPLIT_STATE['sync_reason'] = str(reason or 'change')[:160]
-    with _SPLIT_SYNC_LOCK:
-        # R15 trailing-edge debounce: a burst of ten messages produces one mirror
-        # attempt after the burst, not ten competing SQLite backups.
-        if _SPLIT_SYNC_TIMER is not None:
-            try:
-                _SPLIT_SYNC_TIMER.cancel()
-            except Exception:
-                pass
-        _SPLIT_SYNC_DUE_AT = due
-        _SPLIT_SYNC_TIMER = _split_threading.Timer(max(0.05, due - now), _split_sync_timer_fire)
-        _SPLIT_SYNC_TIMER.daemon = True
-        _SPLIT_SYNC_TIMER.start()
-    return True
+# [OCH12.35 COMPAT] legacy split_schedule_worker_sync_v262 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0030')
 
 
 # Final durability bindings for split mode. SQLite has already been committed by the
@@ -2103,9 +1540,8 @@ def _v262_split_schedule_full_backup_only(chat_id, delay=3.0):
     return True
 
 
-def _v262_split_mega_upload_latest_database_backup(force=False):
-    split_schedule_worker_sync_v262(reason='manual_db_snapshot' if force else 'db_snapshot', delay=0.08 if force else 0.5)
-    return True
+# [OCH12.35 OWNER] _v262_split_mega_upload_latest_database_backup -> 17_integration_mega.py
+_owner_install('mega', 'mega:0152')
 
 
 def _v262_split_schedule_config_backup_for_chats(*chat_ids, delay=3.0):
@@ -2123,98 +1559,20 @@ def _v262_split_schedule_config_backup_for_chats(*chat_ids, delay=3.0):
     return True
 
 
-def _split_google_target(target_chat_id=None, tenant_id=None):
-    try:
-        tid = str(_v149_tenant_id(tenant_id, target_chat_id))
-    except Exception:
-        tid = str(tenant_id or globals().get('TENANT_PLATFORM_ID') or 'platform')
-    cfg = tenant_google_config(tid, create=False) if callable(globals().get('tenant_google_config')) else {}
-    raw = str((cfg or {}).get('spreadsheet_id') or '').strip()
-    if not raw and tid == str(globals().get('TENANT_PLATFORM_ID') or ''):
-        raw = str(_split_os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '') or '').strip()
-    if not raw:
-        raise RuntimeError('Google Таблица не выбрана. Откройте /google → «Куда выгружать Excel» и пришлите ссылку таблицы.')
-    try:
-        sheet_id = _v149_google_id(raw, 'sheet')
-    except Exception:
-        sheet_id = str(raw).strip()
-    return tid, sheet_id
+# [OCH12.35 OWNER] _split_google_target -> 15_integration_google.py
+_owner_install('google', 'google:0071')
 
 
-def _split_annotations_for_google(rows, layout, annotations_override, include_annotations):
-    if not include_annotations:
-        return {}
-    try:
-        if layout == 'compact':
-            _styles, ann, _freeze, _widths = _modern_compact_excel_styles_comments(rows, annotations_override or {})
-        elif layout == 'category_compact':
-            _styles, ann, _freeze, _widths = _modern_category_no_description_styles_comments(rows, annotations_override or {})
-        else:
-            _styles, ann, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-            if annotations_override is not None:
-                ann = dict(annotations_override or {})
-        return ann or {}
-    except Exception:
-        return dict(annotations_override or {})
+# [OCH12.35 OWNER] _split_annotations_for_google -> 15_integration_google.py
+_owner_install('google', 'google:0072')
 
 
-def _v262_split_google_sheets_create_category_report(title, rows, layout='category', annotations_override=None, include_annotations=True, **kwargs):
-    """Queue Google Sheets work on Render #2 and return immediately with a job token."""
-    if not _split_env_bool('SPLIT_GOOGLE_REMOTE_ENABLED', True):
-        raise RuntimeError('Google Sheets worker delegation disabled')
-    base, secret = _split_peer_base(), _split_secret()
-    if not base or not secret:
-        raise RuntimeError('Google Sheets worker is not configured')
-    target_chat_id = kwargs.get('target_chat_id')
-    notify_result = bool(kwargs.get('notify_result', True))
-    recipient_chat_id = kwargs.get('recipient_chat_id') or target_chat_id
-    tid, spreadsheet_id = _split_google_target(target_chat_id=target_chat_id, tenant_id=kwargs.get('tenant_id'))
-    _SPLIT_STATE['google_last_attempt'] = _split_time.time()
-    annotations = _split_annotations_for_google(rows, str(layout or 'category'), annotations_override, bool(include_annotations))
-    encoded_notes = {f'{int(r)},{int(c)}': str(note) for (r, c), note in annotations.items() if str(note or '').strip()}
-    client_job_id = _split_secrets.token_hex(12)
-    body = {
-        'job_id': client_job_id,
-        'title': str(title or 'Статьи')[:300],
-        'rows': rows,
-        'layout': str(layout or 'category'),
-        'annotations': encoded_notes,
-        'include_annotations': bool(include_annotations),
-        'spreadsheet_id': spreadsheet_id,
-        'tenant_id': tid,
-        'target_chat_id': target_chat_id,
-        'recipient_chat_id': recipient_chat_id,
-        'notify_result': notify_result,
-    }
-    try:
-        r = requests.post(base + '/internal/google/sheet', json=body, headers=_split_headers('vys-262-front-google'), timeout=30)
-        payload = r.json() if r.content and 'json' in str(r.headers.get('content-type', '')).lower() else {}
-        if r.status_code == 202:
-            job_id = str(payload.get('job_id') or client_job_id)
-            _SPLIT_STATE['google_last_job'] = job_id
-            _SPLIT_STATE['google_last_error'] = ''
-            return 'worker-job:' + job_id
-        if 200 <= r.status_code < 300 and payload.get('url'):
-            _SPLIT_STATE['google_last_ok'] = _split_time.time()
-            _SPLIT_STATE['google_last_error'] = ''
-            return str(payload.get('url'))
-        _SPLIT_STATE['google_last_error'] = f'HTTP {r.status_code}: {r.text[:220]}'
-        raise RuntimeError('Google Sheets worker: ' + _SPLIT_STATE['google_last_error'])
-    except Exception as exc:
-        _SPLIT_STATE['google_last_error'] = str(exc)[:240]
-        raise
+# [OCH12.35 OWNER] _v262_split_google_sheets_create_category_report -> 15_integration_google.py
+_owner_install('google', 'google:0073')
 
 
-def _split_google_result_seen(job_id):
-    now = _split_time.time()
-    with _SPLIT_GOOGLE_RESULT_LOCK:
-        stale = [k for k, ts in _SPLIT_GOOGLE_RESULTS.items() if now - float(ts) > 86400]
-        for key in stale:
-            _SPLIT_GOOGLE_RESULTS.pop(key, None)
-        if job_id in _SPLIT_GOOGLE_RESULTS:
-            return True
-        _SPLIT_GOOGLE_RESULTS[job_id] = now
-        return False
+# [OCH12.35 OWNER] _split_google_result_seen -> 15_integration_google.py
+_owner_install('google', 'google:0074')
 
 
 @app.route('/internal/split/google-result', methods=['POST'])
@@ -2252,59 +1610,20 @@ def split_front_google_result_v262():
     return ({'ok': True}, 200)
 
 
-def _split_tenant_google_status_text(tenant_id):
-    tid = str(tenant_id)
-    row = tenant_get(tid) or {}
-    cfg = tenant_google_config(tid)
-    raw = str(cfg.get('spreadsheet_id') or '')
-    if not raw and tid == str(globals().get('TENANT_PLATFORM_ID') or ''):
-        raw = str(_split_os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '') or '')
-    try:
-        shown = _v149_mask_id(raw) if raw else 'не выбрана'
-    except Exception:
-        shown = (raw[:8] + '…' + raw[-6:]) if len(raw) > 18 else (raw or 'не выбрана')
-    settings = cfg.get('export_settings') or {}
-    return (
-        f"📊 GOOGLE EXCEL · {row.get('name') or tid}\n\n"
-        f"Service account: ✅ Render #2\n"
-        f"Куда выгружать: {shown}\n"
-        f"Google Sheets: {'✅ ВКЛ' if settings.get('sheet_enabled', True) else '⬜ ВЫКЛ'}\n"
-        f"История: {len(cfg.get('history') or [])}\n"
-        f"Ошибки: {len(cfg.get('errors') or [])}\n\n"
-        "Нажмите «Куда выгружать Excel» и пришлите ссылку или ID Google Таблицы. "
-        "Сам service_account хранится только на Render #2. Выбранную таблицу нужно расшарить его client_email как Редактору."
-    )[:3900]
+# [OCH12.35 OWNER] _split_tenant_google_status_text -> 15_integration_google.py
+_owner_install('google', 'google:0075')
 
 
-def _split_tenant_google_keyboard(tenant_id):
-    tid = str(tenant_id)
-    cfg = tenant_google_config(tid)
-    settings = cfg.get('export_settings') or {}
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('📊 Куда выгружать Excel', callback_data='v149:google:sheet'))
-    kb.row(IB(f"{('✅' if settings.get('sheet_enabled', True) else '⬜')} Google Sheets: {('ВКЛ' if settings.get('sheet_enabled', True) else 'ВЫКЛ')}", callback_data='v149:google:toggle_sheet'))
-    kb.row(IB('🧪 Проверить выбранную таблицу', callback_data='v149:google:test'))
-    kb.row(IB(f"📜 История ({len(cfg.get('history') or [])})", callback_data='v149:google:history'), IB(f"⚠️ Ошибки ({len(cfg.get('errors') or [])})", callback_data='v149:google:errors'))
-    return kb
+# [OCH12.35 OWNER] _split_tenant_google_keyboard -> 15_integration_google.py
+_owner_install('google', 'google:0076')
 
 
-def _split_tenant_google_test(tenant_id):
-    try:
-        tid, spreadsheet_id = _split_google_target(tenant_id=str(tenant_id))
-        base = _split_peer_base()
-        if not base or not _split_secret():
-            return False, '❌ Render #2 не настроен.'
-        r = requests.post(base + '/internal/google/test', json={'spreadsheet_id': spreadsheet_id, 'tenant_id': tid}, headers=_split_headers('vys-262-front-google-test'), timeout=35)
-        payload = r.json() if r.content else {}
-        if 200 <= r.status_code < 300 and payload.get('ok'):
-            return True, f"✅ Google Таблица доступна через Render #2.\nНазвание: {payload.get('title') or '—'}\nService account: {payload.get('service_email') or '—'}"
-        return False, '❌ Проверка Google: ' + str(payload.get('error') or r.text[:500])
-    except Exception as exc:
-        return False, '❌ Проверка Google: ' + str(exc)[:600]
+# [OCH12.35 OWNER] _split_tenant_google_test -> 15_integration_google.py
+_owner_install('google', 'google:0077')
 
 
-def _split_reject_front_google_credentials(*args, **kwargs):
-    raise RuntimeError('Service account не загружается в Telegram-фронт. GOOGLE_SERVICE_ACCOUNT_JSON задаётся только в Environment Render #2.')
+# [OCH12.35 OWNER] _split_reject_front_google_credentials -> 15_integration_google.py
+_owner_install('google', 'google:0078')
 
 
 # New split Google callbacks are legitimate windows and must be declared.
@@ -2314,13 +1633,8 @@ except Exception:
     pass
 
 
-def _split_v167_google_upsert_named_tab(tab_title, rows, target_chat_id, layout='category', annotations_override=None):
-    """Route legacy v167/v261 scheduled Google refreshes to Render #2."""
-    return _v262_split_google_sheets_create_category_report(
-        tab_title, rows, layout=layout, annotations_override=annotations_override,
-        include_annotations=True, target_chat_id=int(target_chat_id),
-        recipient_chat_id=int(target_chat_id), notify_result=False,
-    )
+# [OCH12.35 OWNER] _split_v167_google_upsert_named_tab -> 15_integration_google.py
+_owner_install('google', 'google:0079')
 
 
 # Apply final bindings after 89_callback_final.py.
@@ -2330,6 +1644,7 @@ schedule_full_backup_only = _v262_split_schedule_full_backup_only
 mega_upload_latest_database_backup = _v262_split_mega_upload_latest_database_backup
 schedule_config_backup_for_chats = _v262_split_schedule_config_backup_for_chats
 _v167_google_upsert_named_tab = _split_v167_google_upsert_named_tab
+_R1234_LOCAL_TENANT_GOOGLE_SET_CREDENTIALS = globals().get('tenant_google_set_credentials')
 tenant_google_set_credentials = _split_reject_front_google_credentials
 
 # R11: no legacy MEGA delta is allowed to execute on the fast Front. Some old
@@ -2788,7 +2103,7 @@ def continuity_checkpoint_v263(chat_id=None, reason='update', full=False, schedu
     try:
         user_state_shadow_capture_v265(reason)
         continuity_capture_v263(reason)
-        _split_mark_state_changed_v264(f'continuity:{reason}')
+        _split_mark_state_changed_v265(f'continuity:{reason}')
     except Exception as exc:
         try: log_error(f'CONTINUITY snapshot R5: {exc}')
         except Exception: pass
@@ -2891,41 +2206,8 @@ def _r20_capsule_store_redis(payload: dict, packed: bytes):
     except Exception as exc:
         return False, f'{type(exc).__name__}: {str(exc)[:180]}'
 
-def _r20_capsule_push_now(reason='state_change'):
-    global _R20_CAPSULE_LAST_GEN_SENT, _R20_CAPSULE_LAST_SEQ_SENT
-    _SPLIT_STATE['capsule_last_attempt'] = _split_time.time()
-    try:
-        payload = _r20_capsule_build(reason)
-        raw = _split_json.dumps(payload, ensure_ascii=False, separators=(',',':'), default=str).encode('utf-8')
-        packed = _split_gzip.compress(raw, compresslevel=3)
-        max_bytes = 8 * 1024 * 1024
-        if len(packed) > max_bytes:
-            raise RuntimeError(f'capsule too large: {len(packed)}')
-        seq = int(payload.get('user_state_seq') or 0); gen = int(payload.get('config_generation') or 0)
-        worker_ok=False; worker_detail='HEAVY peer not configured'
-        base, secret = _split_peer_base(), _split_secret()
-        if base and secret:
-            try:
-                r=requests.post(base + '/internal/capsule', data=packed,
-                    headers={**_split_headers('och12-front-capsule'), 'Content-Type':'application/json', 'Content-Encoding':'gzip'}, timeout=3.0)
-                worker_ok = 200 <= r.status_code < 300
-                worker_detail = f'HTTP {r.status_code}' if worker_ok else f'HTTP {r.status_code}: {r.text[:120]}'
-            except Exception as exc:
-                worker_detail=f'{type(exc).__name__}: {str(exc)[:140]}'
-        redis_ok, redis_detail = _r20_capsule_store_redis(payload, packed)
-        _SPLIT_STATE['capsule_redis_cache_ok']=bool(redis_ok)
-        _SPLIT_STATE['capsule_redis_cache_detail']=str(redis_detail)[:180]
-        if worker_ok:
-            _R20_CAPSULE_LAST_GEN_SENT=max(_R20_CAPSULE_LAST_GEN_SENT,gen); _R20_CAPSULE_LAST_SEQ_SENT=max(_R20_CAPSULE_LAST_SEQ_SENT,seq)
-            _SPLIT_STATE['capsule_last_ok']=_split_time.time(); _SPLIT_STATE['capsule_last_error']=''
-            _SPLIT_STATE['capsule_last_seq']=seq; _SPLIT_STATE['capsule_last_generation']=gen
-            return True
-        _SPLIT_STATE['capsule_last_error']=f'heavy={worker_detail}; redis-cache={redis_detail}'[:240]
-    except Exception as exc:
-        _SPLIT_STATE['capsule_last_error']=f'{type(exc).__name__}: {str(exc)[:220]}'
-        try: log_error('OCH12 capsule: '+_SPLIT_STATE['capsule_last_error'])
-        except Exception: pass
-    return False
+# [OCH12.35 COMPAT] legacy _r20_capsule_push_now -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0031')
 
 def _r20_capsule_timer_fire():
     global _R20_CAPSULE_TIMER, _R20_CAPSULE_FIRST_DIRTY_AT, _R20_CAPSULE_REASON
@@ -3004,7 +2286,7 @@ def _split_continuity_checkpoint_fire_v270():
             _SAVE_DATA_CORE(data, root_only=True)
         user_state_shadow_capture_v265('bg:' + reason)
         continuity_capture_v263('bg:' + reason)
-        _split_mark_state_changed_v264('bg_continuity:' + reason)
+        _split_mark_state_changed_v265('bg_continuity:' + reason)
         split_schedule_worker_sync_v262(reason='bg_continuity:' + reason, delay=1.2)
     except Exception as exc:
         try: log_error(f'R15 background continuity: {exc}')
@@ -3042,7 +2324,7 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
     # Non-Telegram/background mutations need their own freshness marker.  Telegram
     # updates receive exactly one marker after the handler, avoiding extra hot-path IO.
     try:
-        if not _split_inside_telegram_update_v264():
+        if not _split_inside_telegram_update_v265():
             _split_touch_state_revision_r18('logical_save_bg')
     except Exception:
         pass
@@ -3073,12 +2355,12 @@ def save_data(d, chat_ids=None, full=False, root_only=False):
         pass
     try:
         if not bool(globals().get('_V241_RESTORE_ACTIVE', False)):
-            _split_mark_state_changed_v264('logical_save')
+            _split_mark_state_changed_v265('logical_save')
             # Boot migrations can call save_data many times. They are local-only until
             # READY, then R6 emits one final canonical snapshot instead of 4-10 GETs.
             ready_fn = globals().get('runtime_is_ready')
             is_ready = bool(ready_fn()) if callable(ready_fn) else False
-            if is_ready or _split_inside_telegram_update_v264():
+            if is_ready or _split_inside_telegram_update_v265():
                 split_schedule_worker_sync_v262(reason='logical_save', delay=0.6)
             else:
                 _SPLIT_STATE['sync_pending'] = True
@@ -3158,18 +2440,8 @@ def _split_idle_full_reconcile_fire_v270(reason='idle_reconcile'):
         _SPLIT_STATE['full_reconcile_pending'] = True
     return ok
 
-def _split_schedule_idle_full_reconcile_v270(reason='need_full', delay=None):
-    global _SPLIT_FULL_TIMER
-    wait = float(delay if delay is not None else _split_os.getenv('R28_FULL_SNAPSHOT_USER_QUIET_SEC','30') or '20')
-    with _SPLIT_FULL_LOCK:
-        if _SPLIT_FULL_TIMER is not None:
-            try: _SPLIT_FULL_TIMER.cancel()
-            except Exception: pass
-        _SPLIT_FULL_TIMER = _split_threading.Timer(max(5.0, wait), _split_idle_full_reconcile_fire_v270, args=(str(reason or 'need_full'),))
-        _SPLIT_FULL_TIMER.daemon = True
-        _SPLIT_FULL_TIMER.start()
-    _SPLIT_STATE['full_reconcile_pending'] = True
-    return True
+# [OCH12.35 COMPAT] legacy _split_schedule_idle_full_reconcile_v270 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0032')
 
 # Snapshot download always captures the latest RAM continuity first.
 _STATE_DOWNLOAD_CORE = split_front_state_download_v262
@@ -3255,14 +2527,14 @@ _CONTINUITY_BOOT_REPORT_V263 = continuity_restore_v263()
 # Re-sending/re-editing every restored chat on boot is both unnecessary and unsafe:
 # stale historic chat ids can return 400 "chat not found".  Preserve the restored
 # message ids/state and resume lazily when that chat next interacts with the bot.
-def _split_schedule_startup_main_windows_v264(delay: float=3.0):
+def _split_schedule_startup_main_windows_v265(delay: float=3.0):
     try:
         log_info('CONTINUITY R5: startup UI replay skipped; restored Telegram messages are kept in place')
     except Exception:
         pass
     return True
 
-schedule_startup_main_windows = _split_schedule_startup_main_windows_v264
+schedule_startup_main_windows = _split_schedule_startup_main_windows_v265
 
 # R6: all callback families emitted by the current bot must have a declared marker.
 # Broad family declarations are intentional: dynamic task/space/reminder IDs vary,
@@ -3325,7 +2597,7 @@ def runtime_mark_ready(detail: str=''):
         user_state_shadow_capture_v265('boot_ready')
         continuity_capture_v263('boot_ready')
         _split_touch_state_revision_r18('boot_ready')
-        _split_mark_state_changed_v264('boot_ready')
+        _split_mark_state_changed_v265('boot_ready')
         if not empty_boot:
             # Never publish a transient EMPTY fallback over remote recovery data.
             _split_request_worker_full_sync_r18('boot_ready_exact_rebase')
@@ -3392,45 +2664,8 @@ def _r7_rebuild_month_short_ids_after_normalize(chat_id: int, store: dict) -> No
     store['records'] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, []) if isinstance(r, dict)]
 
 
-def _r7_finance_changed_now(chat_id: int, day_key: str | None=None, reason: str='change'):
-    """R7: local finance commit stays synchronous; all derived work is one debounced pass."""
-    chat_id = int(chat_id)
-    day_key = str(day_key or get_chat_store(chat_id).get('current_view_day') or today_key())[:10]
-    try:
-        finance_cache_invalidate(chat_id, f'finance_changed:{reason}:r7')
-    except Exception:
-        pass
-    with locked_chat(chat_id):
-        store = get_chat_store(chat_id)
-        store['current_view_day'] = day_key
-        # One normalization only.  Older path normalized inside recalc and again in
-        # rebuild_month_short_ids, which was noticeable on chats with long histories.
-        normalize_chat_records(chat_id)
-        store = get_chat_store(chat_id)
-        store.pop('_finance_hotpath_pending_normalize_r15', None)
-        store.pop('_finance_hotpath_pending_normalize_r16', None)
-        store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
-        _r7_rebuild_month_short_ids_after_normalize(chat_id, store)
-        try:
-            _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store))
-        except Exception:
-            pass
-        _r48_need_persist = True
-    if callable(globals().get('persist_finance_chat_local_fast')):
-        persist_finance_chat_local_fast(chat_id)
-    # Nothing below blocks the Telegram handler or holds chat_lock.
-    try:
-        schedule_quick_backup(chat_id, MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS)
-    except Exception:
-        pass
-    try:
-        schedule_financial_window_refresh(chat_id, day_key, reason=f'r7:{reason}', delay=0.015)
-    except Exception:
-        pass
-    try:
-        schedule_finance_postcommit_background_v243(chat_id, reason=f'r7:{reason}', delay=0.30)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _r7_finance_changed_now -> 11_business_finance.py
+_owner_install('finance', 'finance:0220')
 
 # finance_changed() resolves this name at execution time.
 _finance_changed_now = _r7_finance_changed_now
@@ -3463,14 +2698,8 @@ _v262_postcommit_linked_edit = _r7_linked_edit_postcommit
 
 
 # R7 finance bulk-delete postcommit: callers already committed the normalized chat.
-def _r7_v262_finance_postcommit_job(chat_id: int, day_key: str, reason: str):
-    cid=int(chat_id); dk=str(day_key or '')
-    try: finance_cache_invalidate(cid, f'r7:{reason}')
-    except Exception: pass
-    try: schedule_financial_window_refresh(cid, dk, reason=f'r16-fast:{reason}', delay=0.01)
-    except Exception: pass
-    try: finance_changed(cid, dk, reason=f'r16-reconcile:{reason}', delay=0.18)
-    except Exception: pass
+# [OCH12.35 OWNER] _r7_v262_finance_postcommit_job -> 11_business_finance.py
+_owner_install('finance', 'finance:0221')
 
 _v262_finance_postcommit_job = _r7_v262_finance_postcommit_job
 
@@ -3481,132 +2710,26 @@ _v262_finance_postcommit_job = _r7_v262_finance_postcommit_job
 # --- Google UX: three-step setup, service email, open current sheet, auto-test. ---
 _R7_GOOGLE_INFO_CACHE = {'ts': 0.0, 'data': {}}
 
-def _r7_google_worker_info(fetch: bool=True):
-    now=_split_time.time()
-    cached=dict(_R7_GOOGLE_INFO_CACHE.get('data') or {})
-    if cached and (not fetch or now-float(_R7_GOOGLE_INFO_CACHE.get('ts') or 0) < 600):
-        return cached
-    if not fetch:
-        return cached
-    base = _split_peer_base()
-    if not base or not _split_secret():
-        return cached
-    try:
-        r = requests.get(base + '/internal/google/info', headers=_split_headers('vys-262-front-google-info'), timeout=8)
-        payload = r.json() if r.content else {}
-        if 200 <= r.status_code < 300 and payload.get('ok'):
-            _R7_GOOGLE_INFO_CACHE.update(ts=now, data=dict(payload))
-            return dict(payload)
-    except Exception:
-        pass
-    return cached
+# [OCH12.35 OWNER] _r7_google_worker_info -> 15_integration_google.py
+_owner_install('google', 'google:0080')
 
 
-def _r7_google_status_text(tenant_id):
-    tid = str(tenant_id)
-    row = tenant_get(tid) or {}
-    cfg = tenant_google_config(tid)
-    raw = str(cfg.get('spreadsheet_id') or '')
-    if not raw and tid == str(globals().get('TENANT_PLATFORM_ID') or ''):
-        raw = str(_split_os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '') or '')
-    # Opening /google must be instant: use cached/persisted email only. The worker is
-    # contacted when the user presses step 1 or when access is tested.
-    info = _r7_google_worker_info(fetch=False)
-    email = str(cfg.get('service_account_email') or info.get('service_email') or '')
-    title = str(cfg.get('spreadsheet_title') or '')
-    ready = bool(raw and title)
-    target = title or ((_v149_mask_id(raw) if raw else 'не выбрана'))
-    return (
-        f"📊 GOOGLE EXCEL · {row.get('name') or tid}\n\n"
-        f"Статус: {'✅ готово к выгрузке' if ready else '🟡 нужно подключить таблицу'}\n"
-        f"Таблица: {target}\n"
-        f"Service account: {email or 'Render #2'}\n\n"
-        "Как подключить первый раз:\n"
-        "1️⃣ Нажмите «Email для доступа» и добавьте этот email в Google Таблице: Поделиться → Редактор.\n"
-        "2️⃣ Нажмите «Подключить таблицу» и пришлите ссылку на неё.\n"
-        "3️⃣ Бот сам проверит доступ. Если всё хорошо — больше ничего настраивать не нужно.\n\n"
-        "После этого кнопки Google-выгрузки сами используют выбранную таблицу."
-    )[:3900]
+# [OCH12.35 OWNER] _r7_google_status_text -> 15_integration_google.py
+_owner_install('google', 'google:0081')
 
 
-def _r7_google_keyboard(tenant_id):
-    tid = str(tenant_id)
-    cfg = tenant_google_config(tid)
-    raw = str(cfg.get('spreadsheet_id') or '')
-    if not raw and tid == str(globals().get('TENANT_PLATFORM_ID') or ''):
-        raw = str(_split_os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '') or '')
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('1️⃣ Email для доступа', callback_data='v149:google:service_email'))
-    kb.row(IB('2️⃣ Подключить / сменить таблицу', callback_data='v149:google:sheet'))
-    kb.row(IB('3️⃣ Проверить доступ', callback_data='v149:google:test'))
-    if raw:
-        try:
-            sid = _v149_google_id(raw, 'sheet')
-            kb.row(types.InlineKeyboardButton('🔗 Открыть текущую таблицу', url=f'https://docs.google.com/spreadsheets/d/{sid}/edit'))
-        except Exception:
-            pass
-    settings = cfg.get('export_settings') or {}
-    kb.row(IB(f"{('✅' if settings.get('sheet_enabled', True) else '⬜')} Автовыгрузка Sheets: {('ВКЛ' if settings.get('sheet_enabled', True) else 'ВЫКЛ')}", callback_data='v149:google:toggle_sheet'))
-    kb.row(IB(f"📜 История ({len(cfg.get('history') or [])})", callback_data='v149:google:history'), IB(f"⚠️ Ошибки ({len(cfg.get('errors') or [])})", callback_data='v149:google:errors'))
-    return kb
+# [OCH12.35 OWNER] _r7_google_keyboard -> 15_integration_google.py
+_owner_install('google', 'google:0082')
 
 
-def _r7_google_test(tenant_id):
-    ok, text = _split_tenant_google_test(str(tenant_id))
-    if ok:
-        try:
-            m = re.search(r'Название:\s*(.+)', str(text))
-            cfg = tenant_google_config(str(tenant_id))
-            if m:
-                cfg['spreadsheet_title'] = str(m.group(1)).strip()[:200]
-            info = _r7_google_worker_info()
-            if info.get('service_email'):
-                cfg['service_account_email'] = str(info.get('service_email'))[:250]
-            cfg['updated_at'] = _v149_now_iso()
-            tenant_google_history(str(tenant_id), 'sheet_access_verified_r7', cfg.get('spreadsheet_title') or 'access OK', ok=True)
-            tenant_google_persist(str(tenant_id), 'tenant_google_update')
-        except Exception:
-            pass
-    return ok, text
+# [OCH12.35 OWNER] _r7_google_test -> 15_integration_google.py
+_owner_install('google', 'google:0083')
 
 _GOOGLE_HANDLE_CORE = _canon_tenant_google_handle_message__002
 
 
-def _r7_google_handle_message(msg) -> bool:
-    # Handle the table-link step ourselves so save + access test is one action.
-    try:
-        cid = int(msg.chat.id)
-        uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-        tid = str(tenant_id_for_chat(cid, create=False) or '')
-        cfg = tenant_google_config(tid, create=False) if tid else {}
-        wait = dict((cfg or {}).get('input_wait') or {})
-        if wait and str(wait.get('kind') or '') == 'sheet' and int(wait.get('chat_id') or 0) == cid and int(wait.get('user_id') or 0) == uid:
-            if str(getattr(msg, 'content_type', '')) != 'text':
-                send_and_auto_delete(cid, 'Пришлите ссылку на Google Таблицу обычным текстом.', 10)
-                return True
-            value = str(getattr(msg, 'text', '') or '').strip()
-            cfg['spreadsheet_id'] = _v149_google_id(value, 'sheet')
-            cfg['spreadsheet_title'] = ''
-            cfg['input_wait'] = {}
-            cfg['updated_at'] = _v149_now_iso()
-            tenant_google_persist(tid, 'tenant_google_update')
-            try:
-                DELAYED_SCHEDULER.cancel(f'v213-input-google:{tid}:{cid}:{uid}')
-                _v172_delete_quiet(cid, int(wait.get('cancel_message_id') or 0))
-                bot.delete_message(cid, msg.message_id)
-            except Exception:
-                pass
-            ok, test_text = _r7_google_test(tid)
-            if ok:
-                bot.send_message(cid, '✅ Таблица подключена и доступ проверен.\n\n' + _r7_google_status_text(tid), reply_markup=_r7_google_keyboard(tid))
-            else:
-                bot.send_message(cid, '🟡 Ссылка сохранена, но доступа пока нет.\n\n' + test_text + '\n\nНажмите «Email для доступа», добавьте его как Редактора и затем «Проверить доступ».', reply_markup=_r7_google_keyboard(tid))
-            return True
-    except Exception as exc:
-        try: send_and_auto_delete(int(msg.chat.id), '❌ Google: ' + str(exc)[:600], 20)
-        except Exception: pass
-        return True
-    return bool(_GOOGLE_HANDLE_CORE(msg)) if callable(_GOOGLE_HANDLE_CORE) else False
+# [OCH12.35 OWNER] _r7_google_handle_message -> 15_integration_google.py
+_owner_install('google', 'google:0084')
 
 
 # R47 FINALIZATION: obsolete R7 callback wrapper removed; R29 Google router is canonical.
@@ -3932,13 +3055,15 @@ def _r7_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, sta
 
 
 # Active front hooks must never perform Google OAuth/Drive/Sheets network work.
-def _r7_front_google_forbidden(*args, **kwargs):
-    raise RuntimeError('Google network work is isolated on Render #2. Use /google or the worker export path.')
+# [OCH12.35 OWNER] _r7_front_google_forbidden -> 15_integration_google.py
+_owner_install('google', 'google:0085')
 
 def _r7_front_create_sheet_disabled(tenant_id: str, title: str='Финансы бота'):
     raise RuntimeError('Создайте Google Таблицу в своём аккаунте, расшарьте её service-account как Редактору и подключите через /google. Создание таблиц сервисным аккаунтом отключено, чтобы владельцем файла оставались вы.')
 
-_google_access_token = _r7_front_google_forbidden
+_R1234_LOCAL_TENANT_GOOGLE_UPLOAD = globals().get('tenant_google_upload_export')
+_R1234_LOCAL_TENANT_GOOGLE_CREATE = globals().get('tenant_google_create_spreadsheet')
+_google_access_token = _canon_google_access_token__001
 tenant_google_upload_export = _r7_front_google_forbidden
 tenant_google_create_spreadsheet = _r7_front_create_sheet_disabled
 
@@ -4008,37 +3133,11 @@ def _r10_worker_health_keyboard():
     kb.row(IB('🔙 В Инфо', callback_data='r10:worker:back'), IB('❌ Закрыть', callback_data='info_close'))
     return kb
 
-def _r70_routes_text():
-    h=dict(_SPLIT_STATE.get('worker_health') or {});st=dict(h.get('state') or {})
-    worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
-    try:
-        wa_stats = dict(WINDOW_ACTOR_REGISTRY.stats() or {})
-    except Exception:
-        wa_stats = {}
-    lines=[
-        f'🧭 <b>{BOT_DISPLAY_NAME} · ВЛАДЕЛЬЦЫ ПРОЦЕССОВ R1/R2</b>','',
-        '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
-        '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
-        '🔒 Реальная доставка пересылки — <b>R1 FAST</b>',
-        '🔒 Canonical business mutation — <b>R1 FAST</b>',
-        '🛰 Google / тяжёлые таблицы — <b>R2 HEAVY</b>',
-        '🛰 File export / тяжёлая генерация — <b>R2 HEAVY</b>',
-        '🛰 MEGA runtime heavy jobs — <b>R2 HEAVY</b>',
-        '🔁 State events / delta — <b>R1 → R2</b>',
-        '🧪 Диагностика — <b>R1 инициирует, R2 исполняет</b>','',
-        f'R2 сейчас: {"✅ доступен" if worker_ok else "⛔ недоступен"} · очередь {int(h.get("queue_size") or 0)} · Google {int(h.get("google_queue_size") or 0)}',
-        f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}',
-        f'Window Actor: окон {int(wa_stats.get("windows") or 0)} · markup-only {int(wa_stats.get("markup_only") or 0)} · no-op {int(wa_stats.get("noops") or 0)} · stale render {int(wa_stats.get("stale_renders") or 0)} · stale callback {int(wa_stats.get("stale_callbacks") or 0)}','',
-        f'{BOT_DISPLAY_NAME} намеренно не разрешает переключать Telegram UI/forward delivery на R2: у этих путей должен быть ровно один владелец, иначе снова возможны дубли окон/сообщений.',
-        'Для сравнения R1↔R2 используйте 🧪 Тест #1 ↔ #2 и E2E.'
-    ]
-    return window_mark('\n'.join(lines),'Ф4072')
+# [OCH12.35 COMPAT] legacy _r70_routes_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0033')
 
-def _r70_routes_keyboard():
-    kb=types.InlineKeyboardMarkup(row_width=2)
-    kb.row(IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'),IB('🔄 Render #2',callback_data='r10:worker:refresh'))
-    kb.row(IB('🔙 Render #2',callback_data='r10:worker:status'),IB('❌ Закрыть',callback_data='info_close'))
-    return kb
+# [OCH12.35 COMPAT] legacy _r70_routes_keyboard -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0034')
 
 
 _INFO_KB_CORE = _canon_build_info_keyboard__002
@@ -5293,31 +4392,8 @@ def _r60_redis_inspect_job(page,chat_id,message_id):
     except Exception: pass
 
 
-def _r49_info_inject_redis_toggle(kb, chat_id: int):
-    if int(chat_id) != int(OWNER_ID or 0):
-        return kb
-    try:
-        rows_fn = globals().get('_v177_info_rows')
-        set_fn = globals().get('_v177_info_set_rows')
-        rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or [])
-        remove_callbacks={'r49:redis:toggle','r60:redis:menu','r60:redis:inspect:0','r59:vars:render:0','r59:vars:code:0'}
-        rows = [list(row or []) for row in rows if not any(_r29_button_callback(b) in remove_callbacks for b in (row or []))]
-        insert_at = len(rows)
-        for i, row in enumerate(rows):
-            if any((_r29_button_callback(b) in {'info_close', 'aux_close', 'nav_prev'} or 'назад' in _r29_button_text(b).casefold()) for b in (row or [])):
-                insert_at = i
-                break
-        rows.insert(insert_at, [IB('🌐 Render ENV', callback_data='r59:vars:render:0'), IB('🧩 Код/runtime', callback_data='r59:vars:code:0')])
-        rows.insert(insert_at + 1, [_r49_redis_button(),IB('🧠 Redis: содержимое',callback_data='r60:redis:inspect:0')])
-        if callable(set_fn):
-            return set_fn(kb, rows)
-        setattr(kb, 'keyboard', rows)
-    except Exception:
-        try:
-            kb.row(IB('🌐 Render ENV', callback_data='r59:vars:render:0'), IB('🧩 Код/runtime', callback_data='r59:vars:code:0'))
-            kb.row(_r49_redis_button(),IB('🧠 Redis: содержимое',callback_data='r60:redis:inspect:0'))
-        except Exception: pass
-    return kb
+# [OCH12.35 COMPAT] legacy _r49_info_inject_redis_toggle -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0035')
 
 
 def _r49_render_info_after_redis(chat_id: int, message_id: int):
@@ -5464,275 +4540,36 @@ _R29_GOOGLE_STATUS_CORE = _r7_google_status_text
 _R29_GOOGLE_TEST_CORE = _r7_google_test
 
 
-def _r29_google_keyboard(tenant_id):
-    kb = _R29_GOOGLE_KB_CORE(tenant_id) if callable(_R29_GOOGLE_KB_CORE) else types.InlineKeyboardMarkup()
-    try:
-        rows = list(getattr(kb, 'keyboard', None) or [])
-        callbacks = {_r29_button_callback(b) for row in rows for b in (row or [])}
-        if 'nav_prev' not in callbacks:
-            kb.row(IB('🔙 Назад', callback_data='nav_prev'), IB('❌ Закрыть', callback_data='info_close'))
-    except Exception:
-        pass
-    return kb
+# [OCH12.35 OWNER] _r29_google_keyboard -> 15_integration_google.py
+_owner_install('google', 'google:0086')
 
 
-def _r29_google_status(tenant_id) -> str:
-    try:
-        return str(_R29_GOOGLE_STATUS_CORE(tenant_id)) if callable(_R29_GOOGLE_STATUS_CORE) else '📊 Google'
-    except Exception as exc:
-        return '📊 Google\n\nОшибка локального статуса: ' + str(exc)[:300]
+# [OCH12.35 OWNER] _r29_google_status -> 15_integration_google.py
+_owner_install('google', 'google:0087')
 
 
-def _r29_google_back_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('🔙 В Google', callback_data='v149:google:status'))
-    kb.row(IB('❌ Закрыть', callback_data='info_close'))
-    return kb
+# [OCH12.35 OWNER] _r29_google_back_keyboard -> 15_integration_google.py
+_owner_install('google', 'google:0088')
 
 
-def _r29_google_edit(chat_id: int, message_id: int, text: str, kb=None, parse_mode=None, purpose='r29_google'):
-    return fast_ui_edit_message_text(int(chat_id), int(message_id), str(text)[:4000], reply_markup=kb, parse_mode=parse_mode, purpose=purpose)
+# [OCH12.35 OWNER] _r29_google_edit -> 15_integration_google.py
+_owner_install('google', 'google:0089')
 
 
-def _r29_google_persist_background(tenant_id: str, reason: str):
-    tid = str(tenant_id)
-    def _job():
-        try: tenant_google_persist(tid, reason)
-        except Exception: pass
-    try:
-        pool = globals().get('GENERAL_TASK_POOL')
-        if pool is not None:
-            submit_unique = getattr(pool, 'submit_unique', None)
-            if callable(submit_unique): submit_unique(f'r29-google-persist:{tid}', _job)
-            else: pool.submit(f'r29-google-persist:{tid}', _job)
-            return
-    except Exception:
-        pass
-    try: threading.Thread(target=_job, daemon=True, name='r29-google-persist').start()
-    except Exception: pass
+# [OCH12.35 OWNER] _r29_google_persist_background -> 15_integration_google.py
+_owner_install('google', 'google:0090')
 
 
-def _r29_google_begin_wait(tid: str, kind: str, cid: int, uid: int, panel_mid: int):
-    cfg = tenant_google_config(str(tid))
-    sid = f'r29-{int(time.time()*1000)}-{int(uid)}'
-    delay = 120.0
-    try:
-        delay = float(globals().get('_v213_input_timeout_seconds', lambda: 120)())
-    except Exception:
-        pass
-    cfg['input_wait'] = {
-        'kind': str(kind), 'chat_id': int(cid), 'user_id': int(uid),
-        'expires_at': time.time() + delay, 'session_id': sid,
-        'panel_message_id': int(panel_mid), 'r29_single_window': True,
-    }
-    cfg['updated_at'] = globals().get('_v149_now_iso', lambda: '')()
-    _r29_google_persist_background(str(tid), 'r29_google_wait')
-    key = f'r29-google-input:{tid}:{cid}:{uid}'
-    try: DELAYED_SCHEDULER.cancel(key)
-    except Exception: pass
-    def _expire():
-        try:
-            live = (tenant_google_config(str(tid), create=False) or {}).get('input_wait') or {}
-            if str(live.get('session_id') or '') != sid:
-                return
-            tenant_google_config(str(tid))['input_wait'] = {}
-            _r29_google_persist_background(str(tid), 'r29_google_wait_expire')
-            _r29_google_edit(cid, panel_mid, _r29_google_status(tid) + '\n\n⌛ Ввод отменён по таймеру.', _r29_google_keyboard(tid), purpose='r29_google_wait_expire')
-        except Exception:
-            pass
-    try: DELAYED_SCHEDULER.schedule(key, delay, _expire)
-    except Exception: pass
-    return sid
+# [OCH12.35 OWNER] _r29_google_begin_wait -> 15_integration_google.py
+_owner_install('google', 'google:0091')
 
 
-def _google_extension_callback(call, data_str: str) -> bool:
-    raw = str(data_str or '')
-    if not raw.startswith('v149:google:'):
-        return False
-    try:
-        cid = int(call.message.chat.id)
-        uid = int(getattr(getattr(call, 'from_user', None), 'id', 0) or 0)
-        mid = int(call.message.message_id)
-    except Exception:
-        return True
-    try:
-        ok_manage, tid = _v149_google_can_manage(cid, uid, owner_only=True)
-    except Exception:
-        ok_manage, tid = (uid == int(OWNER_ID or 0), str(globals().get('TENANT_PLATFORM_ID') or 'platform'))
-    if not ok_manage:
-        try: bot.answer_callback_query(call.id, 'Только владелец пространства', show_alert=True)
-        except Exception: pass
-        return True
-    action = raw.split(':', 2)[2]
-    try: bot.answer_callback_query(call.id)
-    except Exception: pass
-
-    if action == 'status':
-        _r29_google_edit(cid, mid, _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_status')
-        return True
-    if action in {'service_email', 'connect'}:
-        try:
-            info = globals().get('_r7_google_worker_info', lambda fetch=False: {})(fetch=False)
-            email = str((info or {}).get('service_email') or '')
-        except Exception:
-            email = ''
-        if email:
-            _r29_google_edit(cid, mid, '📧 EMAIL ДЛЯ ДОСТУПА\n\n<code>' + email + '</code>\n\nДобавьте этот email в Google Таблице: Поделиться → Редактор.', _r29_google_back_keyboard(), parse_mode='HTML', purpose='r29_google_email')
-            return True
-        _r29_google_edit(cid, mid, '⏳ Получаю email service account с Render #2…', _r29_google_back_keyboard(), purpose='r29_google_email_wait')
-        def _fetch_email():
-            try:
-                info2 = globals().get('_r7_google_worker_info', lambda fetch=True: {})(fetch=True)
-                email2 = str((info2 or {}).get('service_email') or '')
-                text = ('📧 EMAIL ДЛЯ ДОСТУПА\n\n<code>' + email2 + '</code>\n\nДобавьте этот email в Google Таблице: Поделиться → Редактор.') if email2 else '❌ Render #2 не отдал email service account.'
-                _r29_google_edit(cid, mid, text, _r29_google_back_keyboard(), parse_mode='HTML' if email2 else None, purpose='r29_google_email_done')
-            except Exception as exc:
-                _r29_google_edit(cid, mid, '❌ Google: ' + str(exc)[:500], _r29_google_back_keyboard(), purpose='r29_google_email_error')
-        try: GENERAL_TASK_POOL.submit_unique(f'r29-google-email:{cid}', _fetch_email)
-        except Exception: pass
-        return True
-    if action in {'sheet', 'folder', 'owner_email'}:
-        prompt = {
-            'sheet': '2️⃣ Пришлите сюда ссылку на Google Таблицу.\n\nПосле сообщения бот сохранит ссылку и проверит доступ в этом же окне.',
-            'folder': '📁 Пришлите ссылку или ID папки Google Drive.',
-            'owner_email': '👤 Пришлите email Google-аккаунта владельца пространства.',
-        }[action]
-        _r29_google_edit(cid, mid, prompt, _r29_google_back_keyboard(), purpose=f'r29_google_wait_{action}')
-        _r29_google_begin_wait(str(tid), action, cid, uid, mid)
-        return True
-    if action in {'history', 'errors'}:
-        text = _v149_google_history_text(str(tid), action == 'errors')
-        _r29_google_edit(cid, mid, text, _r29_google_back_keyboard(), purpose=f'r29_google_{action}')
-        return True
-    if action in {'toggle_sheet', 'toggle_drive'}:
-        cfg = tenant_google_config(str(tid))
-        settings = cfg.setdefault('export_settings', {})
-        key = 'sheet_enabled' if action == 'toggle_sheet' else 'drive_enabled'
-        settings[key] = not bool(settings.get(key, True))
-        cfg['updated_at'] = globals().get('_v149_now_iso', lambda: '')()
-        try: tenant_google_history(str(tid), action, f'{key}={settings[key]}', ok=True)
-        except Exception: pass
-        _r29_google_edit(cid, mid, _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_toggle')
-        _r29_google_persist_background(str(tid), 'tenant_google_settings_r29')
-        return True
-    if action == 'test':
-        _r29_google_edit(cid, mid, '⏳ Проверяю доступ к Google на Render #2…', _r29_google_back_keyboard(), purpose='r29_google_test_start')
-        def _test():
-            try:
-                fn = _R29_GOOGLE_TEST_CORE or globals().get('_r7_google_test')
-                ok, text = fn(str(tid)) if callable(fn) else (False, 'Проверка недоступна')
-                prefix = '✅ ' if ok else '🟡 '
-                _r29_google_edit(cid, mid, prefix + str(text or '') + '\n\n' + _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_test_done')
-            except Exception as exc:
-                _r29_google_edit(cid, mid, '❌ Google: ' + str(exc)[:600], _r29_google_keyboard(tid), purpose='r29_google_test_error')
-        try: GENERAL_TASK_POOL.submit_unique(f'r29-google-test:{tid}', _test)
-        except Exception: pass
-        return True
-    if action == 'create_sheet':
-        _r29_google_edit(cid, mid, '⏳ Создаю Google Таблицу на Render #2…', _r29_google_back_keyboard(), purpose='r29_google_create_start')
-        def _create():
-            try:
-                name = f"Финансы · {(tenant_get(str(tid)) or {}).get('name') or tid}"
-                url = tenant_google_create_spreadsheet(str(tid), name)
-                _r29_google_edit(cid, mid, '✅ Таблица создана и закреплена за пространством:\n' + str(url) + '\n\n' + _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_create_done')
-            except Exception as exc:
-                _r29_google_edit(cid, mid, '❌ Google: ' + str(exc)[:600], _r29_google_keyboard(tid), purpose='r29_google_create_error')
-        try: GENERAL_TASK_POOL.submit_unique(f'r29-google-create:{tid}', _create)
-        except Exception: pass
-        return True
-    if action == 'disconnect_confirm':
-        kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.row(IB('🧹 Да, отключить', callback_data='v149:google:disconnect'), IB('Отмена', callback_data='v149:google:status'))
-        _r29_google_edit(cid, mid, 'Отключить Google только у этого пространства? Таблицы и файлы в Google удалены не будут.', kb, purpose='r29_google_disconnect_confirm')
-        return True
-    if action == 'disconnect':
-        cfg = tenant_google_config(str(tid))
-        keep_history = list(cfg.get('history') or [])
-        keep_errors = list(cfg.get('errors') or [])
-        try: (tenant_get(str(tid)) or {}).pop('google_v149', None)
-        except Exception: pass
-        fresh = tenant_google_config(str(tid))
-        fresh['history'] = keep_history
-        fresh['errors'] = keep_errors
-        try: tenant_google_history(str(tid), 'account_disconnected', 'Google отключён', ok=True)
-        except Exception: pass
-        _r29_google_edit(cid, mid, '✅ Google этого пространства отключён.\n\n' + _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_disconnect')
-        _r29_google_persist_background(str(tid), 'tenant_google_disconnect_r29')
-        return True
-    # Unknown Google action is consumed here; there is no predecessor callback chain.
-    return True
+# [OCH12.35 OWNER] _google_extension_callback -> 15_integration_google.py
+_owner_install('google', 'google:0092')
 
 
-def _r29_google_handle_message(msg) -> bool:
-    try:
-        cid = int(msg.chat.id)
-        uid = int(getattr(getattr(msg, 'from_user', None), 'id', 0) or 0)
-        tid = str(tenant_id_for_chat(cid, create=False) or '')
-        cfg = tenant_google_config(tid, create=False) if tid else {}
-        wait = dict((cfg or {}).get('input_wait') or {})
-        if not wait or not bool(wait.get('r29_single_window')):
-            return bool(_R29_GOOGLE_HANDLE_CORE(msg)) if callable(_R29_GOOGLE_HANDLE_CORE) else False
-        if int(wait.get('chat_id') or 0) != cid or int(wait.get('user_id') or 0) != uid:
-            return False
-        panel_mid = int(wait.get('panel_message_id') or 0)
-        kind = str(wait.get('kind') or '')
-        if str(getattr(msg, 'content_type', '')) != 'text':
-            if panel_mid:
-                _r29_google_edit(cid, panel_mid, 'Пришлите данные обычным текстом.', _r29_google_back_keyboard(), purpose='r29_google_input_type')
-            return True
-        value = str(getattr(msg, 'text', '') or '').strip()
-        if kind == 'sheet':
-            cfg['spreadsheet_id'] = _v149_google_id(value, 'sheet')
-            cfg['spreadsheet_title'] = ''
-        elif kind == 'folder':
-            cfg['drive_folder_id'] = _v149_google_id(value, 'folder')
-            cfg['drive_folder_name'] = ''
-        elif kind == 'owner_email':
-            import re as _r29_re
-            if not _r29_re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', value):
-                raise RuntimeError('Неверный email')
-            cfg['owner_google_email'] = value[:250]
-        else:
-            return False
-        cfg['input_wait'] = {}
-        cfg['updated_at'] = globals().get('_v149_now_iso', lambda: '')()
-        try: DELAYED_SCHEDULER.cancel(f'r29-google-input:{tid}:{cid}:{uid}')
-        except Exception: pass
-        _r29_google_persist_background(tid, 'tenant_google_update_r29')
-        try:
-            deleter = globals().get('_v172_delete_quiet')
-            if callable(deleter): deleter(cid, int(msg.message_id))
-        except Exception: pass
-        if kind != 'sheet':
-            if panel_mid:
-                _r29_google_edit(cid, panel_mid, '✅ Настройка сохранена.\n\n' + _r29_google_status(tid), _r29_google_keyboard(tid), purpose='r29_google_input_saved')
-            return True
-        if panel_mid:
-            _r29_google_edit(cid, panel_mid, '✅ Ссылка сохранена. Проверяю доступ на Render #2…', _r29_google_back_keyboard(), purpose='r29_google_sheet_saved')
-        def _test_saved():
-            try:
-                fn = _R29_GOOGLE_TEST_CORE or globals().get('_r7_google_test')
-                ok, text = fn(str(tid)) if callable(fn) else (False, 'Проверка недоступна')
-                out = ('✅ Таблица подключена и доступ проверен.\n\n' if ok else '🟡 Ссылка сохранена, но доступа пока нет.\n\n') + str(text or '') + '\n\n' + _r29_google_status(tid)
-                if panel_mid:
-                    _r29_google_edit(cid, panel_mid, out, _r29_google_keyboard(tid), purpose='r29_google_sheet_test_done')
-            except Exception as exc:
-                if panel_mid:
-                    _r29_google_edit(cid, panel_mid, '❌ Google: ' + str(exc)[:600], _r29_google_keyboard(tid), purpose='r29_google_sheet_test_error')
-        try: GENERAL_TASK_POOL.submit_unique(f'r29-google-sheet-test:{tid}', _test_saved)
-        except Exception: pass
-        return True
-    except Exception as exc:
-        try:
-            cid = int(msg.chat.id)
-            tid = str(tenant_id_for_chat(cid, create=False) or '')
-            wait = (tenant_google_config(tid, create=False) or {}).get('input_wait') or {}
-            panel_mid = int(wait.get('panel_message_id') or 0)
-            if panel_mid:
-                _r29_google_edit(cid, panel_mid, '❌ Google: ' + str(exc)[:600], _r29_google_back_keyboard(), purpose='r29_google_input_error')
-        except Exception:
-            pass
-        return True
+# [OCH12.35 OWNER] _r29_google_handle_message -> 15_integration_google.py
+_owner_install('google', 'google:0093')
 
 
 tenant_google_keyboard = _r29_google_keyboard
@@ -6556,39 +5393,8 @@ def _r43_store_events_redis(events):
         try: c.close()
         except Exception: pass
 
-def _r34_post_events(events,wire,large=False):
-    """12.27 durability: canonical MEGA normally required; uncertain empty boot is local-safe mode."""
-    if not _r71_route_is_fast('durability'):
-        return _R80_HEAVY_POST_EVENTS(events,wire,large=large)
-    # OCH12.31: there is no permanent empty-boot MEGA write fence.  Redis remains
-    # a cache, while canonical MEGA durability resumes as soon as MEGA is reachable.
-    redis_ok=False; redis_detail='cache disabled'
-    try: redis_ok,redis_detail=_r43_store_events_redis(events)
-    except Exception as exc: redis_detail=f'{type(exc).__name__}: {str(exc)[:160]}'
-    max_rev=max([int((x or {}).get('revision') or 0) for x in (events or [])] or [0])
-    with _R80_MEGA_LOCK:
-        for ev in (events or []):
-            if _r80_compact_event_valid(ev):
-                eid=str(ev.get('event_id') or '')
-                if eid: _R80_MEGA_TAIL_EVENTS[eid]=ev
-        _R80_MEGA_STATE['tail_dirty']=True
-        covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
-    if covered<max_rev:
-        ok,detail=_r80_flush_compact_tail('durability-ack')
-        if not ok: raise RuntimeError('MEGA canonical tail pending: '+str(detail)[:180])
-        with _R80_MEGA_LOCK: covered=int(_R80_MEGA_STATE.get('tail_max_revision') or 0)
-    if covered<max_rev: raise RuntimeError(f'MEGA canonical tail incomplete covered={covered} required={max_rev}')
-    _R32_EVENT_STATE['last_revision_acked']=max(int(_R32_EVENT_STATE.get('last_revision_acked') or 0),max_rev)
-    _R32_EVENT_STATE['last_revision_applied_peer']=max(int(_R32_EVENT_STATE.get('last_revision_applied_peer') or 0),max_rev)
-    _R32_EVENT_STATE['sent']=int(_R32_EVENT_STATE.get('sent') or 0)+len(events or [])
-    _R32_EVENT_STATE['batches']=int(_R32_EVENT_STATE.get('batches') or 0)+1
-    _R32_EVENT_STATE['last_ok']=_r32_time.time(); _R32_EVENT_STATE['last_error']=''
-    _R32_EVENT_STATE['redis_cache_ok']=bool(redis_ok); _R32_EVENT_STATE['redis_cache_detail']=str(redis_detail)[:180]
-    st=globals().get('_SPLIT_STATE')
-    if isinstance(st,dict):
-        st['r34_event_last_revision_acked']=max_rev; st['r35_event_last_revision_applied_peer']=max_rev
-        st['r80_failover_durability']='MEGA_CANONICAL_V126'; st['redis_event_cache_ok']=bool(redis_ok)
-    return True
+# [OCH12.35 COMPAT] legacy _r34_post_events -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0036')
 
 def _r32_send_packet(packet):
     packets=list(packet.get('packets') or [])
@@ -6720,14 +5526,8 @@ def _split_schedule_idle_full_reconcile_v270(reason='need_full',delay=None):
 def _split_request_worker_full_sync_r18(reason='need_full'):
     return True,'R34 event-stream mode: full rebase not required'
 
-def _split_push_snapshot_now_v263(reason='shutdown',sync_mega=False):
-    if not _OCH1226_MEGA_DURABILITY_ENABLED: return True
-    if not (_r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega')):
-        return _R80_HEAVY_PUSH_SNAPSHOT(reason,sync_mega=sync_mega)
-    if not _r80_mega_master_enabled(): return False
-    if bool(sync_mega):
-        ok,_detail=_r80_snapshot_full_compact('sync-'+str(reason or 'snapshot')[:80]); return bool(ok)
-    return bool(_r80_queue_compact_full('snapshot-'+str(reason or '')[:80]))
+# [OCH12.35 COMPAT] legacy _split_push_snapshot_now_v263 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0037')
 
 def r32_event_stream_status():
     # R45-FIX2: diagnostics/UI reads cached counters only; never touch outbox SQLite.
@@ -6880,20 +5680,8 @@ def _r33_export_body(kind,label,func_name,args,kwargs):
     return body
 
 
-def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    # R34: never wait for global state synchronization on FAST.  The job carries a
-    # revision fence and HEAVY waits for only the state it actually needs.
-    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    try: _file_job_progress('передаю задание Render #2', force=True)
-    except Exception: pass
-    submit=globals().get('_r7_worker_file_submit')
-    if not callable(submit): raise RuntimeError('R38 HEAVY export bridge unavailable')
-    jid=submit(body)
-    try: bot_journal('r35_heavy_file_accepted_legacy_guard',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}; required_revision={body.get('required_revision') or 0}")
-    except Exception: pass
-    # R35 intentionally does NOT mark accepted/queued as delivered here. The final
-    # adapter defined below waits for the real FAST delivery callback.
-    return True
+# [OCH12.35 COMPAT] legacy _r33_remote_file_adapter -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0038')
 
 # R47 FINALIZATION: no early submit override; R40 is the sole public owner.
 
@@ -6913,9 +5701,8 @@ def send_exact_range_export(recipient_chat_id:int,target_chat_id:int,start_key:s
     ok,_info=submit_interactive_file_job(int(recipient_chat_id),'exact_export',label,_r34_export_marker,int(recipient_chat_id),int(target_chat_id),str(start_key),int(start_rid),str(end_key),int(end_rid),str(file_type),excel_style_override,excel_options_override,str(delivery or 'chat'))
     return bool(ok)
 
-def send_tabl_lsx_for_chat(recipient_chat_id:int,target_chat_id:int):
-    ok,_info=submit_interactive_file_job(int(recipient_chat_id),'tabl_lsx','Excel /tabl_lsx',_r34_export_marker,int(recipient_chat_id),int(target_chat_id))
-    return bool(ok)
+# [OCH12.35 OWNER] send_tabl_lsx_for_chat -> 16_integration_excel.py
+_owner_install('excel', 'excel:0085')
 
 
 # Defensive R49 hot-path regression gate: callback renderer must only enqueue.
@@ -7124,27 +5911,8 @@ def _r35_wait_remote_delivery(jid,body):
         _r33_time.sleep(0.45)
     raise RuntimeError(f'Render #2 не подтвердил доставку за {timeout} сек.; job_id={jid}')
 
-def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
-    body=_r33_export_body(str(kind),str(label),str(func_name),args,kwargs)
-    body['front_release']='Пер-R43'
-    try: _file_job_progress('передаю задание Render #2',force=True)
-    except Exception: pass
-    submit=globals().get('_r7_worker_file_submit')
-    if not callable(submit): raise RuntimeError('R38 HEAVY export bridge unavailable')
-    jid=submit(body)
-    existing=_r35_delivery_get(jid)
-    if str(existing.get('state') or '') not in {'running','done','done_error'}:
-        _r35_delivery_set(jid,'accepted',{'job_id':jid,'operation':body.get('operation'),'recipient_chat_id':body.get('recipient_chat_id')})
-    try: bot_journal('r36_heavy_file_accepted',int(body.get('recipient_chat_id') or 0),f"kind={kind}; op={body.get('operation')}; job={jid}; required_revision={body.get('required_revision') or 0}")
-    except Exception: pass
-    _r35_wait_remote_delivery(jid,body)
-    # This call runs inside the original FAST file-job context, so only now may the
-    # canonical runner close the status window and release its single-flight lock.
-    delivery=str(body.get('delivery') or 'chat').lower()
-    delivered_kind='Telegram через Render #2' if delivery=='chat' else ('Google Sheets' if delivery=='google' else 'Google Drive')
-    if not file_job_mark_external_delivery(delivered_kind,jid):
-        raise RuntimeError('R36 delivery was confirmed but FAST file-job context was lost')
-    return True
+# [OCH12.35 COMPAT] legacy _r33_remote_file_adapter -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0039')
 
 try:
     bot_journal('r36_transport_fix_loaded',int(OWNER_ID or 0),'accepted!=delivered; local+redis delivery ledger; safe HTTP/JSON; same-job retry; stale callback recovery')
@@ -7451,19 +6219,8 @@ def _r33_remote_file_adapter(kind,label,func_name,args,kwargs):
     return True
 
 
-def _r38_google_submit_report(title,rows,layout='category',annotations_override=None,include_annotations=True,**kwargs):
-    if not _split_env_bool('SPLIT_GOOGLE_REMOTE_ENABLED',True): raise RuntimeError('Google Sheets worker delegation disabled')
-    target_chat_id=kwargs.get('target_chat_id'); notify_result=bool(kwargs.get('notify_result',True)); recipient_chat_id=kwargs.get('recipient_chat_id') or target_chat_id
-    tid,spreadsheet_id=_split_google_target(target_chat_id=target_chat_id,tenant_id=kwargs.get('tenant_id'))
-    annotations=_split_annotations_for_google(rows,str(layout or 'category'),annotations_override,bool(include_annotations))
-    encoded={f'{int(r)},{int(c)}':str(note) for (r,c),note in annotations.items() if str(note or '').strip()}
-    jid=__import__('secrets').token_hex(12)
-    body={'job_id':jid,'title':str(title or 'Статьи')[:300],'rows':rows,'layout':str(layout or 'category'),'annotations':encoded,'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':notify_result,'front_release':'Пер-R43'}
-    _r38_outbox_enqueue('google','/internal/google/sheet',body)
-    try:
-        _SPLIT_STATE['google_last_attempt']=_r33_time.time(); _SPLIT_STATE['google_last_job']=jid; _SPLIT_STATE['google_last_error']=''
-    except Exception: pass
-    return 'worker-job:'+jid
+# [OCH12.35 OWNER] _r38_google_submit_report -> 15_integration_google.py
+_owner_install('google', 'google:0094')
 
 _v262_split_google_sheets_create_category_report = _r38_google_submit_report
 # R38 must also replace the canonical alias rebound by 89_callback_final/98_split_front.
@@ -7509,62 +6266,19 @@ def _r38_sync_peer_json(method,path,*,json_body=None,timeout=12,max_wait=45,agen
     raise RuntimeError(f'Render #2 temporarily unavailable after retry: {last}')
 
 
-def _r38_tenant_google_test(tenant_id):
-    try:
-        tid,spreadsheet_id=_split_google_target(tenant_id=str(tenant_id))
-        r,payload=_r38_sync_peer_json('POST','/internal/google/test',json_body={'spreadsheet_id':spreadsheet_id,'tenant_id':tid},timeout=18,max_wait=60,agent='per-r38-front-google-test')
-        if 200<=int(r.status_code)<300 and payload.get('ok'):
-            return True,f"✅ Google Таблица доступна через Render #2.\nНазвание: {payload.get('title') or '—'}\nService account: {payload.get('service_email') or '—'}"
-        return False,'❌ Проверка Google: '+str(payload.get('error') or f'HTTP {r.status_code}')[:600]
-    except Exception as exc:
-        return False,'❌ Проверка Google: '+str(exc)[:600]
+# [OCH12.35 OWNER] _r38_tenant_google_test -> 15_integration_google.py
+_owner_install('google', 'google:0095')
 
 
-def _r38_google_worker_info(fetch=True):
-    # Preserve R7 cache semantics but do not let a short Render restart surface as HTML/503.
-    cache=globals().get('_R7_GOOGLE_INFO_CACHE')
-    now=_r33_time.time(); cached=dict((cache or {}).get('data') or {}) if isinstance(cache,dict) else {}
-    if cached and (not fetch or now-float((cache or {}).get('ts') or 0)<600): return cached
-    if not fetch:return cached
-    try:
-        r,payload=_r38_sync_peer_json('GET','/internal/google/info',timeout=8,max_wait=30,agent='per-r38-front-google-info')
-        if 200<=int(r.status_code)<300 and payload.get('ok'):
-            if isinstance(cache,dict): cache.update(ts=now,data=dict(payload))
-            return dict(payload)
-    except Exception: pass
-    return cached
+# [OCH12.35 OWNER] _r38_google_worker_info -> 15_integration_google.py
+_owner_install('google', 'google:0096')
 
 tenant_google_test = _r38_tenant_google_test
 _r7_google_worker_info = _r38_google_worker_info
 
 
-def _r38_google_result_handler():
-    if not globals().get('_split_authorized_request',lambda:False)(): return ({'ok':False},404)
-    body=request.get_json(silent=True) or {}; jid=str(body.get('job_id') or '').strip()
-    if not jid:return ({'ok':False,'error':'job_id required'},400)
-    out=_r38_outbox_get(jid)
-    if str(out.get('result_state') or '')=='done': return ({'ok':True,'duplicate':True,'delivered':True},200)
-    try: cid=int(body.get('recipient_chat_id') or 0)
-    except Exception: cid=0
-    if not cid:return ({'ok':False,'error':'recipient_chat_id required'},400)
-    try:
-        if bool(body.get('notify_result',True)):
-            if bool(body.get('ok')):
-                text=f"✅ 📊 Google Excel готов\n{str(body.get('title') or 'Google Excel')[:180]}\n\n{str(body.get('url') or '').strip()}"
-                bot.send_message(cid,text,disable_web_page_preview=True)
-            else:
-                err=str(body.get('error') or 'Render #2 завершил Google-задачу с ошибкой')[:700]
-                bot.send_message(cid,'❌ Google Excel не создан на Render #2:\n'+err)
-        out=out if isinstance(out,dict) else {'job_id':jid,'kind':'google'}
-        out.update({'job_id':jid,'state':'completed','result_state':'done','result_ok':bool(body.get('ok')),'result_url':str(body.get('url') or ''),'result_title':str(body.get('title') or ''),'result_at':_r33_time.time(),'last_error':str(body.get('error') or '')[:500]})
-        _r38_outbox_put(out,pending=False)
-        try:
-            if body.get('ok'):_SPLIT_STATE['google_last_ok']=_r33_time.time(); _SPLIT_STATE['google_last_error']=''
-            else:_SPLIT_STATE['google_last_error']=str(body.get('error') or '')[:240]
-        except Exception: pass
-        return ({'ok':True,'delivered':True},200)
-    except Exception as exc:
-        return ({'ok':False,'error':f'{type(exc).__name__}: {str(exc)[:300]}'},503)
+# [OCH12.35 OWNER] _r38_google_result_handler -> 15_integration_google.py
+_owner_install('google', 'google:0097')
 
 try: app.view_functions['split_front_google_result_v262']=_r38_google_result_handler
 except Exception: pass
@@ -7996,10 +6710,8 @@ def _r40_submit_heavy_file(chat_id,kind,label,func,*args,**kwargs):
     return (True,'Запущено')
 
 
-def submit_interactive_file_job(chat_id:int,kind:str,label:str,func,*args,**kwargs):
-    kind_s=str(kind or 'file'); heavy=(kind_s in _R33_HEAVY_FILE_KINDS or kind_s.startswith('window_'))
-    if heavy: return _r40_submit_heavy_file(chat_id,kind_s,label,func,*args,**kwargs)
-    return _LOCAL_SUBMIT_FILE_JOB(chat_id,kind,label,func,*args,**kwargs) if callable(_LOCAL_SUBMIT_FILE_JOB) else (False,'Экспорт недоступен')
+# [OCH12.35 COMPAT] legacy submit_interactive_file_job -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0040')
 
 
 try:
@@ -8009,26 +6721,12 @@ except Exception: pass
 
 # R40 query-only Google helper for scheduled/legacy paths. FAST sends only period
 # boundaries and a revision fence; HEAVY reconstructs category rows from its mirror.
-def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,end_rid=0,layout='category',include_annotations=True,notify_result=False,recipient_chat_id=None):
-    target_chat_id=int(target_chat_id); recipient_chat_id=int(recipient_chat_id or target_chat_id)
-    tid,spreadsheet_id=_split_google_target(target_chat_id=target_chat_id,tenant_id=None)
-    jid=__import__('secrets').token_hex(12)
-    try: required=int((_R32_EVENT_STATE or {}).get('last_revision_queued') or 0)
-    except Exception: required=0
-    body={'job_id':jid,'operation':'google_exact_query','title':str(title or 'Статьи')[:300],'layout':str(layout or 'category'),'include_annotations':bool(include_annotations),'spreadsheet_id':spreadsheet_id,'tenant_id':tid,'target_chat_id':target_chat_id,'recipient_chat_id':recipient_chat_id,'notify_result':bool(notify_result),'start_key':str(start_key or '')[:10],'start_rid':int(start_rid or 0),'end_key':str(end_key or '')[:10],'end_rid':int(end_rid or 0),'required_revision':required,'front_release':'Пер-R43'}
-    jid2=_r38_outbox_enqueue('google','/internal/google/sheet',body)
-    return str(jid2)
+# [OCH12.35 OWNER] _r40_google_query_submit -> 15_integration_google.py
+_owner_install('google', 'google:0098')
 
 
-def _r40_google_wait(jid,timeout=900):
-    deadline=_r33_time.time()+max(30,min(3600,int(timeout or 900)))
-    while _r33_time.time()<deadline:
-        row=_r38_outbox_get(str(jid)) or {}
-        if str(row.get('result_state') or '')=='done':
-            return bool(row.get('result_ok')),str(row.get('result_url') or ''),str(row.get('last_error') or '')
-        if str(row.get('state') or '')=='failed': return False,'',str(row.get('last_error') or 'Google job dispatch failed')
-        _r33_time.sleep(0.5)
-    return False,'',f'Google job timeout {int(timeout)} sec'
+# [OCH12.35 OWNER] _r40_google_wait -> 15_integration_google.py
+_owner_install('google', 'google:0099')
 
 _r40_google_query_submit = _r40_google_query_submit
 _r40_google_wait = _r40_google_wait
@@ -8203,49 +6901,14 @@ _R44_MEGA_TOKEN_LOCK=_r44_threading.RLock()
 _R44_TEST_KEY_PREFIX='per:r44:test:'
 _R44_TRAFFIC_WORDS=('TRAFFIC_AUDIT','DISPATCHER STUCK','STUCK_STACK','LOCKTRACE','INTERACTIVE FILE JOB','SPLIT FRONT','HEAVY','peer','Render #2','R4','BTNTRACE','FASTBTN','WEBHOOK')
 
-def _r44_redact(value):
-    s=str(value if value is not None else '')
-    try:
-        sec=str(_r44_os.getenv('PEER_SHARED_SECRET','') or '')
-        if sec and len(sec)>=6: s=s.replace(sec,'<peer-secret>')
-    except Exception: pass
-    for key in ('BOT_TOKEN','TELEGRAM_BOT_TOKEN','REDIS_URL','MEGA_PASSWORD','MEGA_SESSION','GOOGLE_SERVICE_ACCOUNT_JSON'):
-        try:
-            v=str(_r44_os.getenv(key,'') or '')
-            if v and len(v)>=8: s=s.replace(v,f'<{key.lower()}>')
-        except Exception: pass
-    return s[:2400]
+# [OCH12.35 COMPAT] legacy _r44_redact -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0041')
 
-def _r44_diag(event, **fields):
-    try:
-        row={'ts':round(_r44_time.time(),3),'event':str(event or '')[:120],'thread':_r44_threading.current_thread().name[:80]}
-        for k,v in fields.items(): row[str(k)[:80]]=_r44_redact(v)
-        raw=_r44_json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n'
-        with _R44_DIAG_LOCK:
-            _R44_DIAG_PATH.parent.mkdir(parents=True,exist_ok=True)
-            try:
-                if _R44_DIAG_PATH.exists() and _R44_DIAG_PATH.stat().st_size>_R44_DIAG_MAX:
-                    old=_R44_DIAG_PATH.with_suffix(_R44_DIAG_PATH.suffix+'.1')
-                    try: old.unlink(missing_ok=True)
-                    except Exception: pass
-                    try: _R44_DIAG_PATH.replace(old)
-                    except Exception: pass
-            except Exception: pass
-            with open(_R44_DIAG_PATH,'a',encoding='utf-8') as fh: fh.write(raw)
-    except Exception:
-        pass
+# [OCH12.35 COMPAT] legacy _r44_diag -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0042')
 
-def _r44_diag_tail(limit=30):
-    try:
-        if not _R44_DIAG_PATH.exists(): return []
-        with open(_R44_DIAG_PATH,'r',encoding='utf-8',errors='replace') as fh:
-            rows=fh.readlines()[-max(1,min(100,int(limit or 30))):]
-        out=[]
-        for line in rows:
-            try: out.append(_r44_json.loads(line))
-            except Exception: continue
-        return out
-    except Exception: return []
+# [OCH12.35 COMPAT] legacy _r44_diag_tail -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0043')
 
 # R47 FINALIZATION: no global logger wrappers. Diagnostics write only explicit R44/R45 events.
 def _r44_peer_base():
@@ -8387,54 +7050,11 @@ def _r44_test_menu_kb(chat_id):
     kb.row(IB('⬅️ Основное окно',callback_data=f'd:{day}:back_main'),IB('❌ Закрыть',callback_data='info_close'))
     return kb
 
-def _r44_mega_screen(chat_id,path,page=0):
-    r,meta=_r44_request(chat_id,'GET','/internal/r44/test/mega/list',params={'path':str(path)},timeout=45)
-    p=meta.get('payload') if isinstance(meta.get('payload'),dict) else {}
-    if not meta.get('ok') or not p.get('ok'):
-        text=window_mark('📁 <b>MEGA #2</b>\n\n⛔ '+_r44_html.escape(str(p.get('error') or meta.get('error') or f'HTTP {meta.get("status")}')[:1200]),'Ф4045')
-        kb=types.InlineKeyboardMarkup();kb.row(IB('🔙 В тест',callback_data='r44:test:open'));return text,kb
-    entries=list(p.get('entries') or []); page=max(0,int(page or 0)); per=9; pages=max(1,(len(entries)+per-1)//per); page=min(page,pages-1)
-    text=window_mark(f'📁 <b>MEGA #2</b>\n\nПуть: <code>{_r44_html.escape(str(p.get("path") or path)[:500])}</code>\nПапок/файлов: {len(entries)} · страница {page+1}/{pages}\nПолучено за {meta.get("elapsed",0)}с','Ф4045')
-    kb=types.InlineKeyboardMarkup(row_width=1)
-    for ent in entries[page*per:(page+1)*per]:
-        ep=str(ent.get('path') or ''); kind=str(ent.get('type') or 'file'); name=str(ent.get('name') or ep.rsplit('/',1)[-1] or '/')
-        tok=_r44_token(ep,kind); label=('📁 ' if kind=='dir' else '📄 ')+name[:46]
-        kb.row(IB(label,callback_data=f'r44:test:mega:{"d" if kind=="dir" else "f"}:{tok}'))
-    nav=[]
-    ptok=_r44_token(str(p.get('path') or path),'dir')
-    if page>0: nav.append(IB('◀️',callback_data=f'r44:test:mega:p:{ptok}:{page-1}'))
-    if page+1<pages: nav.append(IB('▶️',callback_data=f'r44:test:mega:p:{ptok}:{page+1}'))
-    if nav: kb.row(*nav)
-    parent=str(p.get('parent') or '')
-    if parent and parent!=str(p.get('path') or ''):
-        kb.row(IB('⬆️ Вверх',callback_data=f'r44:test:mega:d:{_r44_token(parent,"dir")}'))
-    kb.row(IB('🔄 Обновить',callback_data=f'r44:test:mega:d:{ptok}'),IB('🔙 В тест',callback_data='r44:test:open'))
-    return text,kb
+# [OCH12.35 OWNER] _r44_mega_screen -> 17_integration_mega.py
+_owner_install('mega', 'mega:0153')
 
-def _r44_send_mega_file(chat_id,path):
-    cid=int(chat_id); r,meta=_r44_request(cid,'GET','/internal/r44/test/mega/file',params={'path':str(path)},timeout=120,stream=True)
-    if r is None or not meta.get('ok'):
-        return False,str(meta.get('error') or f'HTTP {meta.get("status")}')[:700]
-    tmp=None
-    try:
-        name=str(path).rstrip('/').rsplit('/',1)[-1] or 'mega_file.bin'
-        fd,tmp=_r44_tempfile.mkstemp(prefix='r44_mega_',suffix='_'+_r44_re.sub(r'[^A-Za-z0-9_.-]+','_',name)[-70:]);_r44_os.close(fd)
-        size=0
-        with open(tmp,'wb') as fh:
-            for chunk in r.iter_content(1024*512):
-                if not chunk: continue
-                size+=len(chunk)
-                if size>50*1024*1024: raise RuntimeError('Файл больше диагностического лимита 50 МБ')
-                fh.write(chunk)
-        with open(tmp,'rb') as fh: bot.send_document(cid,fh,caption=f'🧪 R44 · HEAVY передал из MEGA\n{name}')
-        _r44_diag('mega_file_delivered',chat=cid,path=path,bytes=size,elapsed=meta.get('elapsed'))
-        return True,f'{name} · {size} байт'
-    except Exception as exc:
-        _r44_diag('mega_file_error',chat=cid,path=path,error=exc);return False,f'{type(exc).__name__}: {str(exc)[:500]}'
-    finally:
-        try:
-            if tmp:_r44_os.unlink(tmp)
-        except Exception:pass
+# [OCH12.35 OWNER] _r44_send_mega_file -> 17_integration_mega.py
+_owner_install('mega', 'mega:0154')
 
 def _r44_render_tail():
     rows=_r44_diag_tail(28); lines=['📜 <b>R44 · последние события FAST</b>','']
@@ -8474,25 +7094,8 @@ def _r70_e2e_test(chat_id):
     if not ok:lines.append(_r44_html.escape(str(p.get('error') or cb.get('error') or m.get('error') or '')[:600]))
     return window_mark('\n'.join(lines),'Ф4070')
 
-def _r70_forward_dry_run(chat_id):
-    cid=int(chat_id);pairs=[]
-    try:pairs=list(collect_forward_pairs_for_menu() or [])
-    except Exception:pairs=[]
-    rows=[];ok_count=0;bad_count=0
-    for src,dst in pairs[:40]:
-        try:
-            effective=set(int(x) for x in (resolve_forward_targets(int(src)) or []));ok=int(dst) in effective
-        except Exception:ok=False
-        ok_count+=int(ok);bad_count+=int(not ok)
-        try:sname=get_chat_display_name(int(src));dname=get_chat_display_name(int(dst))
-        except Exception:sname=str(src);dname=str(dst)
-        rows.append(f'{"✅" if ok else "⛔"} {_r44_html.escape(str(sname)[:28])} → {_r44_html.escape(str(dname)[:28])}')
-    lines=['➡️ <b>R70 · DRY-RUN ПЕРЕСЫЛКИ</b>','',f'Настроено пар: {len(pairs)} · реально активны: {ok_count} · заблокированы: {bad_count}']
-    if rows:lines+=['']+rows
-    else:lines+=['','Пар пересылки сейчас нет.']
-    if len(pairs)>40:lines.append(f'…ещё {len(pairs)-40}')
-    lines+=['','Проверка использует тот же <code>resolve_forward_targets()</code>, что и реальная доставка. Сообщения не отправляются.']
-    return window_mark('\n'.join(lines),'Ф4071')
+# [OCH12.35 OWNER] _r70_forward_dry_run -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0208')
 
 def _r44_full_test(chat_id):
     cid=int(chat_id); results=[]
@@ -8827,7 +7430,7 @@ def _r45_split_state_download_conditional():
         if callable(auth) and not auth():return ({'ok':False},404)
         flush=globals().get('_r27_flush_state_revision')
         if callable(flush):flush()
-        tokfn=globals().get('_split_current_state_token_v264')
+        tokfn=globals().get('_split_current_state_token_v265')
         token=str(tokfn() if callable(tokfn) else '')
         prior=str(request.headers.get('X-R45-If-State-Token','') or '')
         if prior and token and prior==token:
@@ -8939,36 +7542,11 @@ def _r71_route_is_fast(kind):
     return _r71_route_owner(kind) == 'fast'
 
 
-def _r71_apply_runtime_side_effects():
-    """12.26: keep legacy MEGA runtime OFF; canonical control-plane durability uses its own lease."""
-    try:
-        if 'MEGA_ENABLED' in globals(): globals()['MEGA_ENABLED']=False
-        _split_os.environ['MEGA_ENABLED']='0'
-        _split_os.environ['FAST_RUNTIME_MEGA_DISABLED']='1'
-        _split_os.environ['OCH1226_MEGA_CANONICAL']='1' if _OCH1226_MEGA_DURABILITY_ENABLED else '0'
-    except Exception: pass
+# [OCH12.35 COMPAT] legacy _r71_apply_runtime_side_effects -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0044')
 
-def _r71_save_routes(routes, reason='switch'):
-    global _R71_ROUTE_CACHE
-    clean = {k: _r71_normalize_owner((routes or {}).get(k, _R71_ROUTE_DEFAULTS[k])) for k in _R71_ROUTE_KEYS}
-    if _OCH1224_SINGLE_RENDER:
-        clean = {k: 'fast' for k in _R71_ROUTE_KEYS}
-        reason = 'och12.24-single-render-forced'
-    with _R71_ROUTE_LOCK:
-        _R71_ROUTE_CACHE = dict(clean)
-        try:
-            db = globals().get('SQLITE')
-            if db is not None and hasattr(db, 'set_meta'):
-                db.set_meta(_R71_ROUTE_META_NS, _R71_ROUTE_META_KEY, dict(clean))
-        except Exception as exc:
-            try: log_error(f'R71 route persist: {exc}')
-            except Exception: pass
-    _r71_apply_runtime_side_effects()
-    try:
-        bot_journal('r71_route_change', int(OWNER_ID or 0), f'reason={reason}; routes={clean}')
-    except Exception:
-        pass
-    return dict(clean)
+# [OCH12.35 COMPAT] legacy _r71_save_routes -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0045')
 
 
 def _r71_toggle_route(kind):
@@ -8989,77 +7567,24 @@ def _r71_owner_html(key):
     return '<b>R1 FAST</b>' if _r71_route_is_fast(key) else '<b>R2 HEAVY</b>'
 
 
-def _r71_fast_google_ready():
-    try:
-        fn = globals().get('_google_service_account_info')
-        if callable(fn):
-            info = fn()
-            return bool(isinstance(info, dict) and info.get('client_email') and info.get('private_key'))
-    except Exception:
-        pass
-    try:
-        return bool(str(_split_os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON', '') or '').strip())
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _r71_fast_google_ready -> 15_integration_google.py
+_owner_install('google', 'google:0100')
 
 
-def _r71_fast_mega_ready():
-    try:
-        import shutil as _r71_shutil
-        creds = bool((str(globals().get('MEGA_EMAIL') or _split_os.getenv('MEGA_EMAIL', '') or '').strip() and str(globals().get('MEGA_PASSWORD') or _split_os.getenv('MEGA_PASSWORD', '') or '').strip()) or str(_split_os.getenv('MEGA_SESSION', '') or '').strip())
-        return creds and _r71_shutil.which('mega-ls') is not None and _r71_shutil.which('mega-get') is not None
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _r71_fast_mega_ready -> 17_integration_mega.py
+_owner_install('mega', 'mega:0155')
 
 
-def _r70_routes_text():
-    h = dict(_SPLIT_STATE.get('worker_health') or {}); st = dict(h.get('state') or {})
-    worker_ok = bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200, 300)
-    try: wa_stats = dict(WINDOW_ACTOR_REGISTRY.stats() or {})
-    except Exception: wa_stats = {}
-    warn = []
-    if _r71_route_is_fast('google') and not _r71_fast_google_ready():
-        warn.append('⚠️ Google выбран на R1, но локальный service account сейчас не найден.')
-    if _r71_route_is_fast('mega') and not _r71_fast_mega_ready():
-        warn.append('⚠️ MEGA выбран на R1, но FAST не видит credentials/MEGAcmd.')
-    lines = [
-        f'🧭 <b>{BOT_DISPLAY_NAME} · ПЕРЕКЛЮЧАТЕЛИ R1/R2</b>', '',
-        'Фиксированные владельцы:',
-        '🔒 Telegram webhook / callback ACK — <b>R1 FAST</b>',
-        '🔒 Telegram окна / кнопки — <b>R1 FAST</b>',
-        '🔒 Реальная доставка пересылки — <b>R1 FAST</b>',
-        '🔒 Canonical business mutation — <b>R1 FAST</b>', '',
-        'Переключаемые режимы:',
-        f'📊 Google / тяжёлые таблицы — {_r71_owner_html("google")}',
-        f'📦 File export / Excel / CSV / JSON / SQLite — {_r71_owner_html("files")}',
-        f'🧪 Runtime / журналы / ТЗ окон — {_r71_owner_html("diagnostics")}',
-        f'🗄 MEGA backup / recovery / runtime — {_r71_owner_html("mega")}', '',
-        'Синхронизация состояния R1 → R2 остаётся включённой независимо от выбора: это зеркало/страховка, а не владелец пользовательской операции.',
-        f'R2 сейчас: {"✅ доступен" if worker_ok else "⛔ недоступен"} · очередь {int(h.get("queue_size") or 0)} · Google {int(h.get("google_queue_size") or 0)}',
-        f'События R2: received {int(st.get("event_received") or 0)} · commit {int(st.get("event_committed") or 0)} · pending {int(st.get("event_pending") or 0)}',
-        f'Window Actor R1: окон {int(wa_stats.get("windows") or 0)} · markup-only {int(wa_stats.get("markup_only") or 0)} · no-op {int(wa_stats.get("noops") or 0)}',
-    ]
-    if warn:
-        lines += ['', *warn]
-    lines += ['', 'Нажатие переключателя меняет <b>реального исполнителя</b>, а не только подпись. По умолчанию после обновления всё тяжёлое остаётся на R2.']
-    return window_mark('\n'.join(lines), 'Ф4072')
+# [OCH12.35 COMPAT] legacy _r70_routes_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0046')
 
 
-def _r71_route_button(key):
-    owner = _r71_route_owner(key)
-    prefix = '🟢 #1' if owner == 'fast' else '🛰 #2'
-    short = {'google':'Google','files':'Файлы','diagnostics':'Диагн.','mega':'MEGA'}[key]
-    return IB(f'{prefix} · {short}', callback_data=f'r71:route:{key}')
+# [OCH12.35 COMPAT] legacy _r71_route_button -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0047')
 
 
-def _r70_routes_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(_r71_route_button('google'), _r71_route_button('files'))
-    kb.row(_r71_route_button('diagnostics'), _r71_route_button('mega'))
-    kb.row(IB('🟢 ВСЁ тяжёлое → #1', callback_data='r71:all:fast'), IB('🛰 ВСЁ тяжёлое → #2', callback_data='r71:all:heavy'))
-    kb.row(IB('🧪 Тест #1 ↔ #2', callback_data='r44:test:open'), IB('🔄 Render #2', callback_data='r10:worker:refresh'))
-    kb.row(IB('🔙 Render #2', callback_data='r10:worker:status'), IB('❌ Закрыть', callback_data='info_close'))
-    return kb
+# [OCH12.35 COMPAT] legacy _r70_routes_keyboard -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0048')
 
 
 # --- real file/diagnostic execution routing ---------------------------------
@@ -9083,26 +7608,8 @@ def _r71_job_group(kind, label='', args=(), kwargs=None):
     return 'files'
 
 
-def _r71_local_tabl_lsx(recipient_chat_id, target_chat_id):
-    path = None
-    try:
-        _file_job_progress('R1 FAST · собираю Excel', force=True)
-        path = create_tabl_lsx_file(int(target_chat_id), today_key())
-        _file_job_progress('R1 FAST · отправляю Excel', force=True)
-        display = _split_os.path.basename(path)
-        fobj = file_bytesio_named(path, display)
-        if not fobj:
-            raise RuntimeError('Excel создан, но не удалось открыть файл')
-        _tg_call_retry(bot.send_document, int(recipient_chat_id), fobj, caption=f'📊 Таблица LSX ({excel_table_style_caption(int(target_chat_id))}) за последние 4 недели Чт–Ср: {get_chat_display_name(int(target_chat_id))}', timeout=120, purpose='r71_local_tabl_lsx')
-        return True
-    except Exception as exc:
-        try: log_error(f'R71 local tabl_lsx: {exc}')
-        except Exception: pass
-        return False
-    finally:
-        if path:
-            try: _split_os.remove(path)
-            except Exception: pass
+# [OCH12.35 OWNER] _r71_local_tabl_lsx -> 16_integration_excel.py
+_owner_install('excel', 'excel:0086')
 
 
 def _r71_local_file_func(kind, func):
@@ -9156,33 +7663,16 @@ def _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs):
     return (True, 'Запущено на R1 FAST')
 
 
-def submit_interactive_file_job(chat_id:int, kind:str, label:str, func, *args, **kwargs):
-    group = _r71_job_group(kind, label, args, kwargs)
-    if _r71_route_is_fast(group):
-        return _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs)
-    return _R71_REMOTE_FILE_SUBMIT(chat_id, kind, label, func, *args, **kwargs)
+# [OCH12.35 COMPAT] legacy submit_interactive_file_job -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0049')
 
 
 # --- Google execution routing -----------------------------------------------
 _R71_REMOTE_GOOGLE_CREATE = _r38_google_submit_report
 
 
-def _r71_google_create(title, rows, layout='category', annotations_override=None, include_annotations=True, **kwargs):
-    if not _r71_route_is_fast('google'):
-        return _R71_REMOTE_GOOGLE_CREATE(title, rows, layout=layout, annotations_override=annotations_override, include_annotations=include_annotations, **kwargs)
-    creator = globals().get('_canon_google_sheets_create_category_report__001')
-    if not callable(creator):
-        raise RuntimeError('R1 Google creator unavailable')
-    target_chat_id = kwargs.get('target_chat_id')
-    tenant_id = kwargs.get('tenant_id')
-    url = creator(title, rows, layout=layout, annotations_override=annotations_override, include_annotations=include_annotations, tenant_id=tenant_id, target_chat_id=target_chat_id)
-    recipient = kwargs.get('recipient_chat_id') or target_chat_id
-    if bool(kwargs.get('notify_result', False)) and recipient:
-        try: bot.send_message(int(recipient), f'✅ 📊 Google Excel готов на R1 FAST\n{str(title or "Google Excel")[:180]}\n\n{url}', disable_web_page_preview=True)
-        except Exception: pass
-    try: _SPLIT_STATE['google_last_ok'] = _r33_time.time(); _SPLIT_STATE['google_last_error'] = ''
-    except Exception: pass
-    return str(url)
+# [OCH12.35 OWNER] _r71_google_create -> 15_integration_google.py
+_owner_install('google', 'google:0101')
 
 
 _v262_split_google_sheets_create_category_report = _r71_google_create
@@ -9199,136 +7689,44 @@ _R71_REMOTE_MEGA_BROWSER_REQUEST = globals().get('_v265_peer_mega_request')
 _R71_REMOTE_MEGA_DOWNLOAD = globals().get('_v265_heavy_download_mega_file')
 
 
-def schedule_delta_backup(chat_id=None, delay=None, reason='change'):
-    if _r71_route_is_fast('mega'):
-        fn = globals().get('_canon_schedule_delta_backup__003') or globals().get('_canon_schedule_delta_backup__002')
-        if callable(fn): return fn(chat_id, delay=delay, reason=reason)
-    return _R71_REMOTE_SCHEDULE_DELTA(chat_id, delay=delay, reason=reason)
+# [OCH12.35 COMPAT] legacy schedule_delta_backup -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0050')
 
 
-def persist_critical_delta_now(chat_id):
-    if _r71_route_is_fast('mega'):
-        fn = globals().get('_canon_persist_critical_delta_now__003') or globals().get('_canon_persist_critical_delta_now__002')
-        if callable(fn): return fn(int(chat_id))
-    return _R71_REMOTE_CRITICAL_DELTA(int(chat_id))
+# [OCH12.35 COMPAT] legacy persist_critical_delta_now -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0051')
 
 
-def schedule_full_backup_only(chat_id, delay=3.0):
-    if _r71_route_is_fast('mega'):
-        fn = globals().get('_V176_ORIG_FULL_BACKUP')
-        if callable(fn): return fn(int(chat_id), delay)
-    return _R71_REMOTE_FULL_BACKUP(int(chat_id), delay)
+# [OCH12.35 COMPAT] legacy schedule_full_backup_only -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0052')
 
 
-def mega_upload_latest_database_backup(force=False):
-    if _r71_route_is_fast('mega'):
-        fn = globals().get('_canon_mega_upload_latest_database_backup__002') or globals().get('_canon_mega_upload_latest_database_backup__001')
-        if callable(fn): return fn(bool(force))
-    return _R71_REMOTE_MEGA_UPLOAD_DB(bool(force))
+# [OCH12.35 OWNER] mega_upload_latest_database_backup -> 17_integration_mega.py
+_owner_install('mega', 'mega:0156')
 
 
-def schedule_config_backup_for_chats(*chat_ids, delay=3.0):
-    if _r71_route_is_fast('mega'):
-        fn = globals().get('_canon_schedule_config_backup_for_chats__002') or globals().get('_canon_schedule_config_backup_for_chats__001')
-        if callable(fn): return fn(*chat_ids, delay=delay)
-    return _R71_REMOTE_CONFIG_BACKUP(*chat_ids, delay=delay)
+# [OCH12.35 COMPAT] legacy schedule_config_backup_for_chats -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0053')
 
 
-def _r71_mega_parent(path):
-    p = str(path or '/').strip() or '/'
-    if p == '/': return '/'
-    q = p.rstrip('/')
-    parent = q.rsplit('/', 1)[0] if '/' in q else ''
-    return parent or '/'
+# [OCH12.35 OWNER] _r71_mega_parent -> 17_integration_mega.py
+_owner_install('mega', 'mega:0157')
 
 
-def _r71_mega_child(path, name):
-    p = str(path or '/').strip() or '/'
-    n = str(name or '').strip().strip('/')
-    if p == '/': return '/' + n
-    return p.rstrip('/') + '/' + n
+# [OCH12.35 OWNER] _r71_mega_child -> 17_integration_mega.py
+_owner_install('mega', 'mega:0158')
 
 
-def _r71_local_mega_list(path):
-    """List immediate MEGA children on R1 using MEGAcmd's own type flag.
-
-    OCH12.12: the old R1 browser combined plain ``mega-ls`` with ``mega-ls -l``
-    by row number.  ``mega-ls -l`` may contain a FLAGS header/service rows, so the
-    two outputs drifted and real directories could be rendered as files.  A
-    single authoritative long listing is now parsed exactly like the proven R2
-    browser: FLAGS VERS SIZE DATE TIME NAME, with NAME allowed to contain spaces.
-    """
-    if not _r71_fast_mega_ready():
-        raise RuntimeError('R1 MEGA: credentials или MEGAcmd недоступны')
-    login = globals().get('mega_login_if_needed')
-    if callable(login): login(control_plane=True)
-    runner = globals().get('_mega_run')
-    if not callable(runner):
-        raise RuntimeError('R1 MEGA runner unavailable')
-    path = str(path or '/').strip() or '/'
-    longr = runner('mega-ls', ['-l', path], timeout=90, check=False, control_plane=True)
-    if int(getattr(longr, 'returncode', 1) or 0) != 0:
-        raise RuntimeError(str(getattr(longr, 'stderr', '') or getattr(longr, 'stdout', '') or 'mega-ls -l failed')[:700])
-
-    entries = []
-    for raw in str(getattr(longr, 'stdout', '') or '').splitlines():
-        line = str(raw or '').strip()
-        if not line or line.upper().startswith('FLAGS ') or line.startswith('Versions of '):
-            continue
-        # MEGAcmd -l: FLAGS VERS SIZE DATE TIME NAME; NAME may contain spaces.
-        parts = line.split(None, 5)
-        if len(parts) < 6:
-            continue
-        flags, name = parts[0], parts[5].strip()
-        if not name or name in {'.', '..'}:
-            continue
-        kind = 'dir' if str(flags).lower().startswith('d') else 'file'
-        entries.append({'path': _r71_mega_child(path, name), 'name': name, 'type': kind})
-
-    # Keep one canonical row per object and show folders before files.
-    dedup = {}
-    for row in entries:
-        dedup[(str(row.get('type') or ''), str(row.get('path') or ''))] = row
-    entries = list(dedup.values())
-    entries.sort(key=lambda row: (0 if row.get('type') == 'dir' else 1, str(row.get('name') or '').casefold()))
-    return {
-        'ok': True,
-        'path': path,
-        'parent': _r71_mega_parent(path),
-        'entries': entries,
-        'configured_root': str(globals().get('MEGA_BACKUP_DIR') or ''),
-        'owner': 'R1_FAST',
-        'parser': 'mega-ls-long-flags-v84',
-    }
+# [OCH12.35 OWNER] _r71_local_mega_list -> 17_integration_mega.py
+_owner_install('mega', 'mega:0159')
 
 
-def _v265_peer_mega_request(path):
-    if _r71_route_is_fast('mega'):
-        return _r71_local_mega_list(path)
-    if callable(_R71_REMOTE_MEGA_BROWSER_REQUEST):
-        return _R71_REMOTE_MEGA_BROWSER_REQUEST(path)
-    raise RuntimeError('Render #2 MEGA browser unavailable')
+# [OCH12.35 OWNER] _v265_peer_mega_request -> 17_integration_mega.py
+_owner_install('mega', 'mega:0160')
 
 
-def _v265_heavy_download_mega_file(remote, workdir):
-    if not _r71_route_is_fast('mega'):
-        if callable(_R71_REMOTE_MEGA_DOWNLOAD): return _R71_REMOTE_MEGA_DOWNLOAD(remote, workdir)
-        raise RuntimeError('Render #2 MEGA download unavailable')
-    if not _r71_fast_mega_ready(): raise RuntimeError('R1 MEGA unavailable')
-    login = globals().get('mega_login_if_needed')
-    if callable(login): login(control_plane=True)
-    runner = globals().get('_mega_run')
-    if not callable(runner): raise RuntimeError('R1 MEGA runner unavailable')
-    _split_os.makedirs(str(workdir), exist_ok=True)
-    res = runner('mega-get', [str(remote), str(workdir)], timeout=360, check=False, control_plane=True)
-    if int(getattr(res, 'returncode', 1) or 0) != 0:
-        raise RuntimeError(str(getattr(res, 'stderr', '') or getattr(res, 'stdout', '') or 'mega-get failed')[:700])
-    name = str(remote or '').rstrip('/').rsplit('/', 1)[-1] or 'mega_restore.bin'
-    target = _split_os.path.join(str(workdir), name)
-    if _split_os.path.isfile(target): return target
-    files = [x for x in _split_os.listdir(str(workdir)) if _split_os.path.isfile(_split_os.path.join(str(workdir), x))]
-    if len(files) == 1: return _split_os.path.join(str(workdir), files[0])
-    raise RuntimeError('R1 MEGA скачал файл, но локальный путь не найден')
+# [OCH12.35 OWNER] _v265_heavy_download_mega_file -> 17_integration_mega.py
+_owner_install('mega', 'mega:0161')
 
 
 # --- callback owner switch ---------------------------------------------------
@@ -9400,58 +7798,20 @@ _R71_LOCAL_GOOGLE_RESULTS = {}
 _R71_LOCAL_GOOGLE_RESULTS_LOCK = _split_threading.RLock() if '_split_threading' in globals() else __import__('threading').RLock()
 
 
-def _r40_google_query_submit(title,target_chat_id,start_key,end_key,start_rid=0,end_rid=0,layout='category',include_annotations=True,notify_result=False,recipient_chat_id=None):
-    if not _r71_route_is_fast('google'):
-        return _R71_REMOTE_GOOGLE_QUERY_SUBMIT(title,target_chat_id,start_key,end_key,start_rid,end_rid,layout=layout,include_annotations=include_annotations,notify_result=notify_result,recipient_chat_id=recipient_chat_id)
-    jid = 'r71local-' + __import__('secrets').token_hex(10)
-    ok = False; url = ''; err = ''
-    try:
-        rows = build_exact_category_stats_xlsx_rows(int(target_chat_id), str(start_key), int(start_rid or 0), str(end_key), int(end_rid or 0))
-        url = _r71_google_create(title, rows, layout=layout, annotations_override={}, include_annotations=include_annotations, target_chat_id=int(target_chat_id), recipient_chat_id=int(recipient_chat_id or target_chat_id), notify_result=bool(notify_result))
-        ok = bool(url)
-    except Exception as exc:
-        err = f'{type(exc).__name__}: {str(exc)[:700]}'
-    with _R71_LOCAL_GOOGLE_RESULTS_LOCK:
-        _R71_LOCAL_GOOGLE_RESULTS[jid] = (bool(ok), str(url or ''), str(err or ''), _r33_time.time())
-        cutoff = _r33_time.time() - 3600
-        for key, row in list(_R71_LOCAL_GOOGLE_RESULTS.items()):
-            if float((row or (False,'','',0))[3] or 0) < cutoff:
-                _R71_LOCAL_GOOGLE_RESULTS.pop(key, None)
-    return jid
+# [OCH12.35 OWNER] _r40_google_query_submit -> 15_integration_google.py
+_owner_install('google', 'google:0102')
 
 
-def _r40_google_wait(jid, timeout=900):
-    key = str(jid or '')
-    if key.startswith('r71local-'):
-        with _R71_LOCAL_GOOGLE_RESULTS_LOCK:
-            row = _R71_LOCAL_GOOGLE_RESULTS.pop(key, None)
-        if row:
-            return bool(row[0]), str(row[1]), str(row[2])
-        return False, '', 'R1 Google local result not found'
-    return _R71_REMOTE_GOOGLE_WAIT(jid, timeout=timeout)
+# [OCH12.35 OWNER] _r40_google_wait -> 15_integration_google.py
+_owner_install('google', 'google:0103')
 
 
-def _split_tenant_google_test(tenant_id):
-    if _r71_route_is_fast('google'):
-        fn = globals().get('tenant_google_test')
-        if callable(fn):
-            ok, text = fn(str(tenant_id))
-            text = str(text or '')
-            if ok and 'R1 FAST' not in text:
-                text = text.replace('✅', '✅ R1 FAST ·', 1)
-            return bool(ok), text
-        return False, '❌ R1 Google test unavailable'
-    return _R71_REMOTE_GOOGLE_TEST(tenant_id)
+# [OCH12.35 OWNER] _split_tenant_google_test -> 15_integration_google.py
+_owner_install('google', 'google:0104')
 
 
-def _r7_google_worker_info(fetch=True):
-    if _r71_route_is_fast('google'):
-        try:
-            info = _google_service_account_info()
-            return {'ok':True, 'service_email':str(info.get('client_email') or ''), 'owner':'R1 FAST'}
-        except Exception as exc:
-            return {'ok':False, 'error':str(exc)[:500], 'owner':'R1 FAST'}
-    return _R71_REMOTE_GOOGLE_INFO(fetch)
+# [OCH12.35 OWNER] _r7_google_worker_info -> 15_integration_google.py
+_owner_install('google', 'google:0105')
 
 
 # R71 lets an explicit MEGA→R1 owner choice supersede the old storage-only gate.
@@ -9466,10 +7826,8 @@ def external_access_allowed_v233(category='other_http'):
     return bool(_R71_EXTERNAL_ACCESS_CORE(category)) if callable(_R71_EXTERNAL_ACCESS_CORE) else True
 
 
-def mega_contour_enabled_v234():
-    if _r71_route_is_fast('mega'):
-        return True
-    return bool(_R71_MEGA_CONTOUR_CORE()) if callable(_R71_MEGA_CONTOUR_CORE) else False
+# [OCH12.35 OWNER] mega_contour_enabled_v234 -> 17_integration_mega.py
+_owner_install('mega', 'mega:0162')
 
 
 # v262
@@ -9508,10 +7866,10 @@ def _r73_factory_root(create=True):
     if not isinstance(root, dict):
         if not create:
             return {}
-        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31')}
+        root = {'schema': 1, 'release': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35')}
         gs[_R73_FACTORY_KEY] = root
     root['schema'] = max(1, int(root.get('schema') or 1))
-    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31')
+    root['release'] = str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35')
     for scope in ('owner', 'circle1', 'circle2'):
         row = root.get(scope)
         if not isinstance(row, dict):
@@ -9798,48 +8156,8 @@ def v227_render_effective_contour_markup(source_markup, text: str, chat_id: int)
     return _r73_filter_features_markup(rendered, int(chat_id))
 
 
-def _r73_schedule_live_refresh(reason='settings'):
-    def _job():
-        try:
-            lock = globals().get('_V221_LIVE_MARKUP_LOCK')
-            reg = globals().get('_V221_LIVE_MARKUP')
-            if lock is None or not isinstance(reg, dict):
-                return
-            with lock:
-                items = [(k, dict(v or {})) for k, v in reg.items()]
-        except Exception:
-            return
-        changed = 0
-        for (cid, mid), row in items:
-            try:
-                source = row.get('source_markup') if row.get('source_markup') is not None else row.get('markup')
-                after = v227_render_effective_contour_markup(source, str(row.get('text') or ''), int(cid))
-                fp = globals().get('_v221_markup_fingerprint')
-                if callable(fp) and fp(row.get('markup')) == fp(after):
-                    continue
-                fast_ui_edit_reply_markup(int(cid), int(mid), after, purpose='r73_factory_refresh')
-                rec = globals().get('v221_record_live_markup')
-                if callable(rec):
-                    rec(int(cid), int(mid), after, str(row.get('text') or ''), source_markup=source)
-                changed += 1
-            except Exception:
-                continue
-        try:
-            bot_journal('r73_factory_live_refresh', int(OWNER_ID or 0), f'reason={reason}; changed={changed}')
-        except Exception:
-            pass
-    try:
-        pool = globals().get('GENERAL_TASK_POOL')
-        submit_unique = getattr(pool, 'submit_unique', None) if pool is not None else None
-        if callable(submit_unique):
-            submit_unique('r73-factory-refresh', _job)
-            return
-    except Exception:
-        pass
-    try:
-        threading.Thread(target=_job, daemon=True, name='r73-factory-refresh').start()
-    except Exception:
-        pass
+# [OCH12.35 COMPAT] legacy _r73_schedule_live_refresh -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0054')
 
 
 def _r73_scope_summary(scope):
@@ -10101,89 +8419,8 @@ def _r75_feature_for_callback(callback):
     return ''
 
 
-def _r75_transport_feature_fence(reply_markup, chat_id, stage='final_transport', message_id=None):
-    """Last-chance visibility policy.  Must run immediately before Telegram API."""
-    if reply_markup is None:
-        return None
-    try:
-        cid = int(chat_id or 0)
-    except Exception:
-        return reply_markup
-    if not cid:
-        return reply_markup
-    try:
-        import copy as _r75_copy
-        kb = _r75_copy.deepcopy(reply_markup)
-    except Exception:
-        kb = reply_markup
-    rows_fn = globals().get('_v221_markup_rows')
-    set_fn = globals().get('_v221_set_markup_rows')
-    try:
-        rows = list(rows_fn(kb) or []) if callable(rows_fn) else list(getattr(kb, 'keyboard', None) or getattr(kb, 'inline_keyboard', None) or [])
-    except Exception:
-        rows = []
-    clean = []
-    removed = []
-    for row in rows:
-        keep = []
-        for button in list(row or []):
-            raw = _r73_cb(button)
-            base = _r75_base_callback(raw)
-            feature = _r75_feature_for_callback(base)
-            if feature and not _r73_feature_enabled(feature, cid):
-                removed.append({'feature': feature, 'callback': base[:120], 'raw': str(raw)[:120]})
-                continue
-            keep.append(button)
-        if keep:
-            clean.append(keep)
-    if callable(set_fn):
-        kb = set_fn(kb, clean)
-    else:
-        try:
-            kb.keyboard = clean
-        except Exception:
-            try:
-                kb.inline_keyboard = clean
-            except Exception:
-                pass
-    stage_name = str(stage or 'final_transport')[:80]
-    with _R75_FEATURE_FENCE_LOCK:
-        _R75_FEATURE_FENCE_STATS['checked'] = int(_R75_FEATURE_FENCE_STATS.get('checked') or 0) + 1
-        if removed:
-            _R75_FEATURE_FENCE_STATS['drops'] = int(_R75_FEATURE_FENCE_STATS.get('drops') or 0) + len(removed)
-            by_stage = _R75_FEATURE_FENCE_STATS.setdefault('by_stage', {})
-            by_stage[stage_name] = int(by_stage.get(stage_name) or 0) + len(removed)
-            by_feature = _R75_FEATURE_FENCE_STATS.setdefault('by_feature', {})
-            for item in removed:
-                f = str(item.get('feature') or '')
-                by_feature[f] = int(by_feature.get(f) or 0) + 1
-            recent = _R75_FEATURE_FENCE_STATS.setdefault('recent', [])
-            recent.append({'at': time.time(), 'chat_id': cid, 'message_id': int(message_id or 0), 'scope': _r73_scope_key_for_chat(cid), 'stage': stage_name, 'removed': removed[:12]})
-            del recent[:-60]
-    if removed:
-        detail = {
-            'scope': _r73_scope_key_for_chat(cid),
-            'stage': stage_name,
-            'removed': removed[:12],
-            'settings': {f: int(_r73_feature_enabled(f, cid)) for f in _R73_FEATURES},
-        }
-        try:
-            caller_fn = globals().get('_window_diag_caller')
-            if callable(caller_fn):
-                detail['producer'] = str(caller_fn() or '')[:180]
-        except Exception:
-            pass
-        try:
-            emit = globals().get('_window_diag_emit')
-            if callable(emit):
-                emit('r75_feature_leak_blocked', cid, int(message_id or 0) or None, detail, 'WARN')
-        except Exception:
-            pass
-        try:
-            bot_journal('r75_feature_leak_blocked', cid, __import__('json').dumps(detail, ensure_ascii=False, separators=(',', ':'), default=str)[:1800], 'WARN')
-        except Exception:
-            pass
-    return kb
+# [OCH12.35 COMPAT] legacy _r75_transport_feature_fence -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0055')
 
 
 def r75_feature_fence_snapshot():
@@ -10195,33 +8432,8 @@ def r75_feature_fence_snapshot():
             return dict(_R75_FEATURE_FENCE_STATS)
 
 
-def _r75_beetle_text():
-    snap = r75_feature_fence_snapshot()
-    by_feature = snap.get('by_feature') or {}
-    by_stage = snap.get('by_stage') or {}
-    lines = [
-        f'🪲 ЖУК-НАРЫВНИК R75 · {BOT_DISPLAY_NAME}', '',
-        'Ловит попытки вернуть выключенные Конструкторы, Описания, ТЗ и Маркеры.',
-        'Проверка стоит прямо перед Telegram API и отдельно перед semantic-router.', '',
-        f"Проверок финального фильтра: {int(snap.get('checked') or 0)}",
-        f"Заблокировано кнопок: {int(snap.get('drops') or 0)}",
-        f"Конструкторы: {int(by_feature.get('constructors') or 0)} · Описания: {int(by_feature.get('descriptions') or 0)}",
-        f"ТЗ: {int(by_feature.get('tz') or 0)} · Маркеры: {int(by_feature.get('markers') or 0)}",
-    ]
-    if by_stage:
-        lines += ['', 'Откуда пытались пройти:']
-        for stage, count in sorted(by_stage.items(), key=lambda kv: int(kv[1] or 0), reverse=True)[:8]:
-            lines.append(f'• {stage}: {int(count or 0)}')
-    recent = list(snap.get('recent') or [])[-8:]
-    if recent:
-        lines += ['', 'Последние блокировки:']
-        for row in reversed(recent):
-            rem = row.get('removed') or []
-            features = ','.join(sorted({str(x.get('feature') or '') for x in rem if x.get('feature')})) or '—'
-            cbs = ', '.join(str(x.get('callback') or '')[:38] for x in rem[:3]) or '—'
-            lines.append(f"• {row.get('stage','?')} · {row.get('scope','?')} · {features} · {cbs}")
-    lines += ['', 'В полном журнале события `r75_feature_leak_blocked` содержат producer, stage, scope, callback и фактическое состояние всех четырёх переключателей.']
-    return window_mark('\n'.join(lines)[:3800], 'Ф89')
+# [OCH12.35 COMPAT] legacy _r75_beetle_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0056')
 
 
 def _r75_beetle_keyboard():
@@ -10301,16 +8513,20 @@ _R74_RUNTIME_PARTS = tuple(globals().get('MODULAR_SOURCE_PARTS') or (
     '05_finance_ui.py','06_commands_callbacks.py','07_state_web.py','08_reliability_tasks.py',
     '09_final_transport.py','10_split_policy_offload.py'))
 _R74_MODULE_PURPOSE = {
-    '01_core_data.py': 'данные, SQLite, финансы, Window Actor, durability',
+    '01_core_data.py': 'ядро данных, SQLite, state, durability; business bodies подключаются из owners',
     '02_transport_safety.py': 'Telegram/MEGA/peer safety и transport guards',
     '03_diagnostics_memory.py': 'диагностика, память, окно/очереди',
-    '04_messages_features.py': 'сообщения, пересылка, пользовательские функции',
-    '05_finance_ui.py': 'финансовые окна, таблицы, экспорт',
+    '04_messages_features.py': 'message handlers/state wiring; business bodies подключаются из owners',
+    '05_finance_ui.py': 'finance UI wiring/handlers; finance bodies — owner 11',
     '06_commands_callbacks.py': 'команды и legacy callback semantics',
     '07_state_web.py': 'state/web endpoints, restore, delivery',
-    '08_reliability_tasks.py': 'reliability, reminders, contour policy',
+    '08_reliability_tasks.py': 'reliability/scheduler/handler wiring; tasks/reminders bodies — owners 12/13',
     '09_final_transport.py': 'финальный Telegram owner, final router, transport bindings',
     '10_split_policy_offload.py': 'FAST↔HEAVY policy, R1/R2, Info extensions, release overlays',
+    '11_business_finance_forward.py': 'единственный владелец тел функций finance + forwarding',
+    '12_business_tasks.py': 'единственный владелец тел функций tasks',
+    '13_business_reminders.py': 'единственный владелец тел функций reminders',
+    '14_business_secret.py': 'единственный владелец тел функций secret',
 }
 
 
@@ -10380,7 +8596,7 @@ def _r74_build_machine_index():
     callback_handler_count = sum(1 for x in telegram_handlers if x.get('kind') == 'callback_query_handler')
     return {
         'schema': 1,
-        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'),
+        'bot': str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'),
         'generated_at_utc': _r74_time.strftime('%Y-%m-%dT%H:%M:%SZ', _r74_time.gmtime()),
         'runtime_root': str(root),
         'runtime_parts': list(_R74_RUNTIME_PARTS),
@@ -10419,7 +8635,7 @@ def _r74_build_machine_index():
 def _r74_build_master_map(index=None):
     idx = index if isinstance(index, dict) else _r74_build_machine_index()
     c = idx.get('counts') or {}
-    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31')
+    bot_name = str(idx.get('bot') or globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35')
     lines = [
         f'# MASTER-КАРТА · {bot_name}', '',
         f"Сформирована из фактических runtime-файлов: {idx.get('generated_at_utc','—')}", '',
@@ -10469,7 +8685,7 @@ def _r74_map_menu_text():
     # Hot path stays trivial: the expensive AST/source scan happens only inside
     # the asynchronous download job, never while opening an Info window.
     return window_mark(
-        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}\n\n"
+        f"🗺 КАРТА / ИНДЕКС · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'}\n\n"
         f"Runtime-модулей: {len(_R74_RUNTIME_PARTS)}\n"
         "MASTER-карта — человеческая схема владельцев, путей и критических контрактов.\n"
         "Машинный индекс — файлы, функции, строки, callback_data, handlers и web routes.\n\n"
@@ -10492,13 +8708,13 @@ def _r74_send_artifact(chat_id, kind):
         try:
             idx = _r74_build_machine_index()
             if artifact == 'index':
-                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}.json"
+                name = f"MASTER_INDEX_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'}.json"
                 payload = _r74_json.dumps(idx, ensure_ascii=False, indent=2, sort_keys=False) + '\n'
-                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}"
+                caption = f"🧭 Машинный индекс · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'}"
             else:
-                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}_RU.md"
+                name = f"MASTER_MAP_{globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'}_RU.md"
                 payload = _r74_build_master_map(idx)
-                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}"
+                caption = f"🗺 MASTER-карта · {globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'}"
             buf = _r74_io.BytesIO(payload.encode('utf-8'))
             buf.name = name
             _tg_call_retry(bot.send_document, cid, buf, caption=caption, timeout=120, purpose=f'r74_{artifact}_send_document')
@@ -10554,7 +8770,7 @@ contour_callback_guard = _r74_contour_callback_guard
 
 try:
     WINDOW_MARKER_CONSTANTS.setdefault('r74:map:*', 'Ф90')
-    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'}; live_source_index=on")
+    bot_journal('r74_live_map_index_loaded', int(OWNER_ID or 0), f"name={globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'}; live_source_index=on")
 except Exception:
     pass
 
@@ -10887,24 +9103,8 @@ def r76_ui_profile_snapshot():
 
 _R76_BEETLE_CORE = _r75_beetle_text
 
-def _r75_beetle_text():
-    base=str(_R76_BEETLE_CORE() if callable(_R76_BEETLE_CORE) else '')
-    snap=r76_ui_profile_snapshot()
-    lines=['', '⚡ R76 ПРОФИЛЬ ОТРИСОВКИ',
-           f"Semantic-дубли удалены: {int(snap.get('semantic_drops') or 0)} в {int(snap.get('semantic_windows') or 0)} окнах",
-           f"Factory refresh: запусков {int(snap.get('refresh_runs') or 0)} · просмотрено {int(snap.get('refresh_scanned') or 0)} · изменено {int(snap.get('refresh_changed') or 0)} · исключено текущее {int(snap.get('refresh_excluded') or 0)}",
-           f"Средний локальный final-filter: {snap.get('filter_avg_ms',0)} ms"]
-    cb=list(snap.get('callback_recent') or [])[-5:]
-    if cb:
-        lines.append('Последние callback total:')
-        for x in reversed(cb): lines.append(f"• {x.get('action') or '—'} · {x.get('ms')} ms")
-    tr=list(snap.get('transport_recent') or [])[-5:]
-    if tr:
-        lines.append('Последние Telegram transport:')
-        for x in reversed(tr): lines.append(f"• {x.get('purpose') or x.get('func')} · {x.get('ms')} ms · {'OK' if x.get('ok') else 'ERR'}")
-    # Keep Telegram text under its hard limit while retaining the newest profiler data.
-    joined=(base.rstrip()+"\n"+'\n'.join(lines)).strip()
-    return window_mark(joined[-3850:], 'Ф89')
+# [OCH12.35 COMPAT] legacy _r75_beetle_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0057')
 
 
 try:
@@ -10929,96 +9129,12 @@ _R77_FIN_STATS = {
 }
 
 
-def _r77_finance_reconcile_job(chat_id: int, reason: str='finance_hotpath'):
-    cid = int(chat_id)
-    started = time.monotonic()
-    dirty = False
-    try:
-        with locked_chat(cid):
-            store = get_chat_store(cid)
-            dirty = bool(store.get('_finance_hotpath_pending_normalize_r16') or store.get('_finance_hotpath_pending_normalize_r15'))
-            if dirty:
-                normalize_chat_records(cid)
-                store = get_chat_store(cid)
-                store.pop('_finance_hotpath_pending_normalize_r15', None)
-                store.pop('_finance_hotpath_pending_normalize_r16', None)
-                store['balance'] = sum(float(r.get('amount', 0) or 0) for r in store.get('records', []) or [] if isinstance(r, dict))
-                try:
-                    _r7_rebuild_month_short_ids_after_normalize(cid, store)
-                except Exception:
-                    pass
-                try:
-                    _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store))
-                except Exception:
-                    pass
-        if dirty:
-            if callable(globals().get('persist_finance_chat_local_fast')):
-                persist_finance_chat_local_fast(cid)
-            try:
-                schedule_quick_backup(cid, MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS)
-            except Exception:
-                pass
-            try:
-                schedule_finance_postcommit_background_v243(cid, reason=f'r77:{reason}', delay=0.45)
-            except Exception:
-                pass
-        with _R77_FIN_STATS_LOCK:
-            _R77_FIN_STATS['runs'] += 1
-            _R77_FIN_STATS['persisted'] += int(bool(dirty))
-            _R77_FIN_STATS['skipped_clean'] += int(not dirty)
-            _R77_FIN_STATS['last_ms'] = round((time.monotonic()-started)*1000.0, 2)
-            _R77_FIN_STATS['last_reason'] = str(reason or '')[:120]
-        try:
-            bot_journal('r77_finance_reconcile_done', cid, f'reason={reason}; dirty={int(bool(dirty))}; elapsed_ms={(time.monotonic()-started)*1000.0:.1f}')
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        with _R77_FIN_STATS_LOCK:
-            _R77_FIN_STATS['errors'] += 1
-            _R77_FIN_STATS['last_ms'] = round((time.monotonic()-started)*1000.0, 2)
-            _R77_FIN_STATS['last_reason'] = str(reason or '')[:120]
-        try:
-            log_error(f'R77 finance reconcile {cid}: {exc}')
-        except Exception:
-            pass
-        return False
+# [OCH12.35 OWNER] _r77_finance_reconcile_job -> 11_business_finance.py
+_owner_install('finance', 'finance:0222')
 
 
-def schedule_finance_reconcile_r77(chat_id: int, day_key: str | None=None, reason: str='finance_hotpath', delay: float=0.45):
-    """Coalesce full finance normalization behind the already-durable user commit.
-
-    This path intentionally performs no Telegram repaint.  The caller already scheduled
-    the one foreground repaint from the incremental committed state.
-    """
-    cid = int(chat_id)
-    key = f'r77-fin-reconcile:{cid}'
-    with _R77_FIN_STATS_LOCK:
-        _R77_FIN_STATS['scheduled'] += 1
-        _R77_FIN_STATS['last_reason'] = str(reason or '')[:120]
-    def _fire():
-        pool = globals().get('FINANCE_MAINT_TASK_POOL') or globals().get('FINANCE_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        submitted = False
-        try:
-            if pool is not None and hasattr(pool, 'submit_unique'):
-                submitted = bool(pool.submit_unique(f'finance-maint:{cid}', _r77_finance_reconcile_job, cid, str(reason or 'finance_hotpath')))
-            elif pool is not None and hasattr(pool, 'submit'):
-                submitted = bool(pool.submit(f'finance-maint:{cid}', _r77_finance_reconcile_job, cid, str(reason or 'finance_hotpath')))
-        except Exception:
-            submitted = False
-        if not submitted:
-            # Never inline a full-ledger normalize into the user's callback/message thread.
-            try:
-                DELAYED_SCHEDULER.schedule(key, 0.35, _fire)
-            except Exception:
-                pass
-    try:
-        DELAYED_SCHEDULER.cancel(key)
-        DELAYED_SCHEDULER.schedule(key, max(0.25, min(2.0, float(delay or 0.45))), _fire)
-        return True
-    except Exception:
-        _fire()
-        return True
+# [OCH12.35 OWNER] schedule_finance_reconcile_r77 -> 11_business_finance.py
+_owner_install('finance', 'finance:0223')
 
 
 # R77 ACK: do not perform a Telegram network round-trip in the Waitress/callback hot path.
@@ -11371,14 +9487,8 @@ def _och1226_seed_restored_tail_handoff():
 
 _OCH1226_RESTORED_TAIL_ROWS=_och1226_seed_restored_tail_handoff()
 
-def _r80_mega_master_enabled():
-    try:
-        import runtime_config as _r80_rc
-        fn=getattr(_r80_rc,'mega_render_enabled',None)
-        if callable(fn): return bool(fn())
-        return bool(getattr(_r80_rc,'_MEGA_RENDER_ENABLED',False))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _r80_mega_master_enabled -> 17_integration_mega.py
+_owner_install('mega', 'mega:0163')
 
 def _r80_compact_root():
     """12.26 canonical delta directory. Legacy compact_v80 is never written."""
@@ -11397,10 +9507,8 @@ def _r80_compact_paths():
         'tail':root+'/current_tail.json.gz',
     } if root and base else {}
 
-def _r80_mega_runtime_ready():
-    # OCH12.31: EMPTY_INIT is still a normal writable runtime.  A previous failed
-    # restore must not leave MEGA durability permanently disabled.
-    return bool(_OCH1226_MEGA_DURABILITY_ENABLED and _r80_mega_master_enabled() and _r71_route_is_fast('mega') and _r71_fast_mega_ready() and _r80_compact_root())
+# [OCH12.35 OWNER] _r80_mega_runtime_ready -> 17_integration_mega.py
+_owner_install('mega', 'mega:0164')
 
 def _r80_sqlite_freshness(path):
     db_rev=0.0; event_rev=0
@@ -11425,26 +9533,13 @@ def _r80_write_local_json(path,obj,gzip_it=False):
     with open(path,'wb') as fh: fh.write(raw)
     return len(raw)
 
-def _r80_mega_put_fixed(local_path,remote_path):
-    """Publish one canonical database object, archiving the previous object instead of deleting it."""
-    paths=_r80_compact_paths(); root=paths.get('root')
-    if not root: return False,'MEGA canonical database root unavailable'
-    prev=bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE',False))
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=True
-    try:
-        remote_dir=remote_path.rsplit('/',1)[0] or root
-        mega_ensure_remote_path(remote_dir)
-        ok=bool(mega_put_replace(str(local_path),remote_dir,remote_path.rsplit('/',1)[-1],archive_previous=True))
-        return ok,('ok' if ok else 'mega_put_replace returned false')
-    except Exception as exc:
-        return False,f'{type(exc).__name__}: {str(exc)[:220]}'
-    finally:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=prev
+# [OCH12.35 OWNER] _r80_mega_put_fixed -> 17_integration_mega.py
+_owner_install('mega', 'mega:0165')
 
 def _r80_current_head(extra=None):
     with _R80_MEGA_LOCK: st=dict(_R80_MEGA_STATE)
     row={
-        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.31'),
+        'schema':126,'release':str(globals().get('BOT_DISPLAY_NAME') or 'очнись_12.35'),
         'updated_at':_split_time.time(),
         'base_generation':str(st.get('last_full_generation') or ''),
         'full_db_revision':float(st.get('full_db_revision') or 0.0),
@@ -11760,85 +9855,14 @@ def _r81_apply_compact_events(path,events):
         con.close()
     return applied,stale
 
-def _r81_mega_get_exact(remote_path,workdir,timeout_sec=90):
-    folder=_split_os.path.join(str(workdir),str(abs(hash(str(remote_path))))[-10:])
-    _split_os.makedirs(folder,exist_ok=True)
-    res=_mega_run('mega-get',[str(remote_path),folder],check=False,timeout=float(timeout_sec))
-    if int(getattr(res,'returncode',1) or 0)!=0:
-        return None,str(getattr(res,'stderr','') or getattr(res,'stdout','') or 'mega-get failed')[:240]
-    base=_split_os.path.basename(str(remote_path).rstrip('/')); direct=_split_os.path.join(folder,base)
-    if _split_os.path.isfile(direct): return direct,'ok'
-    for root,_dirs,files in _split_os.walk(folder):
-        if base in files: return _split_os.path.join(root,base),'ok'
-    return None,'downloaded exact object missing locally'
+# [OCH12.35 OWNER] _r81_mega_get_exact -> 17_integration_mega.py
+_owner_install('mega', 'mega:0166')
 
-def _r221_manual_mega_ready():
-    """Manual recovery bypasses MEGA_ENABLED but still requires real credentials + CLI."""
-    try:
-        creds = bool((str(globals().get('MEGA_EMAIL') or _split_os.getenv('MEGA_EMAIL','') or '').strip() and
-                      str(globals().get('MEGA_PASSWORD') or _split_os.getenv('MEGA_PASSWORD','') or '').strip()) or
-                     str(_split_os.getenv('MEGA_SESSION','') or '').strip())
-        return bool(creds and _split_shutil.which('mega-ls') and _split_shutil.which('mega-get'))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _r221_manual_mega_ready -> 17_integration_mega.py
+_owner_install('mega', 'mega:0167')
 
-def r81_manual_compact_mega_restore():
-    """12.26 manual restore: exact current_manifest -> immutable generation -> matching MEGA tail. Never Redis."""
-    work=None; prev=bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE',False))
-    globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=True
-    try:
-        if not _r221_manual_mega_ready(): return False,'MEGA credentials/CLI unavailable for manual recovery',0
-        login=globals().get('mega_login_if_needed')
-        if callable(login): login(control_plane=True)
-        work=_split_tempfile.mkdtemp(prefix='och1226_manual_generation_restore_')
-        dl=globals().get('constitution_download_active_generation')
-        if not callable(dl): return False,'constitution_download_active_generation unavailable',0
-        gz_path,manifest,detail=dl(work)
-        if not gz_path or not isinstance(manifest,dict): return False,'canonical generation: '+str(detail),0
-        generation=str(manifest.get('generation') or '')
-        candidate=_split_os.path.join(work,'candidate.sqlite3')
-        try:
-            with _split_gzip.open(gz_path,'rb') as src,open(candidate,'wb') as dst:
-                _split_shutil.copyfileobj(src,dst,length=1024*1024)
-        except Exception as exc:
-            return False,f'generation decompress {type(exc).__name__}: {str(exc)[:180]}',0
-        if not _r81_compact_db_valid(candidate): return False,'canonical generation SQLite quick_check failed',0
-        paths=_r80_compact_paths(); tail_path,tail_detail=_r81_mega_get_exact(paths['tail'],work,90)
-        applied=0
-        if tail_path:
-            try: tail=_split_json.loads(_split_gzip.decompress(open(tail_path,'rb').read()).decode('utf-8')) or {}
-            except Exception as exc: return False,f'canonical tail decode {type(exc).__name__}: {str(exc)[:180]}',0
-            if int(tail.get('schema') or 0)!=126: return False,'canonical tail schema != 126',0
-            if str(tail.get('base_generation') or '')==generation:
-                events=list(tail.get('events') or [])
-                if any(not _r81_compact_event_valid(ev) for ev in events): return False,'canonical tail contains invalid R32 event',0
-                applied,_stale=_r81_apply_compact_events(candidate,events)
-                claimed=int(tail.get('max_revision') or 0); final_max=_r81_compact_max_revision(candidate)
-                if claimed and final_max<claimed: return False,f'canonical tail incomplete {final_max} < {claimed}',applied
-        if not _r81_compact_db_valid(candidate): return False,'canonical candidate invalid after tail',applied
-        SQLITE.replace_database(candidate)
-        # Adopt the restored canonical baseline in the live durability manager.
-        _tail_events=list((tail or {}).get('events') or []) if isinstance(locals().get('tail'),dict) else []
-        with _R80_MEGA_LOCK:
-            _R80_MEGA_TAIL_EVENTS.clear()
-            for _ev in _tail_events:
-                if _r81_compact_event_valid(_ev):
-                    _R80_MEGA_TAIL_EVENTS[str(_ev.get('event_id'))]=_ev
-            _R80_MEGA_STATE.update({
-                'last_full_generation':generation,'last_full_at':_split_time.time(),
-                'full_event_cutoff_score':float((tail or {}).get('full_event_cutoff_score') or 0.0) if isinstance(locals().get('tail'),dict) else 0.0,
-                'full_event_revision':int((tail or {}).get('full_event_revision') or 0) if isinstance(locals().get('tail'),dict) else 0,
-                'full_db_revision':float((tail or {}).get('full_db_revision') or 0.0) if isinstance(locals().get('tail'),dict) else 0.0,
-                'last_tail_at':_split_time.time(),'last_tail_count':len(_tail_events),
-                'tail_max_revision':int((tail or {}).get('max_revision') or _r81_compact_max_revision(candidate)) if isinstance(locals().get('tail'),dict) else _r81_compact_max_revision(candidate),
-                'tail_dirty':False,'last_error':'','next_retry':0.0,
-            })
-        return True,f'MEGA canonical generation restore OK generation={generation}; applied={applied}; Redis not used',applied
-    except Exception as exc:
-        return False,f'{type(exc).__name__}: {str(exc)[:260]}',0
-    finally:
-        globals()['_V240_RECOVERY_AUTHORITY_ACTIVE']=prev
-        if work: _split_shutil.rmtree(work,ignore_errors=True)
+# [OCH12.35 OWNER] r81_manual_compact_mega_restore -> 17_integration_mega.py
+_owner_install('mega', 'mega:0168')
 
 def _r221_manual_redis_restore_sqlite():
     """OCH12.22 owner-triggered Redis FULL+TAIL restore independent of REDIS_ENABLED.
@@ -11934,13 +9958,8 @@ def _r71_apply_runtime_side_effects():
     except Exception:
         pass
 
-def _r71_fast_mega_ready():
-    if not _r80_mega_master_enabled(): return False
-    try:
-        import shutil as _r80_shutil
-        creds=bool((str(globals().get('MEGA_EMAIL') or _split_os.getenv('MEGA_EMAIL','') or '').strip() and str(globals().get('MEGA_PASSWORD') or _split_os.getenv('MEGA_PASSWORD','') or '').strip()) or str(_split_os.getenv('MEGA_SESSION','') or '').strip())
-        return creds and _r80_shutil.which('mega-ls') is not None and _r80_shutil.which('mega-get') is not None
-    except Exception: return False
+# [OCH12.35 OWNER] _r71_fast_mega_ready -> 17_integration_mega.py
+_owner_install('mega', 'mega:0169')
 
 # State durability owner. In emergency R1 mode there is NO synchronous R2 request.
 # Redis write is background-sender work, not Telegram callback work; MEGA is dirtied
@@ -12003,7 +10022,7 @@ def _split_event_status_send_v268(update_id,chat_id=None,update_type='other',suc
         return _R80_HEAVY_EVENT_STATUS_SEND(update_id,chat_id,update_type,success,error)
     row={'schema':1,'event_id':_split_event_id_v268(update_id),'update_id':str(update_id),'chat_id':chat_id,
          'update_type':str(update_type or 'other')[:40],'state':'committed' if success else 'failed_retry',
-         'committed_at':_split_time.time() if success else 0.0,'state_token':_split_current_state_token_v264(),
+         'committed_at':_split_time.time() if success else 0.0,'state_token':_split_current_state_token_v265(),
          'last_error':str(error or '')[:300]}
     _split_event_bg_v268(_r80_redis_witness_background,row,row['state'],str(error or ''))
     st=globals().get('_SPLIT_STATE')
@@ -12074,10 +10093,8 @@ def schedule_full_backup_only(chat_id,delay=3.0):
         _r80_mark_tail_dirty(); return True
     return _R80_REMOTE_FULL_BACKUP(int(chat_id),delay)
 
-def mega_upload_latest_database_backup(force=False):
-    if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
-        return _r80_queue_compact_full('manual-force' if force else 'scheduled-full')
-    return _R80_REMOTE_MEGA_UPLOAD_DB(bool(force))
+# [OCH12.35 OWNER] mega_upload_latest_database_backup -> 17_integration_mega.py
+_owner_install('mega', 'mega:0170')
 
 def schedule_config_backup_for_chats(*chat_ids,delay=3.0):
     if _r71_route_is_fast('checkpoints') or _r71_route_is_fast('mega'):
@@ -12171,7 +10188,7 @@ def _och1229_startup_fallback_reanchor_worker():
                 except Exception: pass
                 try:
                     bot.send_message(int(OWNER_ID or 0),
-                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.31"}: MEGA current_manifest восстановлен.\n'
+                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.35"}: MEGA current_manifest восстановлен.\n'
                         f'Источник старта: {selected or "generation fallback"}\n'
                         f'Причина fallback: {fallback_kind}\n'
                         f'{last}')
@@ -12237,7 +10254,7 @@ def _och1228_empty_boot_autoseed_worker():
                     root=str(globals().get('MEGA_BACKUP_DIR') or _split_os.getenv('MEGA_BACKUP_DIR','') or '').rstrip('/')
                     generation=str(_R80_MEGA_STATE.get('last_full_generation') or '—')
                     bot.send_message(int(OWNER_ID or 0),
-                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.31"}: новая база MEGA создана.\n'
+                        f'✅ {globals().get("BOT_DISPLAY_NAME") or "очнись_12.35"}: новая база MEGA создана.\n'
                         f'Root: {root}\n'
                         f'Manifest: {root}/database/current_manifest.json\n'
                         f'Generation: {generation}')
@@ -12260,52 +10277,16 @@ def _och1228_start_empty_boot_autoseed():
     return True
 
 
-def _r70_routes_text():
-    h=dict(_SPLIT_STATE.get('worker_health') or {}); st=dict(h.get('state') or {})
-    worker_ok=bool(h.get('ok')) and int(_SPLIT_STATE.get('peer_status') or 0) in range(200,300)
-    with _R80_MEGA_LOCK: ms=dict(_R80_MEGA_STATE)
-    master=_r80_mega_master_enabled()
-    lines=[
-        f'🧭 <b>{BOT_DISPLAY_NAME} · R1/R2 ПРОЦЕССЫ</b>','',
-        'Всегда на R1 FAST:',
-        '🔒 Telegram webhook / ACK / окна / кнопки',
-        '🔒 Canonical business mutation / SQLite commit',
-        '🔒 Реальная доставка пересылок','',
-        'Переключаемые тяжёлые контуры:',
-        f'📊 Google / таблицы — {_r71_owner_html("google")}',
-        f'📦 Файлы / Excel / CSV / JSON / SQLite — {_r71_owner_html("files")}',
-        f'🧪 Диагностика / журналы / архивы — {_r71_owner_html("diagnostics")}',
-        f'🗄 MEGA browser / recovery — {_r71_owner_html("mega")}',
-        f'🧱 State events / capsule durability — {_r71_owner_html("durability")}',
-        f'📸 FULL / compact tail checkpoints — {_r71_owner_html("checkpoints")}','',
-        f'R2: {"✅ доступен" if worker_ok else "⛔ недоступен"} · HTTP {int(_SPLIT_STATE.get("peer_status") or 0)} · очередь {int(h.get("queue_size") or 0)}',
-        f'MEGA master Render #1: {"✅ MEGA_ENABLED=1" if master else "⛔ MEGA_ENABLED=0"}',
-        f'R1 compact MEGA: FULL {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")} · tail {int(ms.get("last_tail_count") or 0)} · maxrev {int(ms.get("tail_max_revision") or 0)}',
-        f'R1 compact error: {str(ms.get("last_error") or "нет")[:180]}','',
-        '🚨 Если R2 умер: нажмите «ВСЁ → R1». State-events перестанут ждать R2; Redis остаётся быстрым TAIL, MEGA пишется пакетно в фоне.',
-        'MEGA compact хранит только fixed latest + один aggregated tail + head.json. Никаких per-event/generation тысяч файлов.',
-        'Ни один MEGA/Redis/Google heavy-вызов не ставится между нажатием пользователя и отрисовкой окна.',
-    ]
-    return window_mark('\n'.join(lines),'Ф4072')
+# [OCH12.35 COMPAT] legacy _r70_routes_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0058')
 
 def _r71_route_button(key):
     owner=_r71_route_owner(key); prefix='🟢 #1' if owner=='fast' else '🛰 #2'
     short={'google':'Google','files':'Файлы','diagnostics':'Диагн.','mega':'MEGA','durability':'State','checkpoints':'FULL'}[key]
     return IB(f'{prefix} · {short}',callback_data=f'r71:route:{key}')
 
-def _r70_routes_keyboard():
-    kb=types.InlineKeyboardMarkup(row_width=2)
-    kb.row(_r71_route_button('google'),_r71_route_button('files'))
-    kb.row(_r71_route_button('diagnostics'),_r71_route_button('mega'))
-    kb.row(_r71_route_button('durability'),_r71_route_button('checkpoints'))
-    kb.row(IB('🚨 R2 НЕТ → ВСЁ #1',callback_data='r71:all:fast'),IB('⛔ Render #2 выключен',callback_data='r71:all:heavy'))
-    if _OCH1224_SINGLE_RENDER:
-        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('⛔ Render #2 отключён',callback_data='r71:all:heavy'))
-        kb.row(IB('❌ Закрыть',callback_data='info_close'))
-    else:
-        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
-        kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
-    return kb
+# [OCH12.35 COMPAT] legacy _r70_routes_keyboard -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0059')
 
 _R80_CONTOUR_CORE=contour_callback_guard
 def _r80_contour_callback_guard(call,resolved):
@@ -12354,28 +10335,8 @@ _OCH129_FORWARD_OP_ROWS_AT = 0.0
 _OCH129_FORWARD_RECORD_SCAN_MISS = set()
 
 
-def _och129_forward_op_rows(force: bool=False):
-    global _OCH129_FORWARD_OP_ROWS, _OCH129_FORWARD_OP_ROWS_AT
-    now = _v262_time.time()
-    with _OCH129_FORWARD_REPAIR_LOCK:
-        if (not force) and isinstance(_OCH129_FORWARD_OP_ROWS, list) and (now - float(_OCH129_FORWARD_OP_ROWS_AT or 0.0) < 15.0):
-            return list(_OCH129_FORWARD_OP_ROWS)
-        rows = []
-        try:
-            raw_rows = SQLITE._read_all("SELECT k,v FROM meta WHERE kind='forward_finance_ops_v260'")
-            for _key, raw in raw_rows or []:
-                try:
-                    row = json.loads(raw) if isinstance(raw, str) else raw
-                except Exception:
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
-        except Exception as exc:
-            try: log_error(f'[FWD EDIT V263] op-ledger read: {exc}')
-            except Exception: pass
-        _OCH129_FORWARD_OP_ROWS = rows
-        _OCH129_FORWARD_OP_ROWS_AT = now
-        return list(rows)
+# [OCH12.35 OWNER] _och129_forward_op_rows -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0209')
 
 
 def _och129_pair_from_record(dst_chat_id: int, rec: dict, src_chat_id: int, src_msg_id: int):
@@ -12409,283 +10370,36 @@ def _och129_pair_from_record(dst_chat_id: int, rec: dict, src_chat_id: int, src_
     return (int(dst_chat_id), int(dst_mid))
 
 
-def _och129_install_forward_pairs(src_chat_id: int, src_msg_id: int, pairs, reason: str='local-repair'):
-    src = (int(src_chat_id), int(src_msg_id))
-    clean = []
-    for pair in pairs or []:
-        try:
-            p = (int(pair[0]), int(pair[1]))
-        except Exception:
-            continue
-        if p[0] and p[1] and p not in clean:
-            clean.append(p)
-    if not clean:
-        return []
-    changed = False
-    try:
-        with forward_map_lock:
-            current = forward_map.setdefault(src, [])
-            for p in clean:
-                if p not in current:
-                    current.append(p); changed = True
-            resolved = list(current)
-    except Exception:
-        resolved = clean
-    if changed:
-        try:
-            _persist_forward_index_in_data(data)
-        except Exception:
-            pass
-        try:
-            # OCH12.14: every forward-link repair mutates the same root forward_index.
-            # Hundreds of per-message save_data tasks are redundant and previously
-            # amplified the single background lane.  Keep at most one running plus
-            # one newest root persistence task.
-            pool = globals().get('PERSIST_LATEST_TASK_POOL')
-            if pool is not None and hasattr(pool, 'submit_latest'):
-                pool.submit_latest('v263-fwd-index-root-v214', save_data, data, root_only=True)
-            else:
-                fallback = globals().get('BACKGROUND_TASK_POOL') or globals().get('GENERAL_TASK_POOL')
-                if fallback is not None and hasattr(fallback, 'submit_unique'):
-                    fallback.submit_unique('v263-fwd-index-root-v214', save_data, data, root_only=True)
-        except Exception:
-            pass
-        try:
-            bot_journal('forward_index_self_healed_v263', int(src[0]), f'msg={src[1]}; pairs={len(clean)}; reason={reason}')
-        except Exception:
-            pass
-    return resolved
+# [OCH12.35 OWNER] _och129_install_forward_pairs -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0210')
 
 
-def _och129_recover_forward_links_local(src_chat_id: int, src_msg_id: int, target_chat_id: int | None=None, *, scan_records: bool=True):
-    """Network-free forward identity recovery used by every finance edit path."""
-    src_chat_id = int(src_chat_id); src_msg_id = int(src_msg_id)
-    target = int(target_chat_id) if target_chat_id is not None else None
-    pairs = []
-    # 1) Durable operation ledger: O(ledger rows), no network, survives deploy/full SQLite restore.
-    for row in _och129_forward_op_rows(False):
-        try:
-            if int(row.get('source_chat_id') or 0) != src_chat_id or int(row.get('source_msg_id') or 0) != src_msg_id:
-                continue
-            dst_chat = int(row.get('dst_chat_id') or 0); dst_mid = int(row.get('dst_msg_id') or 0)
-            state = str(row.get('state') or '')
-            if target is not None and dst_chat != target:
-                continue
-            if dst_chat and dst_mid and state not in {'deleted', 'cancelled', 'removed'}:
-                p = (dst_chat, dst_mid)
-                if p not in pairs: pairs.append(p)
-        except Exception:
-            continue
-    # 2) Finance rows: immutable v262 origin key / fwd-fin operation key is a second witness.
-    # For a known destination this is one-chat only; general scans happen only on a cache miss.
-    if scan_records and (not pairs or target is None):
-        miss_key = (src_chat_id, src_msg_id, target)
-        do_scan = True
-        with _OCH129_FORWARD_REPAIR_LOCK:
-            if miss_key in _OCH129_FORWARD_RECORD_SCAN_MISS:
-                do_scan = False
-        if do_scan:
-            if target is not None:
-                chat_ids = [target]
-            else:
-                chat_ids = []
-                try:
-                    chat_ids.extend(int(x) for x in ((data or {}).get('chats', {}) or {}).keys())
-                except Exception:
-                    pass
-                try:
-                    # Root finance chat may exist outside the currently materialized LOW-RAM dict.
-                    chat_ids.append(int(src_chat_id))
-                except Exception:
-                    pass
-                chat_ids = list(dict.fromkeys(chat_ids))
-            for cid in chat_ids:
-                try:
-                    store = get_chat_store(int(cid))
-                    seen = set()
-                    for ledger in ('records', 'ars_records', 'usd_records'):
-                        rows = store.get(ledger, []) or []
-                        for rec in rows:
-                            if not isinstance(rec, dict) or id(rec) in seen:
-                                continue
-                            seen.add(id(rec))
-                            p = _och129_pair_from_record(int(cid), rec, src_chat_id, src_msg_id)
-                            if p and (target is None or p[0] == target) and p not in pairs:
-                                pairs.append(p)
-                except Exception:
-                    continue
-            if not pairs:
-                with _OCH129_FORWARD_REPAIR_LOCK:
-                    _OCH129_FORWARD_RECORD_SCAN_MISS.add(miss_key)
-    if pairs:
-        # Recreate missing durable op rows from record witnesses as well.
-        for dst_chat, dst_mid in pairs:
-            try:
-                row = _v260_forward_finance_op_get(src_chat_id, src_msg_id, dst_chat)
-                if not int((row or {}).get('dst_msg_id') or 0):
-                    _v260_forward_finance_op_mark(src_chat_id, src_msg_id, dst_chat, 'committed', dst_msg_id=int(dst_mid), recovered_v263=True)
-            except Exception:
-                pass
-        return _och129_install_forward_pairs(src_chat_id, src_msg_id, pairs, 'sqlite-op+records')
-    return []
+# [OCH12.35 OWNER] _och129_recover_forward_links_local -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0211')
 
 
-def get_forward_links(src_chat_id: int, src_msg_id: int):
-    links = []
-    try:
-        if callable(_OCH129_PARENT_GET_FORWARD_LINKS):
-            links = list(_OCH129_PARENT_GET_FORWARD_LINKS(int(src_chat_id), int(src_msg_id)) or [])
-    except Exception:
-        links = []
-    if links:
-        return links
-    return list(_och129_recover_forward_links_local(int(src_chat_id), int(src_msg_id), None, scan_records=True) or [])
+# [OCH12.35 OWNER] get_forward_links -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0212')
 
 
-def _och129_reconcile_existing_forward_copy(source_chat_id: int, msg, dst_chat_id: int, dst_msg_id: int, finance_enabled: bool):
-    """A repeated pre-deploy message is reconcile/edit, never a second Telegram copy."""
-    try:
-        new_mid = sync_edited_copy_to_target(int(source_chat_id), msg, int(dst_chat_id), int(dst_msg_id), bool(finance_enabled))
-    except Exception as exc:
-        try: log_error(f'[FWD EDIT V263] reconcile {source_chat_id}:{getattr(msg,"message_id",0)}->{dst_chat_id}:{dst_msg_id}: {exc}')
-        except Exception: pass
-        return None
-    if not new_mid:
-        return None
-    try:
-        _store_forward_link(int(source_chat_id), int(getattr(msg, 'message_id', 0) or 0), int(dst_chat_id), int(new_mid))
-    except Exception:
-        pass
-    if finance_enabled:
-        try:
-            rec = find_record_by_message_id(int(dst_chat_id), int(new_mid))
-            if isinstance(rec, dict):
-                _persist_forward_finance_delivery_now(int(source_chat_id), int(getattr(msg, 'message_id', 0) or 0), int(dst_chat_id), int(new_mid), rec)
-            else:
-                _v260_forward_finance_op_mark(int(source_chat_id), int(getattr(msg, 'message_id', 0) or 0), int(dst_chat_id), 'copy_delivered', dst_msg_id=int(new_mid), recovered_v263=True)
-        except Exception:
-            pass
-    try:
-        bot_journal('forward_existing_copy_reconciled_v263', int(dst_chat_id), f'src={source_chat_id}:{getattr(msg,"message_id",0)}; dst={dst_chat_id}:{new_mid}')
-    except Exception:
-        pass
-    return int(new_mid)
+# [OCH12.35 OWNER] _och129_reconcile_existing_forward_copy -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0213')
 
 
-def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool, _migration_retry: bool=False):
-    src_mid = int(getattr(msg, 'message_id', 0) or 0)
-    # Resolve the exact destination before the legacy create-copy branch.  This makes
-    # post-deploy redelivery idempotent even when the RAM/root forward_index vanished.
-    links = list(get_forward_links(int(source_chat_id), src_mid) or [])
-    match = next(((dc, dm) for dc, dm in links if int(dc) == int(dst_chat_id)), None)
-    if match is None and finance_enabled:
-        healed = _och129_recover_forward_links_local(int(source_chat_id), src_mid, int(dst_chat_id), scan_records=True)
-        match = next(((dc, dm) for dc, dm in healed if int(dc) == int(dst_chat_id)), None)
-    if match is not None:
-        reconciled = _och129_reconcile_existing_forward_copy(int(source_chat_id), msg, int(dst_chat_id), int(match[1]), bool(finance_enabled))
-        if reconciled:
-            return int(reconciled)
-        # If Telegram edit/replacement itself fails, preserve exact-once: do not blindly
-        # create another copy while a durable destination identity still exists.
-        try:
-            bot_journal('forward_existing_copy_reconcile_deferred_v263', int(dst_chat_id), f'src={source_chat_id}:{src_mid}; dst={dst_chat_id}:{match[1]}', 'WARN')
-        except Exception:
-            pass
-        return int(match[1])
-    if callable(_OCH129_PARENT_FORWARD_SINGLE):
-        return _OCH129_PARENT_FORWARD_SINGLE(int(source_chat_id), msg, int(dst_chat_id), bool(finance_enabled), _migration_retry=_migration_retry)
-    return None
+# [OCH12.35 OWNER] _forward_single_to_target -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0214')
 
 
-def _och129_finance_record_text(rec: dict) -> str:
-    try:
-        raw = str((rec or {}).get('source_finance_text') or '').strip()
-        if raw:
-            return raw.replace('\r\n', '\n').replace('\r', '\n')
-    except Exception:
-        pass
-    try:
-        fn = globals().get('_v262_record_canonical_text')
-        return str(fn(rec) if callable(fn) else '').strip().replace('\r\n', '\n').replace('\r', '\n')
-    except Exception:
-        return ''
+# [OCH12.35 OWNER] _och129_finance_record_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0224')
 
 
-def handle_finance_message(msg):
-    """Treat same chat/message identity after deploy as replay/edit, never a new operation."""
-    try:
-        cid = int(getattr(getattr(msg, 'chat', None), 'id', 0) or 0)
-        mid = int(getattr(msg, 'message_id', 0) or 0)
-    except Exception:
-        cid = mid = 0
-    if cid and mid:
-        existing = None
-        try:
-            existing = find_record_by_message_id(cid, mid)
-        except Exception:
-            existing = None
-        if isinstance(existing, dict):
-            incoming = str(_message_text_for_finance(msg) or getattr(msg, 'caption', None) or getattr(msg, 'text', None) or '').strip().replace('\r\n', '\n').replace('\r', '\n')
-            previous = _och129_finance_record_text(existing)
-            if incoming != previous:
-                # A Telegram update can be replayed as a normal `message` after a deploy.
-                # Use the native linked-edit transaction, then repaint/reconcile old copies.
-                try:
-                    edited = bool(handle_finance_edit(msg))
-                except Exception as exc:
-                    edited = False
-                    try: log_error(f'[FIN EDIT V263] replay-as-message edit failed {cid}:{mid}: {exc}')
-                    except Exception: pass
-                if edited:
-                    try: schedule_propagate_edited_to_copies(msg)
-                    except Exception: pass
-                    try: bot_journal('finance_message_reclassified_as_edit_v263', cid, f'msg={mid}; old={previous[:120]!r}; new={incoming[:120]!r}')
-                    except Exception: pass
-                    return True
-            # Identical redelivery: stable source identity is authoritative; no new row.
-            try:
-                bot_journal('finance_message_replay_blocked_v263', cid, f'msg={mid}; identical={int(incoming == previous)}')
-            except Exception:
-                pass
-            return True
-    if callable(_OCH129_PARENT_HANDLE_FINANCE_MESSAGE):
-        return _OCH129_PARENT_HANDLE_FINANCE_MESSAGE(msg)
-    return False
+# [OCH12.35 OWNER] handle_finance_message -> 11_business_finance.py
+_owner_install('finance', 'finance:0225')
 
 
-def _och129_boot_rebuild_forward_identity():
-    repaired = 0
-    try:
-        # Merge durable op-ledger links even when root forward_index exists but is stale/partial.
-        grouped = {}
-        for row in _och129_forward_op_rows(True):
-            try:
-                sc = int(row.get('source_chat_id') or 0); sm = int(row.get('source_msg_id') or 0)
-                dc = int(row.get('dst_chat_id') or 0); dm = int(row.get('dst_msg_id') or 0)
-                if sc and sm and dc and dm and str(row.get('state') or '') not in {'deleted','cancelled','removed'}:
-                    grouped.setdefault((sc, sm), []).append((dc, dm))
-            except Exception:
-                continue
-        for (sc, sm), pairs in grouped.items():
-            before = []
-            try:
-                before = list(_OCH129_PARENT_GET_FORWARD_LINKS(sc, sm) or []) if callable(_OCH129_PARENT_GET_FORWARD_LINKS) else []
-            except Exception:
-                pass
-            after = _och129_install_forward_pairs(sc, sm, pairs, 'boot-op-ledger')
-            repaired += max(0, len(after) - len(before))
-        try:
-            legacy = globals().get('_rebuild_forward_index_from_finance_records')
-            if callable(legacy):
-                repaired += int(legacy(data) or 0)
-        except Exception:
-            pass
-        try: bot_journal('forward_identity_boot_rebuild_v263', int(OWNER_ID or 0), f'repaired={repaired}; sources={len(grouped)}')
-        except Exception: pass
-    except Exception as exc:
-        try: log_error(f'[FWD EDIT V263] boot rebuild: {exc}')
-        except Exception: pass
-    return repaired
+# [OCH12.35 OWNER] _och129_boot_rebuild_forward_identity -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0215')
 
 
 def _och129_schedule_boot_rebuild():
@@ -12881,259 +10595,46 @@ def _och1210_retry_pending_restore_reanchor():
 _v240_retry_pending_restore_reanchor = _och1210_retry_pending_restore_reanchor
 
 
-def _och1224_hard_release_mega_runtime() -> dict:
-    """OCH12.26 release MEGAcmd only when the transaction manager is idle."""
-    global _V178_MEGA_SESSION_OK_UNTIL
-    out = {'quit': False, 'term': 0, 'kill': 0, 'survivors': 0}
-    try:
-        with _OCH1225_MEGA_CMD_LOCK:
-            if int(_OCH1225_MEGA_CMD_ACTIVE or 0) > 0:
-                return {'skipped': 'command_active', 'active': int(_OCH1225_MEGA_CMD_ACTIVE or 0)}
-    except Exception:
-        return {'skipped': 'manager_state_unavailable'}
-    try:
-        import shutil as _msh, subprocess as _msp, signal as _msig
-        exe = _msh.which('mega-quit')
-        if exe:
-            try:
-                _msp.run([exe], stdout=_msp.DEVNULL, stderr=_msp.DEVNULL, timeout=5, check=False)
-                out['quit'] = True
-            except Exception:
-                pass
-        me = int(_split_os.getpid())
-        victims = []
-        for ent in _split_os.listdir('/proc'):
-            if not str(ent).isdigit():
-                continue
-            pid = int(ent)
-            if pid in {0, 1, me}:
-                continue
-            try:
-                comm = open(f'/proc/{pid}/comm', 'r', encoding='utf-8', errors='ignore').read().strip()
-            except Exception:
-                continue
-            if comm in {'mega-cmd-server', 'mega-exec'}:
-                victims.append(pid)
-        for pid in victims:
-            try:
-                _split_os.kill(pid, _msig.SIGTERM); out['term'] += 1
-            except Exception:
-                pass
-        if victims:
-            _split_time.sleep(0.15)
-        def _alive_non_zombie(pid):
-            try:
-                stat = open(f'/proc/{pid}/stat', 'r', encoding='utf-8', errors='ignore').read().split()
-                return bool(len(stat) > 2 and stat[2] != 'Z')
-            except Exception:
-                return False
-        survivors = [pid for pid in victims if _alive_non_zombie(pid)]
-        for pid in survivors:
-            try:
-                _split_os.kill(pid, _msig.SIGKILL); out['kill'] += 1
-            except Exception:
-                pass
-        if survivors:
-            _split_time.sleep(0.05)
-        out['survivors'] = sum(1 for pid in survivors if _alive_non_zombie(pid))
-    except Exception as exc:
-        out['error'] = f'{type(exc).__name__}: {str(exc)[:160]}'
-    try:
-        gc_fn = globals().get('_memory_gc')
-        if gc_fn is not None and hasattr(gc_fn, 'collect'):
-            gc_fn.collect()
-        trim_fn = globals().get('memory_malloc_trim')
-        if callable(trim_fn):
-            trim_fn()
-    except Exception:
-        pass
-    try:
-        # A killed/restarted MEGAcmd daemon must never inherit a process-local
-        # "session OK" TTL or directory cache.
-        _V178_MEGA_SESSION_OK_UNTIL = 0.0
-        cache = globals().get('_V178_MEGA_KNOWN_DIRS')
-        if hasattr(cache, 'clear'): cache.clear()
-    except Exception:
-        pass
-    if out.get('term') or out.get('kill') or out.get('survivors') or out.get('error'):
-        try:
-            bot_journal('och1225_mega_idle_release', int(OWNER_ID or 0), str(out))
-        except Exception:
-            pass
-    return out
+# [OCH12.35 OWNER] _och1224_hard_release_mega_runtime -> 17_integration_mega.py
+_owner_install('mega', 'mega:0171')
 
 
-def _och1224_release_mega_if_quiet():
-    if not _OCH1224_MEGA_ZERO_RESIDENT:
-        return False
-    if _och1210_mega_busy():
-        # Do not create a cleanup watchdog loop.  The command that finishes last
-        # schedules the next latest-wins release.
-        return False
-    try:
-        with _OCH1225_MEGA_CMD_LOCK:
-            idle_for = _split_time.time() - float(_OCH1225_MEGA_LAST_CMD_FINISHED or 0.0)
-        if _OCH1225_MEGA_LAST_CMD_FINISHED and idle_for < _OCH1224_MEGA_ZERO_DELAY * 0.8:
-            return False
-    except Exception:
-        pass
-    out = _och1224_hard_release_mega_runtime()
-    return not bool((out or {}).get('skipped'))
+# [OCH12.35 OWNER] _och1224_release_mega_if_quiet -> 17_integration_mega.py
+_owner_install('mega', 'mega:0172')
 
 
-def _och1224_schedule_mega_release():
-    if not _OCH1224_MEGA_ZERO_RESIDENT:
-        return
-    try:
-        # latest-wins key: a multi-command MEGA sequence continuously pushes the
-        # cleanup deadline forward, then one cleanup runs after the sequence is quiet.
-        DELAYED_SCHEDULER.schedule(_OCH1224_MEGA_CLEANUP_KEY, _OCH1224_MEGA_ZERO_DELAY, _och1224_release_mega_if_quiet)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _och1224_schedule_mega_release -> 17_integration_mega.py
+_owner_install('mega', 'mega:0173')
 
 
-def _och1210_mega_run(cmd: str, args=None, timeout=None, check: bool=True, control_plane: bool=False):
-    global _OCH1210_MEGA_LAST_ACTIVITY, _OCH1225_MEGA_CMD_ACTIVE, _OCH1225_MEGA_LAST_CMD_FINISHED
-    _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
-    if not callable(_OCH1210_PARENT_MEGA_RUN):
-        raise RuntimeError('MEGA runner unavailable')
-    # The underlying executor is also serialized, but this counter lets cleanup and
-    # Memory Guard know that a CLI command is alive without reading subprocess state.
-    with _OCH1225_MEGA_CMD_LOCK:
-        _OCH1225_MEGA_CMD_ACTIVE += 1
-    try:
-        return _OCH1210_PARENT_MEGA_RUN(cmd, args=args, timeout=timeout, check=check, control_plane=control_plane)
-    finally:
-        _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
-        with _OCH1225_MEGA_CMD_LOCK:
-            _OCH1225_MEGA_CMD_ACTIVE = max(0, int(_OCH1225_MEGA_CMD_ACTIVE) - 1)
-            _OCH1225_MEGA_LAST_CMD_FINISHED = _split_time.time()
-        _och1224_schedule_mega_release()
+# [OCH12.35 OWNER] _och1210_mega_run -> 17_integration_mega.py
+_owner_install('mega', 'mega:0174')
 
 
 _mega_run = _och1210_mega_run
 
 
-def _och1210_mega_busy() -> bool:
-    # OCH12.31: the zero-resident cleanup must never kill MEGAcmd while a restore,
-    # canonical publish/re-anchor or other recovery authority owns MEGA.
-    try:
-        if bool(globals().get('_V241_RESTORE_ACTIVE', False)) or bool(globals().get('_V240_RECOVERY_AUTHORITY_ACTIVE', False)):
-            return True
-    except Exception:
-        return True
-    try:
-        with _OCH1225_MEGA_CMD_LOCK:
-            if int(_OCH1225_MEGA_CMD_ACTIVE or 0) > 0:
-                return True
-    except Exception:
-        return True
-    try:
-        with _R80_MEGA_LOCK:
-            if bool(_R80_MEGA_STATE.get('running')):
-                return True
-    except Exception:
-        return True
-    try:
-        with _V240_PAR_STATS_LOCK:
-            if int((_V240_PAR_STATS or {}).get('active') or 0) > 0:
-                return True
-    except Exception:
-        pass
-    try:
-        active = globals().get('_MEMORY_ACTIVE') or {}
-        if any(str((row or {}).get('kind') or '').startswith('mega:') for row in active.values()):
-            return True
-    except Exception:
-        pass
-    return False
+# [OCH12.35 OWNER] _och1210_mega_busy -> 17_integration_mega.py
+_owner_install('mega', 'mega:0175')
 
 
-def _och1210_quit_mega_server_if_idle() -> bool:
-    global _OCH1210_MEGA_LAST_ACTIVITY
-    if _split_time.time() - float(_OCH1210_MEGA_LAST_ACTIVITY or 0.0) < _OCH1210_MEGA_IDLE_SEC:
-        return False
-    if _och1210_mega_busy() or _och111_hot_ui_busy():
-        return False
-    try:
-        import shutil as _r83_shutil, subprocess as _r83_subprocess
-        exe = _r83_shutil.which('mega-quit')
-        if not exe:
-            return False
-        _r83_subprocess.run([exe], stdout=_r83_subprocess.DEVNULL, stderr=_r83_subprocess.DEVNULL, timeout=8, check=False)
-        _OCH1210_MEGA_LAST_ACTIVITY = _split_time.time()
-        try:
-            gc_fn = globals().get('_memory_gc')
-            if gc_fn is not None and hasattr(gc_fn, 'collect'): gc_fn.collect()
-            trim_fn = globals().get('memory_malloc_trim')
-            if callable(trim_fn): trim_fn()
-        except Exception:
-            pass
-        try: bot_journal('r83_mega_idle_server_released', int(OWNER_ID or 0), f'idle_sec={int(_OCH1210_MEGA_IDLE_SEC)}')
-        except Exception: pass
-        return True
-    except Exception:
-        return False
+# [OCH12.35 OWNER] _och1210_quit_mega_server_if_idle -> 17_integration_mega.py
+_owner_install('mega', 'mega:0176')
 
 
-def _och1210_mega_idle_reaper_loop():
-    _split_time.sleep(30.0)
-    while True:
-        try: _och1210_quit_mega_server_if_idle()
-        except Exception: pass
-        _split_time.sleep(30.0)
+# [OCH12.35 OWNER] _och1210_mega_idle_reaper_loop -> 17_integration_mega.py
+_owner_install('mega', 'mega:0177')
 
 
-def _och1210_start_mega_idle_reaper():
-    global _OCH1210_MEGA_REAPER_STARTED
-    if _OCH1224_MEGA_ZERO_RESIDENT:
-        return
-    with _OCH1210_MEGA_REAPER_LOCK:
-        if _OCH1210_MEGA_REAPER_STARTED:
-            return
-        _OCH1210_MEGA_REAPER_STARTED = True
-    _split_threading.Thread(target=_och1210_mega_idle_reaper_loop, daemon=True, name='r83-mega-idle').start()
+# [OCH12.35 OWNER] _och1210_start_mega_idle_reaper -> 17_integration_mega.py
+_owner_install('mega', 'mega:0178')
 
 
-def _r70_routes_text():
-    routes = _r71_load_routes()
-    all_fast = all(str(routes.get(k) or '') == 'fast' for k in _R71_ROUTE_KEYS)
-    master = _r80_mega_master_enabled()
-    with _R80_MEGA_LOCK:
-        ms = dict(_R80_MEGA_STATE)
-    generation=str(ms.get('last_full_generation') or '—')
-    lines = [
-        f'🧭 <b>{BOT_DISPLAY_NAME} · R1 ПРОЦЕССЫ</b>', '',
-        '✅ <b>Render #2 отключён · рабочий runtime только R1</b>', '',
-        'Хранилище 12.31:',
-        '☁️ MEGA — единственный источник восстановления',
-        '⚡ Redis — только cache / locks / ускорение; restore из Redis запрещён',
-        '💾 SQLite — рабочая локальная база', '',
-        f'MEGA permission: {"✅ credentials" if master else "⛔ disabled"}',
-        f'Canonical durability: {"✅ ON" if _OCH1226_MEGA_DURABILITY_ENABLED else "⛔ OFF"}',
-        f'Generation: <code>{generation[:72]}</code>',
-        f'Последний FULL: {(_r10_age_text(ms.get("last_full_at")) if ms.get("last_full_at") else "—")}',
-        f'Current tail: {int(ms.get("last_tail_count") or 0)} events · maxrev {int(ms.get("tail_max_revision") or 0)}',
-        f'Ошибка MEGA: {str(ms.get("last_error") or "нет")[:180]}', '',
-        'Путь restore: database/current_manifest.json → immutable generation → database/deltas/current_tail.json.gz',
-        'Старые current_manifest/tail не удаляются: они перемещаются в history/.',
-        'compact_v80 больше не является каноническим restore.',
-    ]
-    return window_mark('\n'.join(lines), 'Ф4072')
+# [OCH12.35 COMPAT] legacy _r70_routes_text -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0060')
 
-def _r70_routes_keyboard():
-    kb=types.InlineKeyboardMarkup(row_width=2)
-    kb.row(_r71_route_button('google'),_r71_route_button('files'))
-    kb.row(_r71_route_button('diagnostics'),_r71_route_button('mega'))
-    kb.row(_r71_route_button('durability'),_r71_route_button('checkpoints'))
-    kb.row(IB('✅ R2 НЕТ · ВСЁ #1',callback_data='r71:all:fast'),IB('⛔ Render #2 выключен',callback_data='r71:all:heavy'))
-    if _OCH1224_SINGLE_RENDER:
-        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('⛔ Render #2 отключён',callback_data='r71:all:heavy'))
-        kb.row(IB('❌ Закрыть',callback_data='info_close'))
-    else:
-        kb.row(IB('📸 MEGA FULL сейчас',callback_data='r80:mega:full'),IB('🧪 Тест #1 ↔ #2',callback_data='r44:test:open'))
-        kb.row(IB('🔄 Render #2',callback_data='r10:worker:refresh'),IB('❌ Закрыть',callback_data='info_close'))
-    return kb
+# [OCH12.35 COMPAT] legacy _r70_routes_keyboard -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0061')
 
 
 try:
@@ -13685,4 +11186,246 @@ except Exception as _och1213_exc:
     try: log_error(f'OCH12.13 R84 init: {_och1213_exc}')
     except Exception: pass
 
-# v262
+
+# ---------------------------------------------------------------------------
+# OCH12.34 / R85 — R1 AUTHORITY + OPTIONAL R2 ACCELERATOR WITH AUTO-FALLBACK.
+#
+# Hard invariant:
+#   * Telegram/UI/business mutation/SQLite/MEGA durability/checkpoints live on R1.
+#   * R2 may accelerate only Google, file generation and diagnostics.
+#   * A configured R2 is probed before a user job is delegated.  If unavailable,
+#     the same operation stays on R1; no manual "R2 died -> switch to R1" action is
+#     required.  Accepted remote jobs are not duplicated after acceptance.
+# ---------------------------------------------------------------------------
+_R1234_ACCEL_KEYS = ('google', 'files', 'diagnostics')
+_R1234_CRITICAL_FAST_KEYS = ('mega', 'durability', 'checkpoints')
+_R1234_ROUTE_NS = 'och12_34_r1_authority'
+_R1234_ROUTE_KEY = 'migrated'
+_R1234_HEALTH_LOCK = _split_threading.RLock()
+_R1234_HEALTH = {'checked_at': 0.0, 'ok': False, 'detail': 'not checked'}
+_R1234_ROUTE_SAVE_CHAIN = _r71_save_routes
+_R1234_FILE_SUBMIT_CHAIN = submit_interactive_file_job
+_R1234_REMOTE_GOOGLE_CREATE = _R71_REMOTE_GOOGLE_CREATE
+_R1234_REMOTE_GOOGLE_QUERY = _R71_REMOTE_GOOGLE_QUERY_SUBMIT
+_R1234_REMOTE_GOOGLE_TEST = _R71_REMOTE_GOOGLE_TEST
+_R1234_REMOTE_GOOGLE_INFO = _R71_REMOTE_GOOGLE_INFO
+
+
+def _r1234_force_critical_fast(routes):
+    row = dict(routes or {})
+    for key in _R1234_CRITICAL_FAST_KEYS:
+        row[key] = 'fast'
+    return row
+
+
+def _r71_save_routes(routes, reason='switch'):
+    """Persist accelerator choices but never move canonical durability away from R1."""
+    return _R1234_ROUTE_SAVE_CHAIN(_r1234_force_critical_fast(routes), 'och12.34:' + str(reason or 'switch'))
+
+
+def _r1234_routes_migrate_once():
+    """First 12.34 boot starts fully standalone, then preserves later accelerator choices."""
+    db = globals().get('SQLITE')
+    done = False
+    try:
+        row = db.get_meta(_R1234_ROUTE_NS, _R1234_ROUTE_KEY, {}) if db is not None else {}
+        done = bool((row or {}).get('done')) if isinstance(row, dict) else bool(row)
+    except Exception:
+        done = False
+    if not done:
+        routes = _r71_save_routes({k: 'fast' for k in _R71_ROUTE_KEYS}, 'first-boot-standalone')
+        try:
+            if db is not None:
+                db.set_meta(_R1234_ROUTE_NS, _R1234_ROUTE_KEY, {
+                    'done': True, 'at': now_local().isoformat(timespec='microseconds'), 'routes': routes,
+                })
+        except Exception:
+            pass
+        return routes
+    current = _r1234_force_critical_fast(_r71_load_routes(force=True))
+    return _r71_save_routes(current, 'enforce-critical-r1')
+
+
+def _r1234_accel_requested(kind):
+    key = str(kind or '').strip().lower()
+    return key in _R1234_ACCEL_KEYS and _r71_route_owner(key) == 'heavy'
+
+
+def _r1234_cached_peer_ok():
+    ttl = max(5.0, min(300.0, float(_split_os.getenv('R1234_R2_HEALTH_TTL_SEC', '45') or '45')))
+    now = _split_time.time()
+    with _R1234_HEALTH_LOCK:
+        if bool(_R1234_HEALTH.get('ok')) and now - float(_R1234_HEALTH.get('checked_at') or 0.0) <= ttl:
+            return True
+    try:
+        h = dict(_SPLIT_STATE.get('worker_health') or {})
+        status = int(_SPLIT_STATE.get('peer_status') or 0)
+        last = float(_SPLIT_STATE.get('peer_last_ok') or 0.0)
+        if bool(h.get('ok')) and 200 <= status < 300 and last and now - last <= ttl:
+            with _R1234_HEALTH_LOCK:
+                _R1234_HEALTH.update(ok=True, checked_at=now, detail='cached peer health')
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _r1234_probe_peer(force=False):
+    """Short preflight used only when owner explicitly selected an accelerator on R2."""
+    if not any(_r1234_accel_requested(k) for k in _R1234_ACCEL_KEYS):
+        return False
+    if (not force) and _r1234_cached_peer_ok():
+        return True
+    base, secret = _split_peer_base(), _split_secret()
+    if not base or not secret:
+        detail = 'R2 URL/secret not configured'
+        with _R1234_HEALTH_LOCK: _R1234_HEALTH.update(ok=False, checked_at=_split_time.time(), detail=detail)
+        _SPLIT_STATE['peer_last_error'] = detail
+        return False
+    try:
+        connect = max(0.2, min(3.0, float(_split_os.getenv('R1234_R2_PROBE_CONNECT_SEC', '0.65') or '0.65')))
+        read = max(0.4, min(5.0, float(_split_os.getenv('R1234_R2_PROBE_READ_SEC', '1.25') or '1.25')))
+        _SPLIT_STATE['peer_last_attempt'] = _split_time.time()
+        r = requests.get(base + '/peer/health', headers=_split_headers('och12.34-r2-preflight'), timeout=(connect, read))
+        ok = 200 <= int(r.status_code) < 300
+        payload = {}
+        try: payload = r.json() if r.content else {}
+        except Exception: payload = {}
+        _SPLIT_STATE['peer_status'] = int(r.status_code)
+        if ok:
+            now = _split_time.time()
+            _SPLIT_STATE['peer_last_ok'] = now
+            _SPLIT_STATE['peer_last_error'] = ''
+            _SPLIT_STATE['worker_health'] = dict(payload or {})
+            _SPLIT_STATE['worker_health']['seen_at'] = now
+            with _R1234_HEALTH_LOCK: _R1234_HEALTH.update(ok=True, checked_at=now, detail='HTTP ' + str(r.status_code))
+            return True
+        detail = 'HTTP ' + str(r.status_code)
+    except Exception as exc:
+        detail = f'{type(exc).__name__}: {str(exc)[:180]}'
+        _SPLIT_STATE['peer_status'] = None
+    _SPLIT_STATE['peer_last_error'] = detail
+    with _R1234_HEALTH_LOCK: _R1234_HEALTH.update(ok=False, checked_at=_split_time.time(), detail=detail)
+    return False
+
+
+def _r1234_use_heavy(kind):
+    return bool(_r1234_accel_requested(kind) and _r1234_probe_peer(False))
+
+
+def _r1234_note_fallback(kind, detail=''):
+    try:
+        _SPLIT_STATE['r1234_last_fallback_at'] = _split_time.time()
+        _SPLIT_STATE['r1234_last_fallback_kind'] = str(kind or '')[:40]
+        _SPLIT_STATE['r1234_last_fallback_detail'] = str(detail or _R1234_HEALTH.get('detail') or 'R2 unavailable')[:220]
+        _SPLIT_STATE['r1234_fallback_count'] = int(_SPLIT_STATE.get('r1234_fallback_count') or 0) + 1
+        bot_journal('och1234_r2_fallback_r1', int(OWNER_ID or 0), f'kind={kind}; detail={str(detail or _R1234_HEALTH.get("detail") or "")[:180]}')
+    except Exception:
+        pass
+
+
+# Restore the local Google primitives that earlier split releases intentionally disabled.
+# They are needed for standalone R1 and for R2 failover.  Spreadsheet creation policy
+# remains unchanged; only authentication, tenant credential update and Drive upload are restored.
+try:
+    if callable(globals().get('_R1234_LOCAL_TENANT_GOOGLE_UPLOAD')):
+        tenant_google_upload_export = globals().get('_R1234_LOCAL_TENANT_GOOGLE_UPLOAD')
+    if callable(globals().get('_R1234_LOCAL_TENANT_GOOGLE_SET_CREDENTIALS')):
+        tenant_google_set_credentials = globals().get('_R1234_LOCAL_TENANT_GOOGLE_SET_CREDENTIALS')
+except Exception:
+    pass
+
+
+# [OCH12.35 OWNER] _r1234_google_local_create -> 15_integration_google.py
+_owner_install('google', 'google:0106')
+
+
+# [OCH12.35 OWNER] _r71_google_create -> 15_integration_google.py
+_owner_install('google', 'google:0107')
+
+
+_v262_split_google_sheets_create_category_report = _r71_google_create
+_google_sheets_create_category_report = _r71_google_create
+
+
+def submit_interactive_file_job(chat_id:int, kind:str, label:str, func, *args, **kwargs):
+    group = _r71_job_group(kind, label, args, kwargs)
+    if group in _R1234_ACCEL_KEYS and _r1234_use_heavy(group):
+        try:
+            result = _R1234_FILE_SUBMIT_CHAIN(chat_id, kind, label, func, *args, **kwargs)
+            if not (isinstance(result, tuple) and result and result[0] is False):
+                return result
+            _r1234_note_fallback(group, str(result[1] if len(result) > 1 else 'remote rejected'))
+        except Exception as exc:
+            _r1234_note_fallback(group, f'remote submit: {type(exc).__name__}: {str(exc)[:160]}')
+    elif group in _R1234_ACCEL_KEYS and _r1234_accel_requested(group):
+        _r1234_note_fallback(group, 'preflight unavailable')
+    return _r71_submit_local_file_job(chat_id, kind, label, func, *args, **kwargs)
+
+
+# [OCH12.35 OWNER] _r40_google_query_submit -> 15_integration_google.py
+_owner_install('google', 'google:0108')
+
+
+_R1234_GOOGLE_WAIT_CHAIN = _r40_google_wait
+# [OCH12.35 OWNER] _r40_google_wait -> 15_integration_google.py
+_owner_install('google', 'google:0109')
+
+
+# [OCH12.35 OWNER] _split_tenant_google_test -> 15_integration_google.py
+_owner_install('google', 'google:0110')
+
+
+# [OCH12.35 OWNER] _r7_google_worker_info -> 15_integration_google.py
+_owner_install('google', 'google:0111')
+
+
+# Final process map: only three contours are accelerators; data safety is fixed on R1.
+def _r70_routes_text():
+    h = dict(_SPLIT_STATE.get('worker_health') or {})
+    worker_ok = _r1234_cached_peer_ok()
+    fb = int(_SPLIT_STATE.get('r1234_fallback_count') or 0)
+    def owner_line(key):
+        configured = _r71_route_owner(key)
+        if configured == 'fast': return '<b>R1 FAST</b>'
+        return '<b>R2 HEAVY</b> (авто→R1 при недоступности)'
+    lines = [
+        f'🧭 <b>{BOT_DISPLAY_NAME} · R1 ОСНОВНОЙ / R2 УСКОРИТЕЛЬ</b>', '',
+        'Всегда на R1 FAST:',
+        '🔒 Telegram webhook / ACK / окна / кнопки',
+        '🔒 Финансы + пересылка + задачи + напоминалка + секрет',
+        '🔒 Canonical SQLite / business mutation',
+        '🔒 MEGA durability / recovery / checkpoints', '',
+        'Можно ускорить через R2:',
+        f'📊 Google / таблицы — {owner_line("google")}',
+        f'📦 Файлы / Excel / CSV / JSON / SQLite — {owner_line("files")}',
+        f'🧪 Диагностика / журналы / архивы — {owner_line("diagnostics")}', '',
+        f'R2 health: {"✅ доступен" if worker_ok else "⛔ сейчас недоступен/не выбран"}',
+        f'Авто-fallback на R1: {fb} раз',
+        '',
+        'Если R2 выключен, удалён или перезапускается, основной бот продолжает работу. Для ускоряемой операции R1 делает короткую проверку и при неуспехе выполняет её сам.',
+        'После принятия задания R2 оно не дублируется на R1, чтобы исключить двойную отправку результата.',
+    ]
+    return window_mark('\n'.join(lines), 'Ф4072')
+
+
+def _r70_routes_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(_r71_route_button('google'), _r71_route_button('files'))
+    kb.row(_r71_route_button('diagnostics'))
+    kb.row(IB('🟢 Ускорители → #1', callback_data='r71:all:fast'), IB('🛰 Ускорители → #2', callback_data='r71:all:heavy'))
+    kb.row(IB('🧪 Тест #1 ↔ #2', callback_data='r44:test:open'), IB('🔄 Проверить R2', callback_data='r10:worker:refresh'))
+    kb.row(IB('❌ Закрыть', callback_data='info_close'))
+    return kb
+
+
+# Ensure old callbacks cannot push critical contours to R2 and make first 12.34 boot standalone.
+try:
+    _r1234_routes_migrate_once()
+    _r71_apply_runtime_side_effects()
+    _SPLIT_STATE['r1234_mode'] = 'R1_AUTHORITY_R2_ACCELERATOR_AUTO_FALLBACK'
+    bot_journal('och1234_r1_authority_loaded', int(OWNER_ID or 0), f'routes={_r71_load_routes()}; critical_fast={_R1234_CRITICAL_FAST_KEYS}')
+except Exception as _r1234_exc:
+    try: log_error(f'OCH12.34 init: {_r1234_exc}')
+    except Exception: pass
+# v266

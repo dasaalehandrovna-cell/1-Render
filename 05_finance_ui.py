@@ -1,4 +1,5 @@
-# v262
+# v266
+# OCH12.34: infrastructure/wiring shell; business function bodies live only in 11-14 owner files.
 
 # --- ИСТОЧНИК: 60_finance_currency.py ---
 GOMONKI_INSERT_TOKEN = 'GOMONKI'
@@ -31,8 +32,8 @@ def _gomonk_currency(chat_id: int, currency: str | None=None) -> str:
     except Exception:
         return 'ars'
 
-def _gomonk_is_usd_view(chat_id: int) -> bool:
-    return _gomonk_currency(chat_id) == 'usd'
+# [OCH12.35 OWNER] _gomonk_is_usd_view -> 11_business_finance.py
+_owner_install('finance', 'finance:0108')
 
 def _gomonk_keys(chat_id: int, currency: str | None=None) -> tuple[str, str, str]:
     if _gomonk_currency(chat_id, currency) == 'usd':
@@ -327,20 +328,17 @@ def build_currency_menu_keyboard(chat_id: int):
     kb.row(IB('⏪', callback_data='currency_back'))
     return kb
 
-def usd_display_enabled(chat_id: int) -> bool:
-    """Совместимость со старым v86: True для ARS-USD и USD."""
-    return currency_mode(int(chat_id)) != 'ars'
+# [OCH12.35 OWNER] usd_display_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0109')
 
-def set_usd_display_enabled(chat_id: int, enabled: bool):
-    set_currency_mode(int(chat_id), 'ars_usd' if enabled else 'ars')
+# [OCH12.35 OWNER] set_usd_display_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0110')
 
-def toggle_usd_display(chat_id: int) -> bool:
-    new_mode = 'ars' if currency_mode(int(chat_id)) != 'ars' else 'ars_usd'
-    set_currency_mode(int(chat_id), new_mode)
-    return new_mode != 'ars'
+# [OCH12.35 OWNER] toggle_usd_display -> 11_business_finance.py
+_owner_install('finance', 'finance:0111')
 
-def usd_display_label(chat_id: int) -> str:
-    return currency_mode_label(chat_id)
+# [OCH12.35 OWNER] usd_display_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0112')
 
 def remaining_ost_label_enabled(chat_id: int) -> bool:
     try:
@@ -357,28 +355,11 @@ def toggle_remaining_ost_label(chat_id: int) -> bool:
     schedule_config_backup_for_chats(int(chat_id))
     return new_value
 
-def fmt_usd_compact(amount: float, rate_info: dict | None, signed: bool=True, absolute: bool=False) -> str:
-    """Конвертация ARS→USD для режима ARS-USD."""
-    if not rate_info or not rate_info.get('rate'):
-        return '$—'
-    amount = float(amount or 0)
-    value = int(round(abs(amount) / float(rate_info['rate'])))
-    if absolute or not signed:
-        sign = ''
-    else:
-        sign = '+' if amount >= 0 else '-'
-    return f'{sign}${value:,}'.replace(',', ' ')
+# [OCH12.35 OWNER] fmt_usd_compact -> 11_business_finance.py
+_owner_install('finance', 'finance:0113')
 
-def fmt_usd_native(amount: float, signed: bool=True, absolute: bool=False) -> str:
-    """Формат суммы, которая уже хранится в отдельном USD-контуре."""
-    amount = float(amount or 0)
-    value = abs(amount)
-    if abs(value - round(value)) < 1e-09:
-        body = f'{int(round(value)):,}'.replace(',', ' ')
-    else:
-        body = f'{value:,.2f}'.replace(',', ' ').rstrip('0').rstrip('.')
-    sign = '' if absolute or not signed else '+' if amount >= 0 else '-'
-    return f'{sign}${body}'
+# [OCH12.35 OWNER] fmt_usd_native -> 11_business_finance.py
+_owner_install('finance', 'finance:0114')
 
 def format_chat_amount(chat_id: int, amount: float, mixed_space: bool=False) -> str:
     """Единый формат: ARS, ARS-USD либо нативные суммы отдельного USD-контура."""
@@ -510,36 +491,8 @@ def open_gomonk_window(chat_id: int, message_id: int | None=None, currency: str 
     else:
         send_or_edit_stored_window(chat_id, 'info_msg_id', build_gomonk_menu_text(chat_id, currency), reply_markup=build_gomonk_menu_keyboard(chat_id, currency), delay=None)
 
-def _opening_balance_before_day(store: dict, day_key: str, chat_id: int | None=None) -> float:
-    """Official opening balance before ``day_key``.
-
-    v195 keeps ONE runtime authority with Excel/Google: when the canonical export
-    helper is loaded, the remaining window calls that exact helper too.  The
-    fallback below exists only for bootstrap/isolated tests and sums the stored
-    accounting ledger losslessly; it never re-parses historical source text.
-    """
-    canonical = globals().get('_excel_canonical_opening_balance')
-    if callable(canonical) and chat_id is not None:
-        try:
-            return float(canonical(int(chat_id), 'ars', str(day_key or '')[:10], 0, False))
-        except Exception:
-            pass
-    total = 0.0
-    target = str(day_key or '')[:10]
-    try:
-        rows = sorted(store.get('records', []) or [], key=record_sort_key)
-    except Exception:
-        rows = list(store.get('records', []) or [])
-    for rec in rows:
-        if not isinstance(rec, dict):
-            continue
-        try:
-            if _record_day_key(rec) >= target:
-                break
-            total += float(rec.get('amount', 0) or 0)
-        except Exception:
-            continue
-    return float(total)
+# [OCH12.35 OWNER] _opening_balance_before_day -> 11_business_finance.py
+_owner_install('finance', 'finance:0115')
 
 def _remaining_state(chat_id: int, currency: str | None=None) -> bool:
     settings = _gomonk_settings(int(chat_id), currency)
@@ -722,325 +675,56 @@ def _clean_category_display_name(value: str) -> str:
     s = re.sub('(?i)@[A-Za-z0-9_]{3,}\\s*', '', s)
     return re.sub('\\s+', ' ', s).strip(' :,-')
 
-def usd_rate_cached(force: bool=False) -> dict | None:
-    gs = data.setdefault('_global_settings', {})
-    cache = gs.get('usd_rate_cache') if isinstance(gs.get('usd_rate_cache'), dict) else {}
-    gate = globals().get('external_access_allowed_v233')
-    if callable(gate) and (not gate('currency')):
-        try:
-            logger_fn = globals().get('external_block_log_v233')
-            if callable(logger_fn):
-                logger_fn('currency', 'usd_rate')
-        except Exception:
-            pass
-        return cache if cache.get('rate') else None
-    age = time.time() - float(cache.get('fetched_ts', 0) or 0)
-    if not force and cache.get('rate') and (age < USD_RATE_CACHE_SECONDS):
-        return cache
-    # R24: FAST/UI window construction never waits for Redis or DolarAPI. A stale
-    # local rate is good enough for the first render; refresh happens after it.
-    _r24_thread_name = threading.current_thread().name.casefold()
-    _r24_ui_thread = _r24_thread_name.startswith(('fast-ui', 'ui-', 'start-ui', 'window-render'))
-    if not force and _r24_ui_thread:
-        try:
-            submit_unique = getattr(GENERAL_TASK_POOL, 'submit_unique', None)
-            if callable(submit_unique):
-                submit_unique('r24-usd-rate-refresh', usd_rate_cached, True)
-            else:
-                GENERAL_TASK_POOL.submit('r24-usd-rate-refresh', usd_rate_cached, True)
-        except Exception:
-            pass
-        return cache if cache.get('rate') else None
-    if not force:
-        kv_get = globals().get('kv_get_json_v248')
-        if callable(kv_get):
-            try:
-                shared_cache = kv_get('cache:usd_rate', None)
-                if isinstance(shared_cache, dict) and shared_cache.get('rate'):
-                    shared_age = time.time() - float(shared_cache.get('fetched_ts', 0) or 0)
-                    if shared_age < USD_RATE_CACHE_SECONDS:
-                        gs['usd_rate_cache'] = dict(shared_cache)
-                        return dict(shared_cache)
-            except Exception:
-                pass
-    if threading.current_thread().name.startswith('webhook'):
-        GENERAL_TASK_POOL.submit('usd-rate-refresh', usd_rate_cached, True)
-        return cache if cache.get('rate') else None
-    try:
-        resp = requests.get(USD_RATE_URL, timeout=8)
-        resp.raise_for_status()
-        payload = resp.json()
-        rate = float(payload.get('venta') or payload.get('promedio') or payload.get('compra') or 0)
-        if rate <= 0:
-            raise ValueError('курс venta отсутствует')
-        cache = {'rate': rate, 'source': str(payload.get('nombre') or payload.get('casa') or 'DolarAPI dólar blue'), 'fetched_at': str(payload.get('fechaActualizacion') or now_local().isoformat(timespec='seconds')), 'fetched_ts': time.time(), 'url': USD_RATE_URL}
-        gs['usd_rate_cache'] = cache
-        kv_set = globals().get('kv_set_json_v248')
-        if callable(kv_set):
-            try:
-                kv_set('cache:usd_rate', cache, USD_RATE_CACHE_SECONDS)
-            except Exception:
-                pass
-        save_data(data, root_only=True)
-        bot_journal('usd_rate_updated', None, f"rate={rate} source={cache['source']} shared_kv={bool(callable(kv_set))}")
-        return cache
-    except Exception as e:
-        bot_journal('usd_rate_error', None, str(e), 'WARN')
-        return cache if cache.get('rate') else None
+# [OCH12.35 OWNER] usd_rate_cached -> 11_business_finance.py
+_owner_install('finance', 'finance:0116')
 
-def _usd_rate_refresh_tick():
-    try:
-        gate = globals().get('external_access_allowed_v233')
-        if not (callable(gate) and (not gate('currency'))):
-            usd_rate_cached(force=True)
-    except Exception:
-        pass
-    finally:
-        try:
-            DELAYED_SCHEDULER.schedule('usd-rate-refresh', USD_RATE_CACHE_SECONDS, _usd_rate_refresh_tick)
-        except Exception:
-            pass
+# [OCH12.35 OWNER] _usd_rate_refresh_tick -> 11_business_finance.py
+_owner_install('finance', 'finance:0117')
 
-def _usd_rate_refresh_loop():
-    return _usd_rate_refresh_tick()
+# [OCH12.35 OWNER] _usd_rate_refresh_loop -> 11_business_finance.py
+_owner_install('finance', 'finance:0118')
 
-def fmt_usd_from_ars(amount: float, rate_info: dict | None) -> str:
-    """Совместимый короткий USD-формат для старых окон."""
-    return fmt_usd_compact(amount, rate_info, signed=False, absolute=True)
+# [OCH12.35 OWNER] fmt_usd_from_ars -> 11_business_finance.py
+_owner_install('finance', 'finance:0119')
 
-def usd_transactions_view_enabled(chat_id: int) -> bool:
-    try:
-        return bool(get_chat_store(int(chat_id)).setdefault('settings', {}).get('usd_transactions_view', False))
-    except Exception:
-        return False
+# [OCH12.35 OWNER] usd_transactions_view_enabled -> 11_business_finance.py
+_owner_install('finance', 'finance:0120')
 
-def set_usd_transactions_view(chat_id: int, enabled: bool):
-    store = get_chat_store(int(chat_id))
-    store.setdefault('settings', {})['usd_transactions_view'] = bool(enabled)
-    save_data(data, chat_ids=[int(chat_id)])
-    schedule_config_backup_for_chats(int(chat_id))
+# [OCH12.35 OWNER] set_usd_transactions_view -> 11_business_finance.py
+_owner_install('finance', 'finance:0121')
 
-def toggle_usd_transactions_view(chat_id: int) -> bool:
-    new_value = not usd_transactions_view_enabled(int(chat_id))
-    set_usd_transactions_view(int(chat_id), new_value)
-    return new_value
+# [OCH12.35 OWNER] toggle_usd_transactions_view -> 11_business_finance.py
+_owner_install('finance', 'finance:0122')
 
-def usd_transactions_toggle_label(chat_id: int) -> str:
-    return '🇦🇷 ARS операции' if usd_transactions_view_enabled(int(chat_id)) else '💵 USD операции'
+# [OCH12.35 OWNER] usd_transactions_toggle_label -> 11_business_finance.py
+_owner_install('finance', 'finance:0123')
 
 
-def ensure_usd_migration_for_chat(chat_id: int) -> int:
-    """OCH12.31 safe legacy USD enrichment.
-
-    Historical ARS rows are immutable business facts.  The old v93 heuristic could
-    reconstruct a synthetic string from ``record.amount`` merely because the note
-    contained ``usd`` and then overwrite amount/note, recalculate the balance and
-    renumber R-ids.  That turned legitimate ARS income into USD-only rows.
-
-    12.31 only enriches USD metadata when the *original* source_finance_text already
-    contains an explicit numeric USD token and parsing it preserves the stored ARS
-    amount.  Existing amount, note, id/short-id and balance are never modified here.
-    """
-    cid = int(chat_id)
-    changed = 0
-    skipped_unsafe = 0
-    with locked_chat(cid):
-        store = get_chat_store(cid)
-        settings = store.setdefault('settings', {})
-        if settings.get('usd_transactions_migrated_v1231'):
-            return 0
-        for rec in store.get('records', []) or []:
-            if not isinstance(rec, dict) or rec.get('usd_amount') is not None:
-                continue
-            source = str(rec.get('source_finance_text') or '').strip()
-            if not source:
-                continue
-            # Never infer USD from a free-form note such as "приход от обмена usd".
-            # A number must be physically attached to USD/УСД/$ in the preserved
-            # original source text.  This deliberately prefers missing old USD
-            # metadata over corrupting an already-accounted ARS transaction.
-            if not (USD_EXPLICIT_AFTER_RE.search(source) or USD_EXPLICIT_PREFIX_RE.search(source)):
-                continue
-            try:
-                comp = parse_financial_components(source) or {}
-                parsed_usd = comp.get('usd_amount')
-                if parsed_usd is None:
-                    continue
-                old_amount = float(rec.get('amount', 0) or 0)
-                parsed_ars = float(comp.get('amount', 0) or 0)
-                parsed_usd_only = bool(comp.get('usd_only', False))
-            except Exception:
-                continue
-            # Safe cases only: either the parser reproduces the exact ARS amount, or
-            # the stored row is already zero-ARS and the source is genuinely USD-only.
-            same_ars = abs(parsed_ars - old_amount) <= 0.01
-            safe_usd_only = parsed_usd_only and abs(old_amount) <= 0.01
-            if not (same_ars or safe_usd_only):
-                skipped_unsafe += 1
-                continue
-            rec['usd_amount'] = float(parsed_usd or 0)
-            rec['usd_note'] = str(comp.get('usd_note') or '')
-            rec['usd_only'] = bool(parsed_usd_only and abs(old_amount) <= 0.01)
-            changed += 1
-        # Preserve the old flag for compatibility, but use a new marker so databases
-        # restored from pre-v93 snapshots execute this safe migration exactly once.
-        settings['usd_transactions_migrated_v93'] = True
-        settings['usd_transactions_migrated_v1231'] = True
-    # Persistence is intentionally outside the chat lock.  No balance/ID rebuild is
-    # needed because ARS business fields are untouched.
-    save_data(data, chat_ids=[cid])
-    try:
-        bot_journal('usd_v1231_safe_migration', cid, f'enriched={changed}; skipped_unsafe={skipped_unsafe}; ars_immutable=1')
-    except Exception:
-        pass
-    return changed
+# [OCH12.35 OWNER] ensure_usd_migration_for_chat -> 11_business_finance.py
+_owner_install('finance', 'finance:0124')
 
 
-def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
-    ensure_usd_migration_for_chat(int(chat_id))
-    store = get_chat_store(int(chat_id))
-    records = list(store.get('records', []) or [])
-    key = ('usd_month', int(chat_id), str(month_key)[:7], len(records), int(store.get('next_id', 0) or 0))
+# [OCH12.35 OWNER] usd_records_for_month -> 11_business_finance.py
+_owner_install('finance', 'finance:0125')
 
-    def _build():
-        rows = []
-        for rec in records:
-            try:
-                if not _record_day_key(rec).startswith(str(month_key)[:7]):
-                    continue
-                usd_amount = float(rec.get('usd_amount', 0) or 0)
-                if not usd_amount:
-                    continue
-                rows.append(rec)
-            except Exception:
-                continue
-        return sorted(rows, key=record_sort_key)
-    return finance_cache_get(key, _build, ttl=30.0) if 'finance_cache_get' in globals() else _build()
+# [OCH12.35 OWNER] usd_balance_for_chat -> 11_business_finance.py
+_owner_install('finance', 'finance:0126')
 
-def usd_balance_for_chat(chat_id: int) -> float:
-    ensure_usd_migration_for_chat(int(chat_id))
-    store = get_chat_store(int(chat_id))
-    if '_usd_balance_cache_r16' in store:
-        try: return float(store.get('_usd_balance_cache_r16', 0) or 0)
-        except Exception: store.pop('_usd_balance_cache_r16', None)
-    total = 0.0
-    for rec in store.get('records', []) or []:
-        try: total += float(rec.get('usd_amount', 0) or 0)
-        except Exception: pass
-    store['_usd_balance_cache_r16'] = float(total)
-    return float(total)
+# [OCH12.35 OWNER] usd_records_for_day -> 11_business_finance.py
+_owner_install('finance', 'finance:0127')
 
-def usd_records_for_day(chat_id: int, day_key: str) -> list[dict]:
-    ensure_usd_migration_for_chat(int(chat_id))
-    store = get_chat_store(int(chat_id))
-    records = list(store.get('records', []) or [])
-    key = ('usd_day', int(chat_id), str(day_key), len(records), int(store.get('next_id', 0) or 0))
+# [OCH12.35 OWNER] render_usd_day_window -> 11_business_finance.py
+_owner_install('finance', 'finance:0128')
 
-    def _build():
-        return [r for r in financial_view_records_for_day_store(store, str(day_key)) if abs(float(r.get('usd_amount', 0) or 0)) > 0]
-    return finance_cache_get(key, _build, ttl=20.0) if 'finance_cache_get' in globals() else _build()
-
-def render_usd_day_window(chat_id: int, day_key: str):
-    """Daily USD shell: same navigation/sections as ARS, but every value comes from usd_amount/usd_note."""
-    ensure_usd_migration_for_chat(int(chat_id))
-    store = get_chat_store(int(chat_id))
-    recs = usd_records_for_day(int(chat_id), day_key)
-    d = datetime.strptime(day_key, '%Y-%m-%d')
-    wd = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'][d.weekday()]
-    t = now_local()
-    td = t.strftime('%Y-%m-%d')
-    yd = (t - timedelta(days=1)).strftime('%Y-%m-%d')
-    tm = (t + timedelta(days=1)).strftime('%Y-%m-%d')
-    tag = 'сегодня' if day_key == td else 'вчера' if day_key == yd else 'завтра' if day_key == tm else ''
-    dk = fmt_date_ddmmyy(day_key)
-    label = f'{dk} ({tag}, {wd})' if tag else f'{dk} ({wd})'
-    header = ['💵 USD операции', f'📅 {label}', '']
-    total_income = 0.0
-    total_expense = 0.0
-    record_lines = []
-    for rec in recs:
-        amt = float(rec.get('usd_amount', 0) or 0)
-        if amt >= 0:
-            total_income += amt
-        else:
-            total_expense += -amt
-        sid = str(rec.get('usd_short_id') or f"U{rec.get('id', '')}")
-        note = html.escape(str(rec.get('usd_note') or rec.get('note') or ''))
-        sign = '+' if amt >= 0 else '-'
-        record_lines.append(f'{sid} {sign}${fmt_num_plain(abs(amt))} {note}'.rstrip())
-    day_balance = financial_view_balance_through_day(store, day_key)
-    total_balance = financial_view_total_balance(store)
-    footer = ['']
-    if recs:
-        footer.append(f'📉 Расход за день: -${fmt_num_plain(total_expense)}')
-        footer.append(f'📈 Приход за день: +${fmt_num_plain(total_income)}')
-    footer.append(f"📆 Остаток на конец дня: {('+' if day_balance >= 0 else '-')}${fmt_num_plain(abs(day_balance))}")
-    footer.append(f"🏦 Остаток по чату: {('+' if total_balance >= 0 else '-')}${fmt_num_plain(abs(total_balance))}")
-    footer.extend(gomonk_summary_lines(chat_id, 'usd'))
-    total = total_income - total_expense
-    if not record_lines:
-        return (wm_common('\n'.join(header + ['Нет USD-записей за этот день.'] + footer), 1, html_mode=True), total)
-    if effective_main_financial_value_buttons_enabled(int(chat_id)):
-        hint = [f'💳 USD-записей за день: {len(recs)}', 'Нажмите сумму-кнопку ниже, чтобы изменить запись.']
-        return (wm_common('\n'.join(header + hint + footer), 1, html_mode=True), total)
-    hidden = 0
-    visible = list(record_lines)
-    if len(visible) > DAY_WINDOW_MAX_RECORDS:
-        hidden = len(visible) - DAY_WINDOW_MAX_RECORDS
-        visible = visible[-DAY_WINDOW_MAX_RECORDS:]
-    while True:
-        prefix = [f'… скрыто ранних записей: {hidden}', ''] if hidden > 0 else []
-        text = '\n'.join(header + prefix + visible + footer)
-        if len(text) <= DAY_WINDOW_MAX_CHARS or len(visible) <= 5:
-            return (wm_common(text[:DAY_WINDOW_MAX_CHARS], 1, html_mode=True), total)
-        hidden += 1
-        visible = visible[1:]
-
-def _v177_legacy_0163_render_usd_month_window(chat_id: int, day_key: str):
-    month_key = str(day_key or today_key())[:7]
-    try:
-        month_dt = datetime.strptime(month_key + '-01', '%Y-%m-%d')
-        month_label = month_dt.strftime('%m.%Y')
-    except Exception:
-        month_label = month_key
-    rows = usd_records_for_month(int(chat_id), month_key)
-    income = sum((float(r.get('usd_amount', 0) or 0) for r in rows if float(r.get('usd_amount', 0) or 0) > 0))
-    expense = sum((abs(float(r.get('usd_amount', 0) or 0)) for r in rows if float(r.get('usd_amount', 0) or 0) < 0))
-    lines = [f'💵 USD операции за {month_label}', '']
-    if rows:
-        for rec in rows:
-            amt = float(rec.get('usd_amount', 0) or 0)
-            sid = str(rec.get('usd_short_id') or rec.get('short_id') or f"U{rec.get('id', '')}")
-            dk = fmt_date_ddmmyy(_record_day_key(rec))
-            note = html.escape(str(rec.get('usd_note') or rec.get('note') or ''))
-            sign = '+' if amt >= 0 else '-'
-            val = fmt_num_plain(abs(amt))
-            lines.append(f'{sid} {dk} {sign}${val} {note}'.rstrip())
-    else:
-        lines.append('Нет USD-транзакций за этот месяц.')
-    lines.extend(['', f'📉 Расход за месяц: -${fmt_num_plain(expense)}', f'📈 Приход за месяц: +${fmt_num_plain(income)}', f"💵 Итог месяца: {('+' if income - expense >= 0 else '-')}${fmt_num_plain(abs(income - expense))}", f"🏦 USD остаток по чату: {('+' if usd_balance_for_chat(chat_id) >= 0 else '-')}${fmt_num_plain(abs(usd_balance_for_chat(chat_id)))}"])
-    return (wm_common('\n'.join(lines), 1, html_mode=True), income - expense)
+# [OCH12.35 OWNER] _v177_legacy_0163_render_usd_month_window -> 11_business_finance.py
+_owner_install('finance', 'finance:0129')
 try:
     _v177_legacy_0163_render_usd_month_window.__name__ = 'render_usd_month_window'
 except Exception:
     pass
 
-def _v177_legacy_0164_build_usd_month_keyboard(day_key: str):
-    try:
-        dt = datetime.strptime(str(day_key)[:10], '%Y-%m-%d').replace(day=1)
-    except Exception:
-        dt = now_local().replace(day=1)
-    prev_dt = (dt - timedelta(days=1)).replace(day=1)
-    next_dt = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
-    current_month = now_local().strftime('%Y-%m')
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    nav = [IB('⬅️ Пред. месяц', callback_data=f"d:{prev_dt.strftime('%Y-%m-01')}:usd_month")]
-    if dt.strftime('%Y-%m') != current_month:
-        nav.append(IB('📅 Этот месяц', callback_data=f'd:{today_key()}:usd_month'))
-    nav.append(IB('След. месяц ➡️', callback_data=f"d:{next_dt.strftime('%Y-%m-01')}:usd_month"))
-    kb.row(*nav)
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{str(day_key)[:10]}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0164_build_usd_month_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0130')
 try:
     _v177_legacy_0164_build_usd_month_keyboard.__name__ = 'build_usd_month_keyboard'
 except Exception:
@@ -1473,54 +1157,18 @@ def _export_end_record_keyboard(chat_id: int, start_key: str, start_rid: int, en
 def _export_style_caption(style: str) -> str:
     return {'old': 'Старая таблица', 'new_comments': 'Новая • комментарии', 'new_notes': 'Новая • примечания', 'google_notes': 'Google Sheets • примечания'}.get(str(style), str(style))
 
-def _excel_checkbox(mark: bool, label: str) -> str:
-    return f"{('✅' if mark else '⬜')} {label}"
+# [OCH12.35 OWNER] _excel_checkbox -> 16_integration_excel.py
+_owner_install('excel', 'excel:0047')
 
-def _v177_legacy_0172_period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, file_type: str, day_key: str, owner_day_key: str):
-    if excel_interface_mode(target_chat_id) == 'new':
-        opts = excel_new_export_options()
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        for option, label in (('old_table', 'Старая таблица'), ('comments', 'С комментариями'), ('notes', 'С примечаниями'), ('description_column', 'Описание в столбце')):
-            kb.row(IB(_excel_checkbox(bool(opts.get(option)), label), callback_data=export_callback(f'exp_new_period_toggle:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{option}:{day_key}:{owner_day_key}')))
-        kb.row(IB(' ', callback_data='none'))
-        kb.row(IB('📥 Скачать в чат', callback_data=export_callback(f'exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:chat:{day_key}:{owner_day_key}')))
-        kb.row(IB('☁️ Залить в Google Sheets', callback_data=export_callback(f'exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:google:{day_key}:{owner_day_key}')))
-        kb.row(IB('📁 Залить файл в Google Drive', callback_data=export_callback(f'exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:drive:{day_key}:{owner_day_key}')))
-    else:
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        for style, label in (('old', '📥 Скачать: старая таблица'), ('new_comments', '📥 Скачать: новая с комментариями'), ('new_notes', '📥 Скачать: новая с примечаниями'), ('google_notes', '☁️ Залить в Google Sheets с примечаниями')):
-            kb.row(IB(label, callback_data=export_callback(f'exp_send_period_style:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{style}:{day_key}:{owner_day_key}')))
-        kb.row(IB('📁 Залить Excel в Google Drive', callback_data=export_callback(f'exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:drive:{day_key}:{owner_day_key}')))
-    if scope == 'fv':
-        back_cb = f'fv:{int(target_chat_id)}:{day_key}:csv_menu:{owner_day_key}'
-    else:
-        back_cb = f'd:{day_key}:csv_all'
-    kb.row(IB('🔙 Назад в CSV / Excel', callback_data=back_cb))
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{owner_day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0172_period_excel_style_keyboard -> 16_integration_excel.py
+_owner_install('excel', 'excel:0048')
 try:
     _v177_legacy_0172_period_excel_style_keyboard.__name__ = '_period_excel_style_keyboard'
 except Exception:
     pass
 
-def _exact_excel_style_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, return_day_key: str):
-    if excel_interface_mode(OWNER_ID or 0) == 'new':
-        opts = excel_new_export_options()
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        for option, label in (('old_table', 'Старая таблица'), ('comments', 'С комментариями'), ('notes', 'С примечаниями'), ('description_column', 'Описание в столбце')):
-            kb.row(IB(_excel_checkbox(bool(opts.get(option)), label), callback_data=export_callback(f'exp_new_exact_toggle:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{option}:{return_day_key}')))
-        kb.row(IB(' ', callback_data='none'))
-        kb.row(IB('📥 Скачать в чат', callback_data=export_callback(f'exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:chat:{return_day_key}')))
-        kb.row(IB('☁️ Залить в Google Sheets', callback_data=export_callback(f'exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:google:{return_day_key}')))
-        kb.row(IB('📁 Залить файл в Google Drive', callback_data=export_callback(f'exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:drive:{return_day_key}')))
-    else:
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        for style, label in (('old', '📥 Скачать: старая таблица'), ('new_comments', '📥 Скачать: новая с комментариями'), ('new_notes', '📥 Скачать: новая с примечаниями'), ('google_notes', '☁️ Залить в Google Sheets с примечаниями')):
-            kb.row(IB(label, callback_data=export_callback(f'exp_send_exact_style:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{style}:{return_day_key}')))
-        kb.row(IB('📁 Залить Excel в Google Drive', callback_data=export_callback(f'exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:drive:{return_day_key}')))
-    kb.row(IB('🔙 Назад к форматам', callback_data=export_callback(f'exp_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{return_day_key}')))
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{return_day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _exact_excel_style_keyboard -> 16_integration_excel.py
+_owner_install('excel', 'excel:0049')
 
 def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, return_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -1544,70 +1192,8 @@ try:
 except Exception:
     pass
 
-def _v177_legacy_0174_build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    """Excel stat with formulas, opening balance and real closing balance."""
-    store = get_chat_store(target_chat_id)
-    records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
-    cats_map = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
-    categories = get_ordered_category_names(cats=cats_map, store=store)
-    clean_categories = [_clean_category_display_name(x) for x in categories]
-    headers = ['Дата', 'Описание', 'Приход'] + clean_categories
-    opening = _opening_balance_before_exact(store, start_key, start_rid)
-    rows = [headers, ['', 'Остаток с прошлого раза', opening] + [''] * len(categories), []]
-    data_start_row = 4
-    income_total = 0.0
-    expense_total = 0.0
-    cat_totals = {cat: 0.0 for cat in categories}
-    prev_day = None
-    for day_key, rec in records:
-        try:
-            amount = financial_view_amount(store, rec)
-        except Exception:
-            amount = 0.0
-        if prev_day is not None and day_key != prev_day:
-            rows.append([])
-        prev_day = day_key
-        row = [fmt_date_table(day_key), financial_view_note(store, rec), ''] + [''] * len(categories)
-        if amount >= 0:
-            income_total += amount
-            row[2] = int(round(amount)) if float(amount).is_integer() else amount
-        else:
-            value = abs(amount)
-            expense_total += value
-            category = resolve_expense_category(financial_view_note(store, rec), store)
-            try:
-                override_slug = str((rec or {}).get('category_override_slug') or '').strip()
-                if override_slug:
-                    category = get_category_by_slug(override_slug, store) or category
-            except Exception:
-                pass
-            if category in cat_totals:
-                cat_totals[category] += value
-                idx = categories.index(category)
-                row[3 + idx] = int(round(value)) if float(value).is_integer() else value
-        rows.append(row)
-    data_last_row = max(data_start_row, len(rows))
-    rows.append([])
-    sum_row_num = len(rows) + 1
-    sum_row = ['', 'Сумма по статьям', {'formula': f'SUM(C{data_start_row}:C{data_last_row})', 'value': income_total}]
-    for idx, cat in enumerate(categories, start=4):
-        col = _xlsx_col_name(idx)
-        sum_row.append({'formula': f'SUM({col}{data_start_row}:{col}{data_last_row})', 'value': cat_totals.get(cat, 0.0)})
-    rows.append(sum_row)
-    rows.append([])
-    expense_row_num = len(rows) + 1
-    if categories:
-        first_cat = _xlsx_col_name(4)
-        last_cat = _xlsx_col_name(3 + len(categories))
-        expense_formula = f'SUM({first_cat}{sum_row_num}:{last_cat}{sum_row_num})'
-    else:
-        expense_formula = '0'
-    rows.append(['', 'Расход', {'formula': expense_formula, 'value': expense_total}] + [''] * len(categories))
-    income_row_num = len(rows) + 1
-    rows.append(['', 'Приход', {'formula': f'C{sum_row_num}', 'value': income_total}] + [''] * len(categories))
-    closing = opening + income_total - expense_total
-    rows.append(['', 'Остаток на руках', {'formula': f'C2+C{income_row_num}-C{expense_row_num}', 'value': closing}] + [''] * len(categories))
-    return rows
+# [OCH12.35 OWNER] _v177_legacy_0174_build_exact_category_stats_xlsx_rows -> 16_integration_excel.py
+_owner_install('excel', 'excel:0050')
 try:
     _v177_legacy_0174_build_exact_category_stats_xlsx_rows.__name__ = 'build_exact_category_stats_xlsx_rows'
 except Exception:
@@ -1878,10 +1464,8 @@ def compose_direct_edit_insert_value(target_chat_id: int, rid: int, day_key: str
     meta = f'{DIRECT_EDIT_TOKEN}|{int(target_chat_id)}|{int(rid)}|{str(day_key)[:10]}|'
     return f'({meta} служебное — можно не трогать)\n\n{value}'
 
-def compose_usd_edit_insert_value(target_chat_id: int, rid: int, day_key: str, amount, note: str='') -> str:
-    value = compose_edit_input_value(amount, note)
-    meta = f'{USD_DIRECT_EDIT_TOKEN}|{int(target_chat_id)}|{int(rid)}|{str(day_key)[:10]}|'
-    return f'({meta} служебное — можно не трогать)\n\n{value}'
+# [OCH12.35 OWNER] compose_usd_edit_insert_value -> 11_business_finance.py
+_owner_install('finance', 'finance:0131')
 
 def make_direct_edit_insert_button(label: str, insert_text: str, viewer_chat_id: int | None=None):
     """Direct edit insert with a safe channel fallback instead of Telegram HTTP 400."""
@@ -2036,36 +1620,11 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
     return sent.message_id
 
 # --- ИСТОЧНИК: 61_forwarding_ui.py ---
-def build_forward_root_menu(day_key: str):
-    """Корневое меню пересылки: старый режим или новый визуальный режим пары A/B."""
-    if forward_menu_new_style_enabled():
-        return build_forward_new_menu(day_key)
-    return build_forward_source_menu(day_key)
+# [OCH12.35 OWNER] build_forward_root_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0118')
 
-def _v177_legacy_0180_collect_forward_picker_items(include_owner: bool=True, include_removed: bool=False):
-    known = collect_forward_menu_chats()
-    items = []
-    owner_item = None
-    for cid, ch in sorted(known.items(), key=lambda x: (x[1].get('title') or '').lower()):
-        try:
-            int_cid = int(cid)
-        except Exception:
-            continue
-        title = ch.get('title') or f'Чат {cid}'
-        if OWNER_ID and str(int_cid) == str(OWNER_ID):
-            owner_item = (int_cid, title)
-        else:
-            if not include_removed and is_chat_bot_removed(int_cid):
-                continue
-            items.append((int_cid, title))
-    if include_owner and OWNER_ID:
-        try:
-            owner_id = int(OWNER_ID)
-            if owner_item is None:
-                owner_item = (owner_id, get_chat_display_name(owner_id))
-        except Exception:
-            owner_item = None
-    return (items, owner_item)
+# [OCH12.35 OWNER] _v177_legacy_0180_collect_forward_picker_items -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0119')
 try:
     _v177_legacy_0180_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
 except Exception:
@@ -2244,508 +1803,128 @@ def build_chat_description_detail_keyboard(viewer_chat_id: int, origin: str, day
     kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{day_key}:back_main'))
     return kb
 
-def _v177_legacy_0185_build_forward_source_menu(day_key: str | None=None):
-    if forward_menu_new_style_enabled():
-        return build_forward_new_menu(day_key)
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    if not OWNER_ID:
-        return kb
-    items, owner_item = _collect_forward_picker_items(include_owner=True)
-    buttons = [IB(chat_button_title(cid, title), callback_data=f'fw_src:{cid}') for cid, title in items]
-    add_buttons_in_rows(kb, buttons, 2)
-    if owner_item:
-        kb.row(IB(chat_button_title(owner_item[0], owner_item[1]), callback_data=f'fw_src:{owner_item[0]}'))
-    kb.row(IB('ℹ️ Описание чатов', callback_data='chat_desc_menu:forward'))
-    kb.row(IB('📡 Проверить чаты', callback_data='fw_probe_all'), IB('🗑 Удалённые', callback_data='fw_removed_list'))
-    if day_key:
-        kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    else:
-        kb.row(IB('🔙 Назад', callback_data='fw_back_root'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0185_build_forward_source_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0120')
 try:
     _v177_legacy_0185_build_forward_source_menu.__name__ = 'build_forward_source_menu'
 except Exception:
     pass
 
-def _v177_legacy_0186_build_forward_target_menu(src_id: int):
-    kb = types.InlineKeyboardMarkup()
-    if not OWNER_ID:
-        return kb
-    items, owner_item = _collect_forward_picker_items(include_owner=True)
-    buttons = []
-    for int_cid, title in items:
-        if int_cid == src_id:
-            continue
-        buttons.append(IB(chat_button_title(int_cid, title), callback_data=f'fw_tgt:{src_id}:{int_cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    if owner_item and owner_item[0] != src_id:
-        kb.row(IB(chat_button_title(owner_item[0], owner_item[1]), callback_data=f'fw_tgt:{src_id}:{owner_item[0]}'))
-    kb.row(IB('🔙 Назад', callback_data='fw_back_src'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0186_build_forward_target_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0121')
 try:
     _v177_legacy_0186_build_forward_target_menu.__name__ = 'build_forward_target_menu'
 except Exception:
     pass
 
-def _forward_pair_key(A: int, B: int) -> str:
-    return f'{int(A)}:{int(B)}'
+# [OCH12.35 OWNER] _forward_pair_key -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0122')
 
-def _forward_pair_undirected_key(A: int, B: int) -> tuple[int, int]:
-    A = int(A)
-    B = int(B)
-    return (A, B) if A <= B else (B, A)
+# [OCH12.35 OWNER] _forward_pair_undirected_key -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0123')
 
-def _v177_legacy_0187_remember_forward_pair(A: int, B: int):
-    """Сохраняет порядок создания пар для нового В22. Старую логику пересылки не трогает."""
-    try:
-        A, B = (int(A), int(B))
-        if A == B:
-            return
-        key = _forward_pair_key(A, B)
-        rev = _forward_pair_key(B, A)
-        order = data.setdefault('forward_pair_order', [])
-        if not isinstance(order, list):
-            order = []
-            data['forward_pair_order'] = order
-        if key not in order and rev not in order:
-            order.append(key)
-            save_data(data)
-    except Exception as e:
-        log_error(f'_remember_forward_pair({A},{B}): {e}')
+# [OCH12.35 OWNER] _v177_legacy_0187_remember_forward_pair -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0124')
 try:
     _v177_legacy_0187_remember_forward_pair.__name__ = '_remember_forward_pair'
 except Exception:
     pass
 
-def _v177_legacy_0188_forget_forward_pair_if_empty(A: int, B: int):
-    """Убирает пару из порядка, только если уже нет ни пересылки, ни 💰 финучёта в обе стороны."""
-    try:
-        A, B = (int(A), int(B))
-        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
-        if ab_on or ba_on or ab_fin or ba_fin:
-            return
-        key = _forward_pair_key(A, B)
-        rev = _forward_pair_key(B, A)
-        order = data.setdefault('forward_pair_order', [])
-        if isinstance(order, list) and (key in order or rev in order):
-            data['forward_pair_order'] = [x for x in order if x not in {key, rev}]
-            save_data(data)
-    except Exception as e:
-        log_error(f'_forget_forward_pair_if_empty({A},{B}): {e}')
+# [OCH12.35 OWNER] _v177_legacy_0188_forget_forward_pair_if_empty -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0125')
 try:
     _v177_legacy_0188_forget_forward_pair_if_empty.__name__ = '_forget_forward_pair_if_empty'
 except Exception:
     pass
 
-def _forward_pair_sort_key(pair):
-    try:
-        order = data.get('forward_pair_order', []) or []
-        key = _forward_pair_key(pair[0], pair[1])
-        rev = _forward_pair_key(pair[1], pair[0])
-        if key in order:
-            return (0, order.index(key))
-        if rev in order:
-            return (0, order.index(rev))
-        a, b = pair
-        return (1, get_chat_display_name(int(a)).lower(), get_chat_display_name(int(b)).lower(), int(a), int(b))
-    except Exception:
-        return (9, str(pair))
+# [OCH12.35 OWNER] _forward_pair_sort_key -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0126')
 
-def _sorted_forward_pair(a: int, b: int):
-    """Старый helper оставлен для совместимости. Новый В22 порядок выбора не сортирует."""
-    a = int(a)
-    b = int(b)
-    ka = (get_chat_display_name(a).lower(), a)
-    kb = (get_chat_display_name(b).lower(), b)
-    return (a, b) if ka <= kb else (b, a)
+# [OCH12.35 OWNER] _sorted_forward_pair -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0127')
 
-def _v177_legacy_0189_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
-    """Все пары, где есть пересылка или 💰 финучёт пересылки. Порядок пары берём из создания/первого обнаружения."""
-    relation_pairs = []
-    seen = set()
-    fr = data.get('forward_rules', {}) or {}
-    ff = data.get('forward_finance', {}) or {}
-
-    def _add_pair(a, b):
-        try:
-            a = int(a)
-            b = int(b)
-        except Exception:
-            return
-        if a == b:
-            return
-        uk = _forward_pair_undirected_key(a, b)
-        if uk in seen:
-            return
-        seen.add(uk)
-        relation_pairs.append((a, b))
-    order = data.get('forward_pair_order', []) or []
-    if isinstance(order, list):
-        for key in order:
-            try:
-                a_s, b_s = str(key).split(':', 1)
-                a, b = (int(a_s), int(b_s))
-            except Exception:
-                continue
-            arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(a, b)
-            if ab_on or ba_on or ab_fin or ba_fin:
-                _add_pair(a, b)
-    for src, dsts in fr.items():
-        for dst in (dsts or {}).keys():
-            _add_pair(src, dst)
-    for src, dsts in ff.items():
-        for dst, enabled in (dsts or {}).items():
-            if enabled:
-                _add_pair(src, dst)
-    try:
-        order = data.setdefault('forward_pair_order', [])
-        if not isinstance(order, list):
-            order = []
-            data['forward_pair_order'] = order
-        changed = False
-        for A, B in relation_pairs:
-            key = _forward_pair_key(A, B)
-            rev = _forward_pair_key(B, A)
-            if key not in order and rev not in order:
-                order.append(key)
-                changed = True
-        if changed:
-            save_data(data)
-    except Exception:
-        pass
-    return sorted(relation_pairs, key=_forward_pair_sort_key)
+# [OCH12.35 OWNER] _v177_legacy_0189_collect_forward_pairs_for_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0128')
 try:
     _v177_legacy_0189_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
 except Exception:
     pass
 
-def _forward_pair_icons(A: int, B: int):
-    fr = data.get('forward_rules', {}) or {}
-    ff = data.get('forward_finance', {}) or {}
-    ab_on = str(B) in (fr.get(str(A), {}) or {})
-    ba_on = str(A) in (fr.get(str(B), {}) or {})
-    ab_fin = bool((ff.get(str(A), {}) or {}).get(str(B), False))
-    ba_fin = bool((ff.get(str(B), {}) or {}).get(str(A), False))
-    return (_forward_arrow_icon(ab_on, ba_on), _forward_fin_icon(ab_fin, ba_fin), ab_on, ba_on, ab_fin, ba_fin)
+# [OCH12.35 OWNER] _forward_pair_icons -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0129')
 
-def _forward_new_pair_buttons(A: int, B: int):
-    """Две кнопки пары сверху в новом В22.
+# [OCH12.35 OWNER] _forward_new_pair_buttons -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0130')
 
-    По уточнённому ТЗ:
-    • кнопка Чата A сверху остаётся выбором этого чата как нового Чата A;
-    • кнопка Чата B сверху открывает настройки именно этой пары и помечается 🛠️ перед именем;
-    • ниже разделителя Чаты A из готовых пар не дублируются, чтобы список не захламлялся.
-    """
-    arrow, fin, *_ = _forward_pair_icons(A, B)
-    return (IB(f'{chat_button_title(A)} ({arrow})', callback_data=f'fw_new_src:{A}'), IB(f'({fin}) 🛠️ {chat_button_title(B)}', callback_data=f'fw_new_pair:{A}:{B}'))
+# [OCH12.35 OWNER] _forward_new_toggle_label -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0131')
 
-def _forward_new_toggle_label(enabled: bool, icon: str) -> str:
-    return ('✅' if enabled else '⬜') + icon
+# [OCH12.35 OWNER] _visible_forward_items_for_new_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0132')
 
-def _visible_forward_items_for_new_menu(include_owner: bool=True):
-    items, owner_item = _collect_forward_picker_items(include_owner=include_owner)
-    all_items = list(items)
-    if owner_item:
-        all_items.append(owner_item)
-    visible = []
-    for cid, title in all_items:
-        try:
-            if is_chat_bot_removed(int(cid)):
-                continue
-        except Exception:
-            pass
-        visible.append((int(cid), title))
-    return visible
+# [OCH12.35 OWNER] build_forward_new_text -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0133')
 
-def build_forward_new_text(A: int | None=None, B: int | None=None) -> str:
-    """В22 новый режим: пары сверху, выбор A/B и настройка шести кнопок."""
-    lines = ['🔁 Пересылка / В22', 'Режим: по-новому', '']
-    if A and B:
-        arrow, fin, *_ = _forward_pair_icons(A, B)
-        lines.append(f'Чат А: {get_chat_display_name(A)} ({arrow})')
-        lines.append(f'Чат Б: ({fin}) {get_chat_display_name(B)}')
-        lines.append('Ниже выбери направление пересылки и 💰 финучёт.')
-    elif A:
-        lines.append(f'Чат А выбран: {get_chat_display_name(A)}')
-        lines.append('Теперь выбери Чат Б. Остальные чаты остаются ниже по 2 кнопки в ряд.')
-    else:
-        lines.append('Сверху пары со связями. Ниже — все доступные чаты. Любой чат можно снова выбрать как Чат А.')
-    return '\n'.join(lines)
-
-def _v177_legacy_0193_build_forward_new_menu(day_key: str | None=None, A: int | None=None, B: int | None=None):
-    """
-    Новый В22 по уточнённому ТЗ:
-    • старт: пары сверху по 2 кнопки (A слева, B справа), потом пустой разделитель, потом свободные чаты по 2 кнопки;
-    • выбран A: кнопка Чат А сверху, остальные чаты остаются ниже по 2 кнопки;
-    • выбран B: сверху Чат А / Чат Б, ниже 6 кнопок режимов, ниже кнопка возврата к выбору чатов.
-    """
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    if not OWNER_ID:
-        return kb
-    visible_items = _visible_forward_items_for_new_menu(include_owner=True)
-    pair_rows = collect_forward_pairs_for_menu()
-    if A and B:
-        A, B = (int(A), int(B))
-        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
-        kb.row(IB(f'Чат А: {chat_button_title(A)}', callback_data=f'fw_new_pair:{A}:{B}'), IB(f'Чат Б: {chat_button_title(B)}', callback_data=f'fw_new_pair:{A}:{B}'))
-        kb.row(IB(_forward_new_toggle_label(ba_on, '⏪️'), callback_data=f'fw_new_mode:{A}:{B}:from'), IB(_forward_new_toggle_label(ab_on, '⏩️'), callback_data=f'fw_new_mode:{A}:{B}:to'), IB(_forward_new_toggle_label(ab_on and ba_on, '🔄'), callback_data=f'fw_new_mode:{A}:{B}:two'), IB(_forward_new_toggle_label(ba_fin, '◀️'), callback_data=f'fw_new_fin:{A}:{B}:ba'), IB(_forward_new_toggle_label(ab_fin, '▶️'), callback_data=f'fw_new_fin:{A}:{B}:ab'), IB('❌', callback_data=f'fw_new_clear:{A}:{B}'))
-        kb.row(IB('🔙 Назад в окно выбора чатов', callback_data='fw_new_back_src'))
-        return kb
-    if A:
-        A = int(A)
-        kb.row(IB(f'Чат А: {chat_button_title(A)}', callback_data=f'fw_new_src:{A}'))
-        buttons = []
-        for cid, title in visible_items:
-            if int(cid) == int(A):
-                continue
-            buttons.append(IB(f'Чат Б: {chat_button_title(cid, title)}', callback_data=f'fw_new_tgt:{A}:{int(cid)}'))
-        if buttons:
-            add_buttons_in_rows(kb, buttons, 2)
-        else:
-            kb.row(IB('Нет чатов для выбора Чата Б', callback_data='none'))
-        kb.row(IB('🔙 Назад в окно выбора чатов', callback_data='fw_new_back_src'))
-        return kb
-    shown_pairs = 0
-    top_pair_a_ids = set()
-    for A0, B0 in pair_rows:
-        try:
-            if is_chat_bot_removed(A0) or is_chat_bot_removed(B0):
-                continue
-        except Exception:
-            pass
-        top_pair_a_ids.add(int(A0))
-        left_btn, right_btn = _forward_new_pair_buttons(A0, B0)
-        kb.row(left_btn, right_btn)
-        shown_pairs += 1
-    chat_buttons = []
-    for cid, title in visible_items:
-        if int(cid) in top_pair_a_ids:
-            continue
-        chat_buttons.append(IB(chat_button_title(cid, title), callback_data=f'fw_new_src:{cid}'))
-    if shown_pairs and chat_buttons:
-        kb.row(IB('⠀', callback_data='none'))
-    if chat_buttons:
-        add_buttons_in_rows(kb, chat_buttons, 2)
-    elif not shown_pairs:
-        kb.row(IB('Нет доступных чатов', callback_data='none'))
-    kb.row(IB('ℹ️ Описание чатов', callback_data='chat_desc_menu:forward'))
-    kb.row(IB('📡 Проверить чаты', callback_data='fw_probe_all'), IB('🗑 Удалённые', callback_data='fw_removed_list'))
-    if day_key:
-        kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    else:
-        kb.row(IB('🔙 Назад', callback_data='fw_back_root'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0193_build_forward_new_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0134')
 try:
     _v177_legacy_0193_build_forward_new_menu.__name__ = 'build_forward_new_menu'
 except Exception:
     pass
 
-def _v177_legacy_0194_build_forward_menu_text_for_current_mode(title: str | None=None, A: int | None=None, B: int | None=None) -> str:
-    if forward_menu_new_style_enabled():
-        return build_forward_new_text(A, B)
-    return build_forward_status_text(title or 'Пересылка:\nВыберите чат A:')
+# [OCH12.35 OWNER] _v177_legacy_0194_build_forward_menu_text_for_current_mode -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0135')
 try:
     _v177_legacy_0194_build_forward_menu_text_for_current_mode.__name__ = 'build_forward_menu_text_for_current_mode'
 except Exception:
     pass
 
-def _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode(day_key: str | None=None, A: int | None=None, B: int | None=None):
-    if forward_menu_new_style_enabled():
-        return build_forward_new_menu(day_key, A, B)
-    if A and B:
-        return build_forward_mode_menu(A, B)
-    if A:
-        return build_forward_target_menu(A)
-    return build_forward_source_menu(day_key)
+# [OCH12.35 OWNER] _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0136')
 try:
     _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode.__name__ = 'build_forward_menu_keyboard_for_current_mode'
 except Exception:
     pass
 
 # --- ИСТОЧНИК: 62_finance_ui.py ---
-def finance_mode_compact_icon(chat_id: int) -> str:
-    """v108: hidden finance and visible auto-window mode are shown independently."""
-    try:
-        if not is_finance_mode(chat_id):
-            return '⬜'
-        hidden_prefix = '🙈' if is_hidden_finance_mode(chat_id) else ''
-        mode = finance_window_mode(chat_id)
-        if mode == 'first':
-            return hidden_prefix + '✅🥇'
-        if mode == 'open':
-            return hidden_prefix + '✅3️⃣'
-        if mode == 'normal':
-            return hidden_prefix + '✅🔟'
-        return hidden_prefix + '✅'
-    except Exception:
-        return '⬜'
+# [OCH12.35 OWNER] finance_mode_compact_icon -> 11_business_finance.py
+_owner_install('finance', 'finance:0132')
 
-def finance_mode_state_lines(chat_id: int) -> list[str]:
-    """F39/v108: hidden accounting is independent; exactly one of the three visible modes may be active, or none."""
-    fin_on = is_finance_mode(chat_id)
-    hidden_on = bool(fin_on and is_hidden_finance_mode(chat_id))
-    mode = finance_window_mode(chat_id) if fin_on else 'off'
-    return [f'Чат: {chat_button_title(chat_id)}', '', f"{('✅' if fin_on else '⬜')} Фин режим", f"{('✅🙈' if hidden_on else '⬜🙈')} Скрытые финансы — независимо", f"{('✅🔟' if fin_on and mode == 'normal' else '⬜')} Как обычно — окно через 10 сообщений", f"{('✅3️⃣' if fin_on and mode == 'open' else '⬜')} Быстрый остаток — открывать окно", f"{('✅🥇' if fin_on and mode == 'first' else '⬜')} Быстрый остаток — всегда первым", '', 'Повторное нажатие активного режима окна выключает только окно; скрытые финансы остаются.']
+# [OCH12.35 OWNER] finance_mode_state_lines -> 11_business_finance.py
+_owner_install('finance', 'finance:0133')
 
-def _v177_legacy_0196_build_finance_toggle_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    known = collect_forward_menu_chats()
-    items = {}
-    for cid, ch in known.items():
-        try:
-            int_cid = int(cid)
-        except Exception:
-            continue
-        items[int_cid] = ch.get('title') or get_chat_display_name(int_cid)
-    if OWNER_ID:
-        try:
-            owner_id = int(OWNER_ID)
-            items.setdefault(owner_id, get_chat_display_name(owner_id))
-        except Exception:
-            pass
-    buttons = []
-    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
-        if is_chat_bot_removed(int_cid) and (not (OWNER_ID and str(int_cid) == str(OWNER_ID))):
-            continue
-        icon = finance_mode_compact_icon(int_cid)
-        buttons.append(IB(f'{icon} {chat_button_title(int_cid, title)}', callback_data=f'd:{day_key}:fw_finmode_pick_{int_cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    kb.row(IB('ℹ️ Описание чатов', callback_data='chat_desc_menu:finmode'))
-    kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0196_build_finance_toggle_chat_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0134')
 try:
     _v177_legacy_0196_build_finance_toggle_chat_menu.__name__ = 'build_finance_toggle_chat_menu'
 except Exception:
     pass
 
-def build_quick_balance_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    known = collect_forward_menu_chats()
-    items = {}
-    for cid, ch in known.items():
-        try:
-            int_cid = int(cid)
-        except Exception:
-            continue
-        items[int_cid] = ch.get('title') or get_chat_display_name(int_cid)
-    owner_item = None
-    if OWNER_ID:
-        try:
-            owner_id = int(OWNER_ID)
-            owner_item = (owner_id, get_chat_display_name(owner_id))
-            items.setdefault(owner_id, owner_item[1])
-        except Exception:
-            owner_item = None
-    buttons = []
-    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
-        if owner_item and int_cid == owner_item[0]:
-            continue
-        mode = finance_window_mode(int_cid) if is_finance_mode(int_cid) else 'off'
-        icon = '✅🥇' if mode == 'first' else '✅3️⃣' if mode == 'open' else '✅🔟' if mode == 'normal' else '⬜'
-        buttons.append(IB(f'{icon} {chat_button_title(int_cid, title)}', callback_data=f'd:{day_key}:qb_cfg_{int_cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    if owner_item:
-        mode = finance_window_mode(owner_item[0]) if is_finance_mode(owner_item[0]) else 'off'
-        icon = '✅🥇' if mode == 'first' else '✅3️⃣' if mode == 'open' else '✅🔟' if mode == 'normal' else '⬜'
-        kb.row(IB(f'{icon} {chat_button_title(owner_item[0], owner_item[1])}', callback_data=f'd:{day_key}:qb_cfg_{owner_item[0]}'))
-    kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] build_quick_balance_chat_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0135')
 
-def _v177_legacy_0198_build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    fin_on = is_finance_mode(target_chat_id)
-    hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
-    mode = finance_window_mode(target_chat_id) if fin_on else 'off'
-    fin_icon = '✅' if fin_on else '⬜'
-    normal_icon = '✅🔟' if fin_on and mode == 'normal' else '⬜'
-    open_icon = '✅3️⃣' if fin_on and mode == 'open' else '⬜'
-    first_icon = '✅🥇' if fin_on and mode == 'first' else '⬜'
-    hidden_icon = '✅🙈' if hidden_on else '⬜🙈'
-    finwin_icon = '🪟✅' if fin_on else '🪟⬜'
-    kb.row(IB(f'{fin_icon} Фин режим ВКЛ/ВЫКЛ', callback_data=f'd:{day_key}:fin_mode_toggle_{target_chat_id}'))
-    kb.row(IB(f'{normal_icon} Как обычно — фин окно через 10 сообщений', callback_data=f'd:{day_key}:qb_mode_normal_{target_chat_id}'))
-    kb.row(IB(f'{open_icon} Фин режим + быстрый остаток: открывать окно', callback_data=f'd:{day_key}:qb_mode_open_{target_chat_id}'))
-    kb.row(IB(f'{first_icon} Фин режим + быстрый остаток: всегда первым', callback_data=f'd:{day_key}:qb_mode_first_{target_chat_id}'))
-    kb.row(IB(f'{hidden_icon} Скрытые финансы', callback_data=f'd:{day_key}:qb_hidden_toggle_{target_chat_id}'), IB(f'{finwin_icon} Фин окно', callback_data=f'd:{day_key}:qb_finwin_open_{target_chat_id}'))
-    kb.row(IB('🔙 Назад к чатам', callback_data=f'd:{day_key}:forward_finmode_menu'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0198_build_quick_balance_mode_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0136')
 try:
     _v177_legacy_0198_build_quick_balance_mode_menu.__name__ = 'build_quick_balance_mode_menu'
 except Exception:
     pass
 
-def _v177_legacy_0199_build_finance_mode_config_menu(day_key: str, target_chat_id: int):
-    """Подменю после: Фин режим → выбор чата. Объединяет финрежим и старый быстрый остаток."""
-    return build_quick_balance_mode_menu(day_key, target_chat_id)
+# [OCH12.35 OWNER] _v177_legacy_0199_build_finance_mode_config_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0137')
 try:
     _v177_legacy_0199_build_finance_mode_config_menu.__name__ = 'build_finance_mode_config_menu'
 except Exception:
     pass
 
-def build_finance_mode_config_text(target_chat_id: int) -> str:
-    return '💰 Фин режим / В24\n' + '\n'.join(finance_mode_state_lines(target_chat_id))
+# [OCH12.35 OWNER] build_finance_mode_config_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0138')
 
-def _canon_apply_finance_window_mode_choice__001(chat_id: int, selected_mode: str) -> str:
-    """F39/v108: the three visible modes are mutually exclusive; clicking the active one turns only windows off."""
-    chat_id = int(chat_id)
-    selected_mode = str(selected_mode or 'off')
-    if selected_mode not in {'normal', 'open', 'first'}:
-        selected_mode = 'off'
-    was_finance = is_finance_mode(chat_id)
-    if not was_finance:
-        set_finance_mode(chat_id, True)
-        set_hidden_finance_mode(chat_id, True)
-    current = finance_window_mode(chat_id)
-    if current == selected_mode:
-        set_finance_window_mode(chat_id, 'off', persist_now=False)
-        delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-        _persist_finance_window_mode_critical(chat_id)
-        return 'off'
-    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-    set_finance_window_mode(chat_id, selected_mode, persist_now=False)
-    try:
-        store = get_chat_store(chat_id)
-        day_key = store.get('current_view_day') or today_key()
-        if selected_mode == 'normal':
-            store['main_window_msg_count'] = 0
-            recreate_main_window_now(chat_id, day_key)
-        else:
-            store['balance_panel_msg_count'] = 0
-            send_minimized_balance_panel(chat_id)
-            if selected_mode == 'first':
-                schedule_quick_balance_first_recreate(chat_id, 60.0)
-    except Exception as e:
-        log_error(f'_apply_finance_window_mode_choice({chat_id},{selected_mode}): {e}')
-    _finance_window_state(chat_id)['auto_reopen_on_boot'] = True
-    _persist_finance_window_mode_critical(chat_id)
-    return selected_mode
+# [OCH12.35 OWNER] _canon_apply_finance_window_mode_choice__001 -> 11_business_finance.py
+_owner_install('finance', 'finance:0139')
 
-def build_hidden_finance_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    known = collect_forward_menu_chats()
-    items = {}
-    for cid, ch in known.items():
-        try:
-            int_cid = int(cid)
-        except Exception:
-            continue
-        items[int_cid] = ch.get('title') or get_chat_display_name(int_cid)
-    if OWNER_ID:
-        try:
-            owner_id = int(OWNER_ID)
-            items.setdefault(owner_id, get_chat_display_name(owner_id))
-        except Exception:
-            pass
-    buttons = []
-    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
-        if is_chat_bot_removed(int_cid) and (not (OWNER_ID and str(int_cid) == str(OWNER_ID))):
-            continue
-        enabled = is_hidden_finance_mode(int_cid)
-        icon = '✅🙈' if enabled else '⬜🙈'
-        buttons.append(IB(f'{icon} {chat_button_title(int_cid, title)}', callback_data=f'd:{day_key}:hf_pick_{int_cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] build_hidden_finance_chat_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0140')
 
 def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str='d', owner_day_key: str | None=None):
     store = get_chat_store(chat_id)
@@ -2773,218 +1952,28 @@ def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str='d', own
         kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
     return kb
 
-def build_usd_edit_records_keyboard(day_key: str, chat_id: int, prefix: str='d', owner_day_key: str | None=None):
-    """USD counterpart of build_edit_records_keyboard, including owner-view callbacks."""
-    store = get_chat_store(int(chat_id))
-    selected = set((int(x) for x in (store.get('usd_edit_delete_selected', {}) or {}).get(str(day_key), [])))
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    rows = usd_records_for_day(int(chat_id), str(day_key))
-    viewer_chat_id = int(OWNER_ID) if prefix == 'fv' and OWNER_ID else int(chat_id)
-    for rec in rows:
-        rid = int(rec.get('id'))
-        amt = float(rec.get('usd_amount', 0) or 0)
-        sid = str(rec.get('usd_short_id') or f'U{rid}')
-        label = f"{sid} {('+' if amt >= 0 else '-')}${fmt_num_plain(abs(amt))}"
-        insert_text = compose_usd_edit_insert_value(chat_id, rid, _record_day_key(rec), amt, rec.get('usd_note') or rec.get('note', ''))
-        del_icon = '☑️' if rid in selected else '❌'
-        if prefix == 'fv':
-            del_cb = f'fv:{chat_id}:{day_key}:del_toggle_{rid}:{owner_day_key or today_key()}'
-        else:
-            del_cb = f'd:{day_key}:del_toggle_{rid}'
-        kb.row(IB(label, callback_data='none'), make_direct_edit_insert_button('✏️', insert_text, viewer_chat_id=viewer_chat_id), IB(del_icon, callback_data=del_cb))
-    if selected:
-        if prefix == 'fv':
-            kb.row(IB('🗑 Удалить выбранное USD', callback_data=f'fv:{chat_id}:{day_key}:del_selected:{owner_day_key or today_key()}'))
-        else:
-            kb.row(IB('🗑 Удалить выбранное USD', callback_data=f'd:{day_key}:del_selected'))
-    if prefix == 'fv':
-        kb.row(IB('🔙 Назад', callback_data=f'fv:{chat_id}:{day_key}:clear_delete_back:{owner_day_key or today_key()}'))
-    else:
-        kb.row(IB('🔙 Назад', callback_data=f'd:{day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] build_usd_edit_records_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0141')
 
-def toggle_usd_edit_delete_selection(chat_id: int, day_key: str, rid: int):
-    store = get_chat_store(int(chat_id))
-    all_sel = store.setdefault('usd_edit_delete_selected', {})
-    selected = set((int(x) for x in all_sel.get(str(day_key), [])))
-    rid = int(rid)
-    if rid in selected:
-        selected.remove(rid)
-    else:
-        selected.add(rid)
-    if selected:
-        all_sel[str(day_key)] = sorted(selected)
-    else:
-        all_sel.pop(str(day_key), None)
-    save_data(data, chat_ids=[int(chat_id)])
+# [OCH12.35 OWNER] toggle_usd_edit_delete_selection -> 11_business_finance.py
+_owner_install('finance', 'finance:0142')
 
-def clear_usd_edit_delete_selection(chat_id: int, day_key: str | None=None):
-    store = get_chat_store(int(chat_id))
-    all_sel = store.setdefault('usd_edit_delete_selected', {})
-    if day_key is None:
-        all_sel.clear()
-    else:
-        all_sel.pop(str(day_key), None)
-    save_data(data, chat_ids=[int(chat_id)])
+# [OCH12.35 OWNER] clear_usd_edit_delete_selection -> 11_business_finance.py
+_owner_install('finance', 'finance:0143')
 
 
-def delete_selected_usd_records(chat_id: int, day_key: str) -> int:
-    chat_id=int(chat_id)
-    with locked_chat(chat_id):
-        store=get_chat_store(chat_id); selected={int(x) for x in store.setdefault('usd_edit_delete_selected',{}).get(str(day_key),[]) or []}
-        if not selected: return 0
-        deleted=0; remove_ids=set(); deleted_usd=0.0
-        for rec in store.get('records',[]) or []:
-            try: rid=int(rec.get('id',-1))
-            except Exception: continue
-            if rid not in selected or not float(rec.get('usd_amount',0) or 0): continue
-            deleted+=1; deleted_usd+=float(rec.get('usd_amount',0) or 0)
-            if abs(float(rec.get('amount',0) or 0))<=0 and bool(rec.get('usd_only',False)): remove_ids.add(rid)
-            else: rec['usd_amount']=0.0; rec['usd_note']=''; rec['usd_only']=False
-        if remove_ids: store['records']=[r for r in store.get('records',[]) or [] if int(r.get('id',-1)) not in remove_ids]
-        for dk,arr in list((store.get('daily_records',{}) or {}).items()):
-            new=[]
-            for rec in arr or []:
-                try: rid=int(rec.get('id',-1))
-                except Exception: new.append(rec); continue
-                if rid in remove_ids: continue
-                if rid in selected and float(rec.get('usd_amount',0) or 0): rec['usd_amount']=0.0; rec['usd_note']=''; rec['usd_only']=False
-                new.append(rec)
-            if new: store['daily_records'][dk]=new
-            else: store['daily_records'].pop(dk,None)
-        store.setdefault('usd_edit_delete_selected',{}).pop(str(day_key),None)
-        store['_finance_hotpath_pending_normalize_r16']=True; store['_finance_fast_generation_r16']=int(store.get('_finance_fast_generation_r16',0) or 0)+1; store.pop('_finance_day_balance_cache_r16',None)
-        if '_usd_balance_cache_r16' in store:
-            try: store['_usd_balance_cache_r16']=float(store.get('_usd_balance_cache_r16',0) or 0)-deleted_usd
-            except Exception: store.pop('_usd_balance_cache_r16',None)
-    persist_finance_chat_local_fast(chat_id)
-    if callable(globals().get('_v262_schedule_finance_postcommit')): _v262_schedule_finance_postcommit(chat_id,str(day_key),'delete_selected_usd')
-    else: rebuild_global_records(); finance_changed(chat_id,str(day_key),reason='delete_selected_usd',delay=0.1)
-    return deleted
+# [OCH12.35 OWNER] delete_selected_usd_records -> 11_business_finance.py
+_owner_install('finance', 'finance:0144')
 
 
-def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
-    store = get_chat_store(chat_id)
-    all_sel = store.setdefault('edit_delete_selected', {})
-    selected = set((int(x) for x in all_sel.get(day_key, [])))
-    rid = int(rid)
-    if rid in selected:
-        selected.remove(rid)
-    else:
-        selected.add(rid)
-    if selected:
-        all_sel[day_key] = sorted(selected)
-    else:
-        all_sel.pop(day_key, None)
-    save_data(data)
+# [OCH12.35 COMPAT] legacy toggle_edit_delete_selection -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0008')
 
-def clear_edit_delete_selection(chat_id: int, day_key: str | None=None):
-    store = get_chat_store(chat_id)
-    all_sel = store.setdefault('edit_delete_selected', {})
-    if day_key is None:
-        all_sel.clear()
-    else:
-        all_sel.pop(day_key, None)
-    save_data(data)
+# [OCH12.35 COMPAT] legacy clear_edit_delete_selection -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0009')
 
-def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, source_finance_text: str | None=None, source_msg_id: int | None=None) -> bool:
-    """Edit one finance row and persist the matching ARS/USD ledger mirror immediately.
-
-    Normal edits target the active ledger by R-id.  💰Перес can additionally pass the bot-copy
-    message id, which lets an old pre-deploy row be edited even when it currently lives in a
-    non-active currency ledger with a colliding R-id.
-    """
-    bot_journal('record_update_start', chat_id, f"rid={rid} amount={amount} note={note} msg={source_msg_id or ''}")
-    if globals().get('constitution_finance_write_blocked_v232') and constitution_finance_write_blocked_v232():
-        return False
-    chat_id = int(chat_id)
-    rid = int(rid)
-    op_id = operation_begin('finance_edit', chat_id, target=str(rid), payload={'amount': amount, 'note': note, 'source_msg_id': source_msg_id}, critical=True) if 'operation_begin' in globals() else ''
-    store = get_chat_store(chat_id)
-    active = _ensure_currency_ledgers(store)
-
-    def _match(rec):
-        if not isinstance(rec, dict):
-            return False
-        try:
-            if int(rec.get('id', -1)) != rid:
-                return False
-        except Exception:
-            return False
-        return source_msg_id is None or _record_has_message_id(rec, int(source_msg_id))
-    record_keys = ['records'] if source_msg_id is None else ['records', 'ars_records', 'usd_records']
-    targets = []
-    touched_ledgers = set()
-    seen = set()
-    for key in record_keys:
-        for rec in store.get(key, []) or []:
-            if not _match(rec):
-                continue
-            oid = id(rec)
-            if oid in seen:
-                continue
-            seen.add(oid)
-            targets.append((key, rec))
-            if key == 'ars_records':
-                touched_ledgers.add('ars')
-            elif key == 'usd_records':
-                touched_ledgers.add('usd')
-            elif key == 'records':
-                touched_ledgers.add(active)
-    if not targets:
-        if op_id and 'operation_review' in globals():
-            operation_review(op_id, 'record not found')
-        return False
-    before_snapshot = copy.deepcopy(targets[0][1]) if targets else {}
-    for _key, target in targets:
-        target['amount'] = amount
-        target['note'] = note
-        if source_finance_text is not None:
-            target['source_finance_text'] = str(source_finance_text or '').strip()
-    daily_keys = ['daily_records'] if source_msg_id is None else ['daily_records', 'ars_daily_records', 'usd_daily_records']
-    for dkey in daily_keys:
-        for _dk, arr in (store.get(dkey, {}) or {}).items():
-            for rec in arr or []:
-                if not _match(rec):
-                    continue
-                rec['amount'] = amount
-                rec['note'] = note
-                if source_finance_text is not None:
-                    rec['source_finance_text'] = str(source_finance_text or '').strip()
-    store['balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get('records', []) or []))
-    for ledger in touched_ledgers:
-        if ledger == active:
-            continue
-        store[f'{ledger}_balance'] = sum((float(r.get('amount', 0) or 0) for r in store.get(f'{ledger}_records', []) or []))
-    _snapshot_active_currency_ledger(store, active)
-    # R7: amount/note edit does not reorder records. Avoid full monthly/global
-    # rebuild in the Telegram request path; derived aggregates run once later.
-    try:
-        for _key, _target in targets:
-            ensure_finance_record_uid(chat_id, _target)
-    except Exception:
-        pass
-    if 'persist_finance_chat_local_fast' in globals():
-        persist_finance_chat_local_fast(chat_id)
-    else:
-        save_data(data, chat_ids=[chat_id])
-    try:
-        _dk = str((targets[0][1] if targets else {}).get('day_key') or store.get('current_view_day') or '')
-        schedule_financial_window_refresh(chat_id, _dk, reason='record_edit_fast_v168')
-    except Exception:
-        pass
-    try:
-        schedule_finance_postcommit_background_v243(chat_id, reason='record_edit_r7', delay=0.25)
-    except Exception:
-        pass
-    try:
-        finance_cache_invalidate(chat_id, 'finance_edit')
-        finance_integrity_append(chat_id, 'edit', targets[0][1] if targets else {'id': rid}, details={'before': before_snapshot})
-    except Exception as _integrity_exc:
-        log_error(f'finance edit integrity: {_integrity_exc}')
-    if op_id and 'operation_complete' in globals():
-        operation_complete(op_id, f'record={rid}')
-    return True
+# [OCH12.35 COMPAT] legacy update_record_in_chat -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0010')
 
 
 def delete_selected_records(chat_id: int, day_key: str) -> int:
@@ -3065,18 +2054,8 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
     kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{owner_day_key}:back_main'))
     return kb
 
-def _v177_legacy_0201_build_fin_window_usd_month_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
-    try:
-        dt = datetime.strptime(str(day_key)[:10], '%Y-%m-%d').replace(day=1)
-    except Exception:
-        dt = now_local().replace(day=1)
-    prev_dt = (dt - timedelta(days=1)).replace(day=1)
-    next_dt = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    kb.row(IB('⬅️ Пред. месяц', callback_data=f"fv:{target_chat_id}:{prev_dt.strftime('%Y-%m-01')}:usd_month:{owner_day_key}"), IB('📅 Этот месяц', callback_data=f'fv:{target_chat_id}:{today_key()}:usd_month:{owner_day_key}'), IB('След. месяц ➡️', callback_data=f"fv:{target_chat_id}:{next_dt.strftime('%Y-%m-01')}:usd_month:{owner_day_key}"))
-    kb.row(IB('🔙 Назад к чату', callback_data=f'fv:{target_chat_id}:{day_key}:open:{owner_day_key}'))
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{owner_day_key}:back_main'))
-    return kb
+# [OCH12.35 OWNER] _v177_legacy_0201_build_fin_window_usd_month_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0145')
 try:
     _v177_legacy_0201_build_fin_window_usd_month_keyboard.__name__ = 'build_fin_window_usd_month_keyboard'
 except Exception:
@@ -3223,234 +2202,48 @@ GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '1RXAdb
 _GOOGLE_TOKEN_CACHE = {'token': '', 'expires_at': 0.0}
 _GOOGLE_TOKEN_LOCK = threading.RLock()
 
-def _google_request_guarded(name: str, method, *args, attempts: int=1, **kwargs):
-    """Circuit breaker/retry for safe Google calls; mutating requests use attempts=1."""
-    gate = globals().get('external_access_allowed_v233')
-    if callable(gate) and (not gate('google')):
-        try:
-            logger_fn = globals().get('external_block_log_v233')
-            if callable(logger_fn):
-                logger_fn('google', name)
-        except Exception:
-            pass
-        raise RuntimeError(f'external_local_only_v233:google:{name}')
-    guard = globals().get('guarded_external_call')
-    if callable(guard):
-        return guard(f'google:{name}', method, *args, attempts=max(1, int(attempts)), base_delay=0.7, **kwargs)
-    return method(*args, **kwargs)
+# [OCH12.35 OWNER] _google_request_guarded -> 15_integration_google.py
+_owner_install('google', 'google:0001')
 
 def _b64url(data: bytes) -> str:
     import base64
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
 
-def _v177_legacy_0205_google_service_account_info() -> dict:
-    raw = GOOGLE_SERVICE_ACCOUNT_JSON
-    if not raw:
-        raise RuntimeError('Google Sheets API не настроен: добавьте GOOGLE_SERVICE_ACCOUNT_JSON в Render Environment')
-    try:
-        if raw.lstrip().startswith('{'):
-            info = json.loads(raw)
-        else:
-            import base64
-            info = json.loads(base64.b64decode(raw).decode('utf-8'))
-    except Exception as exc:
-        raise RuntimeError(f'GOOGLE_SERVICE_ACCOUNT_JSON повреждён: {exc}')
-    for key in ('client_email', 'private_key', 'token_uri'):
-        if not info.get(key):
-            raise RuntimeError(f'GOOGLE_SERVICE_ACCOUNT_JSON: отсутствует {key}')
-    return info
+# [OCH12.35 OWNER] _v177_legacy_0205_google_service_account_info -> 15_integration_google.py
+_owner_install('google', 'google:0002')
 try:
     _v177_legacy_0205_google_service_account_info.__name__ = '_google_service_account_info'
 except Exception:
     pass
 
-def _google_sign_rs256(message: bytes, private_key_pem: str) -> bytes:
-    """Подписывает JWT через системный openssl, без дополнительных pip-зависимостей."""
-    key_path = msg_path = sig_path = None
-    try:
-        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as key_file:
-            key_file.write(private_key_pem)
-            key_path = key_file.name
-        with tempfile.NamedTemporaryFile('wb', delete=False) as msg_file:
-            msg_file.write(message)
-            msg_path = msg_file.name
-        sig_fd, sig_path = tempfile.mkstemp(prefix='google_jwt_', suffix='.sig')
-        os.close(sig_fd)
-        proc = subprocess.run(['openssl', 'dgst', '-sha256', '-sign', key_path, '-out', sig_path, msg_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.decode('utf-8', 'replace')[-500:])
-        return Path(sig_path).read_bytes()
-    finally:
-        for path in (key_path, msg_path, sig_path):
-            if path:
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
+# [OCH12.35 OWNER] _google_sign_rs256 -> 15_integration_google.py
+_owner_install('google', 'google:0003')
 
-def _v177_legacy_0206_google_access_token() -> str:
-    with _GOOGLE_TOKEN_LOCK:
-        now = time.time()
-        if _GOOGLE_TOKEN_CACHE.get('token') and now < float(_GOOGLE_TOKEN_CACHE.get('expires_at', 0)) - 120:
-            return str(_GOOGLE_TOKEN_CACHE['token'])
-        info = _google_service_account_info()
-        header = {'alg': 'RS256', 'typ': 'JWT'}
-        claims = {'iss': info['client_email'], 'scope': 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive', 'aud': info.get('token_uri') or 'https://oauth2.googleapis.com/token', 'iat': int(now), 'exp': int(now) + 3600}
-        signing_input = (_b64url(json.dumps(header, separators=(',', ':')).encode('utf-8')) + '.' + _b64url(json.dumps(claims, separators=(',', ':')).encode('utf-8'))).encode('ascii')
-        signature = _google_sign_rs256(signing_input, info['private_key'])
-        assertion = signing_input.decode('ascii') + '.' + _b64url(signature)
-        response = _google_request_guarded('oauth', requests.post, info.get('token_uri') or 'https://oauth2.googleapis.com/token', data={'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer', 'assertion': assertion}, timeout=30, attempts=2)
-        if response.status_code >= 300:
-            raise RuntimeError(f'Google OAuth {response.status_code}: {response.text[:500]}')
-        payload = response.json()
-        token = str(payload.get('access_token') or '')
-        if not token:
-            raise RuntimeError('Google OAuth не вернул access_token')
-        _GOOGLE_TOKEN_CACHE.update(token=token, expires_at=now + int(payload.get('expires_in', 3600) or 3600))
-        return token
+# [OCH12.35 OWNER] _v177_legacy_0206_google_access_token -> 15_integration_google.py
+_owner_install('google', 'google:0004')
 try:
     _v177_legacy_0206_google_access_token.__name__ = '_google_access_token'
 except Exception:
     pass
 
-def _google_cell_value(value):
-    if isinstance(value, dict) and value.get('formula'):
-        return {'formulaValue': '=' + str(value.get('formula') or '').lstrip('=')}
-    if isinstance(value, bool):
-        return {'boolValue': value}
-    if isinstance(value, (int, float)) and (not isinstance(value, bool)):
-        return {'numberValue': float(value)}
-    return {'stringValue': str(value or '')}
+# [OCH12.35 OWNER] _google_cell_value -> 15_integration_google.py
+_owner_install('google', 'google:0005')
 
-def _google_category_fill(col_idx_zero: int) -> dict:
-    palette = [(0.78, 0.94, 0.81), (0.87, 0.92, 0.97), (0.99, 0.89, 0.84), (0.89, 0.87, 0.93), (1.0, 0.95, 0.8), (0.85, 0.92, 0.83), (0.81, 0.89, 0.95), (0.96, 0.8, 0.8), (0.82, 0.88, 0.89), (0.92, 0.82, 0.86), (0.85, 0.82, 0.91)]
-    if col_idx_zero >= 3:
-        rgb = palette[(col_idx_zero - 3) % len(palette)]
-        return {'red': rgb[0], 'green': rgb[1], 'blue': rgb[2]}
-    return {'red': 0.92, 'green': 0.95, 'blue': 0.9}
+# [OCH12.35 OWNER] _google_category_fill -> 15_integration_google.py
+_owner_install('google', 'google:0006')
 
-def _v177_legacy_0207_google_spreadsheet_id(value: str | None=None) -> str:
-    """Accepts either raw spreadsheet ID or a full docs.google.com/spreadsheets URL."""
-    raw = str(value if value is not None else GOOGLE_SHEETS_SPREADSHEET_ID).strip()
-    if not raw:
-        raise RuntimeError('GOOGLE_SHEETS_SPREADSHEET_ID не задан')
-    match = re.search('/spreadsheets/d/([A-Za-z0-9_-]+)', raw)
-    if match:
-        raw = match.group(1)
-    raw = raw.split('?')[0].split('#')[0].strip().strip('/')
-    if not re.fullmatch('[A-Za-z0-9_-]{20,}', raw):
-        raise RuntimeError('GOOGLE_SHEETS_SPREADSHEET_ID имеет неверный формат')
-    return raw
+# [OCH12.35 OWNER] _v177_legacy_0207_google_spreadsheet_id -> 15_integration_google.py
+_owner_install('google', 'google:0007')
 try:
     _v177_legacy_0207_google_spreadsheet_id.__name__ = '_google_spreadsheet_id'
 except Exception:
     pass
 
-def _google_sheet_tab_title(title: str) -> str:
-    """Creates a short unique Google Sheets tab title safe for repeated exports."""
-    base = re.sub('[\\\\/\\?\\*\\[\\]:]', ' ', str(title or 'Статьи'))
-    base = re.sub('\\s+', ' ', base).strip(" ' ") or 'Статьи'
-    stamp = datetime.now().strftime('%d.%m %H-%M-%S')
-    suffix = f' · {stamp}'
-    limit = max(1, 100 - len(suffix))
-    return base[:limit].rstrip() + suffix
+# [OCH12.35 OWNER] _google_sheet_tab_title -> 15_integration_google.py
+_owner_install('google', 'google:0008')
 
-def _v177_legacy_0208_google_sheets_create_category_report(title: str, rows: list[list], layout: str='category', annotations_override: dict | None=None, include_annotations: bool=True) -> str:
-    """v129: writes a category report to a NEW TAB in an existing owner-shared spreadsheet.
-
-    The service account does not create/own a Drive file. The owner creates one spreadsheet once
-    and shares it to the service-account client_email as Editor. Each export adds a new sheet tab
-    and writes descriptions into native Google Sheets CellData.note.
-    """
-    token = _google_access_token()
-    info = _google_service_account_info()
-    service_email = str(info.get('client_email') or '').strip()
-    spreadsheet_id = _google_spreadsheet_id()
-    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    meta = _google_request_guarded('metadata', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'fields': 'spreadsheetId,properties.title,sheets.properties(sheetId,title)'}, timeout=45, attempts=2)
-    if meta.status_code >= 300:
-        detail = meta.text[:700]
-        if meta.status_code in (401, 403):
-            raise RuntimeError(f'Google Sheets target access 403: сервисный аккаунт не имеет доступа к таблице. Откройте таблицу → Поделиться → добавьте {service_email} как Редактор. spreadsheet_id={spreadsheet_id}; Google: {detail}')
-        raise RuntimeError(f'Google Sheets target {meta.status_code}: {detail}')
-    layout = str(layout or 'category').strip().lower()
-    if layout == 'compact':
-        _styles, annotations, _freeze, _widths = _modern_compact_excel_styles_comments(rows, annotations_override or {})
-    elif layout == 'category_compact':
-        _styles, annotations, _freeze, _widths = _modern_category_no_description_styles_comments(rows, annotations_override or {})
-    else:
-        _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-        if annotations_override is not None:
-            annotations = dict(annotations_override or {})
-    if not include_annotations:
-        annotations = {}
-    max_cols = max((len(row) for row in rows), default=1)
-    row_count = max(100, len(rows) + 20)
-    col_count = max(26, max_cols + 3)
-    tab_title = _google_sheet_tab_title(title)
-    add_sheet = _google_request_guarded('add_sheet', requests.post, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate', headers=headers, json={'requests': [{'addSheet': {'properties': {'title': tab_title, 'gridProperties': {'rowCount': row_count, 'columnCount': col_count, 'frozenRowCount': 1 if layout in {'compact', 'category_compact'} else 2}}}}]}, timeout=60, attempts=1)
-    if add_sheet.status_code >= 300:
-        raise RuntimeError(f'Google Sheets add tab {add_sheet.status_code}: {add_sheet.text[:700]}')
-    add_payload = add_sheet.json()
-    try:
-        sheet_id = int(add_payload['replies'][0]['addSheet']['properties']['sheetId'])
-    except Exception as exc:
-        raise RuntimeError(f'Google Sheets API не вернул sheetId новой вкладки: {exc}')
-    cell_rows = []
-    for r_idx, row in enumerate(rows, start=1):
-        values = []
-        for c_idx in range(1, max_cols + 1):
-            value = row[c_idx - 1] if c_idx - 1 < len(row) else ''
-            cell = {'userEnteredValue': _google_cell_value(value)}
-            note = str(annotations.get((r_idx, c_idx)) or '').strip()
-            if note:
-                cell['note'] = note
-            row_is_blank = not any((_excel_nonempty(v) for v in row))
-            first_label = str(row[0] if row else '').strip().casefold()
-            second_label = str(row[1] if len(row) > 1 else '').strip().casefold()
-            if r_idx == 1:
-                cell['userEnteredFormat'] = {'textFormat': {'bold': True}, 'backgroundColor': _google_category_fill(c_idx - 1)}
-            elif row_is_blank and layout in {'category', 'category_compact'}:
-                cell['userEnteredFormat'] = {'backgroundColor': {'red': 1.0, 'green': 0.6, 'blue': 0.0}}
-            elif first_label in {'расход', 'сумма по статьям'} or second_label in {'расход', 'сумма по статьям'}:
-                cell['userEnteredFormat'] = {'textFormat': {'bold': True}, 'backgroundColor': {'red': 1.0, 'green': 0.55, 'blue': 0.55}}
-            elif first_label in {'приход'} or second_label in {'приход'}:
-                cell['userEnteredFormat'] = {'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.55, 'green': 0.78, 'blue': 1.0}}
-            elif first_label in {'остаток на руках', 'на руках:', 'гомонковые', 'остаток в обороте'} or second_label in {'остаток на руках', 'на руках:', 'гомонковые', 'остаток в обороте'}:
-                cell['userEnteredFormat'] = {'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.55, 'green': 0.85, 'blue': 0.55}}
-            elif first_label == 'расход еды на человека в сутки' or second_label == 'расход еды на человека в сутки':
-                cell['userEnteredFormat'] = {'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.74, 'green': 0.82, 'blue': 1.0}}
-            elif layout == 'compact' and c_idx in {2, 3} and (value not in ('', None)):
-                cell['userEnteredFormat'] = {'backgroundColor': _google_category_fill(3 if c_idx == 3 else 2)}
-            elif layout == 'category_compact' and c_idx >= 3 and (value not in ('', None)):
-                cell['userEnteredFormat'] = {'backgroundColor': _google_category_fill(c_idx)}
-            elif layout == 'category' and c_idx >= 4 and (value not in ('', None)):
-                cell['userEnteredFormat'] = {'backgroundColor': _google_category_fill(c_idx - 1)}
-            values.append(cell)
-        cell_rows.append({'values': values})
-    requests_payload = [{'updateCells': {'range': {'sheetId': sheet_id, 'startRowIndex': 0, 'startColumnIndex': 0}, 'rows': cell_rows, 'fields': 'userEnteredValue,note,userEnteredFormat'}}, {'autoResizeDimensions': {'dimensions': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': max_cols}}}]
-    update = _google_request_guarded('update_sheet', requests.post, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate', headers=headers, json={'requests': requests_payload}, timeout=90, attempts=1)
-    if update.status_code >= 300:
-        raise RuntimeError(f'Google Sheets update {update.status_code}: {update.text[:700]}')
-    expected_notes = {(r, c): str(note).strip() for (r, c), note in annotations.items() if str(note or '').strip()}
-    if expected_notes:
-        verify = _google_request_guarded('verify_notes', requests.get, f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}', headers=headers, params={'includeGridData': 'true', 'ranges': f"'{tab_title.replace(chr(39), chr(39) * 2)}'!A1:{_xlsx_col_name(max_cols)}{max(1, len(rows))}", 'fields': 'sheets(data(rowData(values(note))))'}, timeout=60, attempts=2)
-        if verify.status_code >= 300:
-            raise RuntimeError(f'Google Sheets note verify {verify.status_code}: {verify.text[:700]}')
-        actual_notes = {}
-        try:
-            row_data = ((verify.json().get('sheets') or [{}])[0].get('data') or [{}])[0].get('rowData') or []
-            for r0, row_obj in enumerate(row_data, start=1):
-                for c0, cell in enumerate(row_obj.get('values') or [], start=1):
-                    note = str(cell.get('note') or '').strip()
-                    if note:
-                        actual_notes[r0, c0] = note
-        except Exception as exc:
-            raise RuntimeError(f'Google Sheets note verify parse: {exc}')
-        missing = [f'{_xlsx_col_name(c)}{r}' for (r, c), note in expected_notes.items() if actual_notes.get((r, c)) != note]
-        if missing:
-            raise RuntimeError(f'Google Sheets: нативные примечания не подтвердились после записи; missing={missing[:12]} expected={len(expected_notes)} actual={len(actual_notes)}')
-    return f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}'
+# [OCH12.35 OWNER] _v177_legacy_0208_google_sheets_create_category_report -> 15_integration_google.py
+_owner_install('google', 'google:0009')
 try:
     _v177_legacy_0208_google_sheets_create_category_report.__name__ = '_google_sheets_create_category_report'
 except Exception:
@@ -3834,30 +2627,8 @@ def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner
     kb.row(*row)
     return kb
 
-def build_forward_mode_menu(A: int, B: int):
-    """
-    Меню выбора режима пересылки между чатами A и B.
-    """
-    kb = types.InlineKeyboardMarkup()
-    name_a = chat_button_title(A)
-    name_b = chat_button_title(B)
-    fr = data.get('forward_rules', {}) or {}
-    ab_link = str(B) in fr.get(str(A), {})
-    ba_link = str(A) in fr.get(str(B), {})
-    two_on = ab_link and ba_link
-    ab_state = '✅ ВКЛ' if ab_link else '⬜ ВЫКЛ'
-    ba_state = '✅ ВКЛ' if ba_link else '⬜ ВЫКЛ'
-    two_state = '✅ ВКЛ' if two_on else '⬜ ВЫКЛ'
-    ab_fin = '✅ ВКЛ' if get_forward_finance(A, B) else '⬜ ВЫКЛ'
-    ba_fin = '✅ ВКЛ' if get_forward_finance(B, A) else '⬜ ВЫКЛ'
-    kb.row(IB(f'➡️ {ab_state} {name_a} → {name_b}', callback_data=f'fw_mode:{A}:{B}:to'))
-    kb.row(IB(f'⬅️ {ba_state} {name_b} → {name_a}', callback_data=f'fw_mode:{A}:{B}:from'))
-    kb.row(IB(f'↔️ {two_state} {name_a} ⇄ {name_b}', callback_data=f'fw_mode:{A}:{B}:two'))
-    kb.row(IB(f'💰 {ab_fin} Учёт {name_a} → {name_b}', callback_data=f'fw_finpair:{A}:{B}:ab'))
-    kb.row(IB(f'💰 {ba_fin} Учёт {name_b} → {name_a}', callback_data=f'fw_finpair:{A}:{B}:ba'))
-    kb.row(IB('❌ Удалить все связи A-B', callback_data=f'fw_mode:{A}:{B}:del'))
-    kb.row(IB('🔙 Назад', callback_data=f'fw_back_tgt:{A}'))
-    return kb
+# [OCH12.35 OWNER] build_forward_mode_menu -> 12_business_finance_forward.py
+_owner_install('finance_forward', 'finance_forward:0137')
 
 def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
@@ -4202,39 +2973,8 @@ _R22_NAV_REMOTE_PREFETCH = set()
 def _window_nav_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
 
-def _nav_history_push_v248(key, snap: dict) -> bool:
-    """R22 hot path: RAM first, KV durability later.
-
-    Navigation history is UI continuity, so Redis/Key Value RTT must never be in
-    front of a button.  The in-memory stack is authoritative for the live process;
-    the remote copy is mirrored on the cleanup lane.
-    """
-    with _WINDOW_NAV_HISTORY_LOCK:
-        stack = _WINDOW_NAV_HISTORY[key]
-        if stack and stack[-1].get('text') == snap.get('text') and stack[-1].get('markup') == snap.get('markup'):
-            return True
-        stack.append(snap)
-        if len(stack) > _WINDOW_NAV_HISTORY_LIMIT:
-            del stack[:-_WINDOW_NAV_HISTORY_LIMIT]
-    try:
-        _R22_NAV_REMOTE_HAS[key] = True
-    except Exception:
-        pass
-
-    def _mirror():
-        push = globals().get('kv_nav_push_v248')
-        if callable(push):
-            try:
-                push(int(key[0]), int(key[1]), dict(snap), _WINDOW_NAV_HISTORY_LIMIT)
-            except Exception:
-                pass
-    try:
-        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        if pool is not None:
-            pool.submit(f'r22-nav-mirror:{int(key[0])}:{int(key[1])}', _mirror)
-    except Exception:
-        pass
-    return True
+# [OCH12.35 COMPAT] legacy _nav_history_push_v248 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0011')
 
 def _nav_history_prefetch_v248(key) -> None:
     """Warm one remote Back snapshot without putting Redis/KV RTT on the click path."""
@@ -4281,75 +3021,14 @@ def _nav_history_peek_v248(key):
     _nav_history_prefetch_v248(key)
     return None
 
-def _nav_history_pop_v248(key) -> bool:
-    popped = False
-    with _WINDOW_NAV_HISTORY_LOCK:
-        stack = _WINDOW_NAV_HISTORY.get(key) or []
-        if stack:
-            stack.pop()
-            popped = True
-            if not stack:
-                _WINDOW_NAV_HISTORY.pop(key, None)
-    if not popped:
-        return False
+# [OCH12.35 COMPAT] legacy _nav_history_pop_v248 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0012')
 
-    # Mirror the pop after the UI commit; never wait for KV on a Back click.
-    def _mirror_pop():
-        fn = globals().get('kv_nav_pop_v248')
-        if callable(fn):
-            try:
-                fn(int(key[0]), int(key[1]))
-            except Exception:
-                pass
-    try:
-        pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-        if pool is not None:
-            pool.submit_unique(f'r72-nav-pop:{int(key[0])}:{int(key[1])}', _mirror_pop)
-    except Exception:
-        pass
-    return True
+# [OCH12.35 COMPAT] legacy _nav_history_clear_v248 -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0013')
 
-def _nav_history_clear_v248(chat_id: int, message_id: int) -> None:
-    key = _window_nav_key(chat_id, message_id)
-    with _WINDOW_NAV_HISTORY_LOCK:
-        _WINDOW_NAV_HISTORY.pop(key, None)
-    _R22_NAV_REMOTE_HAS.pop(key, None)
-    fn = globals().get('kv_nav_clear_v248')
-    if callable(fn):
-        try:
-            fn(int(chat_id), int(message_id))
-        except Exception:
-            pass
-
-def r27_callback_is_back_navigation(call, data_str: str) -> bool:
-    """True for a user-visible Back button (not backup operations).
-
-    We inspect both callback token and the text of the clicked button. This lets old
-    windows keep their historical callback names while R27 gives all Back buttons the
-    same navigation semantics: previous window first, legacy fallback second.
-    """
-    raw = str(data_str or '').strip()
-    low = raw.casefold()
-    if 'backup' in low:
-        return False
-    if low == 'nav_prev' or low.endswith(':back_main'):
-        return True
-    normalized = low.replace(':', '_').replace('-', '_')
-    parts = [x for x in normalized.split('_') if x]
-    if 'back' in parts or low.startswith('back_') or low.endswith('_back'):
-        return True
-    try:
-        markup = getattr(getattr(call, 'message', None), 'reply_markup', None)
-        for row in list(getattr(markup, 'keyboard', None) or []):
-            for btn in row or []:
-                if str(getattr(btn, 'callback_data', '') or '') != raw:
-                    continue
-                label = str(getattr(btn, 'text', '') or '').casefold()
-                if 'назад' in label:
-                    return True
-    except Exception:
-        pass
-    return False
+# [OCH12.35 COMPAT] legacy r27_callback_is_back_navigation -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0014')
 
 def r27_cleanup_after_history_back(call):
     try:
@@ -4388,34 +3067,8 @@ def remember_previous_window(call):
     except Exception:
         return False
 
-def window_has_previous(chat_id: int, message_id: int) -> bool:
-    """Non-blocking R22 check. Never contacts Redis on the render hot path."""
-    key = _window_nav_key(chat_id, message_id)
-    with _WINDOW_NAV_HISTORY_LOCK:
-        if bool(_WINDOW_NAV_HISTORY.get(key)):
-            return True
-    if bool(_R22_NAV_REMOTE_HAS.get(key, False)):
-        return True
-    # One background prefetch is allowed for post-restart continuity. Its result
-    # can affect the next render, never the current button latency.
-    if key not in _R22_NAV_REMOTE_PREFETCH:
-        _R22_NAV_REMOTE_PREFETCH.add(key)
-        def _prefetch():
-            try:
-                fn = globals().get('kv_nav_has_v248')
-                if callable(fn):
-                    _R22_NAV_REMOTE_HAS[key] = bool(fn(int(key[0]), int(key[1])))
-            except Exception:
-                pass
-            finally:
-                _R22_NAV_REMOTE_PREFETCH.discard(key)
-        try:
-            pool = globals().get('UI_CLEANUP_TASK_POOL') or globals().get('BACKGROUND_TASK_POOL')
-            if pool is not None:
-                pool.submit_unique(f'r22-nav-has:{int(key[0])}:{int(key[1])}', _prefetch)
-        except Exception:
-            _R22_NAV_REMOTE_PREFETCH.discard(key)
-    return False
+# [OCH12.35 COMPAT] legacy window_has_previous -> 19_compat_legacy.py
+_owner_install('compat_legacy', 'compat_legacy:0015')
 
 def ensure_previous_back_nav_keyboard(reply_markup, chat_id: int, message_id: int):
     if reply_markup is None:
@@ -5052,203 +3705,50 @@ _EXPENSE_SHORTCUT_LOCK = threading.RLock()
 _EXPENSE_SHORTCUT_EVENT_LIMIT = 200
 _EXPENSE_SHORTCUT_RETRY_SECONDS = 30.0
 
-def _expense_shortcut_root() -> dict:
-    return data.setdefault('_global_settings', {}).setdefault('expense_shortcut', {})
+# [OCH12.35 OWNER] _expense_shortcut_root -> 11_business_finance.py
+_owner_install('finance', 'finance:0146')
 
-def _expense_shortcut_persist():
-    try:
-        save_data(data, root_only=True)
-    except TypeError:
-        save_data(data)
-    try:
-        _mark_global_snapshot_pending()
-    except Exception:
-        pass
-    try:
-        if OWNER_ID:
-            schedule_config_backup_for_chats(int(OWNER_ID), delay=0.4)
-            schedule_quick_backup(int(OWNER_ID), 0.4)
-    except Exception:
-        pass
+# [OCH12.35 OWNER] _expense_shortcut_persist -> 11_business_finance.py
+_owner_install('finance', 'finance:0147')
 
-def expense_shortcut_config(create: bool=True) -> dict:
-    with _EXPENSE_SHORTCUT_LOCK:
-        cfg = _expense_shortcut_root()
-        changed = False
-        if create and (not str(cfg.get('token') or '').strip()):
-            cfg['token'] = secrets.token_urlsafe(24)
-            changed = True
-        if create and (not cfg.get('target_chat_id')) and OWNER_ID:
-            cfg['target_chat_id'] = int(OWNER_ID)
-            changed = True
-        if 'text' not in cfg:
-            cfg['text'] = '💸 Был расход'
-            changed = True
-        if 'events' not in cfg or not isinstance(cfg.get('events'), list):
-            cfg['events'] = []
-            changed = True
-        if changed:
-            _expense_shortcut_persist()
-        return cfg
+# [OCH12.35 OWNER] expense_shortcut_config -> 11_business_finance.py
+_owner_install('finance', 'finance:0148')
 
-def expense_shortcut_url() -> str:
-    cfg = expense_shortcut_config(True)
-    base = str(WEBHOOK_URL or APP_URL or '').strip().rstrip('/')
-    if not base:
-        return ''
-    return f"{base}/expense-ping/{cfg.get('token')}"
+# [OCH12.35 OWNER] expense_shortcut_url -> 11_business_finance.py
+_owner_install('finance', 'finance:0149')
 
-def expense_shortcut_set_target(chat_id: int):
-    with _EXPENSE_SHORTCUT_LOCK:
-        cfg = expense_shortcut_config(True)
-        cfg['target_chat_id'] = int(chat_id)
-        _expense_shortcut_persist()
-    return int(chat_id)
+# [OCH12.35 OWNER] expense_shortcut_set_target -> 11_business_finance.py
+_owner_install('finance', 'finance:0150')
 
-def expense_shortcut_regenerate_token() -> str:
-    with _EXPENSE_SHORTCUT_LOCK:
-        cfg = expense_shortcut_config(True)
-        cfg['token'] = secrets.token_urlsafe(24)
-        _expense_shortcut_persist()
-        return str(cfg['token'])
+# [OCH12.35 OWNER] expense_shortcut_regenerate_token -> 11_business_finance.py
+_owner_install('finance', 'finance:0151')
 
-def _expense_shortcut_find_event(event_id: str):
-    cfg = expense_shortcut_config(True)
-    for row in cfg.get('events') or []:
-        if str((row or {}).get('id')) == str(event_id):
-            return row
-    return None
+# [OCH12.35 OWNER] _expense_shortcut_find_event -> 11_business_finance.py
+_owner_install('finance', 'finance:0152')
 
-def _expense_shortcut_cleanup_events_locked(cfg: dict):
-    events = list(cfg.get('events') or [])
-    pending = [e for e in events if str((e or {}).get('status')) != 'sent']
-    sent = [e for e in events if str((e or {}).get('status')) == 'sent'][-80:]
-    cfg['events'] = (pending + sent)[-_EXPENSE_SHORTCUT_EVENT_LIMIT:]
+# [OCH12.35 OWNER] _expense_shortcut_cleanup_events_locked -> 11_business_finance.py
+_owner_install('finance', 'finance:0153')
 
-def enqueue_expense_ping_event(source: str='iphone', force: bool=False) -> tuple[str, bool]:
-    """Сначала сохраняет событие, затем фоном отправляет Telegram-сообщение."""
-    with _EXPENSE_SHORTCUT_LOCK:
-        cfg = expense_shortcut_config(True)
-        now_ts = time.time()
-        if not force:
-            for old in reversed(cfg.get('events') or []):
-                if now_ts - float((old or {}).get('created_ts') or 0) <= 6.0:
-                    if str((old or {}).get('source')) == str(source):
-                        return (str(old.get('id')), True)
-                else:
-                    break
-        event_id = f'xp_{int(now_ts * 1000)}_{secrets.token_hex(4)}'
-        row = {'id': event_id, 'created_ts': now_ts, 'created_at': now_local().isoformat(timespec='seconds'), 'target_chat_id': int(cfg.get('target_chat_id') or OWNER_ID or 0), 'text': str(cfg.get('text') or '💸 Был расход'), 'source': str(source or 'iphone'), 'status': 'pending', 'attempts': 0, 'last_error': ''}
-        cfg.setdefault('events', []).append(row)
-        _expense_shortcut_cleanup_events_locked(cfg)
-        _expense_shortcut_persist()
-    GENERAL_TASK_POOL.submit(f'expense-ping:{event_id}', _deliver_expense_ping_event, event_id)
-    return (event_id, False)
+# [OCH12.35 OWNER] enqueue_expense_ping_event -> 11_business_finance.py
+_owner_install('finance', 'finance:0154')
 
-def expense_compact_message_text(created_at: str | None=None) -> str:
-    """Короткая отметка, чтобы не занимать место в финансовом чате."""
-    try:
-        dt = datetime.fromisoformat(str(created_at or ''))
-    except Exception:
-        dt = now_local()
-    now_dt = now_local()
-    if dt.date() == now_dt.date():
-        stamp = dt.strftime('%H:%M')
-    else:
-        stamp = dt.strftime('%d.%m %H:%M')
-    return f'💸 iPhone · {stamp}'
+# [OCH12.35 OWNER] expense_compact_message_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0155')
 
-def _deliver_expense_ping_event(event_id: str):
-    with _EXPENSE_SHORTCUT_LOCK:
-        row = _expense_shortcut_find_event(event_id)
-        if not row or str(row.get('status')) == 'sent':
-            return True
-        row['attempts'] = int(row.get('attempts') or 0) + 1
-        target_chat_id = int(row.get('target_chat_id') or 0)
-        created_at = str(row.get('created_at') or now_local().isoformat(timespec='seconds'))
-    try:
-        dt = datetime.fromisoformat(created_at)
-    except Exception:
-        dt = now_local()
-    draft = expense_draft_for_event(event_id, target_chat_id, created_at) if 'expense_draft_for_event' in globals() else {'id': 0}
-    draft_id = int((draft or {}).get('id') or 0)
-    text = expense_compact_message_text(created_at)
-    try:
-        markup = expense_draft_message_keyboard(draft_id, target_chat_id) if draft_id and 'expense_draft_message_keyboard' in globals() else None
-        sent = _tg_call_retry(bot.send_message, target_chat_id, text, reply_markup=markup, attempts=2, purpose='expense_ping_send')
-        if draft_id and 'expense_draft_set_message' in globals():
-            expense_draft_set_message(draft_id, int(getattr(sent, 'message_id', 0) or 0))
-        with _EXPENSE_SHORTCUT_LOCK:
-            row = _expense_shortcut_find_event(event_id)
-            if row:
-                row['status'] = 'sent'
-                row['sent_at'] = now_local().isoformat(timespec='seconds')
-                row['telegram_message_id'] = int(getattr(sent, 'message_id', 0) or 0)
-                row['last_error'] = ''
-                _expense_shortcut_cleanup_events_locked(expense_shortcut_config(True))
-                _expense_shortcut_persist()
-        try:
-            bot_journal('expense_ping_sent', target_chat_id, f"event={event_id} source={(row.get('source') if row else '')}")
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        with _EXPENSE_SHORTCUT_LOCK:
-            row = _expense_shortcut_find_event(event_id)
-            if row:
-                row['status'] = 'pending'
-                row['last_error'] = str(exc)[:300]
-                _expense_shortcut_persist()
-        try:
-            bot_journal('expense_ping_retry', target_chat_id, f'event={event_id} error={str(exc)[:240]}', 'WARN')
-        except Exception:
-            pass
-        DELAYED_SCHEDULER.schedule(f'expense-ping-retry:{event_id}', _EXPENSE_SHORTCUT_RETRY_SECONDS, _deliver_expense_ping_event, event_id)
-        return False
+# [OCH12.35 OWNER] _deliver_expense_ping_event -> 11_business_finance.py
+_owner_install('finance', 'finance:0156')
 
-def schedule_expense_ping_recovery(delay: float=1.0):
+# [OCH12.35 OWNER] schedule_expense_ping_recovery -> 11_business_finance.py
+_owner_install('finance', 'finance:0157')
 
-    def _job():
-        cfg = expense_shortcut_config(False)
-        for row in list((cfg or {}).get('events') or []):
-            if str((row or {}).get('status')) != 'sent' and row.get('id'):
-                GENERAL_TASK_POOL.submit(f"expense-ping:{row.get('id')}", _deliver_expense_ping_event, str(row.get('id')))
-    DELAYED_SCHEDULER.schedule('expense-ping-recovery', max(0.1, float(delay)), _job)
+# [OCH12.35 OWNER] build_expense_shortcut_text -> 11_business_finance.py
+_owner_install('finance', 'finance:0158')
 
-def build_expense_shortcut_text(chat_id: int) -> str:
-    cfg = expense_shortcut_config(True)
-    target = int(cfg.get('target_chat_id') or OWNER_ID or chat_id)
-    url = expense_shortcut_url()
-    pending = sum((1 for e in cfg.get('events') or [] if str((e or {}).get('status')) != 'sent'))
-    url_text = html.escape(url) if url else 'APP_URL/WEBHOOK_URL не определён'
-    return f"📱 Быстрый расход с iPhone\n\nЧат назначения: {html.escape(get_chat_display_name(target))}\nID: <code>{target}</code>\nОжидают доставки: {pending}\nКнопки в сообщении: {('✅ ВКЛ' if expense_quick_buttons_enabled() else '⬜ ВЫКЛ')}\nПодхвачены отметки за 2 дня: {html.escape(str(_expense_inbox_root().get('recent_event_migration_v142_at') or 'ещё нет'))}\n\nСкопируйте эту личную ссылку в приложение «Команды»:\n<code>{url_text}</code>\n\nТройное касание задней панели запустит команду, а бот отправит «💸 Был расход». Ссылка секретная: не публикуйте её."
+# [OCH12.35 OWNER] build_expense_shortcut_keyboard -> 11_business_finance.py
+_owner_install('finance', 'finance:0159')
 
-def build_expense_shortcut_keyboard(chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB('🎯 Выбрать чат', callback_data='expense_shortcut_pick'))
-    kb.row(IB('📋 Прислать ссылку отдельно', callback_data='expense_shortcut_send_url'))
-    kb.row(IB('🧪 Проверить сейчас', callback_data='expense_shortcut_test'))
-    kb.row(IB(expense_quick_buttons_label(), callback_data='expense_quick_buttons_toggle'))
-    kb.row(IB('🔐 Создать новую секретную ссылку', callback_data='expense_shortcut_regenerate'))
-    day = get_chat_store(chat_id).get('current_view_day') or today_key()
-    kb.row(IB('🔙 Назад в Инфо', callback_data=f'd:{day}:info'))
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{day}:back_main'))
-    return kb
-
-def build_expense_shortcut_chat_menu(chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    current = int(expense_shortcut_config(True).get('target_chat_id') or OWNER_ID or chat_id)
-    buttons = []
-    for cid in collect_all_known_chat_ids(include_owner=True):
-        if is_chat_bot_removed(cid):
-            continue
-        icon = '✅' if int(cid) == current else '▫️'
-        buttons.append(IB(f'{icon} {chat_button_title(cid)}', callback_data=f'expense_shortcut_target:{cid}'))
-    add_buttons_in_rows(kb, buttons, 2)
-    kb.row(IB('🔙 Назад', callback_data='expense_shortcut_info'))
-    day = get_chat_store(chat_id).get('current_view_day') or today_key()
-    kb.row(IB('⬅️ Назад осн. окно', callback_data=f'd:{day}:back_main'))
-    return kb
+# [OCH12.35 OWNER] build_expense_shortcut_chat_menu -> 11_business_finance.py
+_owner_install('finance', 'finance:0160')
 
 def build_journal_v208_menu_text() -> str:
     """Compact Telegram-safe menu; the full journal remains available as a file.
@@ -5371,15 +3871,8 @@ def open_info_window(chat_id: int):
     info_text = wm_common(build_info_text(chat_id), 9)
     send_or_edit_stored_window(chat_id, 'info_msg_id', info_text, reply_markup=build_info_keyboard(chat_id), parse_mode=None, delay=None)
 
-def _expense_anchor_rows(kb, store: dict, day_key: str, callback_builder, empty_text: str='Нет расходов в этот день'):
-    records = expense_anchor_records_for_day(store, day_key)
-    if records:
-        for rec in records:
-            rid = _record_int_id(rec)
-            kb.row(IB(expense_anchor_button_label(rec, store), callback_data=callback_builder(rid)))
-    else:
-        kb.row(IB(empty_text, callback_data='none'))
-    return records
+# [OCH12.35 OWNER] _expense_anchor_rows -> 11_business_finance.py
+_owner_install('finance', 'finance:0161')
 
 def _send_category_pick_start_record(chat_id: int, message_id: int, start_key: str):
     store = get_chat_store(chat_id)
@@ -6271,33 +4764,8 @@ except Exception:
 _secret_edit_refresh_lock = threading.RLock()
 _secret_edit_refresh_timers = {}
 
-def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, target_chat_id: int, day_key: str, self_only: bool=False, delay: float=0.7):
-    key = (int(viewer_chat_id), int(message_id))
-    generation = time.time_ns()
-    scheduler_key = f'secret-edit-refresh:{key[0]}:{key[1]}'
-
-    def _job():
-        try:
-            with _secret_edit_refresh_lock:
-                if _secret_edit_refresh_timers.get(key) != generation:
-                    return
-            text = build_secret_edit_text(int(target_chat_id), day_key)
-            kb = build_secret_edit_keyboard(int(viewer_chat_id), int(target_chat_id), day_key, self_only=bool(self_only))
-            try:
-                fast_ui_edit_message_text(int(viewer_chat_id), int(message_id), text, reply_markup=kb, purpose='secret_edit_debounce')
-            except Exception as e:
-                if not is_telegram_429(e) and 'message is not modified' not in str(e).lower():
-                    log_error(f'secret edit debounce refresh {viewer_chat_id}:{message_id}: {e}')
-            register_secret_window(int(viewer_chat_id), int(message_id), int(target_chat_id), 'edit', day_key=day_key, self_only=bool(self_only))
-            schedule_secret_calendar_close(int(viewer_chat_id), int(message_id))
-        finally:
-            with _secret_edit_refresh_lock:
-                if _secret_edit_refresh_timers.get(key) == generation:
-                    _secret_edit_refresh_timers.pop(key, None)
-    with _secret_edit_refresh_lock:
-        DELAYED_SCHEDULER.cancel(scheduler_key)
-        _secret_edit_refresh_timers[key] = generation
-        DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+# [OCH12.35 OWNER] schedule_secret_edit_refresh_window -> 18_business_secret.py
+_owner_install('secret', 'secret:0123')
 _CALLBACK_ACK_LOCK = threading.RLock()
 _CALLBACK_ACK_STATE = {}
 _CALLBACK_ACK_TTL_SECONDS = 180.0
@@ -6520,5 +4988,4 @@ def build_integrity_keyboard(chat_id: int):
     day = get_chat_store(chat_id).get('current_view_day') or today_key()
     kb.row(IB('🔙 Назад в Инфо', callback_data=f'd:{day}:info'))
     return kb
-
-# v262
+# v266
