@@ -1,4 +1,4 @@
-"""vys-265 OCH12.34 internal runtime configuration.
+"""OCHNIS 13 internal runtime configuration.
 
 All non-secret operational tunables that used to be Render environment variables
 live here.  Render ENV is intentionally reserved for credentials, remote
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-CONFIG_VERSION = "vys-265-och12.34-clean-business-owner-split"
+CONFIG_VERSION = "ochnis-13-r1-primary-r2-optional"
 
 # Render #1 / FAST.  These values were the R13 recommended deployment values.
 FRONT_INTERNAL_ENV: Dict[str, str] = {
@@ -25,14 +25,21 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "BOT_SPLIT_ROLE": "front",
     # OCH12.27: single-Render profile. Render #2 is treated as unavailable.
     "OCH1224_SINGLE_RENDER": "0",
-    "PEER_PING_ENABLED": "0",
+    "PEER_PING_ENABLED": "1",
     # OCH12.34: R1 is authoritative and self-sufficient; R2 is only an optional accelerator.
     "R1234_R2_ACCELERATOR_ONLY": "1",
     "R1234_R2_FAILOVER_TO_R1": "1",
-    "R1234_R2_HEALTH_TTL_SEC": "45",
+    "R1234_R2_HEALTH_TTL_SEC": "20",
     "R1234_R2_PROBE_CONNECT_SEC": "0.65",
     "R1234_R2_PROBE_READ_SEC": "1.25",
-    "OCH1224_BOOT_REMOTE_PROBES": "0",
+    # OCHNIS 13: R1 is always operational; R2 is discovered automatically.
+    "OCH13_R2_AUTO_ACCEL": "1",
+    "OCH13_R2_BOOT_PROBE": "1",
+    "OCH13_R2_BOOT_RESTORE": "1",
+    "OCH13_R2_BOOT_CONNECT_SEC": "0.65",
+    "OCH13_R2_BOOT_READ_SEC": "1.25",
+    "OCH13_R2_RESTORE_TIMEOUT_SEC": "25",
+    "OCH1224_BOOT_REMOTE_PROBES": "1",
     "OCH1224_JOURNAL_LOCAL_ONLY": "1",
     "OCH1224_MEGA_ZERO_RESIDENT": "1",
     "BOT_JOURNAL_DURABLE_ENABLED": "0",
@@ -42,8 +49,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "BOT_THREAD_STACK_KB": "384",
     "SCHEDULER_WORKERS": "1",
     "R21_HEAVY_DISPATCH_WORKERS": "1",
-    "BOT_JOURNAL_MAX": "180",
-    "R26_TRACE_RING_ROWS": "500",
+    "BOT_JOURNAL_MAX": "120",
+    "R26_TRACE_RING_ROWS": "300",
     "WINDOW_ACTOR_MAX_WINDOWS": "600",
     "WINDOW_DIAGNOSTICS_TAIL_LIMIT": "250",
     "WINDOW_DIAGNOSTICS_STATE_LIMIT": "400",
@@ -73,8 +80,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "UI_CLEANUP_WORKERS": "1",
     "UI_DELETE_WORKERS": "1",
     "UI_DELETE_MAX_PENDING": "400",
-    "R26_TRACE_RING_ROWS": "600",
-    "R26_TRACE_EXPORT_ROWS": "900",
+    "R26_TRACE_RING_ROWS": "400",
+    "R26_TRACE_EXPORT_ROWS": "600",
     "R27_FAST_USER_PRIORITY_SEC": "2.0",
     "R27_SNAPSHOT_USER_QUIET_SEC": "30",
     "R27_STATE_MIRROR_DELAY_SEC": "30",
@@ -158,8 +165,8 @@ FRONT_INTERNAL_ENV: Dict[str, str] = {
     "WORKER_EVENT_RETENTION_SEC": "604800",
 
     # Peer / event-journal transport
-    "PEER_PING_ENABLED": "0",
-    "PEER_PING_INTERVAL_SEC": "120",
+    "PEER_PING_ENABLED": "1",
+    "PEER_PING_INTERVAL_SEC": "45",
     "SPLIT_WORKER_SYNC_ENABLED": "1",
     "SPLIT_STATE_SYNC_DELAY_SEC": "8",
     "SPLIT_STATE_SYNC_MIN_INTERVAL_SEC": "30",

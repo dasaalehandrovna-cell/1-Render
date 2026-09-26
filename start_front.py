@@ -1,6 +1,14 @@
 # v262
 #!/usr/bin/env python3
-"""Render #1 launcher: canonical MEGA generation restore; Redis is cache only.
+"""OCHNIS 13 Render #1 launcher: R1 is primary; R2 is optional.
+
+Startup policy:
+- reuse a valid local SQLite immediately;
+- if local SQLite is missing/invalid, probe R2 once and restore its latest validated snapshot when available;
+- if R2 is unavailable, continue as standalone R1 and optionally use the legacy MEGA emergency restore;
+- if no durable source is reachable, initialize SQLite and start the bot instead of blocking Telegram.
+
+Legacy recovery notes follow for compatibility.
 
 OCH12.31 recovery policy:
 - a valid local SQLite is reused only as the already-running working database;
@@ -22,6 +30,7 @@ from datetime import datetime, timezone
 import json
 import os
 import runpy
+import requests
 import shutil
 import sqlite3
 import subprocess
@@ -34,6 +43,76 @@ from pathlib import Path
 from runtime_config import install_internal_runtime_config, CONFIG_VERSION as INTERNAL_CONFIG_VERSION
 
 install_internal_runtime_config("front")
+
+
+def _och13_peer_base() -> str:
+    raw = str(os.getenv('PEER_SERVICE_URL', '') or os.getenv('PEER_PRIVATE_URL', '') or '').strip().rstrip('/')
+    if raw and not raw.startswith(('http://','https://')):
+        raw = 'https://' + raw
+    return raw
+
+
+def _och13_peer_secret() -> str:
+    return str(os.getenv('PEER_SHARED_SECRET', '') or '').strip()
+
+
+def _och13_probe_r2() -> tuple[bool, str]:
+    if str(os.getenv('OCH13_R2_BOOT_PROBE', '1') or '1').strip().lower() not in {'1','true','yes','on'}:
+        os.environ['OCH13_R2_BOOT_ALIVE'] = '0'
+        return False, 'boot probe disabled'
+    base, secret = _och13_peer_base(), _och13_peer_secret()
+    if not base or not secret:
+        os.environ['OCH13_R2_BOOT_ALIVE'] = '0'
+        return False, 'R2 URL/secret not configured'
+    try:
+        connect = max(0.2, min(3.0, float(os.getenv('OCH13_R2_BOOT_CONNECT_SEC', '0.65') or '0.65')))
+        read = max(0.4, min(5.0, float(os.getenv('OCH13_R2_BOOT_READ_SEC', '1.25') or '1.25')))
+        r = requests.get(base + '/peer/health', headers={'X-Peer-Secret':secret,'User-Agent':'ochnis-13-r1-boot'}, timeout=(connect, read))
+        ok = 200 <= int(r.status_code) < 300
+        os.environ['OCH13_R2_BOOT_ALIVE'] = '1' if ok else '0'
+        return ok, ('HTTP ' + str(r.status_code))
+    except Exception as exc:
+        os.environ['OCH13_R2_BOOT_ALIVE'] = '0'
+        return False, f'{type(exc).__name__}: {str(exc)[:180]}'
+
+
+def _och13_restore_from_r2(target: Path) -> tuple[bool, str]:
+    if str(os.getenv('OCH13_R2_BOOT_RESTORE', '1') or '1').strip().lower() not in {'1','true','yes','on'}:
+        return False, 'R2 boot restore disabled'
+    base, secret = _och13_peer_base(), _och13_peer_secret()
+    if not base or not secret:
+        return False, 'R2 not configured'
+    tmp_gz = target.with_suffix(target.suffix + '.r2.gz.tmp')
+    tmp_db = target.with_suffix(target.suffix + '.r2.tmp')
+    try:
+        timeout = max(5.0, min(90.0, float(os.getenv('OCH13_R2_RESTORE_TIMEOUT_SEC', '25') or '25')))
+        r = requests.get(base + '/internal/restore/latest', headers={'X-Peer-Secret':secret,'User-Agent':'ochnis-13-r1-restore'}, timeout=(1.5, timeout))
+        if not (200 <= int(r.status_code) < 300):
+            return False, f'R2 restore HTTP {r.status_code}: {str(r.text or "")[:180]}'
+        payload = bytes(r.content or b'')
+        if not payload:
+            return False, 'R2 restore returned empty body'
+        expected = str(r.headers.get('X-SHA256') or '').strip().lower()
+        actual = hashlib.sha256(payload).hexdigest()
+        if expected and expected != actual:
+            return False, 'R2 restore SHA256 mismatch'
+        tmp_gz.parent.mkdir(parents=True, exist_ok=True)
+        tmp_gz.write_bytes(payload)
+        with gzip.open(tmp_gz, 'rb') as src, open(tmp_db, 'wb') as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+            dst.flush(); os.fsync(dst.fileno())
+        if not _db_valid(tmp_db):
+            return False, 'R2 snapshot SQLite validation failed'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp_db, target)
+        return True, f'R2 snapshot restored sha256={actual[:12]}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:220]}'
+    finally:
+        try: tmp_gz.unlink(missing_ok=True)
+        except Exception: pass
+        try: tmp_db.unlink(missing_ok=True)
+        except Exception: pass
 
 
 _PREBOOT_SPOOL_LOCK = threading.RLock()
@@ -1787,14 +1866,32 @@ def main():
     try:
         current_valid = bool(local_valid_before)
 
-        # OCH12.26: local SQLite is not a restore source; it is merely the already
-        # active working file if this container/process retained it.  If it is absent
-        # or invalid, the only durable source of truth is canonical MEGA generation.
-        trace['policy'] = 'OCH12.31_MEGA_RESILIENT_CANONICAL'
+        # OCHNIS 13: local SQLite wins. If missing/invalid, R2 is checked once but is
+        # never a startup dependency: failed probe/restore immediately falls through to
+        # R1 emergency recovery and finally empty SQLite initialization.
+        trace['policy'] = 'OCH13_R1_PRIMARY_R2_OPTIONAL'
         trace['local_cache_contacted'] = False
         trace['redis_contacted'] = False
         trace['redis_restore_disabled_v1226'] = True
-        trace['redis_detail'] = 'Redis is cache-only; startup restore uses local working DB or canonical MEGA generation'
+        trace['redis_detail'] = 'Redis is cache-only; startup restore order is LOCAL -> R2 -> MEGA emergency -> EMPTY R1'
+
+        r2_ok, r2_detail = _och13_probe_r2()
+        trace['heavy_contacted'] = bool(_och13_peer_base() and _och13_peer_secret())
+        trace['r2_boot_alive'] = bool(r2_ok)
+        trace['r2_probe_detail'] = str(r2_detail)[:500]
+        if (not current_valid) and r2_ok:
+            r2_restore_ok, r2_restore_detail = _och13_restore_from_r2(target)
+            trace['r2_restore_attempted'] = True
+            trace['r2_restore_ok'] = bool(r2_restore_ok)
+            trace['r2_restore_detail'] = str(r2_restore_detail)[:800]
+            if r2_restore_ok and _db_valid(target):
+                current_valid = True
+                trace['base_source'] = 'R2_VALIDATED_SNAPSHOT'
+                print(f'[OCH13 FRONT] R2 restore ok: {str(r2_restore_detail)[:400]}', flush=True)
+        else:
+            trace['r2_restore_attempted'] = False
+            trace['r2_restore_ok'] = False
+            trace['r2_restore_detail'] = 'not needed' if current_valid else str(r2_detail)[:500]
 
         mega_root = _canonical_mega_root()
         mega_creds = bool(str(os.getenv('MEGA_SESSION', '') or '').strip() or
@@ -1942,7 +2039,7 @@ def main():
         # action binds the real Waitress server.  This removes the old live-but-503 gap.
         os.environ['PREBOOT_WEBHOOK_SPOOL_FILE'] = str(_PREBOOT_SPOOL_PATH)
         os.environ['BOT_DEFER_MAIN_R54'] = '1'
-        runtime_ns = runpy.run_path(str(Path(__file__).with_name('bot.py')), run_name='__main__')
+        runtime_ns = runpy.run_path(str(Path(__file__).with_name('runtime_flat.py')), run_name='__main__')
         os.environ.pop('BOT_DEFER_MAIN_R54', None)
         runtime_main = runtime_ns.get('main')
         if not callable(runtime_main):
